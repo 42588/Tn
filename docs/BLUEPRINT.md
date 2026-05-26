@@ -4,6 +4,7 @@
 > 全文用「✅ 现状」标记**已实现**的部分,用「🧭 规划」标记**蓝图设计**(尚未落地)。
 > 决策背景与多方案权衡见计划文件:`~/.claude/plans/windows-vibe-coding-claude-codex-rust-w-hazy-token.md`。
 > **从 Windows Terminal 与 Ghostty 源码精读提炼的可落地设计要点见 [REFERENCES.md](REFERENCES.md)**(输入编码、GPU 渲染、OSC 133/shell 集成、ConPTY 纪律、IO 合并、配置模型)。
+> **分屏 / 多会话 / 一键 AI / 用量 / 颜值 的完整体验设计见 [UX-DESIGN.md](UX-DESIGN.md)**(灵活平铺 n-ary 容器 + 拖拽停靠、会话启动器、AI 上下文与 token 用量、视觉设计语言)。
 
 ---
 
@@ -225,7 +226,7 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] **每格颜色渲染**:落地自定义 `TerminalElement`(`paint_quad` 背景/光标/选区 + `shape_line`/`paint_glyph`);连字开关。
 - [ ] `tn-config`:schema/加载/路径/首次写默认;字体(family/size/line-height、CJK+emoji 回退)。
 - [ ] 主题系统 + 3–4 内置主题 + 实时 `theme_bridge` + 透明度/内边距;导入 iTerm/WindowsTerminal/base16。
-- [ ] Tab + 分屏 + 焦点;滚动历史 + 选择/复制粘贴 + OSC 8 超链接。
+- [ ] Tab + **灵活平铺分屏(n-ary 容器 + 拖拽停靠)** + 方向焦点 + 会话启动器(`+` 下拉 / 命令面板);滚动历史 + 选择/复制粘贴 + OSC 8 超链接。详见 [UX-DESIGN.md](UX-DESIGN.md) §1–3。
 - [ ] 键位绑定 + 动作派发;配置热重载;崩溃保护 + `tracing` 文件日志。
 - [ ] 重绘改为 push + 4ms 合并 + DEC 2026 同步输出门。
 - **退出标准**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
@@ -244,7 +245,8 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 
 ### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🧭
 - [ ] `tn-ai::detect`(启动意图→进程树→标题);agent SurfaceBlock 状态条。
-- [ ] 命令面板(`Ctrl+Shift+P`):agent 快启、新建 pwsh/WSL/SSH、最近命令、block 动作。
+- [ ] **AI 用量**:`UsageProvider` 解析 Claude(`~/.claude/projects/**/*.jsonl`)/ Codex(`$CODEX_HOME/sessions/**/rollout-*.jsonl`)本地会话,展示**上下文占用 + token + 估算花费**(分屏头环形读数 + AI 状态栏 + 用量面板)。详见 [UX-DESIGN.md](UX-DESIGN.md) §5。
+- [ ] 命令面板(`Ctrl+Shift+P`):agent 快启磁贴、新建 pwsh/WSL/SSH、最近命令、block 动作。
 - [ ] 颜值打磨(主题、mica/acrylic、动画,用 gpui-component);可选 opt-in 桥。
 - **退出标准**:在 Tn 里启动 Claude Code/Codex 明显优于普通终端。
 
