@@ -54,6 +54,35 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
 "#;
         SCRIPT.replace("__NONCE__", &self.nonce)
     }
+
+    /// Base64 of the UTF-16LE bytes of [`Self::powershell`], for launching
+    /// `powershell.exe -NoExit -EncodedCommand <b64>`: the FTCS hooks are
+    /// sourced at startup with no temp file and no echoed input line.
+    pub fn encoded_command(&self) -> String {
+        let utf16: Vec<u8> = self
+            .powershell()
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        base64(&utf16)
+    }
+}
+
+/// Minimal standard-alphabet Base64 with `=` padding (avoids pulling a dep).
+fn base64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(A[(n >> 18 & 63) as usize] as char);
+        out.push(A[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { A[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 
 #[cfg(test)]
@@ -70,5 +99,30 @@ mod tests {
         }
         assert!(s.contains(&i.nonce));
         assert!(!s.contains("__NONCE__")); // placeholder substituted
+    }
+
+    #[test]
+    fn base64_known_vectors() {
+        // RFC 4648 §10 test vectors.
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn encoded_command_is_base64_of_utf16le() {
+        let i = Integration::new();
+        let enc = i.encoded_command();
+        assert!(!enc.is_empty());
+        // valid base64 alphabet only
+        assert!(enc
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=')));
+        // UTF-16LE of an ASCII-heavy script base64s to a length divisible by 4.
+        assert_eq!(enc.len() % 4, 0);
     }
 }

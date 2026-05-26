@@ -169,6 +169,12 @@ impl BlockModel {
         self.finished.len()
     }
 
+    /// The most recently finished block, if any (the bar falls back to this
+    /// while sitting at a fresh prompt that has no command yet).
+    pub fn last_finished(&self) -> Option<&Block> {
+        self.finished.last()
+    }
+
     /// The last known working directory.
     pub fn cwd(&self) -> Option<&str> {
         self.cwd.as_deref()

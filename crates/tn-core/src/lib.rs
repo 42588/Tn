@@ -356,6 +356,17 @@ impl Terminal {
         }
     }
 
+    /// Absolute line of the cursor, counted from the top of the retained
+    /// scrollback (history start). Monotonic as output scrolls — until the
+    /// scrollback cap drops the oldest lines, after which all anchors shift
+    /// together. `tn-blocks` uses this to anchor command blocks into history.
+    pub fn cursor_abs_line(&self) -> u64 {
+        let grid = self.term.grid();
+        let history = grid.history_size() as u64;
+        let line = grid.cursor.point.line.0.max(0) as u64; // 0..screen_lines
+        history + line
+    }
+
     /// Scroll the viewport through scrollback by `lines` (positive = back toward
     /// older output). Clamped to the history bounds by the engine.
     pub fn scroll(&mut self, lines: i32) {
@@ -554,5 +565,20 @@ mod tests {
         let snap = t.snapshot();
         assert_eq!(snap.rows, 10);
         assert_eq!(snap.cols, 40);
+    }
+
+    #[test]
+    fn cursor_abs_line_grows_as_output_scrolls() {
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        let start = t.cursor_abs_line();
+        for i in 0..12 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        // Output past the 3-row viewport pushes lines into history, so the
+        // cursor's absolute line must advance monotonically (block anchors).
+        assert!(
+            t.cursor_abs_line() > start,
+            "cursor absolute line advances as output scrolls into history"
+        );
     }
 }

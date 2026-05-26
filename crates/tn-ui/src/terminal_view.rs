@@ -19,18 +19,22 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures::channel::mpsc;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, prelude::*, px, AsyncApp, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba,
-    ScrollDelta, ScrollWheelEvent, SharedString, WeakEntity, Window,
+    canvas, div, prelude::*, px, rgba, AsyncApp, Bounds, ClipboardItem, Context, Div, FocusHandle,
+    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, WeakEntity, Window,
 };
+use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{GridSize, Palette, Rgb, TermEvent, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec};
+use tn_shell::{Integration, ShellParser};
+
+use crate::block_view;
 
 /// Convert a tn-core RGB color to a GPUI color.
 fn col(c: Rgb) -> Rgba {
@@ -81,6 +85,10 @@ pub struct TerminalView {
     // Screen-space bounds of the text content, captured each paint by a canvas
     // so mouse handlers can map pixels -> cells and resize fits the pane.
     content_bounds: Rc<RefCell<Bounds<Pixels>>>,
+    // Warp-style command blocks, built from the shell-integration bypass.
+    blocks: Arc<Mutex<BlockModel>>,
+    // Live palette copy (for block-bar colors); kept in sync with the engine.
+    palette: Palette,
     // True while a left-drag selection is in progress.
     selecting: bool,
     focused_once: bool,
@@ -89,16 +97,29 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let size = GridSize::new(ROWS, COLS);
-        let spec = SpawnSpec::program("powershell.exe").arg("-NoLogo");
+        // Inject the pwsh shell-integration script (OSC 133 FTCS) via
+        // -EncodedCommand so command blocks light up — no temp file, no echoed
+        // input. Bypassable with TN_NO_SHELL_INTEGRATION for safety.
+        let spec = if std::env::var("TN_NO_SHELL_INTEGRATION").is_ok() {
+            SpawnSpec::program("powershell.exe").arg("-NoLogo")
+        } else {
+            SpawnSpec::program("powershell.exe")
+                .arg("-NoLogo")
+                .arg("-NoExit")
+                .arg("-EncodedCommand")
+                .arg(Integration::new().encoded_command())
+        };
         let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))
             .expect("failed to spawn shell");
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
 
         // Build the engine with the configured scrollback + theme palette.
+        let palette = palette_from(&config.theme);
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
-        term.set_palette(palette_from(&config.theme));
+        term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
+        let blocks = Arc::new(Mutex::new(BlockModel::new()));
         // Starts false: the first read's false->true transition sends the first
         // wake. GPUI still paints the initial (empty) frame when the window opens.
         let dirty = Arc::new(AtomicBool::new(false));
@@ -107,7 +128,15 @@ impl TerminalView {
         let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
         let title = Arc::new(Mutex::new(None));
 
-        Self::spawn_reader(reader, terminal.clone(), writer.clone(), dirty.clone(), wake_tx, title.clone());
+        Self::spawn_reader(
+            reader,
+            terminal.clone(),
+            writer.clone(),
+            dirty.clone(),
+            wake_tx,
+            title.clone(),
+            blocks.clone(),
+        );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
 
         if std::env::var("TN_AUTOQUIT").is_ok() {
@@ -140,6 +169,8 @@ impl TerminalView {
             line_height,
             title,
             content_bounds: Rc::new(RefCell::new(Bounds::default())),
+            blocks,
+            palette,
             selecting: false,
             focused_once: false,
         }
@@ -154,14 +185,19 @@ impl TerminalView {
         dirty: Arc<AtomicBool>,
         wake_tx: mpsc::UnboundedSender<()>,
         title: Arc<Mutex<Option<String>>>,
+        blocks: Arc<Mutex<BlockModel>>,
     ) {
         thread::spawn(move || {
+            // Shell-integration bypass parser + a session clock. The parser is
+            // stateful (a sequence can split across reads), so it lives here.
+            let mut shell = ShellParser::new();
+            let start = Instant::now();
             let mut buf = [0u8; 8192];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let replies: Vec<String> = {
+                        let (replies, events, abs_line): (Vec<String>, _, u64) = {
                             let mut t = terminal.lock().unwrap();
                             t.advance(&buf[..n]);
                             let mut replies = Vec::new();
@@ -173,7 +209,10 @@ impl TerminalView {
                                     _ => {}
                                 }
                             }
-                            replies
+                            // Same bytes feed the bypass parser; the post-advance
+                            // cursor line anchors this batch of block events.
+                            let events = shell.advance(&buf[..n]);
+                            (replies, events, t.cursor_abs_line())
                         };
                         if !replies.is_empty() {
                             let mut w = writer.lock().unwrap();
@@ -181,6 +220,13 @@ impl TerminalView {
                                 let _ = w.write_all(r.as_bytes());
                             }
                             let _ = w.flush();
+                        }
+                        if !events.is_empty() {
+                            let at_ms = start.elapsed().as_millis() as u64;
+                            let mut bm = blocks.lock().unwrap();
+                            for ev in events {
+                                bm.on_event(ev, abs_line, at_ms);
+                            }
                         }
                         // Wake the foreground only on the false->true transition,
                         // so a burst of reads enqueues at most one pending wake.
@@ -248,6 +294,7 @@ impl TerminalView {
     /// Re-apply a color palette to the live engine (config hot-reload). Font and
     /// scrollback are fixed at construction, so those changes affect new panes.
     pub fn apply_palette(&mut self, palette: Palette) {
+        self.palette = palette;
         self.terminal.lock().unwrap().set_palette(palette);
     }
 
@@ -317,6 +364,66 @@ impl TerminalView {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
             }
         }
+    }
+
+    /// Copy a command block's command line to the clipboard (block-bar action).
+    fn copy_command(&self, cmd: &str, cx: &mut Context<Self>) {
+        if !cmd.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(cmd.to_string()));
+        }
+    }
+
+    /// Re-run a command block: type its command line back into the shell.
+    fn rerun_command(&self, cmd: &str, cx: &mut Context<Self>) {
+        if cmd.is_empty() {
+            return;
+        }
+        {
+            let mut w = self.writer.lock().unwrap();
+            let _ = w.write_all(cmd.as_bytes());
+            let _ = w.write_all(b"\r");
+            let _ = w.flush();
+        }
+        self.terminal.lock().unwrap().scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// Build the Warp-style command-block bar shown at the bottom of the pane,
+    /// or `None` on the alternate screen (vim/less) or before any command runs.
+    fn render_block_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.terminal.lock().unwrap().input_mode().alt_screen {
+            return None; // full-screen app owns the viewport — no chrome
+        }
+        let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap())?;
+        let pal = block_view::BarPalette::from_palette(&self.palette);
+        let mut bar = block_view::bar_base(&data, &pal);
+        if !data.command.is_empty() {
+            let copy_cmd = data.command.clone();
+            let rerun_cmd = data.command.clone();
+            let btn = |label: &'static str, color: Rgba| {
+                div()
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .bg(rgba(0xffffff10))
+                    .text_color(color)
+                    .child(label)
+            };
+            bar = bar
+                .child(btn("复制", pal.dim).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
+                        this.copy_command(&copy_cmd, cx)
+                    }),
+                ))
+                .child(btn("重跑", pal.blue).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
+                        this.rerun_command(&rerun_cmd, cx)
+                    }),
+                ));
+        }
+        Some(bar)
     }
 
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
@@ -463,10 +570,16 @@ impl Render for TerminalView {
         let snapshot = self.terminal.lock().unwrap().snapshot();
         let rows = snapshot.row_runs();
         let bounds_cell = self.content_bounds.clone();
+        let block_bar = self.render_block_bar(cx);
 
-        div()
-            .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+        // Terminal area: the canvas captures THIS region's bounds (so the grid
+        // fits the space above the block bar) and hosts the row runs. Mouse +
+        // scroll handlers live here so clicks on the bar don't start selections.
+        let term_area = div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .overflow_hidden()
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
                 this.on_scroll(ev, window, cx)
             }))
@@ -481,16 +594,6 @@ impl Render for TerminalView {
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseUpEvent, window, cx| this.on_mouse_up(ev, window, cx)),
             )
-            .size_full()
-            .relative()
-            .overflow_hidden()
-            .bg(col(snapshot.bg))
-            .text_color(col(snapshot.fg))
-            .font_family(self.font_family.clone())
-            .text_size(px(self.font_size))
-            .line_height(px(self.line_height))
-            // Transparent canvas: captures the content's screen bounds each paint
-            // for pixel->cell mapping and pane-fit resize.
             .child(
                 canvas(
                     move |bounds, _window, _cx| *bounds_cell.borrow_mut() = bounds,
@@ -517,7 +620,22 @@ impl Render for TerminalView {
                                     .child(SharedString::from(r.text))
                             }))
                     })),
-            )
+            );
+
+        div()
+            .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            .size_full()
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .bg(col(snapshot.bg))
+            .text_color(col(snapshot.fg))
+            .font_family(self.font_family.clone())
+            .text_size(px(self.font_size))
+            .line_height(px(self.line_height))
+            .child(term_area)
+            .when_some(block_bar, |this, bar| this.child(bar))
     }
 }
 

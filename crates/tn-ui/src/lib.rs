@@ -5,6 +5,7 @@
 //! local shells. Set `TN_AUTOQUIT=1` for the headless self-test (the first pane
 //! drives a command, dumps the grid, then quits).
 
+mod block_view;
 mod input;
 mod terminal_view;
 mod workspace;

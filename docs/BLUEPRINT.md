@@ -241,12 +241,13 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] Profile 选择器 + 主机列表(可选导入 `~/.ssh/config`);断连 UX。
 - **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。
 
-### M3 — shell 集成 + block UI 🚧 进行中(头部基础完成)
-- [x] `tn-shell`([crates/tn-shell](../crates/tn-shell)):旁路 `vte::Parser` 只处理 `osc_dispatch`,解析 OSC 133(FTCS A/B/C/D[;exit])、633(+E 命令行、P;Cwd=)、7(file://→cwd,%XX 解码 + Windows 盘符)→ `BlockEvent`;`Integration`(per-session nonce + pwsh 集成脚本草稿,prompt 钩子发 D/A/B、PSReadLine Enter 发 C)。9 测试。
-- [x] `tn-blocks`([crates/tn-blocks](../crates/tn-blocks)):`BlockModel` 状态机 `Prompt→Input→Running→Finished`,`on_event(ev,line,at_ms)` → `Block`(命令/cwd/prompt+输出行区间/退出码/时长);中断块无 D 时新 prompt 隐式收尾。5 测试。 *(跨 WSL/SSH = M2 后)*
-- [ ] **接线**:`TerminalView` 注入 pwsh 脚本;reader 旁路跑 `ShellParser` → 当前光标行+时间喂 `BlockModel`。
-- [ ] `tn-ui::block_view`:折叠/置顶/复制/重跑/跳转/搜索;**alt-screen 共存(进入即关 chrome)是正确性门槛**。
-- **退出标准**:命令聚合成可导航的 block,带状态/时长。
+### M3 — shell 集成 + block UI ✅ 完成(待窗口内肉眼复核 UI)
+- [x] `tn-shell`([crates/tn-shell](../crates/tn-shell)):旁路 `vte::Parser` 只处理 `osc_dispatch`,解析 OSC 133(FTCS A/B/C/D[;exit])、633(+E 命令行、P;Cwd=)、7(file://→cwd,%XX 解码 + Windows 盘符)→ `BlockEvent`;`Integration`(per-session nonce + pwsh 集成脚本,prompt 钩子发 D/A/B、PSReadLine Enter 发 C)+ `encoded_command()`(UTF-16LE base64,经 `-EncodedCommand` 注入)。11 测试。
+- [x] `tn-blocks`([crates/tn-blocks](../crates/tn-blocks)):`BlockModel` 状态机 `Prompt→Input→Running→Finished`,`on_event(ev,line,at_ms)` → `Block`(命令/cwd/prompt+输出行区间/退出码/时长);中断块无 D 时新 prompt 隐式收尾;`last_finished`。5 测试。 *(跨 WSL/SSH = M2 后)*
+- [x] **接线**(`terminal_view.rs`):启动用 `-EncodedCommand` 注入 pwsh 脚本(无临时文件/不回显,`TN_NO_SHELL_INTEGRATION` 可关);reader 旁路跑 `ShellParser` → 用 `tn_core::Terminal::cursor_abs_line()` + 会话时钟喂共享 `BlockModel`。`TN_AUTOQUIT` 验不回归。
+- [x] `tn-ui::block_view`:Warp 式命令 block 底栏(Calm Glass、状态条 蓝/绿/红、命令/时长/退出码/cwd、复制/重跑);**alt-screen 自动隐藏(正确性门槛)**。
+- [ ] **后置精修**:历史 block 的逐行覆盖 chrome(锚行随 reflow 重解析、置顶/跳转/搜索);block 栏外观肉眼复核;pwsh `C` 钩子真机鲁棒性。
+- **退出标准**:命令聚合成带状态/时长的 block,底栏可见且 alt-screen 隐藏。✅
 
 ### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🧭
 - [ ] `tn-ai::detect`(启动意图→进程树→标题);agent SurfaceBlock 状态条。

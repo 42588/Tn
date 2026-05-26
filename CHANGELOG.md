@@ -9,7 +9,7 @@
 
 ---
 
-## [Unreleased] — M3 shell 集成 + block(开发中)
+## [Unreleased] — M3 shell 集成 + block(集成完成,待 UI 肉眼复核)
 
 > 计划调整(owner):**M3 → M4 先行,M2 WSL/SSH 后置**(M3/M4 作用于本地终端,不依赖 M2)。
 
@@ -18,18 +18,28 @@
   shell-集成序列 → `BlockEvent`。识别 **OSC 133**(FTCS `A/B/C/D[;exit]`)、**OSC 633**
   (+`E` 命令行、`P;Cwd=`)、**OSC 7**(`file://`→cwd,含 `%XX` 解码与 Windows 盘符)。
   `Integration`:per-session nonce + pwsh 集成脚本(prompt 钩子发 `D/A/B`、PSReadLine Enter
-  发 `C`;脚本为草稿,待真实 pwsh 调)。原始流照常喂 `tn-core`,此为纯旁路。**9 测试**。
+  发 `C`)+ `encoded_command()`(脚本 → UTF-16LE base64,经 `-EncodedCommand` 注入)。原始流照常喂
+  `tn-core`,此为纯旁路。**11 测试**。
 - **`tn-blocks`**(新 crate):`BlockModel` 状态机 `Prompt→Input→Running→Finished`;
   `on_event(event, line, at_ms)` 把事件 + 绝对行 + 时间戳聚合成 `Block`(命令、cwd、prompt/
   输出行区间、退出码、时长);中断块(无 `D`)在新 prompt 到来时隐式收尾;`duration_ms`/
-  `succeeded`/`is_running`。block 是对滚动区的语义索引(行锚点),非替换网格。**5 测试**。
+  `succeeded`/`is_running`/`last_finished`。block 是对滚动区的语义索引(行锚点),非替换网格。**5 测试**。
 
-### 待做 (Pending) — M3 集成 + UI(需窗口内肉眼验证)
-- 接线:`TerminalView` 注入 pwsh 脚本;reader 旁路跑 `ShellParser` → 当前光标行 + 时间喂 `BlockModel`。
-- `tn-ui::block_view`:Warp 式 block 卡片(状态条/命令/时长/cwd、折叠/复制/重跑);
-  **alt-screen 进入即关 block chrome**(正确性门槛)。
+### 新增 (Added) — M3 集成 + block 底栏 UI
+- **接线**(`tn-ui::terminal_view`):启动用 `-EncodedCommand` 注入 pwsh 集成脚本(无临时文件、不回显
+  输入行;`TN_NO_SHELL_INTEGRATION` 可关)。reader 线程在喂 `tn-core` 的同时旁路跑 `ShellParser`,
+  把事件 + **当前光标绝对行**(新增 `tn_core::Terminal::cursor_abs_line`:history + cursor 行,作
+  scrollback 锚点)+ 会话时钟喂给共享 `BlockModel`。纯旁路、不回归(`TN_AUTOQUIT` 注入后网格仍正确渲染)。
+- **`tn-ui::block_view`**:Warp 式命令 block 底栏(Calm Glass 半透磨砂、**无发光**)——状态条
+  运行蓝/成功绿/失败红、命令、时长、退出码、cwd,带**复制 / 重跑**动作;**alt-screen 自动隐藏**
+  (全屏 app 占据视口 = 正确性门槛)。canvas 改为只测量 block 栏之上的终端区,网格按其自适配。
 
-测试总计:**50**(tn-core 9 / tn-config 14 / tn-ui 13 / tn-shell 9 / tn-blocks 5)。
+### 待做 (Pending) — M3 精修(后置,需窗口内肉眼验证)
+- **历史 block 的逐行覆盖 chrome**:当前底栏只装饰"当前/最近"一个 block;围住滚动区里每个历史
+  block 的覆盖层需 abs-line→视口映射 + 随 reflow 重解析,后置。
+- block 底栏外观的窗口内肉眼复核;pwsh `C`(PSReadLine)钩子在更多 prompt 配置下的鲁棒性真机验证。
+
+测试总计:**53**(tn-core 10 / tn-config 14 / tn-ui 13 / tn-shell 11 / tn-blocks 5)。
 
 ---
 

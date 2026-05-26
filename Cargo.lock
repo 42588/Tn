@@ -5590,9 +5590,11 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui",
+ "tn-blocks",
  "tn-config",
  "tn-core",
  "tn-pty",
+ "tn-shell",
  "tracing",
 ]
 
