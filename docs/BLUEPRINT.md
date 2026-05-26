@@ -3,6 +3,7 @@
 > 本文是 Tn 终端的**工程参考手册 + 开发蓝图**。读者对象:接手或参与 Tn 开发的工程师。
 > 全文用「✅ 现状」标记**已实现**的部分,用「🧭 规划」标记**蓝图设计**(尚未落地)。
 > 决策背景与多方案权衡见计划文件:`~/.claude/plans/windows-vibe-coding-claude-codex-rust-w-hazy-token.md`。
+> **从 Windows Terminal 与 Ghostty 源码精读提炼的可落地设计要点见 [REFERENCES.md](REFERENCES.md)**(输入编码、GPU 渲染、OSC 133/shell 集成、ConPTY 纪律、IO 合并、配置模型)。
 
 ---
 
@@ -108,7 +109,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 
 ### 3.3 输入路径 ✅
 
-键盘事件经 `on_key_down` → `keystroke_to_bytes()` 把 GPUI `Keystroke` 映射成终端字节,写回 PTY 的 writer(也就是 shell 的 stdin)。当前覆盖:可打印字符(含 shift/布局,经 `key_char`)、Enter/Tab/Backspace/Esc/方向键/Home/End/PgUp/PgDn/Del/Ins、Ctrl+字母(→ 0x01..0x1a)。🧭 完整的 `to_esc_str`(app-cursor 模式、kitty 键盘协议等)留待输入层重做。
+键盘事件经 `on_key_down` → `keystroke_to_bytes()` 把 GPUI `Keystroke` 映射成终端字节,写回 PTY 的 writer(也就是 shell 的 stdin)。当前覆盖:可打印字符(含 shift/布局,经 `key_char`)、Enter/Tab/Backspace/Esc/方向键/Home/End/PgUp/PgDn/Del/Ins、Ctrl+字母(→ 0x01..0x1a)。🧭 完整的 `to_esc_str` 留待输入层重做——**直接照搬 Windows Terminal `_encodeRegular` 算法**(DECCKM 决定 CSI/SS3、修饰键 `mod+1`、DECFNK F 键、Alt=ESC 前缀、`_makeCtrlChar`),模式位取自 alacritty `Term::mode()`;kitty 键盘协议门控后置。详见 [REFERENCES.md](REFERENCES.md) §一。
 
 ### 3.4 PtyWrite 回写(关键坑)✅
 
@@ -119,7 +120,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 ### 3.5 重绘循环 ✅ / 🧭
 
 ✅ 现状:reader 线程设 `dirty` 原子标志;GPUI 前台任务每 8ms 轮询,`dirty` 为真就 `cx.notify()` 重绘。
-🧭 规划:改为 **push + 4ms 合并窗口 + DEC 2026 同步输出门**——这是 Zed/zTerm/Paneflow 验证过的、解决「`cat` 大文件卡死」的标准方案;渲染「最终状态而非增量」。
+🧭 规划:改为 **push `notify` + 由 GPUI 帧时钟/vsync 合并 + DEC 2026 同步输出门(配 1 秒安全复位定时器)**——这是 Zed/zTerm/Paneflow/Ghostty 验证过的、解决「`cat` 大文件卡死」的标准方案;渲染「最终状态而非增量」。Ghostty 的经验:别过度工程化批渲染,优先让 vsync 节流,仅当 profiling 发现冗余帧再加最小间隔定时器(见 [REFERENCES.md](REFERENCES.md) §六)。
 
 ### 3.6 resize 联动 ✅
 
@@ -137,6 +138,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 - `TerminalSnapshot`:`rows/cols/cursor/cells`;`rows_text()`、`to_text()` 便于渲染与测试。
 - 单测 3 个:写文本入网格、CR/LF 换行、resize 改尺寸。
 - 🧭 待加:`SnapshotCell` 当前只有 `char + flags`,**需补 fg/bg 颜色**(`alacritty …::Color` → RGB,需配色板/主题);damage 脏行追踪用于局部重绘。
+- 🧭 取经(见 [REFERENCES.md](REFERENCES.md) §四,源自 Ghostty PageList):① 滚动区在 alacritty 行数上限之外**再加字节上限**,防超宽行/长跑会话爆内存;② 每行加 **styled/has_link/is_prompt/dirty 提示位**(假阳性可接受),让 block 命中测试与重绘 damage 整行跳过;③ block 快照做成**自包含、样式驻留的拥有式拷贝**,与活网格解耦。
 
 ### 4.2 `tn-pty` — PTY 后端 ✅ / 🧭
 
@@ -150,10 +152,13 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 
 - ✅ `TerminalView`(`Render` 实体):持有共享 `Terminal`、`writer`、`pty`、`focus_handle`、当前 `size`、实测 `cell_width`。`new` 里 spawn shell + reader 线程 + 重绘任务;`render` 做 resize 计算 + 把快照逐行渲染;`on_key` 走输入路径。`TN_AUTOQUIT=1` 时跑内置自测(打一条命令、dump 网格、退出)——这是无人值守验证渲染的手段。
 - 🧭 待做:**自定义 `TerminalElement`**(GPUI `Element` 的 layout/prepaint/paint),用 `paint_quad` 画背景/光标/选区、`shape_line`/`paint_glyph` 画字形,支持**每格颜色**、连字、选择、滚动条;Tab 栏、分屏(panes)、命令面板(palette)。
+- 🧭 取经(见 [REFERENCES.md](REFERENCES.md) §二,源自 Windows Terminal AtlasEngine):**把可见网格拍平成带类型的 quad 批量提交**(背景/字形/光标/选区/下划线一把画)、**按 run(同字体同样式连续段)整形而非按 cell**、fg/bg 分离上色、连字按 cell 边界切分;box-drawing/Powerline 用 quad **自绘 sprite** 保证像素对齐。注意:GPUI 自带字形图集与 DirectWrite,**不重写 D3D**,只在 Element 内组织批处理。
 
 ### 4.4 `tn-config` — 配置与主题 🧭(目前 stub)
 
-TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。schema:`[general]/[font]/[appearance]/[blocks]/[agents]/[[profiles]](local|wsl|ssh)/[keybindings]`。主题模型 `ansi[16] + terminal{} + ui{}`;支持导入 iTerm2/.itermcolors、Windows Terminal、base16、Alacritty 配色。`notify` 监听 → 150ms 防抖 → 校验 → `arc-swap` 热替换。
+TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。schema:`[general]/[font]/[appearance]/[blocks]/[agents]/[[profiles]](local|wsl|ssh)/[keybindings]`。主题模型 `ansi[16] + terminal{} + ui{}`;支持导入 iTerm2/.itermcolors、Windows Terminal、base16、Alacritty 配色。
+
+🧭 取经(见 [REFERENCES.md](REFERENCES.md) §七,源自 Windows Terminal + Ghostty):① **profile 里 font / appearance 是嵌套对象**,`color_scheme` 按名引用、profile 可覆盖 fg/bg/cursor;② **键位解耦成两张表**——`[[actions]]`(`{id, command}`)与 `[[keybindings]]`(`{keys, id}`),一个动作可绑多键;③ 字段全 `#[serde(default)]` 实现可继承覆盖;④ 加**迁移表** `old_key → handler`,旧配置跨版本不炸;⑤ **diff-on-reload**:只重新应用变化字段,部分字段标"仅新会话生效";⑥ **默认手动重载命令**,`notify` 文件监听为可选(150ms 防抖 → 校验 → `arc-swap` 热替换),避免编辑器临时文件触发重载风暴。
 
 ### 4.5 `tn-shell` / `tn-blocks` / `tn-ai` 🧭
 
