@@ -1,0 +1,10 @@
+[package]
+name = "tn-blocks"
+description = "Warp-style command blocks: a state machine that turns tn-shell BlockEvents (+ line/time) into command blocks (prompt/command/output/exit/duration). Headless."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tn-shell.workspace = true

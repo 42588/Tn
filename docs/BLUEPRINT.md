@@ -53,9 +53,9 @@ Tn/
 ├── crates/
 │   ├── tn-core/   # 终端引擎:alacritty 包装(Term+解析+快照)。无 GPUI/无 IO  ✅
 │   ├── tn-pty/    # PTY 后端:PtyBackend trait + LocalPty(ConPTY)            ✅
-│   ├── tn-config/ # 配置 + 主题(TOML、路径、热重载)                          🧭 stub
-│   ├── tn-shell/  # OSC 133/633/7 旁路解析 → BlockEvent;shell 集成脚本        🧭
-│   ├── tn-blocks/ # Warp 式 block 模型(命令/输出/退出码/时长)               🧭
+│   ├── tn-config/ # 配置 + 主题(TOML、路径、热重载)                          ✅ M1.3
+│   ├── tn-shell/  # OSC 133/633/7 旁路解析 → BlockEvent;shell 集成脚本        ✅ M3(headless 基础)
+│   ├── tn-blocks/ # Warp 式 block 模型(命令/输出/退出码/时长)               ✅ M3(headless 基础)
 │   ├── tn-ai/     # 检测 + 托管 claude/codex;agent 会话与状态               🧭
 │   ├── tn-ui/     # GPUI 前端(唯一链接 gpui 的库):TerminalView 等          ✅
 │   └── tn-app/    # 二进制 `tn`:开窗 + 接线 + 日志                          ✅
@@ -233,15 +233,18 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [x] 键位绑定可配置(`bind_keys(cx, &Loaded)` 读 `[[keybindings]]`/`[[actions]]`,叠加默认)+ 配置热重载(`Ctrl+Shift+R`:重读配置、对活动 pane 重应用调色板/chrome,字体/滚动历史仅新 pane 生效)+ 崩溃保护(panic hook→tracing)+ `tracing` 文件日志(`%APPDATA%\Tn\logs\tn.log`,tracing-appender)。
 - **退出标准 ✅(达成,已提交 `59b8b0e`)**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
 
-### M2 — WSL + 远程 Linux 🧭
+> **执行顺序调整(owner)**:先做 **M3 → M4**,再回头做 **M2**。M3/M4 作用于本地终端、不依赖 M2。
+
+### M2 — WSL + 远程 Linux 🧭(后置到 M3/M4 之后)
 - [ ] `tn-pty::WslBackend`(`wsl -l -q` 枚举 + 每发行版默认 + cwd)。
 - [ ] `tn-pty::SshBackend`(russh:连接、认证链、远程 pty、窗口尺寸传播、keepalive、重连)。
 - [ ] Profile 选择器 + 主机列表(可选导入 `~/.ssh/config`);断连 UX。
 - **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。
 
-### M3 — shell 集成 + block UI 🧭
-- [ ] `tn-shell`:旁路 OSC 133/633/7 解析;注入 pwsh/bash/zsh 集成脚本 + nonce。
-- [ ] `tn-blocks`:block 模型(prompt/命令/输出/退出码/时长,跨 local/WSL/SSH)。
+### M3 — shell 集成 + block UI 🚧 进行中(头部基础完成)
+- [x] `tn-shell`([crates/tn-shell](../crates/tn-shell)):旁路 `vte::Parser` 只处理 `osc_dispatch`,解析 OSC 133(FTCS A/B/C/D[;exit])、633(+E 命令行、P;Cwd=)、7(file://→cwd,%XX 解码 + Windows 盘符)→ `BlockEvent`;`Integration`(per-session nonce + pwsh 集成脚本草稿,prompt 钩子发 D/A/B、PSReadLine Enter 发 C)。9 测试。
+- [x] `tn-blocks`([crates/tn-blocks](../crates/tn-blocks)):`BlockModel` 状态机 `Prompt→Input→Running→Finished`,`on_event(ev,line,at_ms)` → `Block`(命令/cwd/prompt+输出行区间/退出码/时长);中断块无 D 时新 prompt 隐式收尾。5 测试。 *(跨 WSL/SSH = M2 后)*
+- [ ] **接线**:`TerminalView` 注入 pwsh 脚本;reader 旁路跑 `ShellParser` → 当前光标行+时间喂 `BlockModel`。
 - [ ] `tn-ui::block_view`:折叠/置顶/复制/重跑/跳转/搜索;**alt-screen 共存(进入即关 chrome)是正确性门槛**。
 - **退出标准**:命令聚合成可导航的 block,带状态/时长。
 

@@ -9,6 +9,30 @@
 
 ---
 
+## [Unreleased] — M3 shell 集成 + block(开发中)
+
+> 计划调整(owner):**M3 → M4 先行,M2 WSL/SSH 后置**(M3/M4 作用于本地终端,不依赖 M2)。
+
+### 新增 (Added) — M3 头部基础(headless)
+- **`tn-shell`**(新 crate):旁路 `vte::Parser`(只处理 `osc_dispatch`)在 PTY 字节上提取
+  shell-集成序列 → `BlockEvent`。识别 **OSC 133**(FTCS `A/B/C/D[;exit]`)、**OSC 633**
+  (+`E` 命令行、`P;Cwd=`)、**OSC 7**(`file://`→cwd,含 `%XX` 解码与 Windows 盘符)。
+  `Integration`:per-session nonce + pwsh 集成脚本(prompt 钩子发 `D/A/B`、PSReadLine Enter
+  发 `C`;脚本为草稿,待真实 pwsh 调)。原始流照常喂 `tn-core`,此为纯旁路。**9 测试**。
+- **`tn-blocks`**(新 crate):`BlockModel` 状态机 `Prompt→Input→Running→Finished`;
+  `on_event(event, line, at_ms)` 把事件 + 绝对行 + 时间戳聚合成 `Block`(命令、cwd、prompt/
+  输出行区间、退出码、时长);中断块(无 `D`)在新 prompt 到来时隐式收尾;`duration_ms`/
+  `succeeded`/`is_running`。block 是对滚动区的语义索引(行锚点),非替换网格。**5 测试**。
+
+### 待做 (Pending) — M3 集成 + UI(需窗口内肉眼验证)
+- 接线:`TerminalView` 注入 pwsh 脚本;reader 旁路跑 `ShellParser` → 当前光标行 + 时间喂 `BlockModel`。
+- `tn-ui::block_view`:Warp 式 block 卡片(状态条/命令/时长/cwd、折叠/复制/重跑);
+  **alt-screen 进入即关 block chrome**(正确性门槛)。
+
+测试总计:**50**(tn-core 9 / tn-config 14 / tn-ui 13 / tn-shell 9 / tn-blocks 5)。
+
+---
+
 ## [0.1.0] — M1 可日用的本地终端(已完成并提交 `59b8b0e`;尚未打 tag/发布)
 
 **目标达成**:能当主力终端日用。Tab / 分屏 / 滚动 / 复制粘贴 / 配置 / 主题全可用,可自我 dogfood。

@@ -10,13 +10,13 @@ performance and aesthetics, with first-class hosting of AI coding CLIs
 
 ## Stack
 
-| Layer | Choice |
-|---|---|
-| UI / render | [GPUI](https://gpui.rs) (Zed's framework) — DirectX 11 + DirectWrite on Windows |
-| Terminal engine | [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) (VT parser + grid) |
-| PTY / remote | [`portable-pty`](https://crates.io/crates/portable-pty) (ConPTY + WSL) + [`russh`](https://crates.io/crates/russh) (SSH) |
-| Language | Rust 2021 (stable, MSVC) |
-| License | GPL-3.0-or-later |
+| Layer           | Choice                                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| UI / render     | [GPUI](https://gpui.rs) (Zed's framework) — DirectX 11 + DirectWrite on Windows                                          |
+| Terminal engine | [`alacritty_terminal`](https://crates.io/crates/alacritty_terminal) (VT parser + grid)                                   |
+| PTY / remote    | [`portable-pty`](https://crates.io/crates/portable-pty) (ConPTY + WSL) + [`russh`](https://crates.io/crates/russh) (SSH) |
+| Language        | Rust 2021 (stable, MSVC)                                                                                                 |
+| License         | GPL-3.0-or-later                                                                                                         |
 
 ## Quick start
 

@@ -1,0 +1,10 @@
+[package]
+name = "tn-shell"
+description = "Shell integration: a bypass VTE parser that extracts OSC 133/633/7 shell-integration sequences into BlockEvents, plus per-shell integration scripts. Headless."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+vte.workspace = true

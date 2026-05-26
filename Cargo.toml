@@ -4,6 +4,8 @@ members = [
     "crates/tn-core",
     "crates/tn-pty",
     "crates/tn-config",
+    "crates/tn-shell",
+    "crates/tn-blocks",
     "crates/tn-cli",
     "crates/tn-ui",
     "crates/tn-app",
@@ -21,6 +23,8 @@ repository = "https://github.com/tingruiyi/Tn"
 tn-core = { path = "crates/tn-core" }
 tn-pty = { path = "crates/tn-pty" }
 tn-config = { path = "crates/tn-config" }
+tn-shell = { path = "crates/tn-shell" }
+tn-blocks = { path = "crates/tn-blocks" }
 tn-ui = { path = "crates/tn-ui" }
 
 # GPU UI framework (Zed). DirectX 11 + DirectWrite on Windows.
@@ -29,6 +33,7 @@ gpui = "0.2"
 # terminal engine + pty
 alacritty_terminal = "0.26"
 portable-pty = "0.9"
+vte = "0.15"   # low-level VT parser for the shell-integration OSC bypass (tn-shell)
 
 # async (pty pumps; ssh backend in M2)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "sync", "macros", "time"] }

@@ -5529,6 +5529,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tn-blocks"
+version = "0.0.0"
+dependencies = [
+ "tn-shell",
+]
+
+[[package]]
 name = "tn-cli"
 version = "0.0.0"
 dependencies = [
@@ -5567,6 +5574,13 @@ dependencies = [
  "anyhow",
  "portable-pty",
  "tracing",
+]
+
+[[package]]
+name = "tn-shell"
+version = "0.0.0"
+dependencies = [
+ "vte",
 ]
 
 [[package]]

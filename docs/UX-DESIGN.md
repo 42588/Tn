@@ -7,7 +7,7 @@
 1. **对用户极友好**:零配置可用、操作可发现(有可视入口,不靠背快捷键)、键鼠皆顺手、状态始终可见。
 2. **会话是一等公民**:一个窗口里多 Tab、每 Tab 任意分屏、每个分屏跑一个会话(shell / WSL / SSH / **Claude / Codex**)。
 3. **AI 原生**:一键起 agent 会话,实时看到它在想什么、花了多少 token/钱、上下文用了多少。
-4. **颜值优先**:Windows 11 原生质感(Mica/圆角)、活动焦点清晰、动效克制流畅、深浅主题一致。
+4. **颜值优先(Calm Glass)**:Windows 11 原生质感(Mica/圆角)、磨砂玻璃靠**折射光与投影分层而非自发光**、活动焦点清晰不炫光、动效克制流畅、深浅主题一致。
 
 ---
 
@@ -202,20 +202,44 @@ pub trait UsageProvider: Send {
 
 ## 6. 颜值 / 视觉设计语言
 
-**总基调**:现代、克制、深色优先,Windows 11 原生质感;信息清晰、焦点明确、动效流畅不喧宾夺主。
+**总基调 — "Calm Glass"(冷静玻璃)**:现代、克制、深色优先,Windows 11 原生质感。**景深来自折射光 + 柔和投影,绝不靠自发光**——磨砂玻璃面板靠镜面高光边与投影"浮起",环境光只剩一丝冷色,强调色不做外发光。(吃过"光污染"的亏:满屏辉光 = 廉价霓虹,而非高级玻璃。)信息清晰、焦点明确、动效流畅不喧宾夺主。
 
-> **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开),渲染图 `design/mockup.png`。原型展示了默认 "vibe coding" 布局:**文件树 Explorer | Claude 大屏 + 小 shell | Diff 查看器**(Codex 等为一键添加,不占默认屏),以及上下文环/用量读数、Warp block、活动屏焦点光,和**有质感的背景**(彩色 mesh 渐变 + 细颗粒 grain + 边缘 vignette + 窗口玻璃高光/Mica)。
+> **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开、全分辨率最准),渲染图 `design/mockup.png`。原型展示默认 "vibe coding" 布局:**文件树 Explorer | Claude 大屏 + 小 shell | Diff 查看器**(Codex 等为一键添加,不占默认屏),以及上下文环/用量读数、Warp block、活动屏焦点(细暖色描边 + 轻浮起,**无光晕**),和**克制的玻璃材质**(磨砂半透 + 顶部镜面高光 + 极淡冷色环境光 + 细颗粒 grain + 边缘 vignette;叠在 Mica 之上)。**下面 §6.1 的设计令牌即此原型的取值,是 GPUI / tn-config 实现基准。**
 
-### 6.1 设计令牌(主题里集中定义,见 tn-config)
-- **颜色**:背景分层 `surface.0/1/2`(窗口/面板/卡片)、`fg`、`muted`、`border`;`accent`(品牌强调);**agent 强调色**(由主题定义,见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml) `[agents]`,源自品牌色按 Tokyo Night 调校)Claude `#F0916D` / Codex `#73DACA`;语义色 success/warn/error;16 色 ANSI 调色板。深/浅两套,跟随系统。
-- **间距**:4 的倍数刻度(4/8/12/16/24)。**圆角**:面板 8、卡片/标签 6–10。**阴影/高度**:活动元素轻投影。
-- **字体**:等宽正文(Nerd Font,连字开关)+ CJK/emoji 回退;UI 用系统 UI 字体。
-- **动效**:时长 120/200ms,缓动 ease-out;遵守系统"减少动态效果"。
+### 6.1 设计令牌(Calm Glass — 即 mockup 取值,GPUI / tn-config 实现基准)
+
+**两套字体(关键分层)**:chrome(标签/路径/状态栏/面板标题/数字)用 **UI 无衬线**,终端与代码用**等宽**——这是"不廉价"的第一要素。
+- UI sans:`Inter, "Segoe UI Variable Text", "Segoe UI", system-ui, "Microsoft YaHei UI", sans-serif`
+- Mono:`"Cascadia Code", "JetBrains Mono", "CaskaydiaCove Nerd Font", Consolas, monospace`(连字开关)+ CJK/emoji 回退
+- 数字用 tabular(`tnum`)对齐(token / 花费 / 百分比 / 时长)。
+
+**颜色(Tn Dark)**:`fg #C6D0F5` / `fg-dim #A6AFD4` / `muted #6E76A0` / `faint #474E72`;强调 `accent #7AA2F7`、`violet #BB9AF7`、`green #9ECE6A`、`red #F7768E`、`yellow #E0AF68`、`cyan #7DCFFF`;**agent 身份色** Claude `#F0916D` / Codex `#73DACA`(见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml) `[agents]`);语义 success/warn/error 复用绿/黄/红;16 色 ANSI 调色板。深/浅两套,跟随系统。**强调色只用于**:焦点描边(极淡)、agent 身份、语义状态、代码/diff 语法 —— **不做外发光**。
+
+**玻璃表面(半透分层,叠在 Mica 上;靠 alpha 让背景透出而非实色填充)**:
+
+| 令牌 | 值 | 用途 |
+|---|---|---|
+| window glass | `linear-gradient(rgba(21,22,34,.62) → rgba(15,16,25,.72))` + `backdrop-blur 60 / saturate 128%` | 窗口底材 |
+| pane(g1) | `linear-gradient(rgba(42,46,68,.42) → rgba(26,28,44,.52))` + `backdrop-blur 9 / saturate 116%` | 面板磨砂玻璃 |
+| inset(g2) | `rgba(255,255,255,.04)` | 头部 / 内嵌卡片叠加 |
+| chip / hover(g3) | `rgba(255,255,255,.06)` | chip / 悬停 |
+| rim | `rgba(255,255,255,.07)` 1px | 玻璃边(**替代硬描边**) |
+| sheen | `rgba(255,255,255,.10)` | 顶部 1px 镜面高光(inset) |
+
+**高度 / 阴影(面板分隔靠阴影,不靠边框)**:面板 `inset 0 1px 0 sheen, 0 24px 58px -36px rgba(0,0,0,.88)` + 顶部约 36% 高度的镜面渐变(`white .04 → 透明`);**焦点面板**仅加 `0 0 0 1px rgba(240,145,109,.10)` 暖色细描边 + 更深投影(浮起一档),**无光晕**。
+
+**环境(窗外,透过玻璃折射)**:`blue .07`(左上)+ `teal .045`(右下)两团**极淡**冷光 + 深中性渐变;grain `opacity .04`;边缘 vignette。刻意压到几乎察觉不到 —— 只为给玻璃一点可折射的颜色,不是"打光"。
+
+**间距**:4 的倍数(4 / 8 / 12 / 16 / 24);面板间 gap 8–12、内边距 12–15。**圆角**:窗口 16、面板 14、卡片 11、pill 999。
+
+**图标**:统一**线性 SVG 图标集**(Lucide 式几何,`stroke-width 1.65`、`currentColor`、圆角端点)—— 文件夹 / 文件 / 折叠箭头 / sparkle(AI)/ 对勾(完成)/ 菱形(运行中,自转)/ 空心圆(待办)/ 终端 / 分支 / 笔 / 窗口控件。**禁止**用临时 Unicode 字形(✻ ◐ ✓)充当图标。
+
+**动效**:时长 120 / 200ms、ease-out;运行中菱形自转、"Thinking" 呼吸点(**仅透明度脉动,不发光**);遵守系统"减少动态效果"。
 
 ### 6.2 关键界面
-- **窗口质感(Windows 11)**:Mica/Acrylic 背景(DWM `DWMWA_SYSTEMBACKDROP_TYPE`)、圆角(`DWMWA_WINDOW_CORNER_PREFERENCE`)、深浅标题栏;可选整体透明度 + 背景模糊。
-- **活动分屏焦点**:活动屏一圈细强调色描边 + 略提亮;非活动屏轻微压暗 —— 多屏时一眼知道焦点在哪。
-- **Tab 栏**:pill 标签 + 类型图标 + agent 强调色条;运行/思考态有微光/转圈;`+` 启动器下拉精致。
+- **窗口质感(Windows 11)**:Mica/Acrylic 背景(DWM `DWMWA_SYSTEMBACKDROP_TYPE`)、圆角(`DWMWA_WINDOW_CORNER_PREFERENCE`)、深浅标题栏;**磨砂半透玻璃面板叠于其上,面板分隔靠镜面高光边 + 柔和投影,不用硬描边**;可选整体透明度。
+- **活动分屏焦点**:活动屏一圈**极淡暖色描边 + 轻浮起(更深投影)**,非活动屏轻微压暗/后退 —— 一眼知道焦点在哪,但**不发光晕**(Calm Glass 原则)。
+- **Tab 栏**:pill 标签 + 类型 SVG 图标 + agent 强调色顶条;运行/思考态用**转圈/呼吸点(无辉光)**;`+` 启动器下拉精致。
 - **分屏头(可选、超薄)**:cwd 面包屑 + 图标 + 状态 chip +(agent)用量微读数。
 - **命令面板 / 启动器**:居中、背景模糊、模糊搜索;agent 快启用**大磁贴**(图标 + 名称 + 上次目录)。
 - **空状态**:新会话欢迎屏,大按钮直达 pwsh / WSL / Claude / Codex。
