@@ -1,0 +1,11 @@
+[package]
+name = "tn-ai"
+description = "AI agent usage + detection (Claude Code / Codex). Headless: parses local session JSONL into token / context-window / cost usage via a built-in pricing table. No GPUI, no UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json.workspace = true

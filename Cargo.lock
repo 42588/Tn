@@ -5517,6 +5517,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
+name = "tn-ai"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "tn-app"
 version = "0.0.0"
 dependencies = [
@@ -5590,6 +5598,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui",
+ "tn-ai",
  "tn-blocks",
  "tn-config",
  "tn-core",

@@ -8,11 +8,11 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use gpui::{
-    actions, div, prelude::*, px, relative, rgb, AnyElement, App, AppContext, AsyncApp, Context,
-    Entity, KeyBinding, MouseButton, Rgba, WeakEntity, Window,
+    actions, div, prelude::*, px, relative, rgb, rgba, AnyElement, App, AppContext, AsyncApp,
+    Context, Entity, KeyBinding, MouseButton, Rgba, SharedString, WeakEntity, Window,
 };
 use tn_config::Loaded;
 
@@ -33,6 +33,44 @@ fn truncate_label(s: &str, max: usize) -> String {
         t
     } else {
         s.to_string()
+    }
+}
+
+/// Pretty model id for the status bar (`claude-opus-4-7` → `Opus 4.7`).
+fn short_model(id: &str) -> String {
+    let l = id.to_ascii_lowercase();
+    let fam = if l.contains("opus") {
+        "Opus"
+    } else if l.contains("sonnet") {
+        "Sonnet"
+    } else if l.contains("haiku") {
+        "Haiku"
+    } else if l.contains("gpt") || l.contains("codex") {
+        "GPT"
+    } else {
+        return id.to_string();
+    };
+    let ver: String = id
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .collect::<String>()
+        .trim_matches('-')
+        .replace('-', ".");
+    if ver.is_empty() {
+        fam.to_string()
+    } else {
+        format!("{fam} {ver}")
+    }
+}
+
+/// Humanize a token count (`444731` → `444K`, `1000000` → `1.0M`).
+fn human_tokens(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        n.to_string()
     }
 }
 
@@ -262,6 +300,8 @@ pub struct Workspace {
     next_id: PaneId,
     focused_init: bool,
     config: Arc<Loaded>,
+    /// Latest Claude usage for the app's project dir, polled off-thread (M4).
+    ai_usage: Option<tn_ai::AiUsage>,
 }
 
 impl Workspace {
@@ -273,16 +313,63 @@ impl Workspace {
             next_id: 0,
             focused_init: false,
             config,
+            ai_usage: None,
         };
         let id = ws.spawn_pane(cx);
         ws.tabs.push(Tab {
             root: Node::Leaf(id),
             focused: id,
         });
+        Self::spawn_usage_poller(cx);
         if std::env::var("TN_DEMO").is_ok() {
             Self::spawn_demo(cx);
         }
         ws
+    }
+
+    /// Poll Claude usage for the app's project dir off the main thread, pushing
+    /// an update only when the session file's mtime changes (so an idle session
+    /// costs a cheap stat, not a re-parse). Reads the same JSONL `ccusage` does.
+    fn spawn_usage_poller(cx: &mut Context<Self>) {
+        let Some(cwd) = std::env::current_dir()
+            .ok()
+            .and_then(|p| p.to_str().map(str::to_string))
+        else {
+            return;
+        };
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut last: Option<SystemTime> = None;
+            loop {
+                let cwd2 = cwd.clone();
+                let prev = last;
+                let res = exec
+                    .spawn(async move {
+                        let path = tn_ai::latest_session_file(&cwd2)?;
+                        let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+                        if Some(mtime) == prev {
+                            return None; // unchanged — skip the (heavy) re-parse
+                        }
+                        let text = std::fs::read_to_string(&path).ok()?;
+                        Some((mtime, tn_ai::parse_claude_session(&text)?))
+                    })
+                    .await;
+                if let Some((mtime, usage)) = res {
+                    last = Some(mtime);
+                    if this
+                        .update(cx, |ws, cx| {
+                            ws.ai_usage = Some(usage);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break; // workspace dropped
+                    }
+                }
+                exec.timer(Duration::from_secs(5)).await;
+            }
+        })
+        .detach();
     }
 
     /// Scripted feature demo (`TN_DEMO=1`): steps through prompt → colored output
@@ -569,6 +656,62 @@ impl Workspace {
             }
         }
     }
+
+    /// Bottom status bar with the live Claude usage readout (M4): agent dot,
+    /// model, a context-fill bar (green → yellow → red), %, tokens, cost.
+    fn render_status_bar(&self) -> gpui::Div {
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(26.))
+            .px_3()
+            .bg(col(ui.chrome_bg))
+            .text_size(px(11.))
+            .text_color(col(ui.muted));
+        match &self.ai_usage {
+            Some(u) => {
+                let frac = u.context_frac();
+                let stripe = if frac >= 0.85 {
+                    t.ansi.red
+                } else if frac >= 0.6 {
+                    t.ansi.yellow
+                } else {
+                    t.ansi.green
+                };
+                bar.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(col(t.agents.claude)))
+                    .child(
+                        div()
+                            .text_color(col(ui.foreground))
+                            .child(SharedString::from(short_model(&u.model))),
+                    )
+                    .child(
+                        div()
+                            .w(px(72.))
+                            .h(px(5.))
+                            .rounded_full()
+                            .bg(rgba(0xffffff1f))
+                            .child(div().h_full().w(relative(frac)).rounded_full().bg(col(stripe))),
+                    )
+                    .child(SharedString::from(format!("{:.0}%", frac * 100.0)))
+                    .child(div().text_color(col(ui.muted)).child(SharedString::from(format!(
+                        "{} / {}",
+                        human_tokens(u.context_used as u64),
+                        human_tokens(u.context_max as u64)
+                    ))))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_color(col(t.ansi.green))
+                            .child(SharedString::from(format!("${:.2}", u.cost_usd))),
+                    )
+            }
+            None => bar.child(SharedString::from("· 读取 Claude 用量…")),
+        }
+    }
 }
 
 impl Render for Workspace {
@@ -682,6 +825,7 @@ impl Render for Workspace {
             .bg(col(ui.chrome_bg))
             .child(tab_bar)
             .child(body)
+            .child(self.render_status_bar())
     }
 }
 

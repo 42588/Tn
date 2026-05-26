@@ -6,6 +6,7 @@ members = [
     "crates/tn-config",
     "crates/tn-shell",
     "crates/tn-blocks",
+    "crates/tn-ai",
     "crates/tn-cli",
     "crates/tn-ui",
     "crates/tn-app",
@@ -25,6 +26,7 @@ tn-pty = { path = "crates/tn-pty" }
 tn-config = { path = "crates/tn-config" }
 tn-shell = { path = "crates/tn-shell" }
 tn-blocks = { path = "crates/tn-blocks" }
+tn-ai = { path = "crates/tn-ai" }
 tn-ui = { path = "crates/tn-ui" }
 
 # GPU UI framework (Zed). DirectX 11 + DirectWrite on Windows.
