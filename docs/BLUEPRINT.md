@@ -220,7 +220,7 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - 工作区/工具链/cargo-deny;GPUI 窗口在 Windows DX11 跑通;`tn-core` 引擎(3 测试);`tn-pty::LocalPty`(ConPTY);`tn-ui::TerminalView`(渲染+输入+resize)。
 - **退出标准达成**:窗口里跑真实交互式 pwsh,输出正确渲染,键盘输入生效,resize 生效。
 
-### M1 — 可日用的本地终端 🚧 进行中(未提交;细分任务与状态见 [CLAUDE.md](../CLAUDE.md))
+### M1 — 可日用的本地终端 ✅ 完成(单次提交 `59b8b0e`,在 `main`;细分任务见 [CLAUDE.md](../CLAUDE.md),变更见 [CHANGELOG.md](../CHANGELOG.md))
 **目标**:能当主力终端用。
 - [x] `tn-core`:`SnapshotCell`/`TerminalSnapshot` 加 fg/bg(`Color`→RGB,ANSI16+256+OSC+INVERSE)、`Palette`(默认 Tn Dark)、`CellRun`+`row_runs()` 批处理、`set_palette()`。5 测试。 *(damage 脏行后置)*
 - [x] **每格颜色渲染**:`tn-ui` 以 run 批处理的样式盒渲染(每格 fg/bg + 粗体),窗口内验证通过。 *(自定义 `TerminalElement`/光标/选区/连字 = M1.2b 后置)*
@@ -228,10 +228,10 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [x] **M1.3** `tn-config`:schema(`[general]/[font]/[appearance]` + `[[profiles]]/[[actions]]/[[keybindings]]`,字段全 `#[serde(default)]` 可继承覆盖)/加载/路径(`%APPDATA%\Tn`)/首次写默认(`config.toml` + `themes/tn-dark.toml`,内嵌 `include_str!` 为单一真源)+ 主题加载(`Theme` 全量文档,缺失/损坏整体回退内置 Tn Dark)+ 字体(family/size/line-height)。`tn-ui` 经 `palette_from(theme)→tn_core::Palette` + `set_palette` 接线,字体与窗口 chrome 颜色来自配置(免重编译);`tn-config` 不依赖 `tn-core`(遵 §2.2 图),GPUI 层做桥。14 测试。 *(导入 iTerm/WT/base16、配置热重载、窗口 backdrop/opacity 应用 = 后置;`[font].fallback`、`[appearance].opacity/backdrop` 已解析未应用)*
 - [x] **M1.4** 输入层重写([crates/tn-ui/src/input.rs](../crates/tn-ui/src/input.rs) `encode_key` + `tn_core::InputMode`/`Terminal::input_mode()`):Windows Terminal `_encodeRegular`——DECCKM CSI/SS3、`mod+1`、DECFNK F5–F20 跳号 LUT、Alt=ESC、`_makeCtrlChar`、Shift-Tab/`ESC[Z`、Enter LNM、Ctrl+Tab/Ctrl+Shift 保留。模式位读 alacritty `Term::mode()`。10 编码测试 + 1 mode 测试。*(kitty 协议、DECKPAM 小键盘、win32-input-mode、bracketed-paste 包裹后置)*
 - [x] **M1.5** 重绘改为 push `notify`(reader→`mpsc::unbounded` wake,`dirty` 去重)+ GPUI vsync 合并,替换 8ms 轮询;DEC 2026 同步输出由 `vte` `Processor`(`StdSyncHandler`)内部缓冲处理(整帧快照,无撕裂)。见 [crates/tn-ui/src/terminal_view.rs](../crates/tn-ui/src/terminal_view.rs)。
-- [ ] **M1.6b** 分隔线拖拽 + drag-dock + 每屏标题;滚动历史 + 选择/复制粘贴 + OSC 8。
-- [ ] **M1.2b** 自定义 `TerminalElement`(字形图集 + typed-quad + 光标/选区,见 REFERENCES §2)。
-- [~] 键位绑定可配置(✅ `bind_keys` 读 `[[keybindings]]`/`[[actions]]`,叠加默认)+ 配置热重载(🧭 待做:手动重载命令→重读配置、活体重应用调色板/chrome);崩溃保护(✅ panic hook→tracing)+ `tracing` 文件日志(✅ `%APPDATA%\Tn\logs\tn.log`,tracing-appender)。
-- **退出标准**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
+- [x] **M1.6b** 滚动历史(滚轮:主屏滚历史/备用屏→方向键,输入回底)✅ · 粘贴(`Ctrl+Shift+V`/`Shift+Insert`,bracketed-paste 感知)✅ · 标题(OSC→标签)✅ · 选择+复制(透明 `canvas` 捕获内容 bounds、像素→格、左键拖拽、`Ctrl+Shift+C`)✅ · 键盘改尺寸(`Ctrl+Shift+方向键`→`Node::resize` 调最近同轴 split 权重)✅ · 多分屏尺寸修正 + **下分屏溢出修复**(各 flex 层 `min-size 0` + `overflow_hidden`)✅。 *(分隔线鼠标拖拽 + drag-dock + OSC 8 后置)*
+- [ ] **M1.2b** 自定义 `TerminalElement`(字形图集 + typed-quad + 光标/选区,见 REFERENCES §2)。*(后置精修;当前 div + run 批处理渲染器即 M1 版本)*
+- [x] 键位绑定可配置(`bind_keys(cx, &Loaded)` 读 `[[keybindings]]`/`[[actions]]`,叠加默认)+ 配置热重载(`Ctrl+Shift+R`:重读配置、对活动 pane 重应用调色板/chrome,字体/滚动历史仅新 pane 生效)+ 崩溃保护(panic hook→tracing)+ `tracing` 文件日志(`%APPDATA%\Tn\logs\tn.log`,tracing-appender)。
+- **退出标准 ✅(达成,已提交 `59b8b0e`)**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
 
 ### M2 — WSL + 远程 Linux 🧭
 - [ ] `tn-pty::WslBackend`(`wsl -l -q` 枚举 + 每发行版默认 + cwd)。
