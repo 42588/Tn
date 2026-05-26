@@ -248,6 +248,17 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] 颜值打磨(主题、mica/acrylic、动画,用 gpui-component);可选 opt-in 桥。
 - **退出标准**:在 Tn 里启动 Claude Code/Codex 明显优于普通终端。
 
+### M5 — Quick Terminal(幽灵模式)🧭
+**目标**:Quake/Guake 风格的下拉/滑入式悬浮终端——任意 app 里按全局快捷键即唤出一个置顶悬浮终端(直接跟 Claude/Codex 对话),用完滑走。**对 vibe coding 价值极高**:不打断当前工作即可召唤 AI 终端。设计取自 Ghostty 的 Quick Terminal(见 [REFERENCES.md](REFERENCES.md);源码 `src/cli/toggle_quick_terminal.zig`、`Config.zig` 的 `quick-terminal-*`)。
+- 依赖:仅需 M0 的窗口能力即可起步;与 M4 的 AI 快启叠加最香。**独立特性,可在 M1 之后任意时机插入**。
+- 实现三要素(Windows/GPUI):
+  - [ ] **全局热键**:Win32 `RegisterHotKey`(必要时低级键盘钩子),前台任意 app 都能唤出;动作 `toggle_quick_terminal`。
+  - [ ] **悬浮窗**:GPUI 开一个**无边框、`WS_EX_TOPMOST`、不进任务栏**的窗口(macOS 走 overlay window / Linux 走 wlr-layer-shell —— 跨平台时再分支)。
+  - [ ] **边缘滑入/滑出动画**(GPUI 动画),位置 `top/bottom/left/right/center`。
+  - [ ] **失焦自动隐藏**(autohide,监听 blur);跟随当前虚拟桌面。
+- 配置(`[quick_terminal]`,镜像 Ghostty 命名):`enabled / position / size(% 或 px)/ animation_duration / autohide / hotkey / screen`。
+- **退出标准**:全局热键一键唤出/隐藏悬浮终端,带滑动动画与失焦自动隐藏;可一键在其中起 Claude/Codex。
+
 ---
 
 ## 9. 开发指南
