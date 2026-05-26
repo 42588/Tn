@@ -1,0 +1,17 @@
+[package]
+name = "tn-app"
+description = "Tn terminal application binary: window bootstrap + wiring."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tn"
+path = "src/main.rs"
+
+[dependencies]
+tn-ui.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

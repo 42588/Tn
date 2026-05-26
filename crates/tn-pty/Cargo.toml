@@ -1,0 +1,12 @@
+[package]
+name = "tn-pty"
+description = "Tn PTY backends: PtyBackend trait + local ConPTY (WSL/SSH added later)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+portable-pty.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

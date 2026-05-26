@@ -1,0 +1,18 @@
+[package]
+name = "tn-cli"
+description = "Headless debug harness for Tn: drives tn-core + tn-pty without GPUI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "tn-cli"
+path = "src/main.rs"
+
+[dependencies]
+tn-core.workspace = true
+tn-pty.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

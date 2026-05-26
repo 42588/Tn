@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tn-core",
+    "crates/tn-pty",
+    "crates/tn-config",
+    "crates/tn-cli",
+    "crates/tn-ui",
+    "crates/tn-app",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+rust-version = "1.85"
+repository = "https://github.com/tingruiyi/Tn"
+
+[workspace.dependencies]
+# internal crates
+tn-core = { path = "crates/tn-core" }
+tn-pty = { path = "crates/tn-pty" }
+tn-config = { path = "crates/tn-config" }
+tn-ui = { path = "crates/tn-ui" }
+
+# GPU UI framework (Zed). DirectX 11 + DirectWrite on Windows.
+gpui = "0.2"
+
+# terminal engine + pty
+alacritty_terminal = "0.26"
+portable-pty = "0.9"
+
+# async (pty pumps; ssh backend in M2)
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "sync", "macros", "time"] }
+
+# data / utils
+anyhow = "1"
+thiserror = "2"
+bytes = "1"
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+directories = "5"
+arc-swap = "1"
+notify = "6"
+
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

@@ -1,0 +1,14 @@
+[package]
+name = "tn-ui"
+description = "Tn GPUI front-end: terminal view, input, rendering. The only GPUI-linked library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tn-core.workspace = true
+tn-pty.workspace = true
+gpui.workspace = true
+anyhow.workspace = true
+tracing.workspace = true

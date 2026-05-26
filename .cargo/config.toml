@@ -1,0 +1,6 @@
+# Cargo aliases for Tn. Run e.g. `cargo smoke`, `cargo lint`.
+[alias]
+rr = "run -p tn-app --release"
+t = "test --workspace"
+lint = "clippy --workspace --all-targets -- -D warnings"
+smoke = "run -p tn-cli --"

@@ -1,0 +1,14 @@
+[package]
+name = "tn-config"
+description = "Tn configuration + theming: TOML schema, paths, importers, hot-reload. Headless."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+directories.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
