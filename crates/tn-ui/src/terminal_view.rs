@@ -63,6 +63,61 @@ pub(crate) fn palette_from(theme: &tn_config::Theme) -> Palette {
     }
 }
 
+/// How to launch a pane's process: program + args + whether to inject the pwsh
+/// shell-integration script. Built from a `tn_config::Profile` (command-bearing
+/// shell/agent profiles), or the default local PowerShell via [`LaunchSpec::pwsh`].
+#[derive(Clone, Debug)]
+pub struct LaunchSpec {
+    pub program: String,
+    pub args: Vec<String>,
+    pub integrate_pwsh: bool,
+}
+
+impl LaunchSpec {
+    /// Default local PowerShell pane, with OSC 133 shell integration.
+    pub fn pwsh() -> Self {
+        Self {
+            program: "powershell.exe".into(),
+            args: vec!["-NoLogo".into()],
+            integrate_pwsh: true,
+        }
+    }
+
+    /// Derive from a config profile if it carries a command (shell + agent).
+    /// WSL/SSH profiles (no command yet, M2) return `None`.
+    ///
+    /// Native pwsh runs directly (with integration). Any other command (Claude /
+    /// Codex / scripts) is **hosted inside pwsh** via `-NoExit -Command "& '…'"`,
+    /// because on Windows those are extensionless npm shims that `CreateProcessW`
+    /// can't execute directly — pwsh resolves them via PATH + PATHEXT, and the
+    /// shell survives the agent's exit (back to a prompt).
+    pub fn from_profile(p: &tn_config::Profile) -> Option<Self> {
+        let command = p.command.clone()?;
+        let lc = command.to_ascii_lowercase();
+        if lc.contains("powershell") || lc.contains("pwsh") {
+            let mut args = p.args.clone();
+            if args.is_empty() {
+                args.push("-NoLogo".into());
+            }
+            return Some(Self {
+                program: command,
+                args,
+                integrate_pwsh: true,
+            });
+        }
+        // Host the command in pwsh (single-quote-escaped call operator).
+        let mut invoke = format!("& '{}'", command.replace('\'', "''"));
+        for a in &p.args {
+            invoke.push_str(&format!(" '{}'", a.replace('\'', "''")));
+        }
+        Some(Self {
+            program: "powershell.exe".into(),
+            args: vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), invoke],
+            integrate_pwsh: false,
+        })
+    }
+}
+
 const ROWS: usize = 34;
 const COLS: usize = 110;
 
@@ -95,22 +150,30 @@ pub struct TerminalView {
 }
 
 impl TerminalView {
-    pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
+    pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, launch: LaunchSpec) -> Self {
         let size = GridSize::new(ROWS, COLS);
-        // Inject the pwsh shell-integration script (OSC 133 FTCS) via
-        // -EncodedCommand so command blocks light up — no temp file, no echoed
-        // input. Bypassable with TN_NO_SHELL_INTEGRATION for safety.
-        let spec = if std::env::var("TN_NO_SHELL_INTEGRATION").is_ok() {
-            SpawnSpec::program("powershell.exe").arg("-NoLogo")
-        } else {
-            SpawnSpec::program("powershell.exe")
-                .arg("-NoLogo")
+        // Build the spawn spec from the launch profile, then inject the pwsh
+        // OSC 133 shell-integration script (pwsh only) via -EncodedCommand — no
+        // temp file, no echoed input. Bypassable with TN_NO_SHELL_INTEGRATION.
+        let mut spec = SpawnSpec::program(&launch.program);
+        for a in &launch.args {
+            spec = spec.arg(a);
+        }
+        if launch.integrate_pwsh && std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
+            spec = spec
                 .arg("-NoExit")
                 .arg("-EncodedCommand")
-                .arg(Integration::new().encoded_command())
-        };
-        let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))
-            .expect("failed to spawn shell");
+                .arg(Integration::new().encoded_command());
+        }
+        // A bad profile command must NOT crash the app: pane construction runs
+        // inside GPUI's window callback (non-unwinding), so a spawn panic aborts
+        // the whole process. Fall back to a plain pwsh instead.
+        let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
+        let mut pty = LocalPty::spawn(&spec, pty_size).unwrap_or_else(|e| {
+            tracing::error!(program = %launch.program, "spawn failed: {e}; falling back to pwsh");
+            LocalPty::spawn(&SpawnSpec::program("powershell.exe").arg("-NoLogo"), pty_size)
+                .expect("fallback pwsh spawn failed")
+        });
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
 

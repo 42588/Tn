@@ -12,11 +12,12 @@ use std::time::{Duration, SystemTime};
 
 use gpui::{
     actions, div, prelude::*, px, relative, rgb, rgba, AnyElement, App, AppContext, AsyncApp,
-    Context, Entity, KeyBinding, MouseButton, Rgba, SharedString, WeakEntity, Window,
+    Context, Entity, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, Rgba, SharedString,
+    WeakEntity, Window,
 };
 use tn_config::Loaded;
 
-use crate::terminal_view::TerminalView;
+use crate::terminal_view::{LaunchSpec, TerminalView};
 
 type PaneId = u64;
 
@@ -72,6 +73,20 @@ fn human_tokens(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// Profiles launchable now (carry a command = shell / agent) that match the
+/// query (case-insensitive substring on the name). WSL/SSH (no command) are M2.
+fn launchable_matches<'a>(
+    profiles: &'a [tn_config::Profile],
+    query: &str,
+) -> Vec<&'a tn_config::Profile> {
+    let q = query.to_ascii_lowercase();
+    profiles
+        .iter()
+        .filter(|p| p.command.is_some())
+        .filter(|p| q.is_empty() || p.name.to_ascii_lowercase().contains(&q))
+        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -226,7 +241,8 @@ actions!(
         GrowWidth,
         ShrinkWidth,
         GrowHeight,
-        ShrinkHeight
+        ShrinkHeight,
+        TogglePalette
     ]
 );
 
@@ -249,6 +265,7 @@ fn default_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-left", ShrinkWidth, ctx),
         KeyBinding::new("ctrl-shift-down", GrowHeight, ctx),
         KeyBinding::new("ctrl-shift-up", ShrinkHeight, ctx),
+        KeyBinding::new("ctrl-shift-p", TogglePalette, ctx),
     ]
 }
 
@@ -268,6 +285,7 @@ fn binding_for(keys: &str, command: &str) -> Option<KeyBinding> {
         "shrink_width" => KeyBinding::new(keys, ShrinkWidth, ctx),
         "grow_height" => KeyBinding::new(keys, GrowHeight, ctx),
         "shrink_height" => KeyBinding::new(keys, ShrinkHeight, ctx),
+        "command_palette" | "toggle_palette" => KeyBinding::new(keys, TogglePalette, ctx),
         _ => return None,
     })
 }
@@ -302,6 +320,11 @@ pub struct Workspace {
     config: Arc<Loaded>,
     /// Latest Claude usage for the app's project dir, polled off-thread (M4).
     ai_usage: Option<tn_ai::AiUsage>,
+    /// Command palette (Ctrl+Shift+P) state.
+    palette_open: bool,
+    palette_query: String,
+    palette_sel: usize,
+    palette_focus: FocusHandle,
 }
 
 impl Workspace {
@@ -314,6 +337,10 @@ impl Workspace {
             focused_init: false,
             config,
             ai_usage: None,
+            palette_open: false,
+            palette_query: String::new(),
+            palette_sel: 0,
+            palette_focus: cx.focus_handle(),
         };
         let id = ws.spawn_pane(cx);
         ws.tabs.push(Tab {
@@ -478,8 +505,12 @@ impl Workspace {
     }
 
     fn spawn_pane(&mut self, cx: &mut Context<Self>) -> PaneId {
+        self.spawn_pane_with(cx, LaunchSpec::pwsh())
+    }
+
+    fn spawn_pane_with(&mut self, cx: &mut Context<Self>, launch: LaunchSpec) -> PaneId {
         let config = self.config.clone();
-        let view = cx.new(|cx| TerminalView::new(cx, config));
+        let view = cx.new(|cx| TerminalView::new(cx, config, launch));
         let id = self.next_id;
         self.next_id += 1;
         self.panes.insert(id, view);
@@ -494,6 +525,97 @@ impl Workspace {
             tab.focused = id;
         }
         cx.notify();
+    }
+
+    // ---- command palette (M4) ----
+
+    /// Open/close the launcher (Ctrl+Shift+P). Open steals key focus; close
+    /// returns it to the active pane.
+    fn toggle_palette(&mut self, _: &TogglePalette, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_open = !self.palette_open;
+        if self.palette_open {
+            self.palette_query.clear();
+            self.palette_sel = 0;
+            self.palette_focus.focus(window);
+        } else {
+            self.refocus_active(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Refocus the active tab's focused pane (after the palette closes).
+    fn refocus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let fid = self.tabs[self.active].focused;
+        self.focus_pane(fid, window, cx);
+    }
+
+    fn palette_match_count(&self) -> usize {
+        launchable_matches(&self.config.config.profiles, &self.palette_query).len()
+    }
+
+    /// Palette keystrokes: type to filter, ↑↓ to select, Enter launches, Esc closes.
+    fn on_palette_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        match ev.keystroke.key.as_str() {
+            "escape" => {
+                self.palette_open = false;
+                self.refocus_active(window, cx);
+                cx.notify();
+            }
+            "enter" => self.launch_selected(window, cx),
+            "backspace" => {
+                self.palette_query.pop();
+                self.palette_sel = 0;
+                cx.notify();
+            }
+            "up" => {
+                self.palette_sel = self.palette_sel.saturating_sub(1);
+                cx.notify();
+            }
+            "down" => {
+                let n = self.palette_match_count();
+                if n > 0 {
+                    self.palette_sel = (self.palette_sel + 1).min(n - 1);
+                }
+                cx.notify();
+            }
+            "space" if !m.control && !m.alt => {
+                self.palette_query.push(' ');
+                self.palette_sel = 0;
+                cx.notify();
+            }
+            k if k.chars().count() == 1 && !m.control && !m.alt => {
+                self.palette_query.push_str(k);
+                self.palette_sel = 0;
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    /// Launch the selected profile in a new tab, then close the palette.
+    fn launch_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let spec = {
+            let matches = launchable_matches(&self.config.config.profiles, &self.palette_query);
+            matches
+                .get(self.palette_sel)
+                .and_then(|p| LaunchSpec::from_profile(p))
+        };
+        let Some(spec) = spec else { return };
+        self.palette_open = false;
+        let id = self.spawn_pane_with(cx, spec);
+        self.tabs.push(Tab {
+            root: Node::Leaf(id),
+            focused: id,
+        });
+        self.active = self.tabs.len() - 1;
+        self.focus_pane(id, window, cx);
+    }
+
+    /// Launch the profile at `idx` (mouse click on a palette row).
+    fn launch_index(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette_sel = idx;
+        self.launch_selected(window, cx);
     }
 
     fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -523,6 +645,35 @@ impl Workspace {
             let fid = self.tabs[i].focused;
             self.focus_pane(fid, window, cx);
         }
+    }
+
+    /// Close tab `i` entirely, dropping all its panes (which kills their child
+    /// processes via `LocalPty`'s Drop). Never leaves zero tabs — closing the
+    /// last one spawns a fresh default pane. Driven by the tab's `×` button.
+    fn close_tab_index(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let mut leaves = Vec::new();
+        collect_leaves(&self.tabs[i].root, &mut leaves);
+        for id in leaves {
+            self.panes.remove(&id); // drop the view → drop LocalPty → kill child
+        }
+        self.tabs.remove(i);
+        if self.tabs.is_empty() {
+            let id = self.spawn_pane(cx);
+            self.tabs.push(Tab {
+                root: Node::Leaf(id),
+                focused: id,
+            });
+            self.active = 0;
+            self.focus_pane(id, window, cx);
+        } else {
+            self.active = self.active.min(self.tabs.len() - 1);
+            let fid = self.tabs[self.active].focused;
+            self.focus_pane(fid, window, cx);
+        }
+        cx.notify();
     }
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
@@ -712,6 +863,90 @@ impl Workspace {
             None => bar.child(SharedString::from("· 读取 Claude 用量…")),
         }
     }
+
+    /// The command-palette overlay (M4), or `None` when closed: a dim scrim +
+    /// a centered Calm Glass panel (query line + launchable profile rows).
+    fn render_palette(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.palette_open {
+            return None;
+        }
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let matches = launchable_matches(&self.config.config.profiles, &self.palette_query);
+        let sel = self.palette_sel.min(matches.len().saturating_sub(1));
+
+        let query_line = div().px_3().py_2().text_size(px(13.)).child(if self.palette_query.is_empty() {
+            div()
+                .text_color(col(ui.muted))
+                .child(SharedString::from("启动会话 / 搜索…   ↑↓ 选择 · Enter 启动 · Esc 关闭"))
+        } else {
+            div()
+                .text_color(col(ui.foreground))
+                .child(SharedString::from(self.palette_query.clone()))
+        });
+
+        let rows = matches.iter().enumerate().map(|(i, p)| {
+            let is_sel = i == sel;
+            let dot = p.accent.unwrap_or(t.agents.claude);
+            let hint = p.command.clone().unwrap_or_default();
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .px_3()
+                .py_1()
+                .rounded_md()
+                .when(is_sel, |d| d.bg(rgba(0xffffff14)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, w, cx| this.launch_index(i, w, cx)),
+                )
+                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot)))
+                .child(
+                    div()
+                        .text_size(px(12.5))
+                        .text_color(col(ui.foreground))
+                        .child(SharedString::from(p.name.clone())),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(col(ui.muted))
+                        .child(SharedString::from(hint)),
+                )
+        });
+
+        let panel = div()
+            .flex()
+            .flex_col()
+            .w(px(540.))
+            .rounded_lg()
+            .overflow_hidden()
+            .border_1()
+            .border_color(rgba(0xffffff1f))
+            .bg(rgba(0x1b1d2bf2))
+            .child(query_line)
+            .child(div().h(px(1.)).bg(rgba(0xffffff14)))
+            .child(div().flex().flex_col().p_1().gap_1().children(rows));
+
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(rgba(0x0a0b11cc))
+                .track_focus(&self.palette_focus)
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
+                    this.on_palette_key(ev, w, cx)
+                }))
+                .child(div().h(px(110.))) // top spacer (centers the panel below the tab bar)
+                .child(panel),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -780,6 +1015,25 @@ impl Render for Workspace {
                                 .child(format!("\u{2317}{panes}")),
                         )
                     })
+                    // Close button: kills the tab's process(es). stop_propagation
+                    // so it closes the tab instead of just activating it.
+                    .child(
+                        div()
+                            .ml_1()
+                            .px_1()
+                            .rounded_md()
+                            .text_size(px(13.0))
+                            .text_color(col(ui.muted))
+                            .hover(|s| s.text_color(col(ui.foreground)).bg(rgba(0xffffff1f)))
+                            .child("\u{00d7}")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _ev, window, cx| {
+                                    cx.stop_propagation();
+                                    this.close_tab_index(i, window, cx);
+                                }),
+                            ),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _ev, window, cx| {
@@ -806,6 +1060,8 @@ impl Render for Workspace {
             .p_1()
             .child(self.render_node(&self.tabs[active].root, focused, cx));
 
+        let palette = self.render_palette(cx);
+
         div()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
@@ -819,13 +1075,16 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::shrink_width))
             .on_action(cx.listener(Self::grow_height))
             .on_action(cx.listener(Self::shrink_height))
+            .on_action(cx.listener(Self::toggle_palette))
             .size_full()
+            .relative()
             .flex()
             .flex_col()
             .bg(col(ui.chrome_bg))
             .child(tab_bar)
             .child(body)
             .child(self.render_status_bar())
+            .when_some(palette, |d, p| d.child(p))
     }
 }
 

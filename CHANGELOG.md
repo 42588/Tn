@@ -9,6 +9,40 @@
 
 ---
 
+## [Unreleased] — M4 托管 AI + 用量 + 命令面板(进行中)
+
+### 新增 (Added) — AI 用量(headless)
+- **`tn-ai`**(新 crate):`AiUsage` 模型 + `pricing` 表(各模型每 MTok 价 + 上下文窗口)+
+  **Claude UsageProvider**——解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 assistant
+  `message.usage`(`input/output/cache_creation/cache_read_tokens` + `model`),累计 token、
+  取**最后一轮总输入**为当前上下文大小、按 pricing 估算**等价 API 花费**;模型 id 未标 `1m` 但
+  观测上下文超 200K 时**推断为 1M 窗口**(真实 `claude-opus-4-7` 1M 会话即如此)。**8 单测** + 真实数据验证。
+
+### 新增 (Added) — UI(需窗口内肉眼验证)
+- **实时用量状态栏**(`workspace.rs`):底部状态栏显示本项目 Claude 用量——agent 点 + 型号 +
+  上下文条(绿→黄→红随占用)+ % + token + 花费。后台线程轮询,**仅会话文件 mtime 变化时重解析**
+  (空闲只做一次廉价 stat,不破坏空闲零唤醒)。
+- **命令面板 `Ctrl+Shift+P`**(`workspace.rs` overlay + `terminal_view::LaunchSpec`):暗化 scrim +
+  居中磨砂面板,列出 config `[[profiles]]` 中可启动项;打字筛选 / ↑↓ 选择 / Enter 启动 / Esc 关闭 /
+  点击。启动 = 新标签跑该 profile。
+- **一键托管 agent**:`claude`/`codex` 这类 Windows npm shim **托管在 pwsh 里**
+  (`-NoExit -Command "& '…'"`)以走 PATHEXT 解析 `.cmd`,agent 退出后回到 prompt。
+- **标签关闭**:每个标签加可点 `×`(`stop_propagation`,关而非激活);关闭即**杀子进程**
+  (`LocalPty` 新增 `Drop` → `clone_killer().kill()`,杜绝孤儿 agent/shell)。
+
+### 修复 (Fixed)
+- **拉起 agent 崩溃**:直接 `CreateProcessW` 拉无扩展名 npm shim 报 os error 193 → spawn `.expect()`
+  在 GPUI 窗口回调(non-unwinding)里 panic → 整进程 abort。改为 pwsh 托管 + **spawn 失败优雅回退 pwsh**(不再崩)。
+
+### 待做 (Pending)
+- Codex UsageProvider(`$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`);
+  `tn-ai::detect`(agent 识别)+ **per-pane 用量跟随焦点**(状态栏/分屏头按焦点 pane 的 agent 切换);
+  颜值落地(Calm Glass → GPUI chrome:mica / 圆角 / 玻璃)。
+
+测试总计:**61**(tn-core 10 / tn-config 14 / tn-ui 13 / tn-shell 11 / tn-blocks 5 / tn-ai 8)。
+
+---
+
 ## [Unreleased] — M3 shell 集成 + block(集成完成,待 UI 肉眼复核)
 
 > 计划调整(owner):**M3 → M4 先行,M2 WSL/SSH 后置**(M3/M4 作用于本地终端,不依赖 M2)。

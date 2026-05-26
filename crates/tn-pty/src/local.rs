@@ -58,6 +58,15 @@ impl LocalPty {
     }
 }
 
+impl Drop for LocalPty {
+    fn drop(&mut self) {
+        // portable-pty does NOT kill the child on drop. Do it explicitly so
+        // closing a pane/tab terminates its process — otherwise agents/shells
+        // are orphaned and keep running.
+        let _ = self.child.clone_killer().kill();
+    }
+}
+
 /// Adapts portable-pty's `ChildKiller` to our [`Killer`] trait.
 struct PortableKiller(Box<dyn ChildKiller + Send + Sync>);
 

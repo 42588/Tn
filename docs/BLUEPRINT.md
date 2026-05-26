@@ -249,10 +249,11 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] **后置精修**:历史 block 的逐行覆盖 chrome(锚行随 reflow 重解析、置顶/跳转/搜索);block 栏外观肉眼复核;pwsh `C` 钩子真机鲁棒性。
 - **退出标准**:命令聚合成带状态/时长的 block,底栏可见且 alt-screen 隐藏。✅
 
-### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🧭
-- [ ] `tn-ai::detect`(启动意图→进程树→标题);agent SurfaceBlock 状态条。
-- [ ] **AI 用量**:`UsageProvider` 解析 Claude(`~/.claude/projects/**/*.jsonl`)/ Codex(`$CODEX_HOME/sessions/**/rollout-*.jsonl`)本地会话,展示**上下文占用 + token + 估算花费**(分屏头环形读数 + AI 状态栏 + 用量面板)。详见 [UX-DESIGN.md](UX-DESIGN.md) §5。
-- [ ] 命令面板(`Ctrl+Shift+P`):agent 快启磁贴、新建 pwsh/WSL/SSH、最近命令、block 动作。
+### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🚧 进行中
+- [x] **AI 用量(Claude)**:新 crate `tn-ai`——`UsageProvider` 解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 `message.usage` → **上下文占用 + token + 等价花费**(累计 token + 最后一轮总输入为上下文 + pricing 表 + 超 200K 推断 1M 窗口)。8 单测 + 真实数据验证。
+- [x] **实时用量状态栏**(`workspace.rs`):型号 / 上下文条(绿→黄→红)/ % / token / 花费;后台轮询,仅 mtime 变化时重解析。
+- [x] **命令面板**(`Ctrl+Shift+P`,`workspace.rs` overlay + `LaunchSpec`):列 config `[[profiles]]`、打字筛选 / ↑↓ / Enter / 点击启动 = 新标签;**agent 托管在 pwsh 里**(解析 npm shim,spawn 失败回退,不崩);标签 `×` 关闭 + `LocalPty` Drop 杀子进程。
+- [ ] `tn-ai::detect`(启动意图→进程树→标题)+ **per-pane 用量跟随焦点**(分屏头环形读数 / 状态栏按焦点 agent 切换);**Codex UsageProvider**(`$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`)。详见 [UX-DESIGN.md](UX-DESIGN.md) §5。
 - [ ] 颜值打磨(主题、mica/acrylic、动画,用 gpui-component);可选 opt-in 桥。
 - **退出标准**:在 Tn 里启动 Claude Code/Codex 明显优于普通终端。
 
