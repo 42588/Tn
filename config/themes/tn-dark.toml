@@ -1,0 +1,62 @@
+# Tn Dark — Tn 的默认主题(Tokyo Night 调校)。
+# 这是 design/mockup.html 原型所用配色的权威定义。主题 schema 见 docs/BLUEPRINT.md §3.3。
+name = "Tn Dark"
+appearance = "dark"          # dark | light(用于跟随系统切换)
+
+# 16 色 ANSI 调色板
+[ansi]
+black          = "#15161E"
+red            = "#F7768E"
+green          = "#9ECE6A"
+yellow         = "#E0AF68"
+blue           = "#7AA2F7"
+magenta        = "#BB9AF7"
+cyan           = "#7DCFFF"
+white          = "#A9B1D6"
+bright_black   = "#414868"
+bright_red     = "#F7768E"
+bright_green   = "#9ECE6A"
+bright_yellow  = "#E0AF68"
+bright_blue    = "#7AA2F7"
+bright_magenta = "#BB9AF7"
+bright_cyan    = "#7DCFFF"
+bright_white   = "#C0CAF5"
+
+# 终端绘制区
+[terminal]
+background    = "#1A1B26"
+foreground    = "#C0CAF5"
+cursor        = "#C0CAF5"
+cursor_text   = "#1A1B26"
+selection_bg  = "#283457"
+selection_fg  = "#C0CAF5"
+
+# UI chrome(窗口/标签/面板/分屏/命令面板等)
+[ui]
+chrome_bg        = "#16161E"   # 标题栏 / 最外层
+surface_1        = "#1F2335"   # 面板 / 卡片
+surface_2        = "#24283B"   # 抬升层 / block 卡片
+foreground       = "#C0CAF5"
+muted            = "#565F89"   # 次要文字 / 注释
+border           = "#2A2E42"
+accent           = "#7AA2F7"   # 品牌强调(蓝)
+accent_alt       = "#BB9AF7"   # 次强调(紫)
+tab_active_bg    = "#1A1B26"
+tab_inactive_fg  = "#565F89"
+block_border     = "#2A2E42"
+block_success    = "#9ECE6A"   # 退出码 0 的左条
+block_error      = "#F7768E"   # 非 0 退出
+block_running    = "#7AA2F7"
+palette_bg       = "#1F2335"
+palette_selected = "#283457"
+
+# 半透明 / 窗口质感(Windows 11)
+[ui.window]
+backdrop = "mica"              # mica | acrylic | solid
+opacity  = 0.96
+corner   = "round"            # 圆角
+
+# AI agent 强调色(标签条 / 焦点描边 / 上下文环 / 用量读数)
+[agents]
+claude = "#F0916D"             # 暖珊瑚橙
+codex  = "#73DACA"             # 青绿

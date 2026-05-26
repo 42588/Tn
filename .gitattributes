@@ -3,3 +3,5 @@
 *.rs text eol=lf
 *.toml text eol=lf
 *.md text eol=lf
+*.png binary
+*.ico binary

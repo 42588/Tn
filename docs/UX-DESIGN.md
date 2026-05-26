@@ -189,6 +189,8 @@ pub trait UsageProvider: Send {
 
 **总基调**:现代、克制、深色优先,Windows 11 原生质感;信息清晰、焦点明确、动效流畅不喧宾夺主。
 
+> **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开),渲染图 `design/mockup.png`。原型展示了默认主题下的灵活平铺分屏、Warp block、Claude/Codex 上下文环与用量读数、半透明窗口质感。
+
 ### 6.1 设计令牌(主题里集中定义,见 tn-config)
 - **颜色**:背景分层 `surface.0/1/2`(窗口/面板/卡片)、`fg`、`muted`、`border`;`accent`(品牌强调);**agent 强调色** Claude `#D97757` / Codex `#10A37F`;语义色 success/warn/error;16 色 ANSI 调色板。深/浅两套,跟随系统。
 - **间距**:4 的倍数刻度(4/8/12/16/24)。**圆角**:面板 8、卡片/标签 6–10。**阴影/高度**:活动元素轻投影。
