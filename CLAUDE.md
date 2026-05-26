@@ -6,8 +6,8 @@ coding CLIs (Claude Code, Codex) with great UX, flexible tiling, WSL + SSH. Stac
 (VT engine) · **portable-pty** (ConPTY/WSL) + **russh** (SSH). License: GPL-3.0-or-later.
 
 ## Status (read first)
-- **M0 = done & committed** (live GPUI terminal). **M1 = in progress, UNCOMMITTED.**
-- The working tree has M1 WIP. **Do NOT commit until M1 is complete** (owner's instruction); then make one M1 commit. Recent git log = M0 + design/doc commits.
+- **M0 = done & committed.** **M1 = done & committed** (single commit `59b8b0e` on `main`): config/theme, input encoding, push-repaint, scrollback, selection/copy-paste, panes (splits + keyboard resize + hot-reload). Exit criteria met & dogfood-verified. See [CHANGELOG.md](CHANGELOG.md).
+- **Next = M2** (WSL + SSH). Post-M1 deferred refinements (do interactively — need visual/mouse verification): **divider mouse-drag** (weight math `Node::resize` already in + tested), **drag-dock**, **M1.2b custom `TerminalElement`** (glyph atlas + typed-quad; div renderer is the M1 cut).
 - Full plan/roadmap: [docs/BLUEPRINT.md](docs/BLUEPRINT.md). UX (panes/sessions/AI usage/viewer): [docs/UX-DESIGN.md](docs/UX-DESIGN.md). Design lessons from Windows Terminal + Ghostty: [docs/REFERENCES.md](docs/REFERENCES.md). Default theme prototype: [design/mockup.html](design/mockup.html), theme [config/themes/tn-dark.toml](config/themes/tn-dark.toml).
 
 ## Workspace (crates)
