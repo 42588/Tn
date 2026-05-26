@@ -102,6 +102,8 @@
   .agenthead .model{ font-size:11px; color:var(--muted); } .agenthead .sp{flex:1;}
   .agenthead .cost{ font-size:11px; color:var(--fg); opacity:.8; }
   .agenthead .think{ font-size:11px; color:var(--claude); display:flex; align-items:center; gap:5px; }
+  .agenthead.codex{ background:linear-gradient(180deg, rgba(115,218,202,0.07), transparent); }
+  .agenthead.codex .nm{ color:var(--codex); }
   .dotpulse{ width:6px;height:6px;border-radius:50%;background:var(--claude); animation:pulse 1s ease-in-out infinite;}
   @keyframes pulse{0%,100%{opacity:.35; transform:scale(.8)}50%{opacity:1; transform:scale(1.15)}}
   .ring{ position:relative; width:30px; height:30px; }
@@ -207,26 +209,53 @@
         </div>
       </div>
 
-      <!-- RIGHT: diff / file viewer -->
-      <div class="pane viewer col">
-        <div class="vh">
-          <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
-          <span class="sp"></span>
-          <span class="by">✻ 编辑中</span>
-          <span class="seg">Diff</span>
+      <!-- RIGHT: diff viewer (top) + Codex (bottom) -->
+      <div class="col" style="flex:1.25">
+        <div class="pane viewer col" style="flex:1.4">
+          <div class="vh">
+            <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
+            <span class="sp"></span>
+            <span class="by">✻ 编辑中</span>
+            <span class="seg">Diff</span>
+          </div>
+          <div class="code">
+            <div class="cl"><span class="ln">12</span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
+            <div class="cl"><span class="ln">13</span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
+            <div class="cl"><span class="ln">14</span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
+            <div class="cl"><span class="ln">15</span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
+            <div class="cl del"><span class="ln">16</span><span class="red"> -        </span>win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
+            <div class="cl add"><span class="ln">16</span><span class="grn"> +        </span><span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
+            <div class="cl add"><span class="ln">17</span><span class="grn"> +        </span>quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
+            <div class="cl"><span class="ln">18</span>        }</div>
+            <div class="cl add"><span class="ln">19</span><span class="grn"> +    </span>win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
+            <div class="cl"><span class="ln">20</span>    }</div>
+            <div class="cl"><span class="ln">21</span>}</div>
+          </div>
         </div>
-        <div class="code">
-          <div class="cl"><span class="ln">12</span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
-          <div class="cl"><span class="ln">13</span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, b: <span class="ty">Bounds</span>, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
-          <div class="cl"><span class="ln">14</span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
-          <div class="cl"><span class="ln">15</span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
-          <div class="cl del"><span class="ln">16</span><span class="red"> -          </span>win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
-          <div class="cl add"><span class="ln">16</span><span class="grn"> +          </span><span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
-          <div class="cl add"><span class="ln">17</span><span class="grn"> +          </span>quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
-          <div class="cl"><span class="ln">18</span>        }</div>
-          <div class="cl add"><span class="ln">19</span><span class="grn"> +      </span>win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
-          <div class="cl"><span class="ln">20</span>    }</div>
-          <div class="cl"><span class="ln">21</span>}</div>
+
+        <!-- Codex pane -->
+        <div class="pane col" style="flex:1">
+          <div class="agenthead codex">
+            <div class="nm"><span>✾</span> Codex</div>
+            <div class="model">gpt-5-codex</div>
+            <span class="sp"></span>
+            <div class="ring" title="上下文 18%">
+              <svg width="30" height="30">
+                <circle cx="15" cy="15" r="12" stroke="#2A2E42" stroke-width="3" fill="none"/>
+                <circle cx="15" cy="15" r="12" stroke="var(--codex)" stroke-width="3" fill="none"
+                  stroke-linecap="round" stroke-dasharray="75.4" stroke-dashoffset="61.8"/>
+              </svg>
+              <div class="lbl">18%</div>
+            </div>
+            <div class="cost">23K/128K</div>
+            <div class="chip" style="color:var(--codex);border-color:rgba(115,218,202,.3)">Ready</div>
+          </div>
+          <div class="agentbody">
+            <div class="tool"><span class="gl" style="color:var(--codex)">❯</span><div>run the test suite</div></div>
+            <div class="row"><span class="grn">  PASS</span> <span class="mut">tn-core · 3 passed</span></div>
+            <div class="row"><span class="grn">  PASS</span> <span class="mut">tn-pty · ConPTY smoke ok</span></div>
+            <div class="row mut">  等待下一步指令…</div>
+          </div>
         </div>
       </div>
     </div>
