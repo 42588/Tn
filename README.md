@@ -44,5 +44,9 @@ crates/tn-app     the `tn` binary
 crates/tn-cli     headless debug/smoke harness
 ```
 
-See [docs/BLUEPRINT.md](docs/BLUEPRINT.md) for architecture, data flow, design
-decisions, the milestone roadmap, and the development guide.
+## Docs
+
+- [docs/BLUEPRINT.md](docs/BLUEPRINT.md) — technical manual: architecture, data flow, per-crate design, deps, roadmap (M0–M5), dev guide.
+- [docs/UX-DESIGN.md](docs/UX-DESIGN.md) — UX: flexible tiling (n-ary panes + drag-dock), multi-session, one-click Claude/Codex, file/diff viewer, AI context + token usage, visual design.
+- [docs/REFERENCES.md](docs/REFERENCES.md) — design lessons distilled from Windows Terminal & Ghostty, mapped to Tn.
+- [design/mockup.html](design/mockup.html) — high-fidelity prototype of the default theme **Tn Dark** ([config/themes/tn-dark.toml](config/themes/tn-dark.toml)); render: `design/mockup.png`.

@@ -32,6 +32,7 @@ portable-pty = "0.9"
 
 # async (pty pumps; ssh backend in M2)
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "sync", "macros", "time"] }
+futures = "0.3"
 
 # data / utils
 anyhow = "1"
@@ -48,6 +49,7 @@ notify = "6"
 # logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
 
 [profile.release]
 lto = "thin"

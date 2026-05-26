@@ -1,0 +1,141 @@
+# Tn 配置文件 — 首次运行自动写入 %APPDATA%\Tn\config.toml。
+# 改动后重启 Tn 生效(配置热重载见后续里程碑)。schema 见 docs/BLUEPRINT.md §4.4。
+# 所有字段都可省略,缺省时回退到内置默认值。颜色取自 [appearance].theme 指向的主题文件。
+
+[general]
+scrollback_lines = 10000      # 每个会话保留的滚动历史行数(暂未接线)
+confirm_close    = true       # 关闭仍在运行的会话前确认(暂未接线)
+
+[font]
+family      = "Consolas"      # 等宽字体族(需系统已安装;缺失则由 DirectWrite 回退)
+size        = 14.0            # 磅值
+line_height = 1.3             # 行高 = size × 此倍数
+fallback    = []             # CJK / emoji 回退字体族(schema 已留,暂未启用)
+
+[appearance]
+theme = "Tn Dark"             # 主题名 = %APPDATA%\Tn\themes\*.toml 里的 name 字段
+# opacity  = 0.96            # 覆盖主题的窗口不透明度(暂未启用)
+# backdrop = "mica"          # mica | acrylic | solid,覆盖主题窗口质感(暂未启用)
+
+# 会话启动器条目 —— 配置即数据(见 docs/UX-DESIGN.md §6)。
+# M4 命令面板消费;当前版本仅解析保存,不影响运行。
+[[profiles]]
+name    = "PowerShell"
+kind    = "shell"            # shell | wsl | ssh | agent
+command = "powershell.exe"
+args    = ["-NoLogo"]
+
+[[profiles]]
+name   = "Ubuntu"
+kind   = "wsl"
+distro = "Ubuntu"
+
+[[profiles]]
+name    = "Claude"
+kind    = "agent"
+agent   = "claude"
+command = "claude"
+accent  = "#F0916D"
+glyph   = "✻"
+
+[[profiles]]
+name    = "Codex"
+kind    = "agent"
+agent   = "codex"
+command = "codex"
+accent  = "#73DACA"
+glyph   = "✾"
+
+# 键位:动作表([[actions]])与绑定表([[keybindings]])分离,
+# 一个动作可绑多键、用户按 id 改键(见 docs/REFERENCES.md §七)。
+# 这些是内置默认值的镜像;配置里的绑定叠加在默认之上(M1 为追加语义:
+# 可新增/改键,暂不能取消默认键)。可用动作:new_tab / split_right /
+# split_down / close_pane / next_pane / next_tab / reload_config /
+# grow_width / shrink_width / grow_height / shrink_height。
+[[actions]]
+id      = "new_tab"
+command = "new_tab"
+
+[[actions]]
+id      = "split_right"
+command = "split_right"
+
+[[actions]]
+id      = "split_down"
+command = "split_down"
+
+[[actions]]
+id      = "close_pane"
+command = "close_pane"
+
+[[actions]]
+id      = "next_pane"
+command = "next_pane"
+
+[[actions]]
+id      = "next_tab"
+command = "next_tab"
+
+[[actions]]
+id      = "reload_config"
+command = "reload_config"
+
+[[actions]]
+id      = "grow_width"
+command = "grow_width"
+
+[[actions]]
+id      = "shrink_width"
+command = "shrink_width"
+
+[[actions]]
+id      = "grow_height"
+command = "grow_height"
+
+[[actions]]
+id      = "shrink_height"
+command = "shrink_height"
+
+[[keybindings]]
+keys = "ctrl-shift-t"
+id   = "new_tab"
+
+[[keybindings]]
+keys = "ctrl-shift-d"
+id   = "split_right"
+
+[[keybindings]]
+keys = "ctrl-shift-e"
+id   = "split_down"
+
+[[keybindings]]
+keys = "ctrl-shift-w"
+id   = "close_pane"
+
+[[keybindings]]
+keys = "ctrl-shift-]"
+id   = "next_pane"
+
+[[keybindings]]
+keys = "ctrl-tab"
+id   = "next_tab"
+
+[[keybindings]]
+keys = "ctrl-shift-r"
+id   = "reload_config"
+
+[[keybindings]]
+keys = "ctrl-shift-right"
+id   = "grow_width"
+
+[[keybindings]]
+keys = "ctrl-shift-left"
+id   = "shrink_width"
+
+[[keybindings]]
+keys = "ctrl-shift-down"
+id   = "grow_height"
+
+[[keybindings]]
+keys = "ctrl-shift-up"
+id   = "shrink_height"

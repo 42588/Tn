@@ -120,8 +120,8 @@ pub enum Viewer { File(FileView), Diff(DiffView) }           // 只读文件 / D
 [[profiles]] name="pwsh"   kind="shell" command="pwsh.exe"
 [[profiles]] name="Ubuntu" kind="wsl"   distro="Ubuntu"
 [[profiles]] name="devbox" kind="ssh"   host="10.0.0.5" user="me"
-[[profiles]] name="Claude" kind="agent" agent="claude" command="claude"  cwd="$PROJECT" accent="#D97757" glyph="✻"
-[[profiles]] name="Codex"  kind="agent" agent="codex"  command="codex"   cwd="$PROJECT" accent="#10A37F" glyph="✾"
+[[profiles]] name="Claude" kind="agent" agent="claude" command="claude"  cwd="$PROJECT" accent="#F0916D" glyph="✻"
+[[profiles]] name="Codex"  kind="agent" agent="codex"  command="codex"   cwd="$PROJECT" accent="#73DACA" glyph="✾"
 ```
 
 **一键 AI 会话的语义**(关键友好点):
@@ -207,7 +207,7 @@ pub trait UsageProvider: Send {
 > **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开),渲染图 `design/mockup.png`。原型展示了默认 "vibe coding" 布局:**文件树 Explorer | Claude 大屏 + 小 shell | Diff 查看器**(Codex 等为一键添加,不占默认屏),以及上下文环/用量读数、Warp block、活动屏焦点光,和**有质感的背景**(彩色 mesh 渐变 + 细颗粒 grain + 边缘 vignette + 窗口玻璃高光/Mica)。
 
 ### 6.1 设计令牌(主题里集中定义,见 tn-config)
-- **颜色**:背景分层 `surface.0/1/2`(窗口/面板/卡片)、`fg`、`muted`、`border`;`accent`(品牌强调);**agent 强调色** Claude `#D97757` / Codex `#10A37F`;语义色 success/warn/error;16 色 ANSI 调色板。深/浅两套,跟随系统。
+- **颜色**:背景分层 `surface.0/1/2`(窗口/面板/卡片)、`fg`、`muted`、`border`;`accent`(品牌强调);**agent 强调色**(由主题定义,见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml) `[agents]`,源自品牌色按 Tokyo Night 调校)Claude `#F0916D` / Codex `#73DACA`;语义色 success/warn/error;16 色 ANSI 调色板。深/浅两套,跟随系统。
 - **间距**:4 的倍数刻度(4/8/12/16/24)。**圆角**:面板 8、卡片/标签 6–10。**阴影/高度**:活动元素轻投影。
 - **字体**:等宽正文(Nerd Font,连字开关)+ CJK/emoji 回退;UI 用系统 UI 字体。
 - **动效**:时长 120/200ms,缓动 ease-out;遵守系统"减少动态效果"。
@@ -229,7 +229,7 @@ pub trait UsageProvider: Send {
 
 | 能力 | 主要 crate | 里程碑 |
 |---|---|---|
-| 会话/Tab/分屏 数据模型 + 二叉分屏树 | tn-ui(+ tn-core 的 Session) | **M1** |
+| 会话/Tab/分屏 数据模型 + n-ary 容器树 + 拖拽停靠 | tn-ui(+ tn-core 的 Session) | **M1** |
 | 原生分屏交互(分隔线/焦点/zoom/关闭/拖拽) | tn-ui | **M1** |
 | 文件树 + 文件/Diff 查看器(viewer pane,只读) | tn-ui(+ tn-ai 提供 diff 源) | **M3**(查看器)/ **M4**(跟随 agent 编辑) |
 | 每格颜色 + 自定义 `TerminalElement` + 焦点描边 | tn-ui | **M1** |

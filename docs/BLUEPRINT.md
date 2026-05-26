@@ -110,7 +110,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 
 ### 3.3 输入路径 ✅
 
-键盘事件经 `on_key_down` → `keystroke_to_bytes()` 把 GPUI `Keystroke` 映射成终端字节,写回 PTY 的 writer(也就是 shell 的 stdin)。当前覆盖:可打印字符(含 shift/布局,经 `key_char`)、Enter/Tab/Backspace/Esc/方向键/Home/End/PgUp/PgDn/Del/Ins、Ctrl+字母(→ 0x01..0x1a)。🧭 完整的 `to_esc_str` 留待输入层重做——**直接照搬 Windows Terminal `_encodeRegular` 算法**(DECCKM 决定 CSI/SS3、修饰键 `mod+1`、DECFNK F 键、Alt=ESC 前缀、`_makeCtrlChar`),模式位取自 alacritty `Term::mode()`;kitty 键盘协议门控后置。详见 [REFERENCES.md](REFERENCES.md) §一。
+键盘事件经 `on_key_down` → `crate::input::encode_key(&Keystroke, InputMode)`([crates/tn-ui/src/input.rs](../crates/tn-ui/src/input.rs))把 GPUI `Keystroke` 映射成终端字节,写回 PTY 的 writer(shell 的 stdin)。**已照搬 Windows Terminal `_encodeRegular` 算法**:方向键/Home/End 按 DECCKM 选 CSI(`ESC[A`)或 SS3(`ESC OA`),带修饰 → `ESC[1;<mod><final>`(`<mod> = bits(SHIFT1/ALT2/CTRL4)+1`);F1–F4 SS3/CSI;F5–F20 DECFNK `ESC[<n>~`(跳号 LUT);Insert/Del/PgUp/PgDn `ESC[n~`;Backspace `0x7f`(Ctrl→`0x08`);Tab + Shift-Tab `ESC[Z`;Enter CR / LNM-CRLF / Ctrl-LF;`_makeCtrlChar`;Alt = ESC 前缀(CSI 键则折进 `<mod>`)。模式位经 `tn_core::Terminal::input_mode()`(读 alacritty `Term::mode()`)。`Ctrl+Shift+*`、`Ctrl+Tab` 保留给 UI(返回 None)。🧭 后置:kitty 键盘协议、DECKPAM 小键盘编码、win32-input-mode、bracketed-paste 包裹(标志已暴露)。详见 [REFERENCES.md](REFERENCES.md) §一。
 
 ### 3.4 PtyWrite 回写(关键坑)✅
 
@@ -118,10 +118,9 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 
 详见记忆 `conpty-dsr-ptywrite`。另一个 ConPTY 坑:**它不可靠地发 EOF**,所以判断子进程退出要用 `try_wait` 轮询,而不是等 `read()==0`。
 
-### 3.5 重绘循环 ✅ / 🧭
+### 3.5 重绘循环 ✅
 
-✅ 现状:reader 线程设 `dirty` 原子标志;GPUI 前台任务每 8ms 轮询,`dirty` 为真就 `cx.notify()` 重绘。
-🧭 规划:改为 **push `notify` + 由 GPUI 帧时钟/vsync 合并 + DEC 2026 同步输出门(配 1 秒安全复位定时器)**——这是 Zed/zTerm/Paneflow/Ghostty 验证过的、解决「`cat` 大文件卡死」的标准方案;渲染「最终状态而非增量」。Ghostty 的经验:别过度工程化批渲染,优先让 vsync 节流,仅当 profiling 发现冗余帧再加最小间隔定时器(见 [REFERENCES.md](REFERENCES.md) §六)。
+✅ 现状(M1.5,[crates/tn-ui/src/terminal_view.rs](../crates/tn-ui/src/terminal_view.rs)):**push + vsync 合并**——reader 线程在有新输出时往 `futures::channel::mpsc::unbounded` 发一个 wake(由 `dirty` 原子标志去重,通道里至多 1 个待处理 wake);前台 `cx.spawn` 任务 `await` 该 wake 后 `cx.notify()`,GPUI 把多次 notify 合并到 vsync 帧时钟。空闲时**零唤醒**(无轮询)。**DEC 2026 同步输出由 alacritty `vte` `Processor`(`StdSyncHandler`)内部处理**——网格仅在 BSU→ESU 完成或其超时时才变更,故每次 `snapshot()` 都是整帧、无半更新撕裂,tn-ui 侧无需额外代码。遵 Ghostty 经验:不过度工程化批渲染,让 vsync 节流。*边角:同步超时仅在下次 `advance` 时复查,中途卡住的同步流会延迟显示——可接受,真实程序会及时发 ESU。*(见 [REFERENCES.md](REFERENCES.md) §六)
 
 ### 3.6 resize 联动 ✅
 
@@ -154,6 +153,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 - ✅ `TerminalView`(`Render` 实体):持有共享 `Terminal`、`writer`、`pty`、`focus_handle`、当前 `size`、实测 `cell_width`。`new` 里 spawn shell + reader 线程 + 重绘任务;`render` 做 resize 计算 + 把快照逐行渲染;`on_key` 走输入路径。`TN_AUTOQUIT=1` 时跑内置自测(打一条命令、dump 网格、退出)——这是无人值守验证渲染的手段。
 - 🧭 待做:**自定义 `TerminalElement`**(GPUI `Element` 的 layout/prepaint/paint),用 `paint_quad` 画背景/光标/选区、`shape_line`/`paint_glyph` 画字形,支持**每格颜色**、连字、选择、滚动条;Tab 栏、分屏(panes)、命令面板(palette)。
 - 🧭 取经(见 [REFERENCES.md](REFERENCES.md) §二,源自 Windows Terminal AtlasEngine):**把可见网格拍平成带类型的 quad 批量提交**(背景/字形/光标/选区/下划线一把画)、**按 run(同字体同样式连续段)整形而非按 cell**、fg/bg 分离上色、连字按 cell 边界切分;box-drawing/Powerline 用 quad **自绘 sprite** 保证像素对齐。注意:GPUI 自带字形图集与 DirectWrite,**不重写 D3D**,只在 Element 内组织批处理。
+- 🧭 会话/Tab/分屏与查看器(完整设计见 [UX-DESIGN.md](UX-DESIGN.md)):`PaneContent = Session | Viewer`;**灵活平铺**(n-ary 容器树 + 拖拽停靠)、标签组;文件树 + 文件/Diff 查看器;会话启动器(`+` / 命令面板,一键 Claude/Codex)与会话管理器。默认布局 `Explorer | Claude(大)+ 小 shell | Diff`。默认主题 `Tn Dark`([config/themes/tn-dark.toml](../config/themes/tn-dark.toml)),原型 [design/mockup.html](../design/mockup.html)。
 
 ### 4.4 `tn-config` — 配置与主题 🧭(目前 stub)
 
@@ -165,7 +165,7 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 
 - **`tn-shell`**:alacritty **不解析** OSC 133/633 →在 PTY 字节上挂一个**旁路 `vte::Parser`**(只处理 `osc_dispatch`),产出 `BlockEvent`,同时原始流照常喂 `Term`。注入 pwsh/bash/zsh/fish 的 OSC 633 集成脚本(带 per-session nonce 防伪)。
 - **`tn-blocks`**:block 是**对 alacritty 滚动区的语义索引**(行锚点 `(generation, abs_line)`,reflow 时重解析),不是替换网格。状态机 `AwaitingPrompt→PromptOpen→OutputOpen→finalize`。**alt-screen(vim/agent TUI)进入时整体关闭 block chrome,全幅渲染**,退出再恢复——这是「让位给全屏程序」的关键。
-- **`tn-ai`**:检测 claude/codex(启动意图 > 进程树匹配 > OSC 标题 > banner);把一次 agent 会话当**一个 SurfaceBlock**,只装饰外框(状态条:名称/状态/耗时/cwd/token),**不爬它的 TUI 内部**;可选 opt-in 桥(Claude hooks 发私有 `OSC 1737;tn;<json>`;Codex 走命名管道 JSON-RPC)。
+- **`tn-ai`**:检测 claude/codex(启动意图 > 进程树匹配 > OSC 标题 > banner);把一次 agent 会话当**一个 SurfaceBlock**,只装饰外框(状态条:名称/状态/耗时/cwd),**不爬它的 TUI 内部**;可选 opt-in 桥(Claude hooks 发私有 `OSC 1737;tn;<json>`;Codex 走命名管道 JSON-RPC)。**AI 用量**(上下文占用 + token + 估算花费)由 `UsageProvider` 解析本地会话 JSONL(Claude `~/.claude/projects`、Codex `$CODEX_HOME/sessions`),展示为分屏头环形读数 + AI 状态栏 + 用量面板——详见 [UX-DESIGN.md](UX-DESIGN.md) §5。
 
 ---
 
@@ -220,15 +220,17 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - 工作区/工具链/cargo-deny;GPUI 窗口在 Windows DX11 跑通;`tn-core` 引擎(3 测试);`tn-pty::LocalPty`(ConPTY);`tn-ui::TerminalView`(渲染+输入+resize)。
 - **退出标准达成**:窗口里跑真实交互式 pwsh,输出正确渲染,键盘输入生效,resize 生效。
 
-### M1 — 可日用的本地终端 🧭
+### M1 — 可日用的本地终端 🚧 进行中(未提交;细分任务与状态见 [CLAUDE.md](../CLAUDE.md))
 **目标**:能当主力终端用。
-- [ ] `tn-core`:`SnapshotCell` 加 fg/bg(`Color`→RGB),damage 脏行。
-- [ ] **每格颜色渲染**:落地自定义 `TerminalElement`(`paint_quad` 背景/光标/选区 + `shape_line`/`paint_glyph`);连字开关。
-- [ ] `tn-config`:schema/加载/路径/首次写默认;字体(family/size/line-height、CJK+emoji 回退)。
-- [ ] 主题系统 + 3–4 内置主题 + 实时 `theme_bridge` + 透明度/内边距;导入 iTerm/WindowsTerminal/base16。
-- [ ] Tab + **灵活平铺分屏(n-ary 容器 + 拖拽停靠)** + 方向焦点 + 会话启动器(`+` 下拉 / 命令面板);滚动历史 + 选择/复制粘贴 + OSC 8 超链接。详见 [UX-DESIGN.md](UX-DESIGN.md) §1–3。
-- [ ] 键位绑定 + 动作派发;配置热重载;崩溃保护 + `tracing` 文件日志。
-- [ ] 重绘改为 push + 4ms 合并 + DEC 2026 同步输出门。
+- [x] `tn-core`:`SnapshotCell`/`TerminalSnapshot` 加 fg/bg(`Color`→RGB,ANSI16+256+OSC+INVERSE)、`Palette`(默认 Tn Dark)、`CellRun`+`row_runs()` 批处理、`set_palette()`。5 测试。 *(damage 脏行后置)*
+- [x] **每格颜色渲染**:`tn-ui` 以 run 批处理的样式盒渲染(每格 fg/bg + 粗体),窗口内验证通过。 *(自定义 `TerminalElement`/光标/选区/连字 = M1.2b 后置)*
+- [x] Tab + **灵活平铺分屏(n-ary 容器)** + 方向/点击聚焦 + 分屏/关闭/切标签快捷键(`workspace.rs`)。 *(分隔线拖拽 + drag-dock + 会话启动器 = M1.6b 后置)*
+- [x] **M1.3** `tn-config`:schema(`[general]/[font]/[appearance]` + `[[profiles]]/[[actions]]/[[keybindings]]`,字段全 `#[serde(default)]` 可继承覆盖)/加载/路径(`%APPDATA%\Tn`)/首次写默认(`config.toml` + `themes/tn-dark.toml`,内嵌 `include_str!` 为单一真源)+ 主题加载(`Theme` 全量文档,缺失/损坏整体回退内置 Tn Dark)+ 字体(family/size/line-height)。`tn-ui` 经 `palette_from(theme)→tn_core::Palette` + `set_palette` 接线,字体与窗口 chrome 颜色来自配置(免重编译);`tn-config` 不依赖 `tn-core`(遵 §2.2 图),GPUI 层做桥。14 测试。 *(导入 iTerm/WT/base16、配置热重载、窗口 backdrop/opacity 应用 = 后置;`[font].fallback`、`[appearance].opacity/backdrop` 已解析未应用)*
+- [x] **M1.4** 输入层重写([crates/tn-ui/src/input.rs](../crates/tn-ui/src/input.rs) `encode_key` + `tn_core::InputMode`/`Terminal::input_mode()`):Windows Terminal `_encodeRegular`——DECCKM CSI/SS3、`mod+1`、DECFNK F5–F20 跳号 LUT、Alt=ESC、`_makeCtrlChar`、Shift-Tab/`ESC[Z`、Enter LNM、Ctrl+Tab/Ctrl+Shift 保留。模式位读 alacritty `Term::mode()`。10 编码测试 + 1 mode 测试。*(kitty 协议、DECKPAM 小键盘、win32-input-mode、bracketed-paste 包裹后置)*
+- [x] **M1.5** 重绘改为 push `notify`(reader→`mpsc::unbounded` wake,`dirty` 去重)+ GPUI vsync 合并,替换 8ms 轮询;DEC 2026 同步输出由 `vte` `Processor`(`StdSyncHandler`)内部缓冲处理(整帧快照,无撕裂)。见 [crates/tn-ui/src/terminal_view.rs](../crates/tn-ui/src/terminal_view.rs)。
+- [ ] **M1.6b** 分隔线拖拽 + drag-dock + 每屏标题;滚动历史 + 选择/复制粘贴 + OSC 8。
+- [ ] **M1.2b** 自定义 `TerminalElement`(字形图集 + typed-quad + 光标/选区,见 REFERENCES §2)。
+- [~] 键位绑定可配置(✅ `bind_keys` 读 `[[keybindings]]`/`[[actions]]`,叠加默认)+ 配置热重载(🧭 待做:手动重载命令→重读配置、活体重应用调色板/chrome);崩溃保护(✅ panic hook→tracing)+ `tracing` 文件日志(✅ `%APPDATA%\Tn\logs\tn.log`,tracing-appender)。
 - **退出标准**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
 
 ### M2 — WSL + 远程 Linux 🧭
@@ -292,7 +294,7 @@ $env:TN_AUTOQUIT="1"; cargo run -p tn-app   # GUI 自测:dump 网格后自动退
 
 ### 9.5 验证清单(对应里程碑退出标准)
 - M0:`cargo run -p tn-app` 开窗、跑 pwsh、`dir`/`vim`/`cat 大文件` 不卡、resize 重排;`TN_AUTOQUIT=1` dump 出含命令输出的网格;`cargo test -p tn-core` 绿。
-- M1:Tab/分屏/复制粘贴可用;改 `config.toml` 字体/主题/透明度热更新;导入并应用一个 iTerm/WindowsTerminal 主题。
+- M1 ✅(退出标准达成):Tab/分屏/滚动/复制粘贴/配置/主题全可用;`Ctrl+Shift+R` 热重载颜色;变更见 [CHANGELOG.md](../CHANGELOG.md)。*(分隔线拖拽/拖拽停靠/自定义 TerminalElement/主题导入 = 后置精修。)*
 - M2:开 WSL Tab 与 SSH Tab,各跑 `htop`/`vim`;SSH 空闲过 keepalive 仍在;拔网线断连 UX 干净。
 - M3:pwsh 集成注入后,每条命令成 block(命令文本、退出色、时长);进 `vim` 时 block chrome 消失、退出恢复;`tn-shell` 用录制的 OSC 流单测。
 - M4:`Ctrl+Shift+P` →「Start Claude Code here」拉起 agent 成带实时状态条的 SurfaceBlock;最近命令面板可重跑已验证 block。

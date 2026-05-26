@@ -1,30 +1,64 @@
 //! Live terminal view: renders a `tn-core` [`Terminal`] driven by a `tn-pty`
 //! ConPTY backend, with keyboard input routed back to the shell.
 //!
-//! Threading model (the M0 cut):
+//! Threading model:
 //!   - A dedicated reader thread pumps PTY bytes into the shared [`Terminal`]
 //!     and writes the engine's `PtyWrite` replies (DSR responses, etc.) back to
 //!     the PTY — without this ConPTY stalls on startup.
-//!   - A GPUI foreground task watches a `dirty` flag and calls `notify()` so the
-//!     view repaints when new output arrives. (This poll will become a push
-//!     channel with the 4ms coalescing window once we build the real element.)
+//!   - The reader **pushes** a wake signal (coalesced via a `dirty` flag) down an
+//!     unbounded channel; a GPUI foreground task awaits it and calls `notify()`.
+//!     GPUI coalesces notifies to its vsync frame clock, so a burst of output
+//!     paints once per frame and an idle terminal costs nothing (no poll).
+//!   - DEC 2026 synchronized output (BSU/ESU) is handled inside the alacritty
+//!     `vte` `Processor` (`StdSyncHandler`): the grid only mutates when an update
+//!     completes or its timeout fires, so snapshots are always whole frames.
 
+use std::cell::RefCell;
 use std::io::{Read, Write};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use futures::channel::mpsc;
+use futures::StreamExt;
 use gpui::{
-    div, prelude::*, px, rgb, AsyncApp, Context, FocusHandle, Keystroke, KeyDownEvent, SharedString,
-    WeakEntity, Window,
+    canvas, div, prelude::*, px, AsyncApp, Bounds, ClipboardItem, Context, FocusHandle, FontWeight,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, WeakEntity, Window,
 };
-use tn_core::{GridSize, TermEvent, Terminal};
+use tn_config::Loaded;
+use tn_core::{GridSize, Palette, Rgb, TermEvent, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec};
 
-const FONT: &str = "Consolas";
-const FONT_SIZE: f32 = 14.0;
-const LINE_HEIGHT: f32 = 18.0;
+/// Convert a tn-core RGB color to a GPUI color.
+fn col(c: Rgb) -> Rgba {
+    gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
+}
+
+/// Map a config [`tn_config::Theme`]'s terminal-color subset into a
+/// [`tn_core::Palette`]. `tn-config` stays free of `tn-core`, so the bridge
+/// lives here in the GPUI layer.
+pub(crate) fn palette_from(theme: &tn_config::Theme) -> Palette {
+    let c = |x: tn_config::Color| Rgb::new(x.r, x.g, x.b);
+    let a = &theme.ansi;
+    let t = &theme.terminal;
+    Palette {
+        ansi: [
+            c(a.black), c(a.red), c(a.green), c(a.yellow),
+            c(a.blue), c(a.magenta), c(a.cyan), c(a.white),
+            c(a.bright_black), c(a.bright_red), c(a.bright_green), c(a.bright_yellow),
+            c(a.bright_blue), c(a.bright_magenta), c(a.bright_cyan), c(a.bright_white),
+        ],
+        fg: c(t.foreground),
+        bg: c(t.background),
+        cursor: c(t.cursor),
+        selection_fg: c(t.selection_fg),
+        selection_bg: c(t.selection_bg),
+    }
+}
+
 const ROWS: usize = 34;
 const COLS: usize = 110;
 
@@ -38,11 +72,22 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     size: GridSize,
     cell_width: f32,
+    // Font, resolved from config once at construction.
+    font_family: SharedString,
+    font_size: f32,
+    line_height: f32,
+    // Latest OSC window title (OSC 0/2), captured off the reader thread.
+    title: Arc<Mutex<Option<String>>>,
+    // Screen-space bounds of the text content, captured each paint by a canvas
+    // so mouse handlers can map pixels -> cells and resize fits the pane.
+    content_bounds: Rc<RefCell<Bounds<Pixels>>>,
+    // True while a left-drag selection is in progress.
+    selecting: bool,
     focused_once: bool,
 }
 
 impl TerminalView {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let size = GridSize::new(ROWS, COLS);
         let spec = SpawnSpec::program("powershell.exe").arg("-NoLogo");
         let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))
@@ -50,24 +95,38 @@ impl TerminalView {
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
 
-        let terminal = Arc::new(Mutex::new(Terminal::new(size)));
-        let dirty = Arc::new(AtomicBool::new(true));
+        // Build the engine with the configured scrollback + theme palette.
+        let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
+        term.set_palette(palette_from(&config.theme));
+        let terminal = Arc::new(Mutex::new(term));
+        // Starts false: the first read's false->true transition sends the first
+        // wake. GPUI still paints the initial (empty) frame when the window opens.
+        let dirty = Arc::new(AtomicBool::new(false));
+        // Reader -> foreground wake channel. `dirty` dedupes so at most one wake
+        // is in flight; the foreground drains it and notifies once per frame.
+        let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
+        let title = Arc::new(Mutex::new(None));
 
-        Self::spawn_reader(reader, terminal.clone(), writer.clone(), dirty.clone());
-        Self::spawn_repaint_loop(cx, dirty.clone());
+        Self::spawn_reader(reader, terminal.clone(), writer.clone(), dirty.clone(), wake_tx, title.clone());
+        Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
 
         if std::env::var("TN_AUTOQUIT").is_ok() {
             Self::spawn_self_test(cx, terminal.clone(), writer.clone());
         }
 
+        let font = config.font();
+        let font_family = SharedString::from(font.family.clone());
+        let font_size = font.size;
+        let line_height = font.line_height_px();
+
         // Measure the monospace cell width once so we can fit the grid to the
         // window. Falls back to a ratio estimate if the glyph can't be measured.
-        let font_id = cx.text_system().resolve_font(&gpui::font(FONT));
+        let font_id = cx.text_system().resolve_font(&gpui::font(&font_family));
         let cell_width = cx
             .text_system()
-            .advance(font_id, px(FONT_SIZE), 'm')
+            .advance(font_id, px(font_size), 'm')
             .map(|s| f32::from(s.width))
-            .unwrap_or(FONT_SIZE * 0.6);
+            .unwrap_or(font_size * 0.6);
 
         Self {
             terminal,
@@ -76,16 +135,25 @@ impl TerminalView {
             focus_handle: cx.focus_handle(),
             size,
             cell_width,
+            font_family,
+            font_size,
+            line_height,
+            title,
+            content_bounds: Rc::new(RefCell::new(Bounds::default())),
+            selecting: false,
             focused_once: false,
         }
     }
 
-    /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back.
+    /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
+    /// capture title changes; push a (coalesced) wake to the foreground.
     fn spawn_reader(
         mut reader: Box<dyn Read + Send>,
         terminal: Arc<Mutex<Terminal>>,
         writer: SharedWriter,
         dirty: Arc<AtomicBool>,
+        wake_tx: mpsc::UnboundedSender<()>,
+        title: Arc<Mutex<Option<String>>>,
     ) {
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -96,13 +164,16 @@ impl TerminalView {
                         let replies: Vec<String> = {
                             let mut t = terminal.lock().unwrap();
                             t.advance(&buf[..n]);
-                            t.drain_events()
-                                .into_iter()
-                                .filter_map(|e| match e {
-                                    TermEvent::PtyWrite(s) => Some(s),
-                                    _ => None,
-                                })
-                                .collect()
+                            let mut replies = Vec::new();
+                            for e in t.drain_events() {
+                                match e {
+                                    TermEvent::PtyWrite(s) => replies.push(s),
+                                    TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
+                                    TermEvent::ResetTitle => *title.lock().unwrap() = None,
+                                    _ => {}
+                                }
+                            }
+                            replies
                         };
                         if !replies.is_empty() {
                             let mut w = writer.lock().unwrap();
@@ -111,7 +182,13 @@ impl TerminalView {
                             }
                             let _ = w.flush();
                         }
-                        dirty.store(true, Ordering::Relaxed);
+                        // Wake the foreground only on the false->true transition,
+                        // so a burst of reads enqueues at most one pending wake.
+                        // (Relaxed: the terminal Mutex carries the data ordering.)
+                        if !dirty.swap(true, Ordering::Relaxed) && wake_tx.unbounded_send(()).is_err()
+                        {
+                            break; // view dropped
+                        }
                     }
                     Err(_) => break,
                 }
@@ -119,15 +196,22 @@ impl TerminalView {
         });
     }
 
-    /// Foreground task: repaint the view whenever the engine has new content.
-    fn spawn_repaint_loop(cx: &mut Context<Self>, dirty: Arc<AtomicBool>) {
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
-            executor.timer(Duration::from_millis(8)).await;
-            if dirty.swap(false, Ordering::Relaxed)
-                && this.update(cx, |_view, cx| cx.notify()).is_err()
-            {
-                break;
+    /// Foreground task: await reader wakes and repaint. GPUI coalesces the
+    /// `notify()` calls onto its vsync frame clock; we render the final state.
+    fn spawn_repaint_loop(
+        cx: &mut Context<Self>,
+        dirty: Arc<AtomicBool>,
+        mut wake_rx: mpsc::UnboundedReceiver<()>,
+    ) {
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // `dirty` dedup guarantees at most one wake is queued at a time, so a
+            // single notify per wake already coalesces a burst of reads. GPUI
+            // then folds repeated notifies into one paint at the next vsync.
+            while wake_rx.next().await.is_some() {
+                dirty.store(false, Ordering::Relaxed);
+                if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                    break; // view dropped
+                }
             }
         })
         .detach();
@@ -151,11 +235,198 @@ impl TerminalView {
         .detach();
     }
 
-    fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, _cx: &mut Context<Self>) {
-        if let Some(bytes) = keystroke_to_bytes(&event.keystroke) {
+    /// The focus handle for this pane, so the workspace can route focus.
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    /// The latest OSC window title for this session, if the program set one.
+    pub fn title(&self) -> Option<String> {
+        self.title.lock().unwrap().clone()
+    }
+
+    /// Re-apply a color palette to the live engine (config hot-reload). Font and
+    /// scrollback are fixed at construction, so those changes affect new panes.
+    pub fn apply_palette(&mut self, palette: Palette) {
+        self.terminal.lock().unwrap().set_palette(palette);
+    }
+
+    /// Write raw bytes to the PTY (the shell's stdin), as if typed. Used by the
+    /// scripted demo driver.
+    pub fn send_bytes(&self, bytes: &[u8]) {
+        let mut w = self.writer.lock().unwrap();
+        let _ = w.write_all(bytes);
+        let _ = w.flush();
+    }
+
+    /// Demo: scroll the viewport by `lines` (positive = back into history).
+    pub fn demo_scroll(&mut self, lines: i32, cx: &mut Context<Self>) {
+        self.terminal.lock().unwrap().scroll(lines);
+        cx.notify();
+    }
+
+    /// Demo: select a fixed visible region so the highlight is observable.
+    pub fn demo_select(&mut self, cx: &mut Context<Self>) {
+        let mut t = self.terminal.lock().unwrap();
+        t.selection_start(1, 2);
+        t.selection_update(4, 36);
+        drop(t);
+        cx.notify();
+    }
+
+    /// Demo: clear any selection and jump back to the live bottom.
+    pub fn demo_reset_view(&mut self, cx: &mut Context<Self>) {
+        let mut t = self.terminal.lock().unwrap();
+        t.clear_selection();
+        t.scroll_to_bottom();
+        drop(t);
+        cx.notify();
+    }
+
+    /// Paste clipboard text into the PTY, wrapped in bracketed-paste markers
+    /// when the program enabled DEC 2004. Newlines are normalized to CR.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let bracketed = {
+            let mut t = self.terminal.lock().unwrap();
+            t.scroll_to_bottom();
+            t.input_mode().bracketed_paste
+        };
+        let normalized = text.replace("\r\n", "\r").replace('\n', "\r");
+        let mut w = self.writer.lock().unwrap();
+        if bracketed {
+            let _ = w.write_all(b"\x1b[200~");
+            let _ = w.write_all(normalized.as_bytes());
+            let _ = w.write_all(b"\x1b[201~");
+        } else {
+            let _ = w.write_all(normalized.as_bytes());
+        }
+        let _ = w.flush();
+        cx.notify();
+    }
+
+    /// Copy the current selection to the clipboard (Ctrl+Shift+C).
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(text) = self.terminal.lock().unwrap().selection_text() {
+            if !text.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
+        }
+    }
+
+    /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
+    fn cell_at(&self, pos: Point<Pixels>) -> (usize, usize) {
+        let b = self.content_bounds.borrow();
+        let x = (f32::from(pos.x) - f32::from(b.origin.x)).max(0.0);
+        let y = (f32::from(pos.y) - f32::from(b.origin.y)).max(0.0);
+        let col = (x / self.cell_width) as usize;
+        let row = (y / self.line_height) as usize;
+        (
+            row.min(self.size.rows.saturating_sub(1)),
+            col.min(self.size.cols.saturating_sub(1)),
+        )
+    }
+
+    fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let (row, col) = self.cell_at(event.position);
+        self.terminal.lock().unwrap().selection_start(row, col);
+        self.selecting = true;
+        cx.notify();
+    }
+
+    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+            return;
+        }
+        let (row, col) = self.cell_at(event.position);
+        self.terminal.lock().unwrap().selection_update(row, col);
+        cx.notify();
+    }
+
+    fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            return;
+        }
+        self.selecting = false;
+        // A click with no drag leaves an empty selection — clear it so no stray
+        // cell stays highlighted.
+        let mut t = self.terminal.lock().unwrap();
+        if t.selection_text().map_or(true, |s| s.is_empty()) {
+            t.clear_selection();
+            drop(t);
+            cx.notify();
+        }
+    }
+
+    fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let m = &event.keystroke.modifiers;
+        let key = event.keystroke.key.as_str();
+        // Copy: Ctrl+Shift+C (reserved from the encoder).
+        if m.control && m.shift && key == "c" {
+            self.copy(cx);
+            return;
+        }
+        // Paste: Ctrl+Shift+V or Shift+Insert (both reserved from the encoder).
+        if (m.control && m.shift && key == "v") || (m.shift && !m.control && !m.alt && key == "insert")
+        {
+            self.paste(cx);
+            return;
+        }
+
+        // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
+        // input also snaps the viewport back to the live bottom.
+        let bytes = {
+            let mut t = self.terminal.lock().unwrap();
+            let mode = t.input_mode();
+            match crate::input::encode_key(&event.keystroke, mode) {
+                Some(b) => {
+                    t.scroll_to_bottom();
+                    b
+                }
+                None => return,
+            }
+        };
+        let mut w = self.writer.lock().unwrap();
+        let _ = w.write_all(&bytes);
+        let _ = w.flush();
+        cx.notify();
+    }
+
+    /// Mouse wheel: scroll the scrollback buffer on the main screen; on the
+    /// alternate screen (vim/less/...) translate it into arrow keys so the app
+    /// scrolls its own buffer.
+    fn on_scroll(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Lines toward older output are positive.
+        let lines = match event.delta {
+            ScrollDelta::Lines(p) => p.y,
+            ScrollDelta::Pixels(p) => f32::from(p.y) / self.line_height,
+        };
+        if lines == 0.0 {
+            return;
+        }
+        let mode = self.terminal.lock().unwrap().input_mode();
+        if mode.alt_screen {
+            let up = lines > 0.0;
+            let arrow: &[u8] = match (up, mode.app_cursor) {
+                (true, false) => b"\x1b[A",
+                (true, true) => b"\x1bOA",
+                (false, false) => b"\x1b[B",
+                (false, true) => b"\x1bOB",
+            };
+            let n = (lines.abs().round() as usize).clamp(1, 100);
             let mut w = self.writer.lock().unwrap();
-            let _ = w.write_all(&bytes);
+            for _ in 0..n {
+                let _ = w.write_all(arrow);
+            }
             let _ = w.flush();
+        } else {
+            self.terminal.lock().unwrap().scroll(lines.round() as i32);
+            cx.notify();
         }
     }
 }
@@ -167,104 +438,87 @@ impl Render for TerminalView {
             self.focused_once = true;
         }
 
-        // Fit the grid to the current window size (padding = p_2 = 8px a side).
-        const PAD: f32 = 16.0;
-        let vp = window.viewport_size();
-        let cols = (((f32::from(vp.width) - PAD) / self.cell_width).floor() as usize).max(1);
-        let rows_n = (((f32::from(vp.height) - PAD) / LINE_HEIGHT).floor() as usize).max(1);
-        let new_size = GridSize::new(rows_n, cols);
-        if new_size != self.size {
-            self.size = new_size;
-            self.terminal.lock().unwrap().resize(new_size);
-            let _ = self
-                .pty
-                .lock()
-                .unwrap()
-                .resize(PtySize::new(rows_n as u16, cols as u16));
+        // Fit the grid to the pane's own content bounds (captured by the canvas
+        // below on the previous frame). Skipping while unset keeps the initial
+        // size for one frame instead of collapsing to 1x1.
+        let (bw, bh) = {
+            let b = self.content_bounds.borrow();
+            (f32::from(b.size.width), f32::from(b.size.height))
+        };
+        if bw > 1.0 && bh > 1.0 {
+            let cols = ((bw / self.cell_width).floor() as usize).max(1);
+            let rows_n = ((bh / self.line_height).floor() as usize).max(1);
+            let new_size = GridSize::new(rows_n, cols);
+            if new_size != self.size {
+                self.size = new_size;
+                self.terminal.lock().unwrap().resize(new_size);
+                let _ = self
+                    .pty
+                    .lock()
+                    .unwrap()
+                    .resize(PtySize::new(rows_n as u16, cols as u16));
+            }
         }
 
-        let rows = self.terminal.lock().unwrap().snapshot().rows_text();
+        let snapshot = self.terminal.lock().unwrap().snapshot();
+        let rows = snapshot.row_runs();
+        let bounds_cell = self.content_bounds.clone();
 
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
-            .size_full()
-            .bg(rgb(0x1e1e2e))
-            .text_color(rgb(0xcdd6f4))
-            .font_family(FONT)
-            .text_size(px(FONT_SIZE))
-            .line_height(px(LINE_HEIGHT))
-            .p_2()
-            .flex()
-            .flex_col()
-            .children(rows.into_iter().map(|line| {
-                let content: SharedString = if line.is_empty() {
-                    " ".into()
-                } else {
-                    line.into()
-                };
-                div().h(px(LINE_HEIGHT)).child(content)
+            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
+                this.on_scroll(ev, window, cx)
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| this.on_mouse_down(ev, window, cx)),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                this.on_mouse_move(ev, window, cx)
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseUpEvent, window, cx| this.on_mouse_up(ev, window, cx)),
+            )
+            .size_full()
+            .relative()
+            .overflow_hidden()
+            .bg(col(snapshot.bg))
+            .text_color(col(snapshot.fg))
+            .font_family(self.font_family.clone())
+            .text_size(px(self.font_size))
+            .line_height(px(self.line_height))
+            // Transparent canvas: captures the content's screen bounds each paint
+            // for pixel->cell mapping and pane-fit resize.
+            .child(
+                canvas(
+                    move |bounds, _window, _cx| *bounds_cell.borrow_mut() = bounds,
+                    |_bounds, _state, _window, _cx| {},
+                )
+                .absolute()
+                .size_full(),
+            )
+            .child(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .children(rows.into_iter().map(|runs| {
+                        div()
+                            .flex()
+                            .flex_row()
+                            .h(px(self.line_height))
+                            .children(runs.into_iter().map(|r| {
+                                div()
+                                    .bg(col(r.bg))
+                                    .text_color(col(r.fg))
+                                    .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
+                                    .child(SharedString::from(r.text))
+                            }))
+                    })),
+            )
     }
 }
 
-/// Map a GPUI keystroke to the bytes a terminal should send to the PTY.
-/// A minimal keymap for M0; the full `to_esc_str` (app-cursor mode, etc.) lands
-/// with the proper input layer.
-fn keystroke_to_bytes(ks: &Keystroke) -> Option<Vec<u8>> {
-    let m = &ks.modifiers;
-    let key = ks.key.as_str();
-
-    // Ctrl + key -> C0 control bytes (ctrl-c => 0x03, etc.).
-    if m.control && !m.alt && !m.platform && key.chars().count() == 1 {
-        let c = key.chars().next().unwrap();
-        if c.is_ascii_alphabetic() {
-            return Some(vec![(c.to_ascii_lowercase() as u8 - b'a') + 1]);
-        }
-        match c {
-            ' ' => return Some(vec![0]),
-            '[' => return Some(vec![0x1b]),
-            '\\' => return Some(vec![0x1c]),
-            ']' => return Some(vec![0x1d]),
-            '^' => return Some(vec![0x1e]),
-            '_' => return Some(vec![0x1f]),
-            _ => {}
-        }
-    }
-
-    let named: Option<&[u8]> = match key {
-        "enter" => Some(b"\r"),
-        "tab" => Some(b"\t"),
-        "backspace" => Some(b"\x7f"),
-        "escape" => Some(b"\x1b"),
-        "space" => Some(b" "),
-        "up" => Some(b"\x1b[A"),
-        "down" => Some(b"\x1b[B"),
-        "right" => Some(b"\x1b[C"),
-        "left" => Some(b"\x1b[D"),
-        "home" => Some(b"\x1b[H"),
-        "end" => Some(b"\x1b[F"),
-        "pageup" => Some(b"\x1b[5~"),
-        "pagedown" => Some(b"\x1b[6~"),
-        "delete" => Some(b"\x1b[3~"),
-        "insert" => Some(b"\x1b[2~"),
-        _ => None,
-    };
-    if let Some(bytes) = named {
-        return Some(bytes.to_vec());
-    }
-
-    // Printable character (honors shift/layout via key_char).
-    if !m.control && !m.platform {
-        if let Some(kc) = &ks.key_char {
-            if !kc.is_empty() {
-                return Some(kc.clone().into_bytes());
-            }
-        }
-        if key.chars().count() == 1 {
-            return Some(key.as_bytes().to_vec());
-        }
-    }
-
-    None
-}
+// Key → byte encoding now lives in `crate::input` (see `input.rs`).
