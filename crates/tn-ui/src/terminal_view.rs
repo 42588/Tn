@@ -400,23 +400,26 @@ impl TerminalView {
         if !data.command.is_empty() {
             let copy_cmd = data.command.clone();
             let rerun_cmd = data.command.clone();
-            let btn = |label: &'static str, color: Rgba| {
+            // Two equal-weight actions: same legible chip + hover brighten. (A
+            // dim label read as "disabled", so both use the full foreground.)
+            let btn = |label: &'static str| {
                 div()
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgba(0xffffff10))
-                    .text_color(color)
+                    .bg(rgba(0xffffff14))
+                    .text_color(pal.fg)
+                    .hover(|s| s.bg(rgba(0xffffff2b)))
                     .child(label)
             };
             bar = bar
-                .child(btn("复制", pal.dim).on_mouse_down(
+                .child(btn("复制").on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
                         this.copy_command(&copy_cmd, cx)
                     }),
                 ))
-                .child(btn("重跑", pal.blue).on_mouse_down(
+                .child(btn("重跑").on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e: &MouseDownEvent, _w, cx| {
                         this.rerun_command(&rerun_cmd, cx)

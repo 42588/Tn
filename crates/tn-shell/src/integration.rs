@@ -40,15 +40,25 @@ impl Integration {
 $global:__tn_nonce = '__NONCE__'
 if (-not $global:__tn_orig_prompt) { $global:__tn_orig_prompt = $function:prompt }
 function global:prompt {
-  $code = $LASTEXITCODE; if ($null -eq $code) { $code = 0 }
+  $ok = $?                      # capture FIRST — reading anything else resets $?
+  $lec = $global:LASTEXITCODE
+  # $LASTEXITCODE only tracks native exes; $? also covers cmdlet success, so a
+  # succeeding cmdlet after a failed exe reports 0 (not the stale exit code).
+  $code = if ($ok) { 0 } elseif ($lec) { $lec } else { 1 }
+  $global:LASTEXITCODE = $lec   # restore for the wrapped prompt (oh-my-posh/starship)
   $e = [char]27
   $p = & $global:__tn_orig_prompt
   "$e]133;D;$code`a$e]133;A`a$p$e]133;B`a"
 }
 if (Get-Module -ListAvailable -Name PSReadLine) {
   Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
+    $l = ''; $c = 0
+    [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$l, [ref]$c)
+    $e = [char]27
+    # OSC 633;E carries the command line; escape ; \ CR LF (parser un-escapes \xHH).
+    $cl = $l.Replace('\','\x5c').Replace(';','\x3b').Replace("`r",'\x0d').Replace("`n",'\x0a')
+    [Console]::Write("$e]633;E;$cl`a$e]133;C`a")
     [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-    [Console]::Write("$([char]27)]133;C`a")
   }
 }
 "#;
@@ -94,9 +104,10 @@ mod tests {
         let i = Integration::new();
         assert!(!i.nonce.is_empty());
         let s = i.powershell();
-        for marker in ["]133;A", "]133;B", "]133;C", "]133;D"] {
+        for marker in ["]133;A", "]133;B", "]133;C", "]133;D", "]633;E"] {
             assert!(s.contains(marker), "script missing {marker}");
         }
+        assert!(s.contains("$?"), "exit code must derive from $? (not stale $LASTEXITCODE)");
         assert!(s.contains(&i.nonce));
         assert!(!s.contains("__NONCE__")); // placeholder substituted
     }

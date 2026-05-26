@@ -68,7 +68,7 @@ pub struct Font {
 impl Default for Font {
     fn default() -> Self {
         Self {
-            family: "Consolas".to_string(),
+            family: "CaskaydiaCove Nerd Font".to_string(),
             size: 14.0,
             line_height: 1.3,
             fallback: Vec::new(),
@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn default_config_has_sane_font_and_theme() {
         let c = Config::default();
-        assert_eq!(c.font.family, "Consolas");
+        assert_eq!(c.font.family, "CaskaydiaCove Nerd Font");
         assert_eq!(c.font.size, 14.0);
         assert!((c.font.line_height_px() - 18.2).abs() < 1e-4);
         assert_eq!(c.appearance.theme, "Tn Dark");
@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn bundled_default_config_parses() {
         let c = Config::from_toml_str(DEFAULT_CONFIG_TOML).expect("default config.toml parses");
-        assert_eq!(c.font.family, "Consolas");
+        assert_eq!(c.font.family, "CaskaydiaCove Nerd Font");
         assert_eq!(c.appearance.theme, "Tn Dark");
         // Template ships example profiles + keybindings.
         assert!(c.profiles.iter().any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("claude")));
@@ -184,7 +184,7 @@ mod tests {
     fn partial_config_inherits_defaults() {
         let c = Config::from_toml_str("[font]\nsize = 16.0\n").expect("partial parses");
         assert_eq!(c.font.size, 16.0); // overridden
-        assert_eq!(c.font.family, "Consolas"); // inherited
+        assert_eq!(c.font.family, "CaskaydiaCove Nerd Font"); // inherited
         assert_eq!(c.appearance.theme, "Tn Dark"); // whole section inherited
     }
 
