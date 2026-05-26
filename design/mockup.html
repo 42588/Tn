@@ -12,23 +12,42 @@
     --yellow:#E0AF68; --cyan:#7DCFFF; --claude:#F0916D; --codex:#73DACA;
     --sel:#283457;
     --font: "Cascadia Code","JetBrains Mono","CaskaydiaCove Nerd Font",Consolas,"Microsoft YaHei UI",monospace;
+    /* film-grain noise for matte texture */
+    --noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   }
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { width:1200px; height:760px; }
   body {
     font-family: var(--font); color:var(--fg); -webkit-font-smoothing:antialiased;
+    /* richer color-mesh desktop */
     background:
-      radial-gradient(900px 600px at 18% 12%, #2a2350 0%, transparent 55%),
-      radial-gradient(800px 700px at 85% 80%, #103040 0%, transparent 55%),
-      linear-gradient(135deg,#0c0d14,#15131f 60%,#0a1016);
+      radial-gradient(1100px 760px at 14% 6%,  rgba(96,78,170,0.42), transparent 52%),
+      radial-gradient(980px 880px at 88% 94%,  rgba(24,96,116,0.36), transparent 54%),
+      radial-gradient(680px 560px at 74% 14%,  rgba(150,92,82,0.16), transparent 50%),
+      radial-gradient(560px 540px at 38% 82%,  rgba(60,80,150,0.20), transparent 55%),
+      linear-gradient(155deg,#090a11,#0d0b15 55%,#070b10);
     display:flex; align-items:center; justify-content:center;
   }
+  /* film grain over the desktop (shows blurred through the window's Mica) */
+  body::before{ content:""; position:fixed; inset:0; pointer-events:none;
+    background:var(--noise); background-size:160px 160px; opacity:.06; mix-blend-mode:overlay; }
+  /* soft edge vignette for depth */
+  body::after{ content:""; position:fixed; inset:0; pointer-events:none;
+    background:radial-gradient(130% 120% at 50% 32%, transparent 50%, rgba(0,0,0,0.55)); }
+
   .win {
+    position:relative; z-index:1;
     width:1140px; height:700px; border-radius:12px; overflow:hidden; display:flex; flex-direction:column;
-    background:linear-gradient(180deg, rgba(26,27,38,0.92), rgba(22,22,30,0.96));
-    backdrop-filter:blur(40px); border:1px solid rgba(122,162,247,0.10);
-    box-shadow:0 30px 80px rgba(0,0,0,0.55), 0 2px 0 rgba(255,255,255,0.04) inset;
+    background:linear-gradient(180deg, rgba(26,27,38,0.90), rgba(22,22,30,0.95));
+    backdrop-filter:blur(40px) saturate(125%); border:1px solid rgba(122,162,247,0.12);
+    box-shadow:0 40px 100px rgba(0,0,0,0.62), 0 1px 0 rgba(255,255,255,0.05) inset;
   }
+  /* glassy top sheen */
+  .win::before{ content:""; position:absolute; inset:0; border-radius:12px; pointer-events:none; z-index:5;
+    background:linear-gradient(180deg, rgba(255,255,255,0.06), transparent 14%); }
+  /* subtle grain on the window itself (matte premium feel) */
+  .win::after{ content:""; position:absolute; inset:0; border-radius:12px; pointer-events:none; z-index:5;
+    background:var(--noise); background-size:160px 160px; opacity:.022; mix-blend-mode:overlay; }
 
   /* title + tabs */
   .titlebar { height:40px; display:flex; align-items:center; background:rgba(22,22,30,0.6);
@@ -209,53 +228,26 @@
         </div>
       </div>
 
-      <!-- RIGHT: diff viewer (top) + Codex (bottom) -->
-      <div class="col" style="flex:1.25">
-        <div class="pane viewer col" style="flex:1.4">
-          <div class="vh">
-            <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
-            <span class="sp"></span>
-            <span class="by">✻ 编辑中</span>
-            <span class="seg">Diff</span>
-          </div>
-          <div class="code">
-            <div class="cl"><span class="ln">12</span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
-            <div class="cl"><span class="ln">13</span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
-            <div class="cl"><span class="ln">14</span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
-            <div class="cl"><span class="ln">15</span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
-            <div class="cl del"><span class="ln">16</span><span class="red"> -        </span>win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
-            <div class="cl add"><span class="ln">16</span><span class="grn"> +        </span><span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
-            <div class="cl add"><span class="ln">17</span><span class="grn"> +        </span>quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
-            <div class="cl"><span class="ln">18</span>        }</div>
-            <div class="cl add"><span class="ln">19</span><span class="grn"> +    </span>win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
-            <div class="cl"><span class="ln">20</span>    }</div>
-            <div class="cl"><span class="ln">21</span>}</div>
-          </div>
+      <!-- RIGHT: diff / file viewer (Codex is one-click add via the + / palette) -->
+      <div class="pane viewer col">
+        <div class="vh">
+          <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
+          <span class="sp"></span>
+          <span class="by">✻ 编辑中</span>
+          <span class="seg">Diff</span>
         </div>
-
-        <!-- Codex pane -->
-        <div class="pane col" style="flex:1">
-          <div class="agenthead codex">
-            <div class="nm"><span>✾</span> Codex</div>
-            <div class="model">gpt-5-codex</div>
-            <span class="sp"></span>
-            <div class="ring" title="上下文 18%">
-              <svg width="30" height="30">
-                <circle cx="15" cy="15" r="12" stroke="#2A2E42" stroke-width="3" fill="none"/>
-                <circle cx="15" cy="15" r="12" stroke="var(--codex)" stroke-width="3" fill="none"
-                  stroke-linecap="round" stroke-dasharray="75.4" stroke-dashoffset="61.8"/>
-              </svg>
-              <div class="lbl">18%</div>
-            </div>
-            <div class="cost">23K/128K</div>
-            <div class="chip" style="color:var(--codex);border-color:rgba(115,218,202,.3)">Ready</div>
-          </div>
-          <div class="agentbody">
-            <div class="tool"><span class="gl" style="color:var(--codex)">❯</span><div>run the test suite</div></div>
-            <div class="row"><span class="grn">  PASS</span> <span class="mut">tn-core · 3 passed</span></div>
-            <div class="row"><span class="grn">  PASS</span> <span class="mut">tn-pty · ConPTY smoke ok</span></div>
-            <div class="row mut">  等待下一步指令…</div>
-          </div>
+        <div class="code">
+          <div class="cl"><span class="ln">12</span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
+          <div class="cl"><span class="ln">13</span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
+          <div class="cl"><span class="ln">14</span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
+          <div class="cl"><span class="ln">15</span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
+          <div class="cl del"><span class="ln">16</span><span class="red"> -        </span>win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
+          <div class="cl add"><span class="ln">16</span><span class="grn"> +        </span><span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
+          <div class="cl add"><span class="ln">17</span><span class="grn"> +        </span>quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
+          <div class="cl"><span class="ln">18</span>        }</div>
+          <div class="cl add"><span class="ln">19</span><span class="grn"> +    </span>win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
+          <div class="cl"><span class="ln">20</span>    }</div>
+          <div class="cl"><span class="ln">21</span>}</div>
         </div>
       </div>
     </div>

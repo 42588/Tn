@@ -204,7 +204,7 @@ pub trait UsageProvider: Send {
 
 **总基调**:现代、克制、深色优先,Windows 11 原生质感;信息清晰、焦点明确、动效流畅不喧宾夺主。
 
-> **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开),渲染图 `design/mockup.png`。原型展示了 "vibe coding" 布局:**文件树 Explorer | Claude 大屏 + 小 shell | Diff 查看器 + Codex**(多 AI 会话),以及每个 agent 的上下文环/用量读数、Warp block、活动屏焦点光、半透明窗口质感。
+> **默认主题 = `Tn Dark`**(Tokyo Night 调校):定义见 [`config/themes/tn-dark.toml`](../config/themes/tn-dark.toml);**高保真原型见 [`design/mockup.html`](../design/mockup.html)**(浏览器打开),渲染图 `design/mockup.png`。原型展示了默认 "vibe coding" 布局:**文件树 Explorer | Claude 大屏 + 小 shell | Diff 查看器**(Codex 等为一键添加,不占默认屏),以及上下文环/用量读数、Warp block、活动屏焦点光,和**有质感的背景**(彩色 mesh 渐变 + 细颗粒 grain + 边缘 vignette + 窗口玻璃高光/Mica)。
 
 ### 6.1 设计令牌(主题里集中定义,见 tn-config)
 - **颜色**:背景分层 `surface.0/1/2`(窗口/面板/卡片)、`fg`、`muted`、`border`;`accent`(品牌强调);**agent 强调色** Claude `#D97757` / Codex `#10A37F`;语义色 success/warn/error;16 色 ANSI 调色板。深/浅两套,跟随系统。
