@@ -27,7 +27,7 @@ use futures::StreamExt;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AsyncApp, Bounds,
     ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString,
     WeakEntity, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
@@ -49,15 +49,7 @@ pub struct UsageUpdated;
 /// this to fall back to its launcher when the hosted agent/shell exits.
 pub struct ProcessExited;
 
-/// Convert a tn-core RGB color to a GPUI color.
-fn col(c: Rgb) -> Rgba {
-    gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
-}
-
-/// An RGB color with explicit alpha (Calm Glass translucent fills).
-fn cola(c: Rgb, a: f32) -> Rgba {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
-}
+use crate::style::{col, cola, UI_SANS};
 
 /// Map a config [`tn_config::Theme`]'s terminal-color subset into a
 /// [`tn_core::Palette`]. `tn-config` stays free of `tn-core`, so the bridge
@@ -420,7 +412,11 @@ impl TerminalView {
             // stateful (a sequence can split across reads), so it lives here.
             let mut shell = ShellParser::new();
             let start = Instant::now();
-            let mut buf = [0u8; 8192];
+            // 64 KiB: high-throughput output (cat big files, build logs) drains in
+            // far fewer read calls than the old 8 KiB, cutting lock churn on the
+            // shared Terminal (待优化清单 §2.3). Heap-boxed to keep the thread stack
+            // small.
+            let mut buf = vec![0u8; 65536];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -849,7 +845,7 @@ impl TerminalView {
             .py_2()
             .flex_none()
             .rounded_t(px(13.)) // top corners follow the pane card
-            .font_family(crate::workspace::UI_SANS) // chrome = sans, terminal = mono
+            .font_family(UI_SANS) // chrome = sans, terminal = mono
             // faint vertical agent-color wash, fading out (refraction, no glow)
             .bg(linear_gradient(
                 180.,

@@ -11,14 +11,12 @@ use std::process::Command;
 use std::sync::Arc;
 
 use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, Rgba, SharedString};
-use tn_config::{Color, Loaded};
+use tn_config::Loaded;
+
+use crate::style::{col, UI_SANS};
 
 /// Max lines rendered (a viewer is a glance, not a pager).
 const MAX_LINES: usize = 500;
-
-fn col(c: Color) -> Rgba {
-    gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -355,7 +353,7 @@ impl ViewerView {
             .h(px(32.))
             .px_3()
             .flex_none()
-            .font_family(crate::workspace::UI_SANS) // header chrome = sans (code stays mono)
+            .font_family(UI_SANS) // header chrome = sans (code stays mono)
             .text_size(px(11.5))
             .child(crate::assets::icon("file", 14.).text_color(col(th.ui.accent)))
             .child(div().text_color(col(th.ui.muted)).child(SharedString::from(dir)))

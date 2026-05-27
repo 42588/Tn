@@ -11,23 +11,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, Rgba, SharedString, Svg};
+use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, SharedString};
 use tn_config::Loaded;
 
-/// Convert a `tn-config` chrome color to a GPUI color.
-fn col(c: tn_config::Color) -> Rgba {
-    gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
-}
-
-/// A line icon sized + tinted with a chrome color.
-fn icon(name: &str, size: f32, c: tn_config::Color) -> Svg {
-    crate::assets::icon(name, size).text_color(col(c))
-}
-
-/// A chrome color with explicit alpha.
-fn cola(c: tn_config::Color, a: f32) -> Rgba {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
-}
+use crate::style::{col, cola, icon, HOVER, INSET, RIM};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -96,14 +83,21 @@ impl ExplorerView {
     /// / A(dded) / D(eleted) / R(enamed).
     fn compute_git_status(root: &Path) -> HashMap<String, char> {
         let mut map = HashMap::new();
-        let Ok(out) = Command::new("git")
+        let out = match Command::new("git")
             .arg("-C")
             .arg(root)
             .arg("status")
             .arg("--porcelain")
             .output()
-        else {
-            return map;
+        {
+            Ok(o) => o,
+            Err(e) => {
+                // git missing / not spawnable: log once, then stay silent
+                // (待优化清单 §8.2). Not-a-repo just yields empty output.
+                static WARN: std::sync::Once = std::sync::Once::new();
+                WARN.call_once(|| tracing::warn!(error = %e, "git unavailable; explorer status marks off"));
+                return map;
+            }
         };
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             if line.len() < 4 {
@@ -211,8 +205,8 @@ impl ExplorerView {
             .pl(px(indent))
             .rounded(px(7.))
             .text_size(px(12.5))
-            .when(is_sel, |d| d.bg(rgba(0xffffff14)))
-            .when(!is_sel, |d| d.hover(|s| s.bg(rgba(0xffffff0a))))
+            .when(is_sel, |d| d.bg(rgba(HOVER)))
+            .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _w, cx| this.on_row_click(path.clone(), is_dir, cx)),
@@ -315,7 +309,7 @@ impl Render for ExplorerView {
             .overflow_hidden()
             .rounded(px(14.))
             .border_1()
-            .border_color(rgba(0xffffff12))
+            .border_color(rgba(RIM))
             .bg(rgba(0x1f233566)) // frosted panel (surface_1 @ ~0.4)
             .child(header)
             .child(

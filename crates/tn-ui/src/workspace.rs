@@ -13,10 +13,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative,
-    rgb, rgba, AnyElement, App, AppContext, AsyncApp, BoxShadow, Context, Div, Entity, FocusHandle,
-    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Rgba,
-    SharedString, WeakEntity, Window, WindowControlArea,
+    actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
+    AnyElement, App, AppContext, AsyncApp, Context, Entity, FocusHandle, KeyBinding, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Rgba, SharedString, WeakEntity,
+    Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -26,62 +26,12 @@ use crate::viewer::ViewerView;
 
 type PaneId = u64;
 
-/// Convert a `tn-config` chrome color to a GPUI color.
-fn col(c: tn_config::Color) -> Rgba {
-    rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
-}
-
-/// A chrome color with explicit alpha. Calm Glass surfaces are translucent so
-/// the acrylic-blurred backdrop (the window material) shows through, instead of
-/// being filled with an opaque color. See docs/UX-DESIGN §6.1.
-fn cola(c: tn_config::Color, a: f32) -> Rgba {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
-}
-
-// Calm Glass white-on-glass overlay tokens (alpha-only — depth from layered
-// translucency + a top mirror highlight, never from glow). docs/UX-DESIGN §6.1.
-const RIM: u32 = 0xffffff12; // glass edge (~white .07) — replaces hard borders
-const SHEEN: u32 = 0xffffff1a; // top 1px mirror highlight (~white .10)
-const INSET: u32 = 0xffffff0a; // header / inset card overlay (~white .04)
-const HOVER: u32 = 0xffffff14; // chip / hover (~white .08)
-/// UI sans-serif font for chrome (tabs / headers / status / numbers) — the
-/// mockup pairs this with the mono terminal/code font. "Segoe UI Variable" /
-/// "Segoe UI" ship on Windows 10/11. docs/UX-DESIGN §6.1.
-pub(crate) const UI_SANS: &str = "Segoe UI";
-
-// Calm Glass corner radii (px): window 16, panel 14, card 11. docs/UX-DESIGN §6.1.
-const R_WINDOW: f32 = 16.0;
-const R_PANEL: f32 = 14.0;
-const R_CARD: f32 = 11.0;
-
-/// A soft, contained drop shadow (depth without glow — Calm Glass). A negative
-/// spread keeps it tucked under the element rather than blooming outward.
-fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShadow {
-    BoxShadow {
-        color: hsla(0., 0., 0., alpha),
-        offset: point(px(0.), px(y)),
-        blur_radius: px(blur),
-        spread_radius: px(spread),
-    }
-}
-
-/// Attach box shadows to a div (gpui 0.2.2 has no fluent `.shadow_*` helper).
-fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
-    d.style().box_shadow = Some(shadows);
-    d
-}
-
-/// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG
-/// only when a text color is set, so the tint is always explicit — see
-/// `assets.rs`.)
-fn icon(name: &str, size: f32, color: tn_config::Color) -> gpui::Svg {
-    gpui::svg()
-        .path(crate::assets::icon_path(name))
-        .w(px(size))
-        .h(px(size))
-        .flex_none()
-        .text_color(col(color))
-}
+// Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
+// now live in `crate::style` — single source of truth (待优化清单 §4.1).
+use crate::style::{
+    col, cola, icon, shadowed, soft_shadow, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN,
+    UI_SANS,
+};
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
 fn truncate_label(s: &str, max: usize) -> String {
@@ -144,15 +94,24 @@ fn short_cwd(p: &str) -> String {
 }
 
 /// The current git branch of the app's cwd, if it's a repo (for the status bar).
+/// Returns `None` both when not in a repo (silent — expected) and when `git`
+/// can't be spawned (logged once — likely not installed / PATH). (待优化清单 §8.2)
 fn git_branch() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
-    let out = std::process::Command::new("git")
+    let out = match std::process::Command::new("git")
         .arg("-C")
         .arg(&cwd)
         .arg("branch")
         .arg("--show-current")
         .output()
-        .ok()?;
+    {
+        Ok(o) => o,
+        Err(e) => {
+            static WARN: std::sync::Once = std::sync::Once::new();
+            WARN.call_once(|| tracing::warn!(error = %e, "git unavailable; status bar branch disabled"));
+            return None;
+        }
+    };
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!s.is_empty()).then_some(s)
 }

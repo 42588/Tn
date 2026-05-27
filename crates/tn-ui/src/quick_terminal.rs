@@ -23,42 +23,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    div, hsla, point, prelude::*, px, rgba, BoxShadow, Context, Div, Entity, FocusHandle,
-    KeyDownEvent, MouseButton, Rgba, SharedString, Window,
+    div, prelude::*, px, rgba, Context, Div, Entity, FocusHandle, KeyDownEvent, MouseButton,
+    SharedString, Window,
 };
 use tn_config::Loaded;
 
 use crate::platform;
+use crate::style::{col, cola, shadowed, soft_shadow, HOVER, INSET, RIM, R_CARD, R_WINDOW, SHEEN, UI_SANS};
 use crate::terminal_view::{LaunchSpec, ProcessExited, TerminalView, UsageUpdated};
-
-// Calm Glass tokens (alpha-only — depth from layered translucency, never glow),
-// mirrored from `workspace.rs` so the launcher matches the command palette.
-const RIM: u32 = 0xffffff12;
-const SHEEN: u32 = 0xffffff1a;
-const INSET: u32 = 0xffffff0a;
-const HOVER: u32 = 0xffffff14;
-const R_WINDOW: f32 = 16.0;
-const R_CARD: f32 = 11.0;
-const UI_SANS: &str = "Segoe UI";
-
-fn col(c: tn_config::Color) -> Rgba {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a: 1.0 }
-}
-fn cola(c: tn_config::Color, a: f32) -> Rgba {
-    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
-}
-fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShadow {
-    BoxShadow {
-        color: hsla(0., 0., 0., alpha),
-        offset: point(px(0.), px(y)),
-        blur_radius: px(blur),
-        spread_radius: px(spread),
-    }
-}
-fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
-    d.style().box_shadow = Some(shadows);
-    d
-}
 
 pub struct QuickTerminal {
     config: Arc<Loaded>,

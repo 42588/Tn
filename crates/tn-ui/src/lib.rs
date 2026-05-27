@@ -11,6 +11,7 @@ mod explorer;
 mod input;
 mod platform;
 mod quick_terminal;
+mod style;
 mod terminal_view;
 mod viewer;
 mod workspace;

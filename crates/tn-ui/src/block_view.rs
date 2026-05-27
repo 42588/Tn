@@ -14,11 +14,9 @@
 
 use gpui::{div, prelude::*, px, rgba, Div, Rgba, SharedString};
 use tn_blocks::{Block, BlockModel, BlockState};
-use tn_core::{Palette, Rgb};
+use tn_core::Palette;
 
-fn col(c: Rgb) -> Rgba {
-    gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
-}
+use crate::style::col;
 
 /// Colors the bar needs, pulled from the live terminal palette.
 pub(crate) struct BarPalette {

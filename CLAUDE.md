@@ -33,7 +33,8 @@ tn-shell   shell 集成:旁路 vte::Parser 把 OSC 133/633/7 解析成 BlockEven
 tn-blocks  Warp 式 block 状态机:BlockEvent(+行/时间)→ Block(命令/输出区间/退出码/时长)。
 tn-ai      AI 用量 + 检测:claude.rs / codex.rs 解析本地会话 JSONL → token/上下文/估算花费 + pricing 表;
            detect.rs resolve_session(启动意图 > 日志新鲜度)。
-tn-ui      GPUI 前端(唯一链接 gpui 的库):assets(内嵌 SVG 图标 + 动态用量环)· input(按键编码)·
+tn-ui      GPUI 前端(唯一链接 gpui 的库):style(共享 Calm Glass 令牌 + col/cola/soft_shadow/shadowed/icon,
+           单一真源)· assets(内嵌 SVG 图标 + 动态用量环)· input(按键编码)·
            terminal_view(单 pane + LaunchSpec + 用量轮询 + agent/shell 头 + 可见光标)· block_view(block 卡片)·
            explorer(文件树侧栏)· viewer(文件/Diff 查看器)· workspace(标题栏 + 标签/n-ary 分屏 + 侧栏 +
            状态栏 + 命令面板 + Calm Glass chrome)· platform(Windows-only:全局热键 + 置顶/滑动 SetWindowPos)·
