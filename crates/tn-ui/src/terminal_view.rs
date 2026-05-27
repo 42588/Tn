@@ -25,10 +25,10 @@ use std::time::{Duration, Instant, SystemTime};
 use futures::channel::mpsc;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AsyncApp, Bounds,
-    ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString,
-    WeakEntity, Window,
+    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba, AsyncApp,
+    Bounds, ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
+    SharedString, WeakEntity, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
@@ -49,7 +49,7 @@ pub struct UsageUpdated;
 /// this to fall back to its launcher when the hosted agent/shell exits.
 pub struct ProcessExited;
 
-use crate::style::{col, cola, UI_SANS};
+use crate::style::{col, cola, HOVER, UI_SANS};
 
 /// Map a config [`tn_config::Theme`]'s terminal-color subset into a
 /// [`tn_core::Palette`]. `tn-config` stays free of `tn-core`, so the bridge
@@ -202,6 +202,8 @@ impl LaunchSpec {
 
 const ROWS: usize = 34;
 const COLS: usize = 110;
+/// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
+const CURSOR_BLINK_MS: u64 = 530;
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -233,6 +235,12 @@ pub struct TerminalView {
     // True while a left-drag selection is in progress.
     selecting: bool,
     focused_once: bool,
+    // Cursor blink (待优化清单 §3.1): `cursor_on` is the current blink phase,
+    // toggled ~530ms by the blink task *only while focused*; `focused` caches the
+    // last render's focus so the task knows whether to blink (and so an unfocused
+    // pane stays idle — zero wakes). Typing forces `cursor_on = true`.
+    cursor_on: bool,
+    focused: bool,
     // AI usage for this pane (M4): the agent it hosts + its latest usage
     // snapshot, polled off-thread from the agent's session log.
     agent: Option<AgentKind>,
@@ -335,6 +343,7 @@ impl TerminalView {
             blocks.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
+        Self::spawn_blink_loop(cx);
         // Watch the child so a pane (esp. the quick terminal) can react to its
         // shell/agent exiting. Harmless for the main window (no subscriber).
         Self::spawn_exit_watcher(cx, pty.clone());
@@ -387,6 +396,8 @@ impl TerminalView {
             palette,
             selecting: false,
             focused_once: false,
+            cursor_on: true,
+            focused: false,
             agent,
             usage: None,
             claude_accent,
@@ -480,6 +491,33 @@ impl TerminalView {
             while wake_rx.next().await.is_some() {
                 dirty.store(false, Ordering::Relaxed);
                 if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                    break; // view dropped
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Blink the cursor (~530ms) while the pane is focused. Toggling + notifying
+    /// only when `focused` keeps an unfocused pane at zero wakes (preserving the
+    /// idle-cost-nothing design); an unfocused pane shows a steady hollow cursor.
+    fn spawn_blink_loop(cx: &mut Context<Self>) {
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                exec.timer(Duration::from_millis(CURSOR_BLINK_MS)).await;
+                let alive = this
+                    .update(cx, |v, cx| {
+                        if v.focused {
+                            v.cursor_on = !v.cursor_on;
+                            cx.notify();
+                        } else if !v.cursor_on {
+                            v.cursor_on = true; // restore steady cursor on blur
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !alive {
                     break; // view dropped
                 }
             }
@@ -953,6 +991,8 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Keep the cursor solid right as the user types (don't blink mid-keystroke).
+        self.cursor_on = true;
         let m = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
         // Copy: Ctrl+Shift+C (reserved from the encoder).
@@ -1064,7 +1104,12 @@ impl Render for TerminalView {
         // it (vim) or the viewport is scrolled off the cursor row.
         let (cur_row, cur_col) = snapshot.cursor;
         let focused = self.focus_handle.is_focused(window);
+        self.focused = focused; // cache for the blink task (only blinks when focused)
+        // Focused: solid block on the "on" half of the blink; nothing on the "off"
+        // half. Unfocused: a steady hollow outline (no blink).
+        let draw_solid = focused && self.cursor_on;
         let cursor_el = (snapshot.cursor_visible
+            && (draw_solid || !focused)
             && cur_row < self.size.rows
             && cur_col < self.size.cols)
             .then(|| {
@@ -1075,13 +1120,33 @@ impl Render for TerminalView {
                     .w(px(self.cell_width))
                     .h(px(self.line_height))
                     .rounded(px(2.));
-                if focused {
+                if draw_solid {
                     // translucent block so a character under the cursor stays legible
                     base.bg(cola(self.palette.cursor, 0.85))
                 } else {
                     base.border_1().border_color(col(self.palette.cursor))
                 }
             });
+
+        // Scrollbar (待优化清单 §3.2): a thin right-edge indicator of the viewport's
+        // position within scrollback. Shown only when there's history; brighter
+        // while actually scrolled up. The thumb's size = viewport / total content.
+        let scrollbar = (snapshot.scroll_history > 0).then(|| {
+            let total = (snapshot.scroll_history + self.size.rows) as f32;
+            let thumb_h = (self.size.rows as f32 / total).clamp(0.06, 1.0);
+            let top = ((snapshot.scroll_history.saturating_sub(snapshot.scroll_offset)) as f32
+                / total)
+                .clamp(0.0, 1.0 - thumb_h);
+            let scrolled = snapshot.scroll_offset > 0;
+            div()
+                .absolute()
+                .top(relative(top))
+                .right(px(2.))
+                .w(px(4.))
+                .h(relative(thumb_h))
+                .rounded(px(2.))
+                .bg(rgba(if scrolled { 0xffffff66 } else { HOVER }))
+        });
 
         // Terminal area: the canvas captures THIS region's bounds (so the grid
         // fits the space above the block bar) and hosts the row runs. Mouse +
@@ -1132,7 +1197,8 @@ impl Render for TerminalView {
                             }))
                     })),
             )
-            .when_some(cursor_el, |this, c| this.child(c));
+            .when_some(cursor_el, |this, c| this.child(c))
+            .when_some(scrollbar, |this, s| this.child(s));
 
         div()
             .track_focus(&self.focus_handle)

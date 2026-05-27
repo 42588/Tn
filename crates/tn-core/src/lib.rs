@@ -200,6 +200,11 @@ pub struct TerminalSnapshot {
     pub cursor: (usize, usize),
     /// Whether the cursor should be drawn (false when an app hides it, e.g. vim).
     pub cursor_visible: bool,
+    /// Rows scrolled up from the live bottom (0 = at the bottom). For a scrollbar.
+    pub scroll_offset: usize,
+    /// Total scrollback rows retained above the viewport. For a scrollbar; a
+    /// scrollbar is meaningful only when this exceeds 0.
+    pub scroll_history: usize,
     /// Default foreground / background (resolved theme colors).
     pub fg: Rgb,
     pub bg: Rgb,
@@ -482,6 +487,8 @@ impl Terminal {
             cols: self.size.cols,
             cursor: (cursor_row, cur.column.0),
             cursor_visible: content.cursor.shape != CursorShape::Hidden,
+            scroll_offset: content.display_offset,
+            scroll_history: self.term.grid().history_size(),
             fg: self.palette.fg,
             bg: self.palette.bg,
             cells,
@@ -550,10 +557,16 @@ mod tests {
             t.advance(format!("line{i}\r\n").as_bytes());
         }
         let bottom = t.snapshot().to_text();
+        // At the bottom: history accrued, offset 0 (scrollbar would sit at bottom).
+        let snap = t.snapshot();
+        assert!(snap.scroll_history > 0, "scrollback retained");
+        assert_eq!(snap.scroll_offset, 0);
         t.scroll(2);
         assert_ne!(bottom, t.snapshot().to_text(), "scrolling up changes visible rows");
+        assert_eq!(t.snapshot().scroll_offset, 2, "snapshot reflects scroll offset");
         t.scroll_to_bottom();
         assert_eq!(bottom, t.snapshot().to_text(), "scroll-to-bottom restores live view");
+        assert_eq!(t.snapshot().scroll_offset, 0);
     }
 
     #[test]

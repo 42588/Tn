@@ -63,9 +63,10 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 > 不再按里程碑罗列;各里程碑的提交与逐项变更在 [CHANGELOG.md](CHANGELOG.md)。
 
 - **终端内核 + 渲染**(`tn-core` + `terminal_view`):每格 fg/bg 颜色(`row_runs()` run 批处理成样式盒,div 渲染)·
-  可见光标块(聚焦实心/失焦空心,滚离/alt 隐藏)· **push + vsync 重绘**(reader→`mpsc::unbounded` wake,`dirty`
+  可见光标块(聚焦实心 + **~530ms 闪烁**[键入即点亮]/失焦空心稳定,滚离/alt 隐藏)· **push + vsync 重绘**(reader→`mpsc::unbounded` wake,`dirty`
   原子去重,前台 `cx.spawn` await 后 `cx.notify()`;DEC 2026 同步输出由 vte `Processor` 内部缓冲 → 整帧快照无撕裂)·
-  resize 联动(按 pane 自身 canvas bounds 算行列)· 滚动历史(主屏滚历史 / alt 屏→方向键)· 选择(左键拖拽 +
+  resize 联动(按 pane 自身 canvas bounds 算行列)· 滚动历史(主屏滚历史 / alt 屏→方向键)+ **右缘滚动条**
+  (snapshot 带 scroll_offset/history,thumb 按视口/总量,滚动时变亮)· 选择(左键拖拽 +
   **双击选词 / 三击选行**,`MouseDownEvent.click_count`→`SelectKind`)+ 复制(`Ctrl+Shift+C`)/ 粘贴
   (`Ctrl+Shift+V`、`Shift+Insert`,bracketed-paste 感知)。
 - **输入**(`input.rs` + `tn-core::InputMode`):`encode_key` 照搬 Windows Terminal `_encodeRegular`——DECCKM CSI/SS3、
