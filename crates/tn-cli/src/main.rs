@@ -296,8 +296,16 @@ fn prompt_layout_probe() -> anyhow::Result<()> {
     let nogrow = std::env::var("TN_PTY_NOGROW").is_ok();
     let conpty_spawn = if nogrow { pty_rows } else { initial };
     // -NoLogo only (NOT -NoProfile): load the user's profile so their real prompt
-    // renders, exactly like a Tn shell pane.
-    let spec = SpawnSpec::program("powershell.exe").arg("-NoLogo");
+    // renders, exactly like a Tn shell pane. `TN_INTEGRATE=1` also injects the
+    // Tn OSC-133 shell-integration script (like the default pwsh pane), to catch
+    // integration × prompt interactions.
+    let mut spec = SpawnSpec::program("powershell.exe").arg("-NoLogo");
+    if std::env::var("TN_INTEGRATE").is_ok() {
+        spec = spec
+            .arg("-NoExit")
+            .arg("-EncodedCommand")
+            .arg(tn_shell::Integration::new().encoded_command());
+    }
     let mut pty = LocalPty::spawn(&spec, PtySize::new(conpty_spawn, cols))?;
     let mut reader = pty.take_reader()?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.writer()?));
@@ -355,13 +363,18 @@ fn prompt_layout_probe() -> anyhow::Result<()> {
         thread::sleep(Duration::from_millis(800));
     }
     dump("fresh prompt");
-    {
-        let mut w = writer.lock().unwrap();
-        let _ = w.write_all(b"ls\r");
-        let _ = w.flush();
+    // Run a few commands so cumulative output scrolls alacritty; with the row-lock
+    // (ConPTY rows > grid) this is where ConPTY's cursor diverges from alacritty's.
+    for cmd in ["echo hi", "ls", "echo two", "echo three"] {
+        {
+            let mut w = writer.lock().unwrap();
+            let _ = w.write_all(cmd.as_bytes());
+            let _ = w.write_all(b"\r");
+            let _ = w.flush();
+        }
+        thread::sleep(Duration::from_millis(1200));
     }
-    thread::sleep(Duration::from_millis(1500));
-    dump("after ls");
+    dump("after a few commands");
 
     let _ = pty.killer().and_then(|mut k| k.kill());
     std::process::exit(0);

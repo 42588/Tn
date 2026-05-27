@@ -97,11 +97,6 @@ const ROWS: usize = 34;
 const COLS: usize = 110;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
-/// Floor for a plain shell's ConPTY row count (see `pty_target_rows`). Chosen to
-/// exceed any realistic full-window pane (a 1440p window at a readable font is
-/// ~100 rows) so dragging a divider never grows ConPTY's rows — which would let
-/// its resize-repaint eat scrollback. Tall ConPTY rows are harmless for a shell.
-const SHELL_PTY_ROWS_FLOOR: usize = 120;
 /// Sentinel window title a hosted **agent** pane emits *after* the agent exits
 /// (the `-NoExit` pwsh runs it on return). The reader sees this OSC, flags the
 /// pane, and we clear the agent identity — so the header/tab stop pretending the
@@ -162,37 +157,12 @@ pub struct TerminalView {
     ui_accent: Rgb,
     // Launch program (e.g. "powershell.exe") — for a clean shell label.
     program: String,
-    // Row-lock for plain shells (see `pty_target_rows`): the monotonic, floored
-    // ConPTY row count for this pane on the main screen. It only ever grows and
-    // starts above any realistic full-window pane, so dragging a divider bigger
-    // never triggers a ConPTY row-grow — which would let ConPTY's resize-repaint
-    // clobber the scrollback alacritty pulls into the viewport (Windows quirk).
-    shell_pty_rows: usize,
-    // The last (rows, cols) actually sent to the PTY, so we only resize the PTY
-    // when the target genuinely changes (the row-lock decouples it from `size`).
-    last_pty_size: Option<PtySize>,
     // Cached render data + the engine generation it was built from (待优化清单
     // §2.1). Reused when a repaint changed nothing renderable (cursor blink).
     render_cache: Option<RenderCache>,
     // Opt-in render instrumentation (TN_PERF): render rate + cache hit-rate +
     // rebuild timing, logged to `tn::perf` ~1/s.
     perf: PerfStats,
-}
-
-/// The ConPTY row count for a pane, given whether it hosts an agent, whether
-/// the alternate screen is active, the previous shell high-water mark, and the
-/// current visible grid rows. Pure so it can be unit-tested; see
-/// [`TerminalView::pty_target_rows`] for the rationale (the row-lock that stops
-/// ConPTY's resize-repaint from eating scrollback on a divider drag).
-fn pty_rows_for(is_agent: bool, alt_screen: bool, locked_rows: usize, grid_rows: usize) -> usize {
-    if is_agent || alt_screen {
-        grid_rows // exact: agents redraw by height, fullscreen apps position by row
-    } else {
-        // Monotonic: stay at the locked height (seeded to the spawn height, so it
-        // never *grows* in normal use — that would repaint/blank). Only a pane
-        // taller than the lock (huge monitor) bumps it, a rare one-time grow.
-        locked_rows.max(grid_rows)
-    }
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -221,15 +191,7 @@ fn fallback_pwsh(size: PtySize) -> LocalPty {
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, launch: LaunchSpec) -> Self {
         let size = GridSize::new(ROWS, COLS);
-        // A local shell spawns its ConPTY at the row-lock height (the floor)
-        // directly, so its rows NEVER grow afterward — a ConPTY row-grow repaints
-        // and repositions content, blanking the prompt / eating scrollback (see
-        // `pty_target_rows` + 踩过的坑). Agents spawn at the visible rows (they
-        // redraw their TUI fully and want a real height). alacritty's grid still
-        // starts at `ROWS` and tracks the pane; only ConPTY's rows are pinned.
-        let is_local_shell = launch.agent.is_none() && launch.ssh.is_none();
-        let spawn_rows = if is_local_shell { SHELL_PTY_ROWS_FLOOR } else { ROWS } as u16;
-        let pty_size = PtySize::new(spawn_rows, COLS as u16);
+        let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
         // Pick the backend: a remote SSH session, or a local ConPTY. A bad
         // profile must NOT crash the app — pane construction runs inside GPUI's
         // window callback (non-unwinding), so a spawn panic aborts the whole
@@ -358,45 +320,9 @@ impl TerminalView {
             codex_accent,
             ui_accent,
             program: launch.program.clone(),
-            // Seed the lock to the spawn height so a local shell's ConPTY rows
-            // stay put (no grow). Agents leave it 0 (they use exact rows until,
-            // on exit, the pane relocks at its then-current height).
-            shell_pty_rows: if is_local_shell { SHELL_PTY_ROWS_FLOOR } else { 0 },
-            // Seed to the spawn size so the first render doesn't redundantly
-            // resize ConPTY's rows (only its columns, to fit the pane).
-            last_pty_size: Some(pty_size),
             render_cache: None,
             perf: PerfStats::new("pane.render"),
         }
-    }
-
-    /// The row count to give ConPTY for this pane (columns are always tracked
-    /// exactly — they drive line wrapping). The catch is a Windows ConPTY quirk:
-    /// when ConPTY's *rows* grow, it repaints its viewport, and that repaint
-    /// overwrites the scrollback lines alacritty just pulled up into the grown
-    /// viewport → they're lost from both screen and history (verified with
-    /// `tn-cli TN_RESIZE_EXP`). We can't stop alacritty pulling them up, so we
-    /// stop ConPTY from growing its rows for plain shells:
-    ///
-    /// * **Agent panes** (Claude/Codex are Ink TUIs that redraw by terminal
-    ///   height) → exact rows always. They manage their own redraw; correct
-    ///   layout matters more than shell-style scrollback.
-    /// * **Alt-screen** (vim/less) → exact rows; a fullscreen app positions by
-    ///   absolute row and has no scrollback to lose anyway.
-    /// * **Plain shell on the main screen** → a monotonic count floored at
-    ///   [`SHELL_PTY_ROWS_FLOOR`], which exceeds any realistic full-window pane.
-    ///   So a divider drag never grows ConPTY's rows and its repaint can't
-    ///   clobber. alacritty still resizes exactly and reflows its own (intact)
-    ///   scrollback, so growing the pane losslessly reveals more history. A
-    ///   shell ignores its row count, and a tall ConPTY (rows ≫ the visible
-    ///   grid) still streams output coherently and bottom-anchored — verified
-    ///   with `tn-cli TN_RESIZE_EXP=interactive` up to a 10× ratio.
-    fn pty_target_rows(&mut self, grid_rows: usize, alt_screen: bool) -> usize {
-        let rows = pty_rows_for(self.agent.is_some(), alt_screen, self.shell_pty_rows, grid_rows);
-        if self.agent.is_none() && !alt_screen {
-            self.shell_pty_rows = rows; // remember the (monotonic) high-water mark
-        }
-        rows
     }
 
     /// The focus handle for this pane, so the workspace can route focus.
@@ -417,11 +343,6 @@ impl TerminalView {
         if self.agent.is_some() && self.agent_exited.load(Ordering::Relaxed) {
             self.agent = None;
             self.usage = None;
-            // Lock the now-shell at its CURRENT height, not the floor — growing
-            // ConPTY rows here (to 120) would repaint and blank the fresh prompt.
-            // (A later divider-drag bigger can still grow it, but that's rare for
-            // a just-exited agent and far less jarring than a blank-out on exit.)
-            self.shell_pty_rows = self.size.rows;
             true
         } else {
             false
@@ -777,22 +698,17 @@ impl Render for TerminalView {
             let cols = ((bw / self.cell_width).floor() as usize).max(1);
             let rows_n = ((bh / self.line_height).floor() as usize).max(1);
             let new_size = GridSize::new(rows_n, cols);
-            // alacritty always matches the pane exactly (it renders these rows
-            // and reflows its own scrollback losslessly).
+            // ConPTY tracks the visible grid EXACTLY. (We tried locking shell rows
+            // to a tall value so a divider-drag-grow wouldn't repaint+clobber
+            // scrollback — but ConPTY rows ≠ alacritty rows caused worse, frequent
+            // blanking: once output scrolls alacritty but not ConPTY, their cursor
+            // coordinates diverge and the prompt mislands. So we keep them equal
+            // and accept that dragging a pane *bigger* may drop a few lines of OLD
+            // scrollback — minimized by commit-on-release. See 踩过的坑.)
             if new_size != self.size {
                 self.size = new_size;
                 self.terminal.lock().unwrap().resize(new_size);
-            }
-            // ConPTY's rows are row-locked for plain shells (see
-            // `pty_target_rows`) — its columns always track exactly. Resize the
-            // PTY only when this target actually changes (it's decoupled from
-            // `self.size`, and the alt-screen state can flip it without a resize).
-            let alt = self.terminal.lock().unwrap().input_mode().alt_screen;
-            let pty_rows = self.pty_target_rows(rows_n, alt);
-            let pty_size = PtySize::new(pty_rows as u16, cols as u16);
-            if self.last_pty_size != Some(pty_size) {
-                self.last_pty_size = Some(pty_size);
-                let _ = self.pty.lock().unwrap().resize(pty_size);
+                let _ = self.pty.lock().unwrap().resize(PtySize::new(rows_n as u16, cols as u16));
             }
         }
 
@@ -1059,42 +975,6 @@ mod tests {
             "ephemeral agent must not append the sentinel, got {:?}",
             spec.args
         );
-    }
-
-    // ── Row-lock (ConPTY resize-repaint scrollback fix) ───────────────────────
-    // Background: growing ConPTY's *rows* makes it repaint and clobber the
-    // scrollback alacritty pulled into the grown viewport — verified losing
-    // exactly `delta` lines with `tn-cli TN_RESIZE_EXP`. `pty_rows_for` pins a
-    // plain shell's ConPTY rows so a divider drag never grows them.
-
-    #[test]
-    fn shell_pty_rows_never_grow_on_a_divider_drag() {
-        // A local shell's ConPTY is spawned at the floor, so the lock starts at
-        // `SHELL_PTY_ROWS_FLOOR`. Dragging the pane smaller or bigger (within the
-        // lock) must NOT change the ConPTY row count — no repaint, no blank, no
-        // scrollback loss. Columns are handled separately and always exact.
-        let lock = SHELL_PTY_ROWS_FLOOR; // seeded at spawn
-        assert_eq!(pty_rows_for(false, false, lock, 50), lock, "shrunk pane keeps the lock");
-        assert_eq!(pty_rows_for(false, false, lock, 12), lock, "shrinking does not lower it");
-        assert_eq!(pty_rows_for(false, false, lock, 90), lock, "growing within the lock keeps it");
-    }
-
-    #[test]
-    fn shell_pty_rows_only_grow_beyond_the_lock() {
-        // Only a pane taller than the current lock (huge monitor) bumps it — a
-        // rare one-time grow; thereafter shrinking keeps the new mark.
-        let mut lock = SHELL_PTY_ROWS_FLOOR;
-        lock = pty_rows_for(false, false, lock, 200); // taller than the floor
-        assert_eq!(lock, 200, "exceeds the lock -> raises it");
-        assert_eq!(pty_rows_for(false, false, lock, 60), 200, "then shrinking keeps the mark");
-    }
-
-    #[test]
-    fn agents_and_alt_screen_get_exact_rows() {
-        // Agent panes (Ink redraws by height) and fullscreen apps (absolute
-        // positioning) must always get the real grid rows, not the lock.
-        assert_eq!(pty_rows_for(true, false, 999, 30), 30, "agent: exact");
-        assert_eq!(pty_rows_for(false, true, 999, 30), 30, "alt-screen: exact");
     }
 
     #[test]

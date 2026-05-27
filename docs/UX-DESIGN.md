@@ -267,7 +267,7 @@ pub trait UsageProvider: Send {
 - **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
 - **标签/头部用干净名**:不吃 pwsh 的 OSC 标题(`…\powershell.exe`);标签 = `Claude`/`Codex`/`pwsh`,cwd 走徽章。
 - **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。**agent 退出即回落 shell**:主窗口 agent 托管在 `pwsh -NoExit` 里(退出 claude/codex 后 pwsh 还在),退出后经哨兵标题检测**自动清掉头部 + 用量、标签回 `pwsh`**——否则会一直挂着已退出 agent 的头部(还常显示别的会话的陈旧用量)。
-- **拖分屏/退 agent 不丢历史、不留空白**:普通 shell 的 ConPTY 行数**锁定不增高**(见 [BLUEPRINT §5](BLUEPRINT.md))。ConPTY 行增高会让其 resize-repaint 重定位内容——**既吃滚动历史(拉大 pane 时丢上方内容)、又把提示符顶出可视区(留一大片空白)**。锁定后:拖分隔线把 pane 拉大只是平滑露出更多历史,退 agent 回落 shell 也不再空白。
+- **resize 取舍(ConPTY 精确跟随)**:ConPTY 行/列始终与 alacritty 一致(见 [BLUEPRINT §5](BLUEPRINT.md))。**曾试"行锁定"**(ConPTY 锁高)避免拖大 pane 吃滚动历史,但 ConPTY≠alacritty 导致**普通命令也大片空白**(光标坐标错位),已撤销。现状:拖分隔线**拉大**可能丢几行**旧**历史(当前内容不受影响),commit-on-release 已把影响降到最小;退 agent 回落 shell **不再空白**(已无 ConPTY 增高)。
 - **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;**聚焦时 ~530ms 闪烁(键入即点亮),失焦稳定不闪**——blink 任务仅在聚焦时 toggle+notify,空闲零唤醒。
 - **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
 - **tabular 数字(`tnum`)开不了**:§6.1 想用 `tnum` 对齐 token/花费/时长,但 gpui 0.2.2 **无 `font-feature-settings` API**(已对源码确认),无法开启该 OpenType 特性。退路:选本身即等宽数字的字体,或接受比例数字。详见 [CSS_TO_GPUI.md](CSS_TO_GPUI.md) §4。

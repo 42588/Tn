@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 tn-core.workspace = true
 tn-pty.workspace = true
+tn-shell.workspace = true   # probe-only: inject the real shell-integration script
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -180,7 +180,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 | 许可证 | **开源 GPL-3.0-or-later** | 规避 GPUI 依赖树里 GPL-3.0 传递依赖的冲突([zed#55470](https://github.com/zed-industries/zed/issues/55470)) |
 | MVP 顺序 | 本地内核 → WSL/SSH → blocks → AI | 先有能日用的扎实终端 |
 | 渲染 | **按 `generation` 缓存渲染数据** | 引擎每次 grid 变更 +1;空闲/光标闪烁等无变化帧复用 snapshot+row_runs,不每帧重走全网格 |
-| ConPTY 行数 | **普通 shell 与 alacritty 解耦、spawn 即锁定不增高**;agent/alt-screen 仍精确 | ConPTY 行**增高**的 resize-repaint 会吃滚动历史 + 把提示符顶出可视区(实测);列数恒精确 |
+| ConPTY 行数 | **始终精确跟随 alacritty**(曾试"shell 行锁定"防 resize 吃历史,因 ConPTY≠alacritty 致高频空白已**撤销**) | ConPTY 行增高会吃历史/顶飞提示符,但任何尺寸不匹配会复活空白;取舍:拖大 pane 丢少量旧历史,commit-on-release 最小化 |
 | agent 退出 | **`-NoExit` 托管 agent 用哨兵标题自报退出** | pwsh 存活故无 `ProcessExited`;退出后清身份回落 shell,而非进程树轮询(脆弱) |
 
 ---

@@ -6788,6 +6788,7 @@ dependencies = [
  "anyhow",
  "tn-core",
  "tn-pty",
+ "tn-shell",
  "tracing",
  "tracing-subscriber",
 ]
