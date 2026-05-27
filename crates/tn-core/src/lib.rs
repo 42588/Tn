@@ -9,7 +9,7 @@ use std::sync::mpsc::{Receiver, Sender};
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Point, Side};
+use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
@@ -27,6 +27,16 @@ pub enum SelectKind {
     Cell,
     Word,
     Line,
+}
+
+/// One hit from [`Terminal::search`]: the absolute line (0 = oldest retained
+/// scrollback line — the same numbering as [`Terminal::cursor_abs_line`], so the
+/// UI can scroll a match into view) and the half-open column range `[start,end)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchMatch {
+    pub line: usize,
+    pub col_start: usize,
+    pub col_end: usize,
 }
 
 /// Viewport size in character cells. Implements alacritty's [`Dimensions`].
@@ -410,6 +420,39 @@ impl Terminal {
         }
     }
 
+    /// Find every occurrence of `query` (plain, case-sensitive substring) across
+    /// the whole buffer — retained scrollback **and** the visible grid — top to
+    /// bottom. Each [`SearchMatch`] carries an absolute line (0 = oldest history,
+    /// aligned with [`cursor_abs_line`](Self::cursor_abs_line)) so the UI can
+    /// scroll a hit into view. An empty query yields nothing.
+    ///
+    /// Read-only (doesn't move the viewport). Matching is per-grid-row: a match
+    /// can't span a wrapped line, and a wide-char's trailing spacer cell is
+    /// included verbatim (fine for the ASCII text that searches usually target).
+    pub fn search(&self, query: &str) -> Vec<SearchMatch> {
+        let needle: Vec<char> = query.chars().collect();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let grid = self.term.grid();
+        let mut out = Vec::new();
+        // `topmost_line()` is the oldest history line (negative); enumerate gives
+        // the absolute index from the top of history.
+        for (abs, li) in (grid.topmost_line().0..=grid.bottommost_line().0).enumerate() {
+            let row = &grid[Line(li)];
+            let line: Vec<char> = (0..row.len()).map(|c| row[Column(c)].c).collect();
+            if line.len() < needle.len() {
+                continue;
+            }
+            for start in 0..=(line.len() - needle.len()) {
+                if line[start..start + needle.len()] == needle[..] {
+                    out.push(SearchMatch { line: abs, col_start: start, col_end: start + needle.len() });
+                }
+            }
+        }
+        out
+    }
+
     /// Begin a simple (cell-granularity) text selection at viewport cell
     /// `(row, col)` (0 = top/left).
     pub fn selection_start(&mut self, row: usize, col: usize) {
@@ -704,5 +747,51 @@ mod tests {
         // The CR-overwritten 'x' carries the default fg — no SGR leaked across the
         // reset from the prior line.
         assert_eq!(cell('x').fg, Rgb::new(0xC0, 0xCA, 0xF5), "default fg after reset");
+    }
+
+    #[test]
+    fn search_finds_matches_in_visible_grid() {
+        let mut t = Terminal::new(GridSize::new(4, 20));
+        t.advance(b"hello world\r\nhello again\r\n");
+        let m = t.search("hello");
+        assert_eq!(m.len(), 2, "two rows begin with hello");
+        assert_eq!((m[0].line, m[0].col_start, m[0].col_end), (0, 0, 5));
+        assert_eq!(m[1].line, 1, "second hit on the next row");
+        // A query inside a line is located at the right column.
+        let w = t.search("world");
+        assert_eq!((w[0].line, w[0].col_start, w[0].col_end), (0, 6, 11));
+    }
+
+    #[test]
+    fn search_finds_multiple_hits_on_one_line() {
+        let mut t = Terminal::new(GridSize::new(2, 20));
+        t.advance(b"ab ab ab");
+        let cols: Vec<usize> = t.search("ab").iter().map(|m| m.col_start).collect();
+        assert_eq!(cols, vec![0, 3, 6]);
+    }
+
+    #[test]
+    fn search_reaches_into_scrollback() {
+        let mut t = Terminal::with_scrollback(GridSize::new(3, 20), 1000);
+        for i in 0..20 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        // "line0" scrolled into history long ago, but search still finds it — and
+        // it's the oldest retained line, so its absolute line is 0.
+        let m = t.search("line0");
+        assert_eq!(m.len(), 1, "exactly one 'line0' (line10..19 don't contain it)");
+        assert_eq!(m[0].line, 0);
+        // A recent line sits at a higher absolute line than the oldest.
+        let recent = t.search("line19");
+        assert_eq!(recent.len(), 1);
+        assert!(recent[0].line > m[0].line, "newer output is further down");
+    }
+
+    #[test]
+    fn search_empty_query_and_no_match_yield_nothing() {
+        let mut t = Terminal::new(GridSize::new(2, 10));
+        t.advance(b"abc");
+        assert!(t.search("").is_empty(), "empty query matches nothing");
+        assert!(t.search("xyz").is_empty(), "absent text matches nothing");
     }
 }
