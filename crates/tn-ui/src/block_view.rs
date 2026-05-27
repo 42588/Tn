@@ -80,14 +80,33 @@ fn status_color(data: &BlockBar, pal: &BarPalette) -> Rgba {
     }
 }
 
-/// Short human status label.
-fn status_text(data: &BlockBar) -> SharedString {
+/// The exit-status chip: a colored pill with a check/✗/diamond icon (mockup's
+/// `.exit`), matching the block's state + exit code.
+fn exit_chip(data: &BlockBar, pal: &BarPalette) -> Div {
+    let color = status_color(data, pal);
+    let bg = Rgba { a: 0.16, ..color };
+    let chip = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .px_2()
+        .py(px(1.))
+        .rounded(px(999.))
+        .bg(bg)
+        .text_color(color);
     match (data.state, data.exit) {
-        (BlockState::Running, _) => "运行中".into(),
-        (BlockState::Finished, Some(0)) => "exit 0".into(),
-        (BlockState::Finished, Some(n)) => format!("exit {n}").into(),
-        (BlockState::Finished, None) => "结束".into(),
-        _ => "".into(),
+        (BlockState::Running, _) => chip
+            .child(crate::assets::icon("diamond", 10.).text_color(color))
+            .child(SharedString::from("运行中")),
+        (BlockState::Finished, Some(0)) => {
+            chip.child(crate::assets::icon("check", 11.).text_color(color))
+        }
+        (BlockState::Finished, Some(n)) => chip
+            .child(crate::assets::icon("close", 11.).text_color(color))
+            .child(SharedString::from(format!("exit {n}"))),
+        (BlockState::Finished, None) => chip.child(SharedString::from("结束")),
+        _ => chip,
     }
 }
 
@@ -136,18 +155,25 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         short(&data.command, 64)
     };
 
+    // A floating rounded "block card" (Calm Glass) rather than a flush shelf —
+    // accent left-stripe, command, duration, exit chip, cwd.
     let mut row = div()
         .flex()
         .flex_row()
         .items_center()
         .gap_2()
-        .h(px(30.))
-        .px_3()
+        .h(px(32.))
+        .mx_2()
+        .mb_1()
+        .pl_2()
+        .pr_2()
+        .rounded(px(11.))
         .text_size(px(11.))
-        .bg(rgba(0xffffff0a)) // translucent inset footer (Calm Glass)
-        // left status stripe + dot
-        .child(div().w(px(3.)).h(px(15.)).rounded_md().bg(stripe))
-        .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(stripe))
+        .border_1()
+        .border_color(rgba(0xffffff12)) // glass rim
+        .bg(rgba(0xffffff0d)) // translucent card
+        // left status stripe
+        .child(div().w(px(3.)).h(px(16.)).rounded_full().bg(stripe))
         // command line (monospace, inherited from the pane root)
         .child(div().text_color(pal.fg).child(SharedString::from(cmd)))
         .child(div().flex_1());
@@ -155,9 +181,9 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     if let Some(ms) = data.duration_ms {
         row = row.child(div().text_color(pal.dim).child(SharedString::from(fmt_duration(ms))));
     }
-    row = row.child(div().text_color(stripe).child(status_text(data)));
+    row = row.child(exit_chip(data, pal));
     if let Some(cwd) = &data.cwd {
-        row = row.child(div().text_color(pal.dim).child(SharedString::from(short_path(cwd, 26))));
+        row = row.child(div().text_color(pal.dim).child(SharedString::from(short_path(cwd, 22))));
     }
     row
 }

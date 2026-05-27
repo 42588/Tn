@@ -8,22 +8,76 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use gpui::{
-    actions, div, prelude::*, px, relative, rgb, rgba, AnyElement, App, AppContext, AsyncApp,
-    Context, Entity, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, Rgba, SharedString,
-    WeakEntity, Window,
+    actions, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative, rgb,
+    rgba, AnyElement, App, AppContext, AsyncApp, BoxShadow, Context, Div, Entity, FocusHandle,
+    KeyBinding, KeyDownEvent, MouseButton, Rgba, SharedString, WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
-use crate::terminal_view::{LaunchSpec, TerminalView};
+use crate::explorer::{ExplorerView, OpenFile};
+use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
+use crate::viewer::ViewerView;
 
 type PaneId = u64;
 
 /// Convert a `tn-config` chrome color to a GPUI color.
 fn col(c: tn_config::Color) -> Rgba {
     rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
+}
+
+/// A chrome color with explicit alpha. Calm Glass surfaces are translucent so
+/// the acrylic-blurred backdrop (the window material) shows through, instead of
+/// being filled with an opaque color. See docs/UX-DESIGN §6.1.
+fn cola(c: tn_config::Color, a: f32) -> Rgba {
+    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
+}
+
+// Calm Glass white-on-glass overlay tokens (alpha-only — depth from layered
+// translucency + a top mirror highlight, never from glow). docs/UX-DESIGN §6.1.
+const RIM: u32 = 0xffffff12; // glass edge (~white .07) — replaces hard borders
+const SHEEN: u32 = 0xffffff1a; // top 1px mirror highlight (~white .10)
+const INSET: u32 = 0xffffff0a; // header / inset card overlay (~white .04)
+const HOVER: u32 = 0xffffff14; // chip / hover (~white .08)
+/// UI sans-serif font for chrome (tabs / headers / status / numbers) — the
+/// mockup pairs this with the mono terminal/code font. "Segoe UI Variable" /
+/// "Segoe UI" ship on Windows 10/11. docs/UX-DESIGN §6.1.
+pub(crate) const UI_SANS: &str = "Segoe UI";
+
+// Calm Glass corner radii (px): window 16, panel 14, card 11. docs/UX-DESIGN §6.1.
+const R_WINDOW: f32 = 16.0;
+const R_PANEL: f32 = 14.0;
+const R_CARD: f32 = 11.0;
+
+/// A soft, contained drop shadow (depth without glow — Calm Glass). A negative
+/// spread keeps it tucked under the element rather than blooming outward.
+fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShadow {
+    BoxShadow {
+        color: hsla(0., 0., 0., alpha),
+        offset: point(px(0.), px(y)),
+        blur_radius: px(blur),
+        spread_radius: px(spread),
+    }
+}
+
+/// Attach box shadows to a div (gpui 0.2.2 has no fluent `.shadow_*` helper).
+fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
+    d.style().box_shadow = Some(shadows);
+    d
+}
+
+/// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG
+/// only when a text color is set, so the tint is always explicit — see
+/// `assets.rs`.)
+fn icon(name: &str, size: f32, color: tn_config::Color) -> gpui::Svg {
+    gpui::svg()
+        .path(crate::assets::icon_path(name))
+        .w(px(size))
+        .h(px(size))
+        .flex_none()
+        .text_color(col(color))
 }
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -38,7 +92,7 @@ fn truncate_label(s: &str, max: usize) -> String {
 }
 
 /// Pretty model id for the status bar (`claude-opus-4-7` → `Opus 4.7`).
-fn short_model(id: &str) -> String {
+pub(crate) fn short_model(id: &str) -> String {
     let l = id.to_ascii_lowercase();
     let fam = if l.contains("opus") {
         "Opus"
@@ -65,7 +119,7 @@ fn short_model(id: &str) -> String {
 }
 
 /// Humanize a token count (`444731` → `444K`, `1000000` → `1.0M`).
-fn human_tokens(n: u64) -> String {
+pub(crate) fn human_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)
     } else if n >= 1_000 {
@@ -73,6 +127,31 @@ fn human_tokens(n: u64) -> String {
     } else {
         n.to_string()
     }
+}
+
+/// Short cwd for the tab badge: the last two path components (`proj/tn`).
+fn short_cwd(p: &str) -> String {
+    let p = p.trim().replace('\\', "/");
+    let parts: Vec<&str> = p.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    match parts.len() {
+        0 => p,
+        1 => parts[0].to_string(),
+        n => format!("{}/{}", parts[n - 2], parts[n - 1]),
+    }
+}
+
+/// The current git branch of the app's cwd, if it's a repo (for the status bar).
+fn git_branch() -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&cwd)
+        .arg("branch")
+        .arg("--show-current")
+        .output()
+        .ok()?;
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 /// Profiles launchable now (carry a command = shell / agent) that match the
@@ -242,7 +321,9 @@ actions!(
         ShrinkWidth,
         GrowHeight,
         ShrinkHeight,
-        TogglePalette
+        TogglePalette,
+        ToggleExplorer,
+        ToggleViewer
     ]
 );
 
@@ -266,6 +347,8 @@ fn default_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-down", GrowHeight, ctx),
         KeyBinding::new("ctrl-shift-up", ShrinkHeight, ctx),
         KeyBinding::new("ctrl-shift-p", TogglePalette, ctx),
+        KeyBinding::new("ctrl-shift-b", ToggleExplorer, ctx),
+        KeyBinding::new("ctrl-shift-j", ToggleViewer, ctx),
     ]
 }
 
@@ -286,6 +369,8 @@ fn binding_for(keys: &str, command: &str) -> Option<KeyBinding> {
         "grow_height" => KeyBinding::new(keys, GrowHeight, ctx),
         "shrink_height" => KeyBinding::new(keys, ShrinkHeight, ctx),
         "command_palette" | "toggle_palette" => KeyBinding::new(keys, TogglePalette, ctx),
+        "toggle_explorer" | "explorer" => KeyBinding::new(keys, ToggleExplorer, ctx),
+        "toggle_viewer" | "viewer" => KeyBinding::new(keys, ToggleViewer, ctx),
         _ => return None,
     })
 }
@@ -318,8 +403,15 @@ pub struct Workspace {
     next_id: PaneId,
     focused_init: bool,
     config: Arc<Loaded>,
-    /// Latest Claude usage for the app's project dir, polled off-thread (M4).
-    ai_usage: Option<tn_ai::AiUsage>,
+    /// File explorer sidebar (left column) + whether it's shown.
+    explorer: Entity<ExplorerView>,
+    explorer_open: bool,
+    /// File/diff viewer (right column) + whether it's shown (auto-opens on
+    /// clicking a file in the explorer).
+    viewer: Entity<ViewerView>,
+    viewer_open: bool,
+    /// Current git branch of the app cwd (status bar), resolved at startup.
+    branch: Option<String>,
     /// Command palette (Ctrl+Shift+P) state.
     palette_open: bool,
     palette_query: String,
@@ -329,6 +421,16 @@ pub struct Workspace {
 
 impl Workspace {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
+        let explorer = cx.new(|cx| ExplorerView::new(cx, config.clone()));
+        let viewer = cx.new(|cx| ViewerView::new(cx, config.clone()));
+        // Clicking a file in the explorer opens it in the viewer (auto-showing it).
+        cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
+            let path = ev.0.clone();
+            ws.viewer.update(cx, |v, _| v.open(path));
+            ws.viewer_open = true;
+            cx.notify();
+        })
+        .detach();
         let mut ws = Self {
             tabs: Vec::new(),
             active: 0,
@@ -336,7 +438,11 @@ impl Workspace {
             next_id: 0,
             focused_init: false,
             config,
-            ai_usage: None,
+            explorer,
+            explorer_open: true,
+            viewer,
+            viewer_open: false,
+            branch: git_branch(),
             palette_open: false,
             palette_query: String::new(),
             palette_sel: 0,
@@ -347,56 +453,10 @@ impl Workspace {
             root: Node::Leaf(id),
             focused: id,
         });
-        Self::spawn_usage_poller(cx);
         if std::env::var("TN_DEMO").is_ok() {
             Self::spawn_demo(cx);
         }
         ws
-    }
-
-    /// Poll Claude usage for the app's project dir off the main thread, pushing
-    /// an update only when the session file's mtime changes (so an idle session
-    /// costs a cheap stat, not a re-parse). Reads the same JSONL `ccusage` does.
-    fn spawn_usage_poller(cx: &mut Context<Self>) {
-        let Some(cwd) = std::env::current_dir()
-            .ok()
-            .and_then(|p| p.to_str().map(str::to_string))
-        else {
-            return;
-        };
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut last: Option<SystemTime> = None;
-            loop {
-                let cwd2 = cwd.clone();
-                let prev = last;
-                let res = exec
-                    .spawn(async move {
-                        let path = tn_ai::latest_session_file(&cwd2)?;
-                        let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
-                        if Some(mtime) == prev {
-                            return None; // unchanged — skip the (heavy) re-parse
-                        }
-                        let text = std::fs::read_to_string(&path).ok()?;
-                        Some((mtime, tn_ai::parse_claude_session(&text)?))
-                    })
-                    .await;
-                if let Some((mtime, usage)) = res {
-                    last = Some(mtime);
-                    if this
-                        .update(cx, |ws, cx| {
-                            ws.ai_usage = Some(usage);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break; // workspace dropped
-                    }
-                }
-                exec.timer(Duration::from_secs(5)).await;
-            }
-        })
-        .detach();
     }
 
     /// Scripted feature demo (`TN_DEMO=1`): steps through prompt → colored output
@@ -511,6 +571,11 @@ impl Workspace {
     fn spawn_pane_with(&mut self, cx: &mut Context<Self>, launch: LaunchSpec) -> PaneId {
         let config = self.config.clone();
         let view = cx.new(|cx| TerminalView::new(cx, config, launch));
+        // Repaint the status bar when this pane's usage changes (only on change,
+        // not on every terminal frame — that's why TerminalView emits an event
+        // rather than relying on plain `notify`).
+        cx.subscribe(&view, |_ws, _view, _ev: &UsageUpdated, cx| cx.notify())
+            .detach();
         let id = self.next_id;
         self.next_id += 1;
         self.panes.insert(id, view);
@@ -540,6 +605,18 @@ impl Workspace {
         } else {
             self.refocus_active(window, cx);
         }
+        cx.notify();
+    }
+
+    /// Show/hide the file explorer sidebar (Ctrl+Shift+B).
+    fn toggle_explorer(&mut self, _: &ToggleExplorer, _window: &mut Window, cx: &mut Context<Self>) {
+        self.explorer_open = !self.explorer_open;
+        cx.notify();
+    }
+
+    /// Show/hide the file/diff viewer (Ctrl+Shift+J).
+    fn toggle_viewer(&mut self, _: &ToggleViewer, _window: &mut Window, cx: &mut Context<Self>) {
+        self.viewer_open = !self.viewer_open;
         cx.notify();
     }
 
@@ -745,32 +822,51 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Root window-surface fill: translucent glass over the acrylic backdrop, or
+    /// an opaque fill when the theme requests a `solid` window.
+    fn window_glass(&self) -> Rgba {
+        let ui = &self.config.theme.ui;
+        match ui.window.backdrop {
+            tn_config::Backdrop::Solid => col(ui.chrome_bg),
+            _ => cola(ui.chrome_bg, 0.72), // window-glass token (~.72)
+        }
+    }
+
     fn render_node(&self, node: &Node, focused: PaneId, cx: &mut Context<Self>) -> AnyElement {
         match node {
             Node::Leaf(id) => {
                 let id = *id;
                 let view = self.panes.get(&id).expect("pane exists").clone();
                 let is_focused = id == focused;
-                div()
+                let theme = &self.config.theme;
+                // Focused pane: a faint warm rim + a lift (deeper shadow) so the
+                // eye finds it instantly — no glow. Others: a plain glass rim,
+                // sitting flat. (docs/UX-DESIGN §6.2 active-split focus.)
+                let rim = if is_focused {
+                    cola(theme.agents.claude, 0.45)
+                } else {
+                    rgba(RIM)
+                };
+                let pane = div()
                     .size_full()
                     .border_1()
-                    .rounded_md()
+                    .rounded(px(R_PANEL))
                     .overflow_hidden()
                     .p_1()
-                    .bg(col(self.config.theme.terminal.background))
-                    .border_color(if is_focused {
-                        col(self.config.theme.agents.claude) // active pane focus ring
-                    } else {
-                        col(self.config.theme.ui.border)
-                    })
+                    .bg(cola(theme.terminal.background, 0.96)) // readable, faintly glassy
+                    .border_color(rim)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _ev, window, cx| {
                             this.focus_pane(id, window, cx);
                         }),
                     )
-                    .child(view)
-                    .into_any_element()
+                    .child(view);
+                if is_focused {
+                    shadowed(pane, vec![soft_shadow(16.0, 48.0, -28.0, 0.55)]).into_any_element()
+                } else {
+                    pane.into_any_element()
+                }
             }
             Node::Split {
                 axis,
@@ -808,60 +904,110 @@ impl Workspace {
         }
     }
 
-    /// Bottom status bar with the live Claude usage readout (M4): agent dot,
-    /// model, a context-fill bar (green → yellow → red), %, tokens, cost.
-    fn render_status_bar(&self) -> gpui::Div {
+    /// Accent color for an agent (Claude coral / Codex teal / muted shell).
+    fn agent_color(&self, agent: Option<tn_ai::AgentKind>) -> tn_config::Color {
+        let t = &self.config.theme;
+        match agent {
+            Some(tn_ai::AgentKind::ClaudeCode) => t.agents.claude,
+            Some(tn_ai::AgentKind::Codex) => t.agents.codex,
+            None => t.ui.muted,
+        }
+    }
+
+    /// Bottom status bar (M4) — the mockup's multi-segment readout: branch ·
+    /// sessions · per-agent context % (Claude + Codex) · … · viewer file·lang ·
+    /// encoding · theme. The per-agent ctx is aggregated across panes (one
+    /// segment per agent kind present); detailed tokens/cost live in the pane's
+    /// agent header (R2).
+    fn render_status_bar(&self, cx: &Context<Self>) -> gpui::Div {
         let t = &self.config.theme;
         let ui = &t.ui;
-        let bar = div()
+
+        // Aggregate context % per agent kind across all panes.
+        let mut claude_pct: Option<u32> = None;
+        let mut codex_pct: Option<u32> = None;
+        for v in self.panes.values() {
+            let v = v.read(cx);
+            if let (Some(a), Some(u)) = (v.agent(), v.usage()) {
+                let pct = (u.context_frac() * 100.0).round() as u32;
+                match a {
+                    tn_ai::AgentKind::ClaudeCode => claude_pct.get_or_insert(pct),
+                    tn_ai::AgentKind::Codex => codex_pct.get_or_insert(pct),
+                };
+            }
+        }
+
+        // A single segment (icon? + content), and a faint vertical divider.
+        let seg = |children: Vec<AnyElement>| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px_3()
+                .h(px(18.))
+                .children(children)
+        };
+        let sep = || div().w(px(1.)).h(px(13.)).flex_none().bg(rgba(0xffffff14));
+        let num = |s: String| -> AnyElement {
+            div().text_color(col(ui.foreground)).child(SharedString::from(s)).into_any_element()
+        };
+
+        let mut bar = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .h(px(26.))
-            .px_3()
-            .bg(col(ui.chrome_bg))
+            .h(px(30.))
+            .px_2()
+            .border_t(px(1.))
+            .border_color(rgba(SHEEN)) // top mirror edge catches the light
+            .bg(cola(ui.chrome_bg, 0.55)) // glass over the acrylic backdrop
             .text_size(px(11.))
             .text_color(col(ui.muted));
-        match &self.ai_usage {
-            Some(u) => {
-                let frac = u.context_frac();
-                let stripe = if frac >= 0.85 {
-                    t.ansi.red
-                } else if frac >= 0.6 {
-                    t.ansi.yellow
-                } else {
-                    t.ansi.green
-                };
-                bar.child(div().w(px(6.)).h(px(6.)).rounded_full().bg(col(t.agents.claude)))
-                    .child(
-                        div()
-                            .text_color(col(ui.foreground))
-                            .child(SharedString::from(short_model(&u.model))),
-                    )
-                    .child(
-                        div()
-                            .w(px(72.))
-                            .h(px(5.))
-                            .rounded_full()
-                            .bg(rgba(0xffffff1f))
-                            .child(div().h_full().w(relative(frac)).rounded_full().bg(col(stripe))),
-                    )
-                    .child(SharedString::from(format!("{:.0}%", frac * 100.0)))
-                    .child(div().text_color(col(ui.muted)).child(SharedString::from(format!(
-                        "{} / {}",
-                        human_tokens(u.context_used as u64),
-                        human_tokens(u.context_max as u64)
-                    ))))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_color(col(t.ansi.green))
-                            .child(SharedString::from(format!("${:.2}", u.cost_usd))),
-                    )
-            }
-            None => bar.child(SharedString::from("· 读取 Claude 用量…")),
+
+        // branch
+        bar = bar.child(seg(vec![
+            icon("branch", 13., ui.accent).into_any_element(),
+            div().child(SharedString::from(self.branch.clone().unwrap_or_else(|| "—".into()))).into_any_element(),
+        ]));
+        // sessions (tab count)
+        bar = bar.child(sep()).child(seg(vec![
+            num(self.tabs.len().to_string()),
+            div().child("sessions").into_any_element(),
+        ]));
+        // per-agent context readouts
+        if let Some(p) = claude_pct {
+            bar = bar.child(sep()).child(seg(vec![
+                icon("spark", 12., t.agents.claude).into_any_element(),
+                div().child("ctx").into_any_element(),
+                num(format!("{p}%")),
+            ]));
         }
+        if let Some(p) = codex_pct {
+            bar = bar.child(sep()).child(seg(vec![
+                icon("spark", 12., t.agents.codex).into_any_element(),
+                div().child("ctx").into_any_element(),
+                num(format!("{p}%")),
+            ]));
+        }
+
+        bar = bar.child(div().flex_1());
+
+        // right cluster: viewer file·lang, encoding, theme
+        if let Some((name, lang)) = self.viewer.read(cx).status() {
+            bar = bar.child(seg(vec![div()
+                .text_color(col(ui.foreground))
+                .child(SharedString::from(format!("{name} · {lang}")))
+                .into_any_element()]));
+            bar = bar.child(sep());
+        }
+        bar = bar.child(seg(vec![div().child("UTF-8").into_any_element()]));
+        bar = bar.child(sep());
+        bar = bar.child(seg(vec![div()
+            .text_color(col(ui.accent))
+            .child(SharedString::from(t.name.clone()))
+            .into_any_element()]));
+        bar
     }
 
     /// The command-palette overlay (M4), or `None` when closed: a dim scrim +
@@ -896,8 +1042,9 @@ impl Workspace {
                 .gap_2()
                 .px_3()
                 .py_1()
-                .rounded_md()
-                .when(is_sel, |d| d.bg(rgba(0xffffff14)))
+                .rounded(px(R_CARD))
+                .when(is_sel, |d| d.bg(rgba(HOVER)))
+                .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, w, cx| this.launch_index(i, w, cx)),
@@ -918,18 +1065,22 @@ impl Workspace {
                 )
         });
 
-        let panel = div()
-            .flex()
-            .flex_col()
-            .w(px(540.))
-            .rounded_lg()
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgba(0xffffff1f))
-            .bg(rgba(0x1b1d2bf2))
-            .child(query_line)
-            .child(div().h(px(1.)).bg(rgba(0xffffff14)))
-            .child(div().flex().flex_col().p_1().gap_1().children(rows));
+        let panel = shadowed(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(540.))
+                .rounded(px(R_WINDOW))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(cola(ui.palette_bg, 0.86)) // frosted panel over the scrim + acrylic
+                .child(div().h(px(1.)).bg(rgba(SHEEN))) // top mirror highlight
+                .child(query_line)
+                .child(div().h(px(1.)).bg(rgba(RIM)))
+                .child(div().flex().flex_col().p_1().gap_1().children(rows)),
+            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)], // floats above the workspace
+        );
 
         Some(
             div()
@@ -965,48 +1116,94 @@ impl Render for Workspace {
         let ui = &self.config.theme.ui;
 
         // Each tab labels itself with its focused pane's OSC title, falling back
-        // to "Term N". Precomputed so the click closures below own `cx` freely.
-        let tab_info: Vec<(String, usize)> = self
+        // to "Term N", and carries that pane's agent for an identity dot.
+        // Precomputed so the click closures below own `cx` freely.
+        let tab_info: Vec<(String, usize, Option<tn_ai::AgentKind>, Option<String>)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(i, tab)| {
-                let title = self
-                    .panes
-                    .get(&tab.focused)
+                let pane = self.panes.get(&tab.focused);
+                let title = pane
                     .and_then(|v| v.read(cx).title())
                     .filter(|s| !s.trim().is_empty())
-                    .map(|s| truncate_label(s.trim(), 28));
+                    .map(|s| truncate_label(s.trim(), 24));
+                let agent = pane.and_then(|v| v.read(cx).agent());
+                let cwd = pane.and_then(|v| v.read(cx).cwd());
                 (
                     title.unwrap_or_else(|| format!("Term {}", i + 1)),
                     tab.root.leaf_count(),
+                    agent,
+                    cwd,
                 )
             })
             .collect();
 
-        let tab_bar = div()
+        let tabs = div()
             .flex()
             .flex_row()
             .items_center()
-            .h(px(34.0))
-            .px_2()
             .gap_1()
-            .bg(col(ui.chrome_bg))
-            .children(tab_info.into_iter().enumerate().map(|(i, (label, panes))| {
+            .children(tab_info.into_iter().enumerate().map(|(i, (label, panes, agent, cwd))| {
                 let is_active = i == active;
+                let dot = self.agent_color(agent);
+                // Accent bar/icon color: agent identity, or UI accent for shells.
+                let accent_c = if agent.is_some() { dot } else { ui.accent };
                 div()
+                    .relative()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .gap_2()
                     .px_3()
                     .py_1()
-                    .rounded_md()
+                    .rounded(px(R_CARD))
                     .text_size(px(12.0))
+                    // Active tab = a glass pill (inset + rim + sheen) with a thin
+                    // agent-color accent bar at the top. Inactive sits flat and
+                    // lifts a touch on hover. No glow.
                     .when(is_active, |d| {
-                        d.bg(col(ui.tab_active_bg)).text_color(col(ui.foreground))
+                        shadowed(
+                            d.bg(cola(ui.tab_active_bg, 0.85))
+                                .border_1()
+                                .border_color(rgba(RIM))
+                                .text_color(col(ui.foreground)),
+                            vec![soft_shadow(2.0, 10.0, -4.0, 0.35)],
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(1.))
+                                .left(px(11.))
+                                .right(px(11.))
+                                .h(px(2.))
+                                .rounded_full()
+                                .bg(col(accent_c)),
+                        )
                     })
-                    .when(!is_active, |d| d.text_color(col(ui.tab_inactive_fg)))
+                    .when(!is_active, |d| {
+                        d.border_1()
+                            .border_color(rgba(0x00000000))
+                            .text_color(col(ui.tab_inactive_fg))
+                            .hover(|s| s.bg(rgba(INSET)))
+                    })
+                    // Type icon in agent identity color: spark for agents
+                    // (Claude coral / Codex teal), terminal glyph (accent) for
+                    // a plain shell. See docs/UX-DESIGN §6.2 tab agent accent.
+                    .child(if agent.is_some() {
+                        icon("spark", 13., dot)
+                    } else {
+                        icon("term", 13., ui.accent)
+                    })
                     .child(label)
+                    // cwd path badge on the active tab (mockup's "~/proj/tn").
+                    .when(is_active && cwd.is_some(), |d| {
+                        d.child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(short_cwd(cwd.as_deref().unwrap_or("")))),
+                        )
+                    })
                     .when(panes > 1, |d| {
                         d.child(
                             div()
@@ -1022,10 +1219,11 @@ impl Render for Workspace {
                             .ml_1()
                             .px_1()
                             .rounded_md()
-                            .text_size(px(13.0))
-                            .text_color(col(ui.muted))
-                            .hover(|s| s.text_color(col(ui.foreground)).bg(rgba(0xffffff1f)))
-                            .child("\u{00d7}")
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .hover(|s| s.bg(rgba(HOVER)))
+                            .child(icon("close", 12., ui.muted))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _ev, window, cx| {
@@ -1043,22 +1241,130 @@ impl Render for Workspace {
             }))
             .child(
                 div()
-                    .px_2()
-                    .text_size(px(16.0))
-                    .text_color(col(ui.muted))
-                    .child("+")
+                    .w(px(28.))
+                    .h(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(9.))
+                    .hover(|s| s.bg(rgba(INSET)))
+                    .child(icon("plus", 15., ui.muted))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _ev, window, cx| this.new_tab(&NewTab, window, cx)),
                     ),
             );
 
+        // Brand: a gradient-ish rounded mark + the product name. Marked as a
+        // drag region (the OS moves the window from here via HTCAPTION).
+        let brand = div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .pl_1()
+            .pr_2()
+            .window_control_area(WindowControlArea::Drag)
+            .child(
+                div()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .rounded(px(7.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(linear_gradient(
+                        145.,
+                        linear_color_stop(col(ui.accent), 0.),
+                        linear_color_stop(col(ui.accent_alt), 1.),
+                    ))
+                    .child(icon("term", 13., ui.chrome_bg)),
+            )
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(gpui::FontWeight::BOLD)
+                    .text_color(col(ui.foreground))
+                    .child("Tn"),
+            );
+
+        // Window controls: the OS performs the action from the marked region
+        // (HTMINBUTTON / HTMAXBUTTON / HTCLOSE) — no click handler needed.
+        let ctl_btn = |name: &'static str, area: WindowControlArea, danger: bool| {
+            div()
+                .w(px(34.))
+                .h(px(28.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(8.))
+                .hover(move |s| s.bg(if danger { rgba(0xF7768E33) } else { rgba(HOVER) }))
+                .window_control_area(area)
+                .child(icon(name, 13., ui.muted))
+        };
+        let controls = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .child(ctl_btn("min", WindowControlArea::Min, false))
+            .child(ctl_btn("max", WindowControlArea::Max, false))
+            .child(ctl_btn("close", WindowControlArea::Close, true));
+
+        let titlebar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .h(px(46.))
+            .pl_3()
+            .pr_2()
+            .border_b(px(1.))
+            .border_color(rgba(RIM)) // glass edge under the titlebar
+            .child(brand)
+            .child(tabs)
+            // A flexible draggable spacer fills the gap between tabs and controls.
+            .child(div().flex_1().h_full().window_control_area(WindowControlArea::Drag))
+            .child(controls);
+
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
             .overflow_hidden()
             .p_1()
-            .child(self.render_node(&self.tabs[active].root, focused, cx));
+            .flex()
+            .flex_row()
+            .gap_2()
+            // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
+            .when(self.explorer_open, |d| {
+                d.child(
+                    div()
+                        .w(px(214.))
+                        .flex_none()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .child(self.explorer.clone()),
+                )
+            })
+            .child(
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .min_h(px(0.))
+                    .overflow_hidden()
+                    .child(self.render_node(&self.tabs[active].root, focused, cx)),
+            )
+            // File/diff viewer (right column): auto-opens on file click,
+            // toggle with Ctrl+Shift+J.
+            .when(self.viewer_open, |d| {
+                d.child(
+                    div()
+                        .w(px(420.))
+                        .flex_none()
+                        .min_h(px(0.))
+                        .overflow_hidden()
+                        .child(self.viewer.clone()),
+                )
+            });
 
         let palette = self.render_palette(cx);
 
@@ -1076,14 +1382,19 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::grow_height))
             .on_action(cx.listener(Self::shrink_height))
             .on_action(cx.listener(Self::toggle_palette))
+            .on_action(cx.listener(Self::toggle_explorer))
+            .on_action(cx.listener(Self::toggle_viewer))
             .size_full()
             .relative()
             .flex()
             .flex_col()
-            .bg(col(ui.chrome_bg))
-            .child(tab_bar)
+            .rounded(px(R_WINDOW)) // rounded window corners (Calm Glass)
+            .bg(self.window_glass()) // translucent over the acrylic backdrop
+            .text_color(col(ui.foreground))
+            .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
+            .child(titlebar)
             .child(body)
-            .child(self.render_status_bar())
+            .child(self.render_status_bar(cx))
             .when_some(palette, |d, p| d.child(p))
     }
 }

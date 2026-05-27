@@ -5,15 +5,19 @@
 //! local shells. Set `TN_AUTOQUIT=1` for the headless self-test (the first pane
 //! drives a command, dumps the grid, then quits).
 
+mod assets;
 mod block_view;
+mod explorer;
 mod input;
 mod terminal_view;
+mod viewer;
 mod workspace;
 
 use std::sync::Arc;
 
 use gpui::{
-    px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions,
+    px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions,
 };
 
 use workspace::Workspace;
@@ -28,7 +32,15 @@ pub fn run() {
         "loaded config"
     );
 
-    Application::new().run(move |cx: &mut App| {
+    // Calm Glass: a Mica/Acrylic theme asks the OS to blur the desktop behind
+    // the window (Windows acrylic), so the translucent chrome reads as frosted
+    // glass over a real material. A `solid` theme stays opaque.
+    let window_background = match config.theme.ui.window.backdrop {
+        tn_config::Backdrop::Solid => WindowBackgroundAppearance::Opaque,
+        _ => WindowBackgroundAppearance::Blurred,
+    };
+
+    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         workspace::bind_keys(cx, &config);
 
         // Quit when the last window is closed (gpui doesn't do this by default),
@@ -46,8 +58,13 @@ pub fn run() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Tn".into()),
+                    // Hide the OS caption — the workspace draws its own integrated
+                    // titlebar (brand + tabs + window controls). Drag + min/max/
+                    // close are wired via `window_control_area` regions.
+                    appears_transparent: true,
                     ..Default::default()
                 }),
+                window_background,
                 ..Default::default()
             },
             move |_window, cx| cx.new(|cx| Workspace::new(cx, config.clone())),

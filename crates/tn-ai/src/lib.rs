@@ -9,11 +9,20 @@
 //! [`AiUsage`] as a context ring / status bar (see docs/UX-DESIGN.md §5).
 
 mod claude;
+mod codex;
+mod detect;
 mod pricing;
 
 pub use claude::{
     claude_projects_dir, encode_project_dir, latest_session_file, parse_claude_session,
     usage_for_cwd,
+};
+pub use codex::{
+    codex_sessions_dir, latest_codex_session_file, parse_codex_session, usage_for_cwd_codex,
+};
+pub use detect::{
+    agent_kind_for_command, parse_session, resolve_session, usage_for_cwd as usage_for_cwd_any,
+    SessionRef,
 };
 pub use pricing::{pricing_for, Pricing};
 
@@ -24,6 +33,16 @@ use serde::Serialize;
 pub enum AgentKind {
     ClaudeCode,
     Codex,
+}
+
+impl AgentKind {
+    /// Short display label for the status bar / pane chrome.
+    pub fn label(self) -> &'static str {
+        match self {
+            AgentKind::ClaudeCode => "Claude",
+            AgentKind::Codex => "Codex",
+        }
+    }
 }
 
 /// A point-in-time usage snapshot for one agent session.

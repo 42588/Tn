@@ -249,12 +249,15 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] **后置精修**:历史 block 的逐行覆盖 chrome(锚行随 reflow 重解析、置顶/跳转/搜索);block 栏外观肉眼复核;pwsh `C` 钩子真机鲁棒性。
 - **退出标准**:命令聚合成带状态/时长的 block,底栏可见且 alt-screen 隐藏。✅
 
-### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🚧 进行中
-- [x] **AI 用量(Claude)**:新 crate `tn-ai`——`UsageProvider` 解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 `message.usage` → **上下文占用 + token + 等价花费**(累计 token + 最后一轮总输入为上下文 + pricing 表 + 超 200K 推断 1M 窗口)。8 单测 + 真实数据验证。
-- [x] **实时用量状态栏**(`workspace.rs`):型号 / 上下文条(绿→黄→红)/ % / token / 花费;后台轮询,仅 mtime 变化时重解析。
+### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🚧 功能闭环(待颜值窗口内微调)
+- [x] **AI 用量(Claude)**:新 crate `tn-ai`——`claude.rs` 解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 `message.usage` → **上下文占用 + token + 等价花费**(累计 token + 最后一轮总输入为上下文 + pricing 表 + 超 200K 推断 1M 窗口)。真实数据验证。
+- [x] **AI 用量(Codex)**:`codex.rs` 解析 `$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`(`total/last_token_usage` + 日志里的真实 `model_context_window`;`input_tokens` 含 cached → 拆出 cache_read);`latest_codex_session_file` 按 `session_meta.cwd` 匹配。
+- [x] **agent 检测 + per-pane 用量跟随焦点**:`detect.rs` `resolve_session(cwd, hint)`——启动意图(`LaunchSpec.agent`)优先,否则按日志新鲜度择一;每个 `TerminalView` 自轮询本 pane 用量、`UsageUpdated` 事件驱动 `Workspace` 订阅重绘;**状态栏读焦点 pane 的 agent**(修掉"Codex 标签显示 Claude")。
+- [x] **实时用量状态栏**(`workspace.rs`):agent 点 + 型号 / 上下文条(绿→黄→红)/ % / token /(Claude)花费;轮询仅 mtime 变化时重解析。
 - [x] **命令面板**(`Ctrl+Shift+P`,`workspace.rs` overlay + `LaunchSpec`):列 config `[[profiles]]`、打字筛选 / ↑↓ / Enter / 点击启动 = 新标签;**agent 托管在 pwsh 里**(解析 npm shim,spawn 失败回退,不崩);标签 `×` 关闭 + `LocalPty` Drop 杀子进程。
-- [ ] `tn-ai::detect`(启动意图→进程树→标题)+ **per-pane 用量跟随焦点**(分屏头环形读数 / 状态栏按焦点 agent 切换);**Codex UsageProvider**(`$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`)。详见 [UX-DESIGN.md](UX-DESIGN.md) §5。
-- [ ] 颜值打磨(主题、mica/acrylic、动画,用 gpui-component);可选 opt-in 桥。
+- [x] **Calm Glass 颜值落地**:窗口 `WindowBackgroundAppearance::Blurred`(Windows acrylic)+ 半透玻璃 chrome(alpha 令牌 rim/sheen/inset/hover)+ 圆角(16/14/11)+ 柔影(`box_shadow`)+ 焦点暖描边浮起 + 标签 agent 身份点。**无发光**。详见 [UX-DESIGN.md](UX-DESIGN.md) §5–6。
+- [x] **Calm Glass UI 全量构建(10 轮逐步还原 [mockup](../design/mockup.html))**:SVG 图标系统(`assets.rs`,内嵌图标 + 动态用量环)· 自绘集成标题栏(`appears_transparent` + `window_control_area`:品牌 mark + pill 标签 + 窗口控制)· 每 pane 头(agent 头含上下文环 / shell 头含 cwd)· **文件浏览器侧栏**(`explorer.rs`,git M/U 标记,`Ctrl+Shift+B`)· **文件/Diff 查看器**(`viewer.rs`,行号+语法着色+`git diff`,`Ctrl+Shift+J`)· 多段状态栏 · UI 无衬线 chrome / 等宽代码 · 标签 agent 强调条 + cwd 徽章 · Warp block 卡片(✓/✗ exit chip)。这把 `PaneContent = Session | Viewer` 的查看器/浏览器面板落了地(作为侧栏 chrome,非 split 树节点)。
+- [ ] 窗口内颜值微调 + 标题栏拖动/控制真机点验;连续动画(运行/Thinking——agent 思考态 PTY 不可观测,未伪造);per-pane cwd 经 OSC 7 实时跟随;真机 Codex 用量复核。
 - **退出标准**:在 Tn 里启动 Claude Code/Codex 明显优于普通终端。
 
 ### M5 — Quick Terminal(幽灵模式)🧭

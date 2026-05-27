@@ -15,19 +15,22 @@
 
 use std::cell::RefCell;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::channel::mpsc;
 use futures::StreamExt;
 use gpui::{
-    canvas, div, prelude::*, px, rgba, AsyncApp, Bounds, ClipboardItem, Context, Div, FocusHandle,
-    FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString, WeakEntity, Window,
+    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AsyncApp, Bounds,
+    ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
+    WeakEntity, Window,
 };
+use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{GridSize, Palette, Rgb, TermEvent, Terminal};
@@ -36,9 +39,42 @@ use tn_shell::{Integration, ShellParser};
 
 use crate::block_view;
 
+/// Emitted when a pane's AI-usage readout changes, so the workspace status bar
+/// (which renders the *focused* pane's usage) can repaint without re-rendering
+/// on every terminal frame.
+pub struct UsageUpdated;
+
 /// Convert a tn-core RGB color to a GPUI color.
 fn col(c: Rgb) -> Rgba {
     gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
+}
+
+/// An RGB color with explicit alpha (Calm Glass translucent fills).
+fn cola(c: Rgb, a: f32) -> Rgba {
+    Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
+}
+
+/// Keep a path's tail (`…/parent/dir`) so the current directory stays legible.
+fn short_path_label(p: &str) -> String {
+    let p = p.trim().replace('\\', "/");
+    let parts: Vec<&str> = p.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    match parts.len() {
+        0 => p,
+        1 => parts[0].to_string(),
+        n => format!("…/{}/{}", parts[n - 2], parts[n - 1]),
+    }
+}
+
+/// A small rounded "pill" chip for the pane header (shell version / title).
+fn chip(text: &str, p: &Palette) -> Div {
+    div()
+        .text_size(px(10.5))
+        .px_2()
+        .py(px(2.))
+        .rounded(px(999.))
+        .text_color(col(p.fg))
+        .bg(rgba(0xffffff10))
+        .child(SharedString::from(text.to_string()))
 }
 
 /// Map a config [`tn_config::Theme`]'s terminal-color subset into a
@@ -71,6 +107,9 @@ pub struct LaunchSpec {
     pub program: String,
     pub args: Vec<String>,
     pub integrate_pwsh: bool,
+    /// Which agent this pane hosts (launch-intent signal for per-pane usage).
+    /// `None` for a plain shell — usage is then auto-detected by log freshness.
+    pub agent: Option<AgentKind>,
 }
 
 impl LaunchSpec {
@@ -80,6 +119,7 @@ impl LaunchSpec {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
             integrate_pwsh: true,
+            agent: None,
         }
     }
 
@@ -93,6 +133,14 @@ impl LaunchSpec {
     /// shell survives the agent's exit (back to a prompt).
     pub fn from_profile(p: &tn_config::Profile) -> Option<Self> {
         let command = p.command.clone()?;
+        // Agent identity: an explicit `agent = "..."` field wins, else infer from
+        // the command (`claude` / `codex`). This is the launch-intent signal the
+        // status bar reads, so a Codex pane never shows Claude's usage.
+        let agent = p
+            .agent
+            .as_deref()
+            .and_then(tn_ai::agent_kind_for_command)
+            .or_else(|| tn_ai::agent_kind_for_command(&command));
         let lc = command.to_ascii_lowercase();
         if lc.contains("powershell") || lc.contains("pwsh") {
             let mut args = p.args.clone();
@@ -103,6 +151,7 @@ impl LaunchSpec {
                 program: command,
                 args,
                 integrate_pwsh: true,
+                agent,
             });
         }
         // Host the command in pwsh (single-quote-escaped call operator).
@@ -114,6 +163,7 @@ impl LaunchSpec {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), invoke],
             integrate_pwsh: false,
+            agent,
         })
     }
 }
@@ -147,6 +197,14 @@ pub struct TerminalView {
     // True while a left-drag selection is in progress.
     selecting: bool,
     focused_once: bool,
+    // AI usage for this pane (M4): the agent it hosts + its latest usage
+    // snapshot, polled off-thread from the agent's session log.
+    agent: Option<AgentKind>,
+    usage: Option<AiUsage>,
+    // Theme accents for the per-pane header (Claude coral / Codex teal / UI blue).
+    claude_accent: Rgb,
+    codex_accent: Rgb,
+    ui_accent: Rgb,
 }
 
 impl TerminalView {
@@ -179,6 +237,10 @@ impl TerminalView {
 
         // Build the engine with the configured scrollback + theme palette.
         let palette = palette_from(&config.theme);
+        let to_rgb = |c: tn_config::Color| Rgb::new(c.r, c.g, c.b);
+        let claude_accent = to_rgb(config.theme.agents.claude);
+        let codex_accent = to_rgb(config.theme.agents.codex);
+        let ui_accent = to_rgb(config.theme.ui.accent);
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
         term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
@@ -201,6 +263,14 @@ impl TerminalView {
             blocks.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
+
+        // Per-pane AI usage poller: reads this pane's agent session log for the
+        // app cwd off-thread (the agent runs where it was launched). The agent
+        // hint comes from launch intent; a plain shell auto-detects by freshness.
+        let agent = launch.agent;
+        if let Some(cwd) = std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string)) {
+            Self::spawn_usage_poller(cx, cwd, agent);
+        }
 
         if std::env::var("TN_AUTOQUIT").is_ok() {
             Self::spawn_self_test(cx, terminal.clone(), writer.clone());
@@ -236,6 +306,11 @@ impl TerminalView {
             palette,
             selecting: false,
             focused_once: false,
+            agent,
+            usage: None,
+            claude_accent,
+            codex_accent,
+            ui_accent,
         }
     }
 
@@ -344,9 +419,75 @@ impl TerminalView {
         .detach();
     }
 
+    /// Poll this pane's agent usage off the main thread, re-parsing only when the
+    /// resolved session file changes (path or mtime) — an idle agent costs a
+    /// cheap `stat`, preserving the idle-zero-wakeup property. Emits
+    /// [`UsageUpdated`] on change so the workspace status bar repaints.
+    fn spawn_usage_poller(cx: &mut Context<Self>, cwd: String, hint: Option<AgentKind>) {
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut last: Option<(PathBuf, SystemTime)> = None;
+            loop {
+                let cwd2 = cwd.clone();
+                let prev = last.clone();
+                let res = exec
+                    .spawn(async move {
+                        let sref = tn_ai::resolve_session(&cwd2, hint)?;
+                        let mtime = std::fs::metadata(&sref.path).ok()?.modified().ok()?;
+                        if prev.as_ref() == Some(&(sref.path.clone(), mtime)) {
+                            return None; // unchanged — skip the re-parse
+                        }
+                        let text = std::fs::read_to_string(&sref.path).ok()?;
+                        let usage = tn_ai::parse_session(sref.kind, &text)?;
+                        Some((sref.kind, sref.path, mtime, usage))
+                    })
+                    .await;
+                if let Some((kind, path, mtime, usage)) = res {
+                    last = Some((path, mtime));
+                    if this
+                        .update(cx, |v, cx| {
+                            // Launch intent (if any) wins for the label; detection
+                            // only fills it in for an unhinted plain shell.
+                            if v.agent.is_none() {
+                                v.agent = Some(kind);
+                            }
+                            v.usage = Some(usage);
+                            cx.emit(UsageUpdated);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break; // view dropped
+                    }
+                }
+                exec.timer(Duration::from_secs(4)).await;
+            }
+        })
+        .detach();
+    }
+
     /// The focus handle for this pane, so the workspace can route focus.
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
+    }
+
+    /// This pane's agent (from launch intent, or detected from session logs).
+    pub fn agent(&self) -> Option<AgentKind> {
+        self.agent
+    }
+
+    /// This pane's latest AI usage snapshot, if any has been parsed yet.
+    pub fn usage(&self) -> Option<&AiUsage> {
+        self.usage.as_ref()
+    }
+
+    /// This pane's current working directory (from OSC 7 / shell integration),
+    /// if known — drives the tab path badge.
+    pub fn cwd(&self) -> Option<String> {
+        let m = self.blocks.lock().unwrap();
+        m.current()
+            .and_then(|b| b.cwd.clone())
+            .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
     }
 
     /// The latest OSC window title for this session, if the program set one.
@@ -492,6 +633,194 @@ impl TerminalView {
         Some(bar)
     }
 
+    /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
+    /// for a plain shell.
+    fn agent_accent(&self) -> Rgb {
+        match self.agent {
+            Some(AgentKind::ClaudeCode) => self.claude_accent,
+            Some(AgentKind::Codex) => self.codex_accent,
+            None => self.ui_accent,
+        }
+    }
+
+    /// A two-tone context-usage ring (grey track + agent-colored arc) with a
+    /// centered percent label — the mockup's signature per-agent readout.
+    fn usage_ring(&self, pct: u32, accent: Rgb) -> Div {
+        div()
+            .relative()
+            .w(px(32.))
+            .h(px(32.))
+            .flex_none()
+            .child(
+                gpui::svg()
+                    .path(crate::assets::ring_track_path())
+                    .absolute()
+                    .size_full()
+                    .text_color(rgba(0xffffff1f)),
+            )
+            .child(
+                gpui::svg()
+                    .path(crate::assets::ring_path(pct))
+                    .absolute()
+                    .size_full()
+                    .text_color(col(accent)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(9.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(col(self.palette.fg))
+                    .child(SharedString::from(format!("{pct}%"))),
+            )
+    }
+
+    /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
+    /// indicator — we can't observe the agent's think state from the PTY, so we
+    /// don't fake one (Calm Glass: honest chrome).
+    fn render_agent_header(&self, agent: AgentKind) -> Div {
+        let accent = self.agent_accent();
+        let name = match agent {
+            AgentKind::ClaudeCode => "Claude Code",
+            AgentKind::Codex => "Codex",
+        };
+        let model = self
+            .usage
+            .as_ref()
+            .map(|u| crate::workspace::short_model(&u.model))
+            .unwrap_or_else(|| "…".into());
+        let who = div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_size(px(13.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(col(self.palette.fg))
+                    .child(SharedString::from(name)),
+            )
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(col(self.palette.ansi[8]))
+                    .child(SharedString::from(model)),
+            );
+        let avatar = div()
+            .w(px(28.))
+            .h(px(28.))
+            .rounded(px(9.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .flex_none()
+            .bg(cola(accent, 0.14))
+            .child(crate::assets::icon("spark", 16.).text_color(col(accent)));
+        let mut head = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .py_2()
+            .flex_none()
+            .font_family(crate::workspace::UI_SANS) // chrome = sans, terminal = mono
+            // faint vertical agent-color wash, fading out (refraction, no glow)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(cola(accent, 0.10), 0.),
+                linear_color_stop(cola(accent, 0.0), 0.78),
+            ))
+            .child(avatar)
+            .child(who)
+            .child(div().flex_1());
+        if let Some(u) = &self.usage {
+            let pct = (u.context_frac() * 100.0).round() as u32;
+            let meta = div()
+                .flex()
+                .flex_col()
+                .items_end()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(col(self.palette.ansi[8]))
+                        .child(SharedString::from(format!(
+                            "{} / {}",
+                            crate::workspace::human_tokens(u.context_used as u64),
+                            crate::workspace::human_tokens(u.context_max as u64)
+                        ))),
+                )
+                .when(u.cost_usd > 0.0, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::BOLD)
+                            .text_color(col(self.palette.ansi[2]))
+                            .child(SharedString::from(format!("${:.2}", u.cost_usd))),
+                    )
+                });
+            head = head.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(meta)
+                    .child(self.usage_ring(pct, accent)),
+            );
+        }
+        head
+    }
+
+    /// Shell pane header (phead): terminal glyph + cwd + a version/title chip.
+    fn render_shell_header(&self) -> Div {
+        let cwd = {
+            let m = self.blocks.lock().unwrap();
+            m.current()
+                .and_then(|b| b.cwd.clone())
+                .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
+        };
+        let title = self.title();
+        let label = match &cwd {
+            Some(c) => short_path_label(c),
+            None => title.clone().unwrap_or_else(|| "shell".into()),
+        };
+        let mut head = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .px_3()
+            .h(px(30.))
+            .flex_none()
+            .font_family(crate::workspace::UI_SANS) // chrome = sans
+            .text_size(px(11.5))
+            .text_color(col(self.palette.ansi[8]))
+            .child(crate::assets::icon("term", 14.).text_color(col(self.ui_accent)))
+            .child(
+                div()
+                    .text_color(col(self.palette.fg))
+                    .child(SharedString::from(label)),
+            )
+            .child(div().flex_1());
+        if let Some(t) = title.filter(|t| !t.trim().is_empty() && cwd.is_some()) {
+            head = head.child(chip(t.trim(), &self.palette));
+        }
+        head
+    }
+
+    /// The per-pane header (agent header for agents, phead for shells).
+    fn render_pane_header(&self) -> Div {
+        match self.agent {
+            Some(a) => self.render_agent_header(a),
+            None => self.render_shell_header(),
+        }
+    }
+
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
     fn cell_at(&self, pos: Point<Pixels>) -> (usize, usize) {
         let b = self.content_bounds.borrow();
@@ -604,6 +933,8 @@ impl TerminalView {
     }
 }
 
+impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused_once {
@@ -637,6 +968,7 @@ impl Render for TerminalView {
         let rows = snapshot.row_runs();
         let bounds_cell = self.content_bounds.clone();
         let block_bar = self.render_block_bar(cx);
+        let header = self.render_pane_header();
 
         // Terminal area: the canvas captures THIS region's bounds (so the grid
         // fits the space above the block bar) and hosts the row runs. Mouse +
@@ -700,6 +1032,7 @@ impl Render for TerminalView {
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))
             .line_height(px(self.line_height))
+            .child(header)
             .child(term_area)
             .when_some(block_bar, |this, bar| this.child(bar))
     }

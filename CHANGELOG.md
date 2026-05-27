@@ -9,37 +9,69 @@
 
 ---
 
-## [Unreleased] — M4 托管 AI + 用量 + 命令面板(进行中)
+## [Unreleased] — M4 托管 AI + 用量 + 命令面板 + 颜值(功能闭环,待窗口内颜值微调)
 
 ### 新增 (Added) — AI 用量(headless)
 - **`tn-ai`**(新 crate):`AiUsage` 模型 + `pricing` 表(各模型每 MTok 价 + 上下文窗口)+
-  **Claude UsageProvider**——解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 assistant
+  **Claude UsageProvider**(`claude.rs`)——解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 assistant
   `message.usage`(`input/output/cache_creation/cache_read_tokens` + `model`),累计 token、
   取**最后一轮总输入**为当前上下文大小、按 pricing 估算**等价 API 花费**;模型 id 未标 `1m` 但
-  观测上下文超 200K 时**推断为 1M 窗口**(真实 `claude-opus-4-7` 1M 会话即如此)。**8 单测** + 真实数据验证。
+  观测上下文超 200K 时**推断为 1M 窗口**(真实 `claude-opus-4-7` 1M 会话即如此)。真实数据验证。
+- **Codex UsageProvider**(`codex.rs`):解析 `$CODEX_HOME/sessions/**/rollout-*.jsonl` 的
+  `token_count` 事件——`total_token_usage`(累计;Codex 的 `input_tokens` 含 `cached_input_tokens`,
+  拆成未缓存 input + cache_read)、`last_token_usage`(当前轮 = 上下文大小)、以及**日志里记录的真实
+  `model_context_window`**(直接用,不靠 pricing 表猜)。`latest_codex_session_file` 按
+  `session_meta.cwd` 大小写/分隔符无关匹配、newest-first 只读首行、限量扫描。
+- **agent 检测 / 会话解析**(`detect.rs`):`resolve_session(cwd, hint)`——**启动意图**(launch intent)
+  优先,否则按两家会话日志的 mtime **新鲜度**择一;`agent_kind_for_command` 从命令串识别 claude/codex;
+  `parse_session(kind, text)` 分派。
 
 ### 新增 (Added) — UI(需窗口内肉眼验证)
-- **实时用量状态栏**(`workspace.rs`):底部状态栏显示本项目 Claude 用量——agent 点 + 型号 +
-  上下文条(绿→黄→红随占用)+ % + token + 花费。后台线程轮询,**仅会话文件 mtime 变化时重解析**
-  (空闲只做一次廉价 stat,不破坏空闲零唤醒)。
+- **用量状态栏跟随焦点**(`terminal_view.rs` + `workspace.rs`):每个 `TerminalView` 持有 `agent` +
+  `usage`,**自轮询本 pane 的 agent 会话日志**(mtime 守卫、空闲只 stat、`cx.emit(UsageUpdated)`);
+  `Workspace` `cx.subscribe` **仅在用量变化时重绘状态栏**(不随终端帧)。状态栏读**焦点 pane** 的
+  agent(Claude 珊瑚 / Codex 青绿点 + 标签)+ 型号 + 上下文条(绿→黄→红)+ % + token,Codex 无 pricing
+  时只显 token 不显花费。
 - **命令面板 `Ctrl+Shift+P`**(`workspace.rs` overlay + `terminal_view::LaunchSpec`):暗化 scrim +
   居中磨砂面板,列出 config `[[profiles]]` 中可启动项;打字筛选 / ↑↓ 选择 / Enter 启动 / Esc 关闭 /
-  点击。启动 = 新标签跑该 profile。
+  点击。启动 = 新标签跑该 profile。`LaunchSpec.agent` 从 profile 命令/`agent` 字段识别(per-pane 用量提示)。
 - **一键托管 agent**:`claude`/`codex` 这类 Windows npm shim **托管在 pwsh 里**
   (`-NoExit -Command "& '…'"`)以走 PATHEXT 解析 `.cmd`,agent 退出后回到 prompt。
 - **标签关闭**:每个标签加可点 `×`(`stop_propagation`,关而非激活);关闭即**杀子进程**
   (`LocalPty` 新增 `Drop` → `clone_killer().kill()`,杜绝孤儿 agent/shell)。
+- **Calm Glass 颜值落地**(`lib.rs` + `workspace.rs` + `block_view.rs`):窗口按主题
+  `[ui.window].backdrop` 设 `WindowBackgroundAppearance::Blurred`(Windows acrylic 模糊背景);chrome
+  改 alpha 半透玻璃(`cola()` + 令牌 `RIM`/`SHEEN`/`INSET`/`HOVER`)让材质透出;圆角(窗口 16 /
+  面板 14 / 卡片 11)、**玻璃边 rim 替代硬描边**、顶部镜面高光 sheen、柔和投影(`soft_shadow` →
+  `style().box_shadow`);焦点 pane 暖色细描边 + 浮起、非焦点平铺;标签 = agent 身份点 + 玻璃 pill;
+  命令面板浮层带投影。**全程无发光**(Calm Glass 原则)。
+
+### 新增 (Added) — Calm Glass UI 全量构建(10 轮逐步还原 mockup,需窗口内肉眼验证)
+- **SVG 图标系统**(`assets.rs`):`Assets: AssetSource` 内嵌 ~16 个 Lucide 式线性图标 +
+  **运行时合成的用量环**(`ring/<pct>.svg` 按百分比算 dashoffset);`Application::with_assets` 注册。
+  gpui `svg()` 渲染为 alpha 掩膜按 `text_color` 着色(双色环 = 两层叠放)。
+- **自绘集成标题栏**(`appears_transparent` + `window_control_area`):品牌渐变 mark + pill 标签
+  (类型图标 + agent 强调顶条 + cwd 徽章)+ 窗口控制(min/max/close,OS 经 NC 命中执行)。
+- **每 pane 头**:agent 头(头像 + 名称/型号 + 上下文环 + token/花费);shell 头(终端图标 + cwd + chip)。
+- **文件浏览器侧栏**(`explorer.rs`,`Ctrl+Shift+B`):cwd 树、展开/折叠、图标、缩进、
+  **git M/U/A/D/R 标记**(`git status --porcelain`)、点文件发 `OpenFile`。
+- **文件/Diff 查看器**(`viewer.rs`,`Ctrl+Shift+J`/点文件自动开):File(行号 + 语法着色)+
+  Diff(`git diff` 解析 + 行号跟踪 + `+/-` 着色)。
+- **多段状态栏**:分支 · sessions · 各 agent ctx% · 文件·语言 · UTF-8 · 主题。
+- **字体分层**:UI 无衬线(Segoe UI)做 chrome、等宽做终端/代码。
+- **Warp block 卡片**:浮起圆角卡 + accent 左条 + ✓/✗/◆ exit chip(图标)。
 
 ### 修复 (Fixed)
+- **"Codex 标签仍显示 Claude"**:旧状态栏全局只读 Claude 用量。改为**状态栏跟随焦点 pane 的 agent**——
+  Codex pane 读 Codex 用量、纯 shell 按日志新鲜度自动识别,不再串台。
 - **拉起 agent 崩溃**:直接 `CreateProcessW` 拉无扩展名 npm shim 报 os error 193 → spawn `.expect()`
   在 GPUI 窗口回调(non-unwinding)里 panic → 整进程 abort。改为 pwsh 托管 + **spawn 失败优雅回退 pwsh**(不再崩)。
 
 ### 待做 (Pending)
-- Codex UsageProvider(`$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`);
-  `tn-ai::detect`(agent 识别)+ **per-pane 用量跟随焦点**(状态栏/分屏头按焦点 pane 的 agent 切换);
-  颜值落地(Calm Glass → GPUI chrome:mica / 圆角 / 玻璃)。
+- 窗口内颜值微调 + 真机 Codex 用量复核 + 标题栏拖动/控制按钮真机点验;连续动画(运行/Thinking,
+  需帧时钟且 agent 思考态 PTY 不可观测,未伪造);per-pane cwd 用 OSC 7 实时跟随。
 
-测试总计:**61**(tn-core 10 / tn-config 14 / tn-ui 13 / tn-shell 11 / tn-blocks 5 / tn-ai 8)。
+测试总计:**71**(tn-core 10 / tn-config 14 / tn-ui 16 / tn-shell 11 / tn-blocks 5 / tn-ai 15)。
 
 ---
 
