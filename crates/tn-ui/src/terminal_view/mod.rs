@@ -16,7 +16,7 @@
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -102,6 +102,11 @@ const CURSOR_BLINK_MS: u64 = 530;
 /// ~100 rows) so dragging a divider never grows ConPTY's rows — which would let
 /// its resize-repaint eat scrollback. Tall ConPTY rows are harmless for a shell.
 const SHELL_PTY_ROWS_FLOOR: usize = 120;
+/// Sentinel window title a hosted **agent** pane emits *after* the agent exits
+/// (the `-NoExit` pwsh runs it on return). The reader sees this OSC, flags the
+/// pane, and we clear the agent identity — so the header/tab stop pretending the
+/// (now-gone) agent is still running. See [`launch::LaunchSpec`] + `io::spawn_reader`.
+pub(super) const AGENT_EXIT_SENTINEL: &str = "TN::agent-exited";
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
@@ -146,6 +151,11 @@ pub struct TerminalView {
     // snapshot, polled off-thread from the agent's session log.
     agent: Option<AgentKind>,
     usage: Option<AiUsage>,
+    // Set by the reader when a hosted agent emits [`AGENT_EXIT_SENTINEL`] on exit
+    // (the `-NoExit` pwsh outlives it). The foreground then clears `agent`/`usage`
+    // so the pane reverts to a plain shell (no stale header). Only agent panes
+    // emit the sentinel, so a plain shell never trips this.
+    agent_exited: Arc<AtomicBool>,
     // Theme accents for the per-pane header (Claude coral / Codex teal / UI blue).
     claude_accent: Rgb,
     codex_accent: Rgb,
@@ -261,6 +271,7 @@ impl TerminalView {
         // is in flight; the foreground drains it and notifies once per frame.
         let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
         let title = Arc::new(Mutex::new(None));
+        let agent_exited = Arc::new(AtomicBool::new(false));
 
         Self::spawn_reader(
             reader,
@@ -270,6 +281,7 @@ impl TerminalView {
             wake_tx,
             title.clone(),
             blocks.clone(),
+            agent_exited.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
         Self::spawn_blink_loop(cx);
@@ -330,6 +342,7 @@ impl TerminalView {
             scrollbar_drag: None,
             agent,
             usage: None,
+            agent_exited,
             claude_accent,
             codex_accent,
             ui_accent,
@@ -378,6 +391,20 @@ impl TerminalView {
     /// This pane's agent (from launch intent, or detected from session logs).
     pub fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// If a hosted agent has signalled its exit (via [`AGENT_EXIT_SENTINEL`]),
+    /// drop the agent identity + usage so the pane reverts to a plain shell (no
+    /// stale header; the tab relabels to the shell name). Returns whether it
+    /// just cleared, so the caller can repaint the workspace tab. Idempotent.
+    pub(super) fn clear_agent_if_exited(&mut self) -> bool {
+        if self.agent.is_some() && self.agent_exited.load(Ordering::Relaxed) {
+            self.agent = None;
+            self.usage = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// This pane's latest AI usage snapshot, if any has been parsed yet.
@@ -525,7 +552,7 @@ impl TerminalView {
                     .px_2()
                     .py_1()
                     .rounded_md()
-                    .bg(rgba(0xffffff14))
+                    .bg(rgba(HOVER))
                     .text_color(pal.fg)
                     .hover(|s| s.bg(rgba(0xffffff2b)))
                     .child(label)
@@ -988,15 +1015,29 @@ mod tests {
             "command hosted via call operator, got {:?}",
             spec.args
         );
+        // A persistent agent appends the exit sentinel so the view can drop the
+        // header once the agent exits (the -NoExit pwsh runs it).
+        assert!(
+            spec.args.iter().any(|a| a.contains(AGENT_EXIT_SENTINEL)),
+            "persistent agent emits the exit sentinel, got {:?}",
+            spec.args
+        );
     }
 
     #[test]
-    fn ephemeral_hosted_agent_omits_noexit() {
+    fn ephemeral_hosted_agent_omits_noexit_and_sentinel() {
         let p = first_profile("[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\n");
         let spec = LaunchSpec::from_profile_ephemeral(&p).expect("codex is launchable");
         assert_eq!(spec.agent, Some(AgentKind::Codex));
         assert!(!spec.args.contains(&"-NoExit".to_string()), "ephemeral drops -NoExit");
         assert!(spec.args.iter().any(|a| a.contains("& 'codex'")));
+        // No sentinel: the ephemeral pane exits pwsh outright (ProcessExited),
+        // so it needn't (and shouldn't) emit the title marker.
+        assert!(
+            !spec.args.iter().any(|a| a.contains(AGENT_EXIT_SENTINEL)),
+            "ephemeral agent must not append the sentinel, got {:?}",
+            spec.args
+        );
     }
 
     // ── Row-lock (ConPTY resize-repaint scrollback fix) ───────────────────────

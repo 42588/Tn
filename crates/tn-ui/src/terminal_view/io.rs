@@ -36,6 +36,7 @@ impl TerminalView {
         wake_tx: mpsc::UnboundedSender<()>,
         title: Arc<Mutex<Option<String>>>,
         blocks: Arc<Mutex<BlockModel>>,
+        agent_exited: Arc<AtomicBool>,
     ) {
         thread::spawn(move || {
             // Shell-integration bypass parser + a session clock. The parser is
@@ -72,6 +73,14 @@ impl TerminalView {
                                 for e in t.drain_events() {
                                     match e {
                                         TermEvent::PtyWrite(s) => replies.push(s),
+                                        // A hosted agent emits this sentinel title
+                                        // once it exits → flag it instead of
+                                        // showing it as the window title.
+                                        TermEvent::Title(s)
+                                            if s == super::AGENT_EXIT_SENTINEL =>
+                                        {
+                                            agent_exited.store(true, Ordering::Relaxed);
+                                        }
                                         TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
                                         TermEvent::ResetTitle => *title.lock().unwrap() = None,
                                         _ => {}
@@ -141,7 +150,17 @@ impl TerminalView {
             // then folds repeated notifies into one paint at the next vsync.
             while wake_rx.next().await.is_some() {
                 dirty.store(false, Ordering::Relaxed);
-                if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                let alive = this
+                    .update(cx, |view, cx| {
+                        // A hosted agent that just exited reverts the pane to a
+                        // plain shell; emit so the workspace relabels the tab.
+                        if view.clear_agent_if_exited() {
+                            cx.emit(UsageUpdated);
+                        }
+                        cx.notify();
+                    })
+                    .is_ok();
+                if !alive {
                     break; // view dropped
                 }
             }
@@ -232,6 +251,11 @@ impl TerminalView {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let mut last: Option<(PathBuf, SystemTime)> = None;
             loop {
+                // Stop once the agent identity is gone (it exited → pane is now a
+                // plain shell) or the view dropped — no point polling a dead agent.
+                if this.update(cx, |v, _| v.agent().is_none()).unwrap_or(true) {
+                    break;
+                }
                 let cwd2 = cwd.clone();
                 let prev = last.clone();
                 let res = exec

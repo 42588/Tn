@@ -6,6 +6,8 @@
 
 use tn_ai::AgentKind;
 
+use super::AGENT_EXIT_SENTINEL;
+
 /// How to launch a pane's process: program + args + whether to inject the pwsh
 /// shell-integration script. Built from a `tn_config::Profile` (command-bearing
 /// shell/agent profiles), or the default local PowerShell via [`LaunchSpec::pwsh`].
@@ -136,6 +138,13 @@ impl LaunchSpec {
         let mut invoke = format!("& '{}'", command.replace('\'', "''"));
         for a in profile_args {
             invoke.push_str(&format!(" '{}'", a.replace('\'', "''")));
+        }
+        // After a *persistent* agent exits, the surviving `-NoExit` pwsh runs this
+        // and sets a sentinel title; the reader sees it and clears the agent so the
+        // pane reverts to a plain shell instead of keeping a stale agent header.
+        // (Ephemeral panes exit pwsh outright → `ProcessExited`, so no sentinel.)
+        if agent.is_some() && persist {
+            invoke.push_str(&format!("; $Host.UI.RawUI.WindowTitle = '{AGENT_EXIT_SENTINEL}'"));
         }
         let mut args = vec!["-NoLogo".to_string()];
         if persist {
