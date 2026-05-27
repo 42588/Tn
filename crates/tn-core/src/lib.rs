@@ -599,6 +599,23 @@ mod tests {
     }
 
     #[test]
+    fn resize_preserves_content_via_scrollback() {
+        // Resizing the viewport (e.g. dragging a split divider) must not lose
+        // content: shrinking moves the top rows into scrollback (staying
+        // bottom-anchored), and growing pulls them back into view.
+        let mut t = Terminal::with_scrollback(GridSize::new(6, 20), 1000);
+        for i in 0..20 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        let before = t.snapshot().to_text();
+        t.resize(GridSize::new(3, 20)); // shrink
+        assert_eq!(t.scroll_position().0, 0, "stays bottom-anchored after shrink");
+        assert!(t.scroll_position().1 >= 18, "shrunk rows go to scrollback");
+        t.resize(GridSize::new(6, 20)); // grow back
+        assert_eq!(t.snapshot().to_text(), before, "grow restores the prior view from history");
+    }
+
+    #[test]
     fn word_selection_grabs_whole_word() {
         let mut t = Terminal::new(GridSize::new(2, 20));
         t.advance(b"hello world");
