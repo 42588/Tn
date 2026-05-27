@@ -1,7 +1,9 @@
 # Tn 体验设计:分屏 · 多会话 · 一键 AI · 用量 · 颜值
 
 > 本文给出 Tn 面向用户的核心体验设计方案:**原生分屏、多终端会话与窗口管理、一键启动 Claude/Codex、按 AI 工具获取用量信息,以及统一的视觉/颜值设计语言**。
-> 标记同 [BLUEPRINT.md](BLUEPRINT.md):「✅ 现状」/「🧭 规划」。本文均为 🧭 规划,落地映射见末节。
+> 本文是**体验设计的依据(为什么这样设计)**;**绝大部分已落地**(分屏、多会话、一键 Claude/Codex、
+> AI 用量、Calm Glass 颜值、文件/Diff 查看器、Quick Terminal 等)。具体实现状态以 [CHANGELOG.md](../CHANGELOG.md)
+> 与 [CLAUDE.md](../CLAUDE.md) 为准;尚未落地的设计(如拖拽停靠、会话管理器)在末节「落地映射」标注。
 
 设计原则(贯穿全文):
 1. **对用户极友好**:零配置可用、操作可发现(有可视入口,不靠背快捷键)、键鼠皆顺手、状态始终可见。
@@ -271,20 +273,23 @@ pub trait UsageProvider: Send {
 
 ## 7. 落地映射(crate / 里程碑)
 
-| 能力 | 主要 crate | 里程碑 |
-|---|---|---|
-| 会话/Tab/分屏 数据模型 + n-ary 容器树 + 拖拽停靠 | tn-ui(+ tn-core 的 Session) | **M1** |
-| 原生分屏交互(分隔线/焦点/zoom/关闭/拖拽) | tn-ui | **M1** |
-| 文件树 + 文件/Diff 查看器(viewer pane,只读) | tn-ui(+ tn-ai 提供 diff 源) | **M3**(查看器)/ **M4**(跟随 agent 编辑) |
-| 每格颜色 + 自定义 `TerminalElement` + 焦点描边 | tn-ui | **M1** |
-| Profile + 启动器(`+` 下拉 / 面板)+ shell/WSL/SSH | tn-config + tn-ui | **M1**(基础)/ **M2**(WSL/SSH) |
-| 一键 Claude/Codex agent 会话 + 强调色标识 | tn-ai + tn-ui | **M4** |
-| AI 用量(UsageProvider:Claude/Codex 文件解析 + 展示) | tn-ai(+ tn-ui 展示) | **M4**(基础可在 M1 后起步) |
-| 会话管理器 + 广播 + 布局/会话持久化 | tn-ui | **M1→M2** 增量 |
-| 视觉设计令牌 + Mica/圆角 + 动效 + 组件化打磨 | tn-config(令牌)+ tn-ui | **M1** 起,**M4** 集中打磨颜值 |
-| Quick Terminal(幽灵模式) | tn-ui | **M5** |
+| 能力 | 主要 crate | 里程碑 | 状态 |
+|---|---|---|---|
+| 标签 + n-ary 容器树分屏 | tn-ui | M1 | ✅ |
+| 分屏交互(键盘切分/改尺寸/点击聚焦/焦点描边) | tn-ui | M1 | ✅ |
+| 分隔线鼠标拖拽 + 拖拽停靠(drag-dock) | tn-ui | M1 | 🧭 未做(`Node::resize` 权重数学已就绪) |
+| 文件树 + 文件/Diff 查看器(只读) | tn-ui | M4 | ✅ |
+| 每格颜色 + 焦点描边 | tn-ui | M1 | ✅ |
+| 自定义 `TerminalElement`(字形图集 + typed-quad) | tn-ui | M1.2b | 🧭 未做(当前 div + run 批处理) |
+| Profile + 命令面板/Quick 启动器 + shell/WSL/SSH | tn-config + tn-ui | M4/M2 | ✅ shell·agent·WSL;SSH ⏸ parked |
+| 一键 Claude/Codex agent 会话 + 强调色标识 | tn-ai + tn-ui | M4 | ✅ |
+| AI 用量(Claude/Codex 文件解析 + 跟随焦点展示) | tn-ai + tn-ui | M4 | ✅ |
+| 会话管理器 + 广播 + 布局/会话持久化 | tn-ui | 后续 | 🧭 未做 |
+| 视觉设计令牌 + 玻璃材质 + 动效 | tn-config + tn-ui | M4 | ✅(Calm Glass) |
+| Quick Terminal(幽灵下拉终端) | tn-config + tn-ui | M5 | ✅ |
 
-> 对路线图的影响:**M1 的"Tab + 分屏"扩展为本文的完整会话/分屏模型与启动器**;**M4 增加"AI 用量"与 agent 会话强调色/状态**;**颜值设计语言从 M1 起贯穿、M4 集中打磨**。详见 [BLUEPRINT.md](BLUEPRINT.md) 路线图。
+> 已落地能力的实现细节与最新状态以 [CLAUDE.md](../CLAUDE.md)「已实现」+ [CHANGELOG.md](../CHANGELOG.md) 为准;
+> 上表 🧭 项为尚未动工的设计。
 
 ---
 

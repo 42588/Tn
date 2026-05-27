@@ -214,7 +214,9 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 
 ## 8. 开发蓝图 / 路线图
 
-> 每个里程碑都给出**交付物 + 退出标准 + 任务清单**。M0 已完成。
+> 每个里程碑都给出**交付物 + 退出标准 + 任务清单**。**M0–M5 现已全部落地**(owner 实际执行顺序
+> **M0 → M1 → M3 → M4 → M5 → M2**);唯一例外是 **M2 的 SSH**——已编译 + headless 单测过,但 owner
+> 决定**暂停(parked)**、等有远程登录需求时再做端到端。各里程碑的提交散见 [CHANGELOG.md](../CHANGELOG.md)。
 
 ### M0 — 骨架 ✅ 已完成(2026-05-26,commit `aa53a98`)
 - 工作区/工具链/cargo-deny;GPUI 窗口在 Windows DX11 跑通;`tn-core` 引擎(3 测试);`tn-pty::LocalPty`(ConPTY);`tn-ui::TerminalView`(渲染+输入+resize)。
@@ -233,13 +235,13 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [x] 键位绑定可配置(`bind_keys(cx, &Loaded)` 读 `[[keybindings]]`/`[[actions]]`,叠加默认)+ 配置热重载(`Ctrl+Shift+R`:重读配置、对活动 pane 重应用调色板/chrome,字体/滚动历史仅新 pane 生效)+ 崩溃保护(panic hook→tracing)+ `tracing` 文件日志(`%APPDATA%\Tn\logs\tn.log`,tracing-appender)。
 - **退出标准 ✅(达成,已提交 `59b8b0e`)**:Tab/分屏/滚动/复制粘贴/配置/主题全可用,能自我 dogfood。
 
-> **执行顺序调整(owner)**:先做 **M3 → M4**,再回头做 **M2**。M3/M4 作用于本地终端、不依赖 M2。
+> **执行顺序(owner)**:M1 之后先做 **M3 → M4 → M5**(都作用于本地终端、不依赖 M2),最后回到 **M2**。
 
-### M2 — WSL + 远程 Linux 🚧(在 M5 之后做;WSL ✅ 端到端 / SSH ✅ 编译+单测、端到端待真机)
+### M2 — WSL + 远程 Linux 🚧(WSL ✅ 完成端到端;SSH ⏸ parked——编译+单测过,端到端待 owner)
 - [x] **WSL**(`tn-pty::wsl`)——**无需专属 backend**:ConPTY 托管 `wsl.exe` 如同普通程序,复用 `LocalPty`。`wsl --list --quiet`(UTF-16LE)枚举 → `parse_distros`(纯函数,单测);`LaunchSpec::from_profile` 支持 `kind="wsl"` → `wsl.exe -d <distro>`;命令面板 / Quick Terminal 启动器纳入 WSL profile。端到端验证:`tn-cli -- wsl.exe -d Ubuntu -- echo …` SMOKE PASS。
-- [x] **`tn-pty::SshBackend`**(russh,`ring` 后端)——实现 `PtyBackend`:专属线程跑 tokio,connect→auth(key→password)→pty→shell→`select!` 循环把 async channel 桥成同步 Read/Write;`window_change`、keepalive 30s、drop 即断开;`SshConfig`(host[:port]/user/自动找 `~/.ssh/id_*`)。`TerminalView` 已抽象到 `Box<dyn PtyBackend>`,`LaunchSpec.ssh` + `from_profile(kind="ssh")` + `is_launchable` 接线。**编译 + headless 单测过**;**端到端无测试主机,owner 自验**。
-- [ ] **SSH 后续**:ssh-agent(`russh::keys::agent`)+ **known_hosts 校验**(当前接受任意主机密钥)+ 密码交互 + 断连重连 UX + `~/.ssh/config` 导入。
-- **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。(WSL 达成;SSH 编译+单测达成,端到端待真机。)
+- [x] **`tn-pty::SshBackend`**(russh,`ring` 后端)⏸ **parked**——实现 `PtyBackend`:专属线程跑 tokio,connect→auth(key→password)→pty→shell→`select!` 循环把 async channel 桥成同步 Read/Write;`window_change`、keepalive 30s、drop 即断开;`SshConfig`(host[:port]/user/自动找 `~/.ssh/id_*`)。`TerminalView` 已抽象到 `Box<dyn PtyBackend>`,`LaunchSpec.ssh` + `from_profile(kind="ssh")` + `is_launchable` 接线。**编译 + headless 单测过**。代码原地保留;owner 决定**等有远程登录需求时再做端到端**——在此之前别主动推进。
+- [ ] **SSH 恢复时的待办**:真机端到端验;ssh-agent(`russh::keys::agent`)+ **known_hosts 校验**(当前接受任意主机密钥,真用前必须接)+ 密码交互 + 断连重连 UX + `~/.ssh/config` 导入。
+- **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。(WSL 达成;SSH parked,端到端待 owner。)
 
 ### M3 — shell 集成 + block UI ✅ 完成(待窗口内肉眼复核 UI)
 - [x] `tn-shell`([crates/tn-shell](../crates/tn-shell)):旁路 `vte::Parser` 只处理 `osc_dispatch`,解析 OSC 133(FTCS A/B/C/D[;exit])、633(+E 命令行、P;Cwd=)、7(file://→cwd,%XX 解码 + Windows 盘符)→ `BlockEvent`;`Integration`(per-session nonce + pwsh 集成脚本,prompt 钩子发 D/A/B、PSReadLine Enter 发 C)+ `encoded_command()`(UTF-16LE base64,经 `-EncodedCommand` 注入)。11 测试。
@@ -249,7 +251,7 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] **后置精修**:历史 block 的逐行覆盖 chrome(锚行随 reflow 重解析、置顶/跳转/搜索);block 栏外观肉眼复核;pwsh `C` 钩子真机鲁棒性。
 - **退出标准**:命令聚合成带状态/时长的 block,底栏可见且 alt-screen 隐藏。✅
 
-### M4 — Claude/Codex 托管 + 命令面板 + 颜值 🚧 功能闭环(待颜值窗口内微调)
+### M4 — Claude/Codex 托管 + 命令面板 + 颜值 ✅ 完成(颜值持续微调)
 - [x] **AI 用量(Claude)**:新 crate `tn-ai`——`claude.rs` 解析 `~/.claude/projects/<proj>/<session>.jsonl` 的 `message.usage` → **上下文占用 + token + 等价花费**(累计 token + 最后一轮总输入为上下文 + pricing 表 + 超 200K 推断 1M 窗口)。真实数据验证。
 - [x] **AI 用量(Codex)**:`codex.rs` 解析 `$CODEX_HOME/sessions/**/rollout-*.jsonl` 的 `token_count`(`total/last_token_usage` + 日志里的真实 `model_context_window`;`input_tokens` 含 cached → 拆出 cache_read);`latest_codex_session_file` 按 `session_meta.cwd` 匹配。
 - [x] **agent 检测 + per-pane 用量跟随焦点**:`detect.rs` `resolve_session(cwd, hint)`——启动意图(`LaunchSpec.agent`)优先,否则按日志新鲜度择一;每个 `TerminalView` 自轮询本 pane 用量、`UsageUpdated` 事件驱动 `Workspace` 订阅重绘;**状态栏读焦点 pane 的 agent**(修掉"Codex 标签显示 Claude")。
