@@ -20,6 +20,15 @@ use alacritty_terminal::vte::ansi::{Color, CursorShape, Processor};
 /// alacritty_terminal directly.
 pub use alacritty_terminal::event::Event as TermEvent;
 
+/// Granularity for a click-drag selection: a single cell (single click), the
+/// word under the cursor (double click), or the whole line (triple click).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SelectKind {
+    Cell,
+    Word,
+    Line,
+}
+
 /// Viewport size in character cells. Implements alacritty's [`Dimensions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridSize {
@@ -380,11 +389,25 @@ impl Terminal {
         self.term.scroll_display(Scroll::Bottom);
     }
 
-    /// Begin a simple text selection at viewport cell `(row, col)` (0 = top/left).
+    /// Begin a simple (cell-granularity) text selection at viewport cell
+    /// `(row, col)` (0 = top/left).
     pub fn selection_start(&mut self, row: usize, col: usize) {
+        self.selection_start_kind(row, col, SelectKind::Cell);
+    }
+
+    /// Begin a selection of the given granularity — used for double-click (word)
+    /// and triple-click (line). The selection auto-expands to the word/line at
+    /// the click point; a subsequent [`selection_update`] drag extends it by the
+    /// same granularity.
+    pub fn selection_start_kind(&mut self, row: usize, col: usize, kind: SelectKind) {
         let offset = self.term.grid().display_offset();
         let point = viewport_to_point(offset, Point::new(row, Column(col)));
-        self.term.selection = Some(Selection::new(SelectionType::Simple, point, Side::Left));
+        let ty = match kind {
+            SelectKind::Cell => SelectionType::Simple,
+            SelectKind::Word => SelectionType::Semantic,
+            SelectKind::Line => SelectionType::Lines,
+        };
+        self.term.selection = Some(Selection::new(ty, point, Side::Left));
     }
 
     /// Extend the active selection to viewport cell `(row, col)`.
@@ -544,6 +567,26 @@ mod tests {
         assert!(s.starts_with("hello"), "selection text was {s:?}");
         t.clear_selection();
         assert!(!t.has_selection());
+    }
+
+    #[test]
+    fn word_selection_grabs_whole_word() {
+        let mut t = Terminal::new(GridSize::new(2, 20));
+        t.advance(b"hello world");
+        // Double-click in the middle of "world" selects the whole word, no drag.
+        t.selection_start_kind(0, 8, SelectKind::Word); // 'r' in "world"
+        let s = t.selection_text().unwrap_or_default();
+        assert_eq!(s.trim(), "world", "word selection was {s:?}");
+    }
+
+    #[test]
+    fn line_selection_grabs_whole_line() {
+        let mut t = Terminal::new(GridSize::new(2, 20));
+        t.advance(b"hello world");
+        // Triple-click anywhere on the row selects the whole line.
+        t.selection_start_kind(0, 2, SelectKind::Line);
+        let s = t.selection_text().unwrap_or_default();
+        assert_eq!(s.trim(), "hello world", "line selection was {s:?}");
     }
 
     #[test]

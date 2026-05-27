@@ -33,7 +33,7 @@ use gpui::{
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
-use tn_core::{GridSize, Palette, Rgb, TermEvent, Terminal};
+use tn_core::{GridSize, Palette, Rgb, SelectKind, TermEvent, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec, SshBackend};
 use tn_shell::{Integration, ShellParser};
 
@@ -916,7 +916,14 @@ impl TerminalView {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let (row, col) = self.cell_at(event.position);
-        self.terminal.lock().unwrap().selection_start(row, col);
+        // Click count picks the granularity: 1 = cell, 2 = word, 3+ = line
+        // (待优化清单 §3.5). A following drag extends by that same granularity.
+        let kind = match event.click_count {
+            0 | 1 => SelectKind::Cell,
+            2 => SelectKind::Word,
+            _ => SelectKind::Line,
+        };
+        self.terminal.lock().unwrap().selection_start_kind(row, col, kind);
         self.selecting = true;
         cx.notify();
     }
