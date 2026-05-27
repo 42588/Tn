@@ -211,6 +211,7 @@ pub trait UsageProvider: Send {
 3. **用量面板/命令**(`AI: Usage`):会话/当日/当月 的 token 与花费明细,按模型/token 类型分解(对标 ccusage);上下文占用走势(本会话随轮次的曲线)。
 
 **注意/诚实**:token/费用/上下文**都不在终端字节流里**,靠解析本地会话文件;`/cost`、`/context` 等是 TUI 内不可抓;费用是**按定价表估算**(订阅制下更应理解为"等价 API 成本/限额占用");上下文%受模型窗口表准确性影响。文件监听只读、防抖,不影响性能与隐私(数据本就在本机)。
+- **已知限制 — 用量可能串到别的会话**:会话文件按 **cwd** 匹配(`~/.claude/projects/<编码cwd>/`);托管型 agent 窗格不上报真实 cwd(无 shell 集成),轮询又用 app 启动目录,匹配落空时回退"该 agent 最近会话",**可能显示同机另一个 Claude/Codex 的用量**。真修需窗格上报真实 cwd(让托管命令发 OSC 7 + 轮询改用窗格 cwd + 去掉 latest-any 回退)——待办。
 
 ---
 
@@ -265,8 +266,9 @@ pub trait UsageProvider: Send {
 - **窗口材质默认 `Opaque`,不是 acrylic**:gpui 0.2.2 只有 `Opaque/Transparent/Blurred`,而 `Blurred` 在 Windows = **acrylic(真·透背模糊)**,不是 Mica。半透 chrome 叠在 acrylic 上,亮壁纸会从边缘/圆角透进来(像"框外一层透明"),与 Calm Glass「叠在深色材质上」的设定不符。故**默认 `Opaque`**(仅显式 `backdrop = "acrylic"` 才透背);玻璃层叠感来自**内部面板的半透**而非窗口底材。真 Mica 待 gpui 暴露 `DWMWA_SYSTEMBACKDROP_TYPE` 后再上。
 - **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
 - **标签/头部用干净名**:不吃 pwsh 的 OSC 标题(`…\powershell.exe`);标签 = `Claude`/`Codex`/`pwsh`,cwd 走徽章。
-- **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。
-- **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;常亮(闪烁/呼吸待帧时钟机制)。
+- **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。**agent 退出即回落 shell**:主窗口 agent 托管在 `pwsh -NoExit` 里(退出 claude/codex 后 pwsh 还在),退出后经哨兵标题检测**自动清掉头部 + 用量、标签回 `pwsh`**——否则会一直挂着已退出 agent 的头部(还常显示别的会话的陈旧用量)。
+- **拖分屏/退 agent 不丢历史、不留空白**:普通 shell 的 ConPTY 行数**锁定不增高**(见 [BLUEPRINT §5](BLUEPRINT.md))。ConPTY 行增高会让其 resize-repaint 重定位内容——**既吃滚动历史(拉大 pane 时丢上方内容)、又把提示符顶出可视区(留一大片空白)**。锁定后:拖分隔线把 pane 拉大只是平滑露出更多历史,退 agent 回落 shell 也不再空白。
+- **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;**聚焦时 ~530ms 闪烁(键入即点亮),失焦稳定不闪**——blink 任务仅在聚焦时 toggle+notify,空闲零唤醒。
 - **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
 - **tabular 数字(`tnum`)开不了**:§6.1 想用 `tnum` 对齐 token/花费/时长,但 gpui 0.2.2 **无 `font-feature-settings` API**(已对源码确认),无法开启该 OpenType 特性。退路:选本身即等宽数字的字体,或接受比例数字。详见 [CSS_TO_GPUI.md](CSS_TO_GPUI.md) §4。
 

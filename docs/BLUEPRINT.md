@@ -179,6 +179,9 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 | AI 模式 | **托管 CLI** + Warp 式 **block UI** | 不做原生侧栏/内联补全(暂);深度 = 优秀托管 + chrome 装饰 + 优雅降级 |
 | 许可证 | **开源 GPL-3.0-or-later** | 规避 GPUI 依赖树里 GPL-3.0 传递依赖的冲突([zed#55470](https://github.com/zed-industries/zed/issues/55470)) |
 | MVP 顺序 | 本地内核 → WSL/SSH → blocks → AI | 先有能日用的扎实终端 |
+| 渲染 | **按 `generation` 缓存渲染数据** | 引擎每次 grid 变更 +1;空闲/光标闪烁等无变化帧复用 snapshot+row_runs,不每帧重走全网格 |
+| ConPTY 行数 | **普通 shell 与 alacritty 解耦、spawn 即锁定不增高**;agent/alt-screen 仍精确 | ConPTY 行**增高**的 resize-repaint 会吃滚动历史 + 把提示符顶出可视区(实测);列数恒精确 |
+| agent 退出 | **`-NoExit` 托管 agent 用哨兵标题自报退出** | pwsh 存活故无 `ProcessExited`;退出后清身份回落 shell,而非进程树轮询(脆弱) |
 
 ---
 
@@ -210,6 +213,8 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 6. **gpui async 接口**:`cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| …)`;`WeakEntity::update(cx, |v, cx| cx.notify())`;定时器 `background_executor().timer(dur).await`;退出 `cx.quit()`。
 7. **cargo 不在 bash PATH**:在 `%USERPROFILE%\.cargo\bin\cargo.exe`,PowerShell 里用全路径或重开 shell。
 
+> 更多近期硬坑(ConPTY 行**增高**吃历史/顶飞提示符、reader panic 经 Mutex 中毒拖垮 app、`-NoExit` 托管 agent 退出检测)详见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」,不在此复述。
+
 ---
 
 ## 8. 开发蓝图 / 路线图
@@ -229,7 +234,9 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 **M2 SSH(⏸ parked)**:`SshBackend` 实现 `PtyBackend`——专属线程跑 current-thread tokio,connect→auth(key→password)→pty→shell→`select!` 把 async channel 桥成同步 Read/Write;`window_change`/keepalive 30s/drop 断开;`SshConfig`(host[:port]/user/自动找 `~/.ssh/id_*`);`TerminalView` 已抽象到 `Box<dyn PtyBackend>`,`LaunchSpec.ssh` + `from_profile(kind="ssh")` 接线。**编译 + headless 单测过**,代码原地保留。owner 决定**等有远程登录需求时再做端到端**——在此之前别主动推进。
 **SSH 恢复待办**:真机端到端;ssh-agent(`russh::keys::agent`);**known_hosts 校验**(当前接受任意主机密钥,真用前必接);密码交互;断连重连 UX;`~/.ssh/config` 导入。
 
-**尚未动工(🧭,非里程碑门槛)**:自定义 `TerminalElement`(字形图集 + typed-quad,见 §4.3 / [REFERENCES.md](REFERENCES.md) §二)· 连字 · 拖拽停靠(drag-dock)· 配色导入(iTerm/WT/base16)· 会话管理器/广播/布局持久化 · OSC 8 超链接 · kitty 键盘协议 / DECKPAM 小键盘 · 历史 block 的逐行覆盖 chrome。
+**M5 后打磨轨道(post-M5)**:代码评审清单的逐项优化与 dogfood 修复在 [`待优化清单.md`](../待优化清单.md) 跟踪(已落地:渲染缓存 · shell 行锁定 · reader panic 安全 · 子串搜索内核 · URL 检测内核 · agent 退出回落 · terminal_view 文件夹模块拆分 · criterion 基准 · 集成测试 等)。关键架构/UX 决策见上 §5 与 [UX-DESIGN §6.3](UX-DESIGN.md)。
+
+**尚未动工(🧭,非里程碑门槛)**:自定义 `TerminalElement`(字形图集 + typed-quad,见 §4.3 / [REFERENCES.md](REFERENCES.md) §二)· 连字 · 拖拽停靠(drag-dock)· 配色导入(iTerm/WT/base16)· 会话管理器/广播/布局持久化 · **搜索 UI**(Ctrl+Shift+F,内核 `Terminal::search` 已就绪)· **URL 下划线 + Ctrl+Click 打开**(检测内核 `snapshot.urls()` 已就绪,OSC 8 同此)· kitty 键盘协议 / DECKPAM 小键盘 · 历史 block 的逐行覆盖 chrome。
 
 ---
 
