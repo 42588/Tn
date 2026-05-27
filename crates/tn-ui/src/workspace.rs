@@ -10,7 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
@@ -21,6 +21,7 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::explorer::{ExplorerView, OpenFile};
+use crate::perf::PerfStats;
 use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
 use crate::viewer::ViewerView;
 
@@ -460,6 +461,11 @@ pub struct Workspace {
     /// the overlay is rendered) doesn't reliably land, so keys leaked to the
     /// terminal underneath; we focus it in render where the element exists.
     palette_needs_focus: bool,
+    /// Opt-in render instrumentation (TN_PERF, 待优化清单 §2.2): how often the
+    /// workspace chrome re-renders and how long it takes. Panes are embedded as
+    /// entities, so terminal output frames don't trigger this — only the
+    /// workspace's own notifies (usage updates, tab/split/focus, palette) do.
+    perf: PerfStats,
 }
 
 impl Workspace {
@@ -496,6 +502,7 @@ impl Workspace {
             divider_drag: None,
             split_extents: Rc::new(RefCell::new(HashMap::new())),
             palette_needs_focus: false,
+            perf: PerfStats::new("workspace.render"),
         };
         let id = ws.spawn_pane(cx);
         ws.tabs.push(Tab {
@@ -1303,6 +1310,11 @@ impl Render for Workspace {
             self.palette_focus.focus(window);
         }
 
+        // Time the chrome build (待优化清单 §2.2) when TN_PERF is on. Panes are
+        // embedded as entities, so this fires only on the workspace's own
+        // notifies (usage/tab/split/focus/palette), not per terminal frame.
+        let perf_t0 = self.perf.enabled().then(Instant::now);
+
         let active = self.active;
         let focused = self.tabs[active].focused;
         let ui = &self.config.theme.ui;
@@ -1621,7 +1633,7 @@ impl Render for Workspace {
 
         let palette = self.render_palette(cx);
 
-        div()
+        let root = div()
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::split_right))
@@ -1655,7 +1667,14 @@ impl Render for Workspace {
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))
-            .when_some(palette, |d, p| d.child(p))
+            .when_some(palette, |d, p| d.child(p));
+
+        // No render-data cache here (tab labels/cwd live in the child panes and
+        // change without signalling the workspace, so a cache would risk stale
+        // labels for no real gain — the chrome build is cheap + infrequent). We
+        // still instrument it so that's verifiable in the field.
+        self.perf.record(false, perf_t0.map(|t| t.elapsed()));
+        root
     }
 }
 
