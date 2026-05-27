@@ -33,7 +33,7 @@ use gpui::{
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
-use tn_core::{GridSize, Palette, Rgb, SelectKind, TermEvent, Terminal};
+use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, TermEvent, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec, SshBackend};
 use tn_shell::{Integration, ShellParser};
 
@@ -49,7 +49,25 @@ pub struct UsageUpdated;
 /// this to fall back to its launcher when the hosted agent/shell exits.
 pub struct ProcessExited;
 
+use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER, UI_SANS};
+
+/// Cached per-frame render data (待优化清单 §2.1), keyed by the engine's
+/// [`generation`](tn_core::Terminal::generation). A repaint that changed nothing
+/// the grid renders (the ~530ms cursor blink, an unfocused-pane notify) reuses
+/// this instead of rebuilding the snapshot + run batches. `rows` is `Rc` so the
+/// hit path hands the renderer a cheap clone; the scalars are all the rest of
+/// `render` needs (it never touches `snapshot.cells` after `row_runs`).
+struct RenderCache {
+    generation: u64,
+    rows: Rc<Vec<Vec<CellRun>>>,
+    cursor: (usize, usize),
+    cursor_visible: bool,
+    scroll_offset: usize,
+    scroll_history: usize,
+    fg: Rgb,
+    bg: Rgb,
+}
 
 /// Map a config [`tn_config::Theme`]'s terminal-color subset into a
 /// [`tn_core::Palette`]. `tn-config` stays free of `tn-core`, so the bridge
@@ -282,6 +300,12 @@ pub struct TerminalView {
     // The last (rows, cols) actually sent to the PTY, so we only resize the PTY
     // when the target genuinely changes (the row-lock decouples it from `size`).
     last_pty_size: Option<PtySize>,
+    // Cached render data + the engine generation it was built from (待优化清单
+    // §2.1). Reused when a repaint changed nothing renderable (cursor blink).
+    render_cache: Option<RenderCache>,
+    // Opt-in render instrumentation (TN_PERF): render rate + cache hit-rate +
+    // rebuild timing, logged to `tn::perf` ~1/s.
+    perf: PerfStats,
 }
 
 /// The ConPTY row count for a pane, given whether it hosts an agent, whether
@@ -451,6 +475,8 @@ impl TerminalView {
             program: launch.program.clone(),
             shell_pty_rows: 0,
             last_pty_size: None,
+            render_cache: None,
+            perf: PerfStats::new("pane.render"),
         }
     }
 
@@ -1248,8 +1274,36 @@ impl Render for TerminalView {
             }
         }
 
-        let snapshot = self.terminal.lock().unwrap().snapshot();
-        let rows = snapshot.row_runs();
+        // Render-data cache (待优化清单 §2.1): rebuild the snapshot + per-row run
+        // batches only when the engine generation changed since the last paint.
+        // A cursor-blink or unfocused-pane repaint changes nothing renderable, so
+        // it reuses the cached `rows` (a cheap Rc clone) instead of re-walking the
+        // whole grid. `perf` (TN_PERF) logs the hit-rate + rebuild cost.
+        let generation = self.terminal.lock().unwrap().generation();
+        let cache_hit = matches!(&self.render_cache, Some(c) if c.generation == generation);
+        let rebuild = if cache_hit {
+            None
+        } else {
+            let t0 = self.perf.enabled().then(Instant::now); // zero-cost when TN_PERF off
+            let snap = self.terminal.lock().unwrap().snapshot();
+            let rows = Rc::new(snap.row_runs());
+            self.render_cache = Some(RenderCache {
+                generation,
+                rows,
+                cursor: snap.cursor,
+                cursor_visible: snap.cursor_visible,
+                scroll_offset: snap.scroll_offset,
+                scroll_history: snap.scroll_history,
+                fg: snap.fg,
+                bg: snap.bg,
+            });
+            t0.map(|t| t.elapsed())
+        };
+        self.perf.record(cache_hit, rebuild);
+        let (rows, (cur_row, cur_col), cursor_visible, scroll_offset, scroll_history, fg, bg) = {
+            let c = self.render_cache.as_ref().unwrap();
+            (c.rows.clone(), c.cursor, c.cursor_visible, c.scroll_offset, c.scroll_history, c.fg, c.bg)
+        };
         let bounds_cell = self.content_bounds.clone();
         let block_bar = self.render_block_bar(cx);
         let header = self.render_pane_header();
@@ -1258,13 +1312,12 @@ impl Render for TerminalView {
         // which starts at the term-area origin). Solid + accent-tinted when the
         // pane is focused; a hollow outline when not. Hidden when the app hides
         // it (vim) or the viewport is scrolled off the cursor row.
-        let (cur_row, cur_col) = snapshot.cursor;
         let focused = self.focus_handle.is_focused(window);
         self.focused = focused; // cache for the blink task (only blinks when focused)
         // Focused: solid block on the "on" half of the blink; nothing on the "off"
         // half. Unfocused: a steady hollow outline (no blink).
         let draw_solid = focused && self.cursor_on;
-        let cursor_el = (snapshot.cursor_visible
+        let cursor_el = (cursor_visible
             && (draw_solid || !focused)
             && cur_row < self.size.rows
             && cur_col < self.size.cols)
@@ -1287,13 +1340,12 @@ impl Render for TerminalView {
         // Scrollbar (待优化清单 §3.2): a thin right-edge indicator of the viewport's
         // position within scrollback. Shown only when there's history; brighter
         // while actually scrolled up. The thumb's size = viewport / total content.
-        let scrollbar = (snapshot.scroll_history > 0).then(|| {
-            let total = (snapshot.scroll_history + self.size.rows) as f32;
+        let scrollbar = (scroll_history > 0).then(|| {
+            let total = (scroll_history + self.size.rows) as f32;
             let thumb_h = (self.size.rows as f32 / total).clamp(0.06, 1.0);
-            let top = ((snapshot.scroll_history.saturating_sub(snapshot.scroll_offset)) as f32
-                / total)
+            let top = ((scroll_history.saturating_sub(scroll_offset)) as f32 / total)
                 .clamp(0.0, 1.0 - thumb_h);
-            let scrolled = snapshot.scroll_offset > 0 || self.scrollbar_drag.is_some();
+            let scrolled = scroll_offset > 0 || self.scrollbar_drag.is_some();
             div()
                 .absolute()
                 .top(relative(top))
@@ -1345,17 +1397,17 @@ impl Render for TerminalView {
                     .size_full()
                     .flex()
                     .flex_col()
-                    .children(rows.into_iter().map(|runs| {
+                    .children(rows.iter().map(|runs| {
                         div()
                             .flex()
                             .flex_row()
                             .h(px(self.line_height))
-                            .children(runs.into_iter().map(|r| {
+                            .children(runs.iter().map(|r| {
                                 div()
                                     .bg(col(r.bg))
                                     .text_color(col(r.fg))
                                     .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
-                                    .child(SharedString::from(r.text))
+                                    .child(SharedString::from(r.text.clone()))
                             }))
                     })),
             )
@@ -1370,8 +1422,8 @@ impl Render for TerminalView {
             .flex_col()
             .overflow_hidden()
             .rounded(px(13.)) // match the pane card's inner radius (R_PANEL - border)
-            .bg(col(snapshot.bg))
-            .text_color(col(snapshot.fg))
+            .bg(col(bg))
+            .text_color(col(fg))
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))
             .line_height(px(self.line_height))

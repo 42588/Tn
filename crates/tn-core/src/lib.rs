@@ -408,6 +408,13 @@ pub struct Terminal {
     size: GridSize,
     palette: Palette,
     events: Receiver<Event>,
+    /// Monotonic counter bumped on every grid-affecting mutation (output,
+    /// scroll, resize, selection, palette). A renderer can compare it to skip
+    /// rebuilding its [`snapshot`](Self::snapshot)/[`row_runs`] when nothing
+    /// changed (e.g. a cursor-blink-only repaint) — see 待优化清单 §2.1.
+    /// **Any new `&mut self` method that changes what the grid renders MUST call
+    /// [`bump`](Self::bump)**, or the cache will show stale content.
+    generation: u64,
 }
 
 impl Terminal {
@@ -431,24 +438,40 @@ impl Terminal {
             size,
             palette: Palette::default(),
             events: rx,
+            generation: 0,
         }
+    }
+
+    /// The render-cache generation (see the [`generation`](Self::generation)
+    /// field). Bumped by every mutation that changes what the grid renders.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Mark the grid as changed for cache-invalidation purposes.
+    #[inline]
+    fn bump(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Replace the color palette (e.g. from the user's theme).
     pub fn set_palette(&mut self, palette: Palette) {
         self.palette = palette;
+        self.bump();
     }
 
     /// Feed raw PTY output bytes into the parser and grid.
     pub fn advance(&mut self, bytes: &[u8]) {
         // Disjoint field borrows: `parser` (receiver) and `term` (argument).
         self.parser.advance(&mut self.term, bytes);
+        self.bump();
     }
 
     /// Resize the grid to a new viewport size.
     pub fn resize(&mut self, size: GridSize) {
         self.size = size;
         self.term.resize(size);
+        self.bump();
     }
 
     pub fn size(&self) -> GridSize {
@@ -483,11 +506,13 @@ impl Terminal {
     /// older output). Clamped to the history bounds by the engine.
     pub fn scroll(&mut self, lines: i32) {
         self.term.scroll_display(Scroll::Delta(lines));
+        self.bump();
     }
 
     /// Jump the viewport back to the live bottom (latest output).
     pub fn scroll_to_bottom(&mut self) {
         self.term.scroll_display(Scroll::Bottom);
+        self.bump();
     }
 
     /// Current `(display_offset, history_size)` — for scrollbar drag math.
@@ -503,6 +528,7 @@ impl Terminal {
         let target = offset.min(self.term.grid().history_size()) as i32;
         if target != cur {
             self.term.scroll_display(Scroll::Delta(target - cur));
+            self.bump();
         }
     }
 
@@ -558,6 +584,7 @@ impl Terminal {
             SelectKind::Line => SelectionType::Lines,
         };
         self.term.selection = Some(Selection::new(ty, point, Side::Left));
+        self.bump();
     }
 
     /// Extend the active selection to viewport cell `(row, col)`.
@@ -567,11 +594,13 @@ impl Terminal {
         if let Some(sel) = self.term.selection.as_mut() {
             sel.update(point, Side::Right);
         }
+        self.bump();
     }
 
     /// Clear any active selection.
     pub fn clear_selection(&mut self) {
         self.term.selection = None;
+        self.bump();
     }
 
     /// Whether a text selection is currently active.
@@ -916,5 +945,36 @@ mod tests {
         // a bare scheme (no host) and a scheme glued mid-token must not match.
         t.advance(b"text https:// and xhttps://nope\r\n");
         assert!(t.snapshot().urls().is_empty());
+    }
+
+    #[test]
+    fn generation_bumps_on_mutation_only() {
+        // The render cache (待优化清单 §2.1) keys on `generation`: it must advance
+        // on every grid-affecting mutation and stay put for read-only calls (so a
+        // cursor-blink repaint, which mutates nothing here, reuses the cache).
+        let mut t = Terminal::new(GridSize::new(4, 20));
+        let g0 = t.generation();
+        let _ = t.snapshot();
+        let _ = t.search("x");
+        let _ = t.scroll_position();
+        assert_eq!(t.generation(), g0, "read-only ops must not bump");
+
+        let mut prev = g0;
+        for step in [
+            "advance", "scroll", "resize", "select", "select_update", "clear", "to_bottom",
+        ] {
+            match step {
+                "advance" => t.advance(b"hi"),
+                "scroll" => t.scroll(1),
+                "resize" => t.resize(GridSize::new(6, 30)),
+                "select" => t.selection_start(0, 0),
+                "select_update" => t.selection_update(0, 2),
+                "clear" => t.clear_selection(),
+                "to_bottom" => t.scroll_to_bottom(),
+                _ => unreachable!(),
+            }
+            assert!(t.generation() > prev, "{step} must bump the generation");
+            prev = t.generation();
+        }
     }
 }
