@@ -39,6 +39,17 @@ pub struct SearchMatch {
     pub col_end: usize,
 }
 
+/// A clickable URL found in the visible grid (see [`TerminalSnapshot::urls`]).
+/// Coordinates are viewport cells (matching what the renderer draws), so the UI
+/// can underline `[col_start, col_end)` on `row` and open `url` on Ctrl+Click.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UrlSpan {
+    pub row: usize,
+    pub col_start: usize,
+    pub col_end: usize,
+    pub url: String,
+}
+
 /// Viewport size in character cells. Implements alacritty's [`Dimensions`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridSize {
@@ -223,6 +234,60 @@ pub struct TerminalSnapshot {
     pub cells: Vec<SnapshotCell>,
 }
 
+/// Scan one row of chars for `http(s)://` URLs → half-open `[start, end)` char
+/// ranges. The scheme must sit on a word boundary (so `xhttps://…` mid-token
+/// isn't matched), and trailing sentence punctuation / a closing bracket is
+/// trimmed off the tail.
+fn find_urls(chars: &[char]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let at_boundary = i == 0 || !chars[i - 1].is_ascii_alphanumeric();
+        if at_boundary {
+            if let Some(scheme_len) = url_scheme_len(&chars[i..]) {
+                let body_start = i + scheme_len;
+                let mut end = body_start;
+                while end < chars.len() && is_url_char(chars[end]) {
+                    end += 1;
+                }
+                while end > body_start && is_trailing_punct(chars[end - 1]) {
+                    end -= 1;
+                }
+                if end > body_start {
+                    spans.push((i, end));
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    spans
+}
+
+/// Length of an `http://` (7) / `https://` (8) scheme at the start of `s`, else `None`.
+fn url_scheme_len(s: &[char]) -> Option<usize> {
+    const HTTP: [char; 7] = ['h', 't', 't', 'p', ':', '/', '/'];
+    const HTTPS: [char; 8] = ['h', 't', 't', 'p', 's', ':', '/', '/'];
+    if s.len() >= HTTPS.len() && s[..HTTPS.len()] == HTTPS {
+        Some(HTTPS.len())
+    } else if s.len() >= HTTP.len() && s[..HTTP.len()] == HTTP {
+        Some(HTTP.len())
+    } else {
+        None
+    }
+}
+
+/// RFC 3986 unreserved + reserved + `%` — the chars allowed inside a URL.
+fn is_url_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c)
+}
+
+/// Punctuation that, at a URL's tail, is almost always sentence/markup, not link.
+fn is_trailing_punct(c: char) -> bool {
+    matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '>')
+}
+
 impl TerminalSnapshot {
     /// Each visible row as a string, trailing blanks trimmed. Row count equals
     /// `self.rows`. Intended for line-by-line rendering and debugging.
@@ -242,6 +307,27 @@ impl TerminalSnapshot {
     /// headless tests and debugging.
     pub fn to_text(&self) -> String {
         self.rows_text().join("\n")
+    }
+
+    /// Detect `http(s)://` URLs in the visible grid for hover/click. Each
+    /// [`UrlSpan`] is in viewport cell coordinates (matching the rendered grid),
+    /// so the UI can underline the run and open it on Ctrl+Click. A URL is not
+    /// matched across a row boundary (terminals hard-wrap), and trailing
+    /// sentence punctuation / a closing bracket is trimmed off the end.
+    pub fn urls(&self) -> Vec<UrlSpan> {
+        let mut out = Vec::new();
+        for (row, line) in self.rows_text().iter().enumerate() {
+            let chars: Vec<char> = line.chars().collect();
+            for (col_start, col_end) in find_urls(&chars) {
+                out.push(UrlSpan {
+                    row,
+                    col_start,
+                    col_end,
+                    url: chars[col_start..col_end].iter().collect(),
+                });
+            }
+        }
+        out
     }
 
     /// Per-row runs of same-style cells, for colored rendering. Each inner
@@ -793,5 +879,42 @@ mod tests {
         t.advance(b"abc");
         assert!(t.search("").is_empty(), "empty query matches nothing");
         assert!(t.search("xyz").is_empty(), "absent text matches nothing");
+    }
+
+    #[test]
+    fn urls_detected_with_position() {
+        let mut t = Terminal::new(GridSize::new(4, 60));
+        t.advance(b"visit https://example.com/path?q=1 now\r\n");
+        let u = t.snapshot().urls();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].url, "https://example.com/path?q=1");
+        assert_eq!(u[0].row, 0);
+        assert_eq!(u[0].col_start, 6); // after "visit "
+        assert_eq!(u[0].col_end, 6 + "https://example.com/path?q=1".len());
+    }
+
+    #[test]
+    fn urls_trim_trailing_punctuation_and_brackets() {
+        let mut t = Terminal::new(GridSize::new(3, 60));
+        t.advance(b"see (https://a.bc/x). end\r\n");
+        let u = t.snapshot().urls();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].url, "https://a.bc/x", "trailing `).` trimmed");
+    }
+
+    #[test]
+    fn urls_two_per_line_and_plain_http() {
+        let mut t = Terminal::new(GridSize::new(2, 80));
+        t.advance(b"http://a.com and https://b.org/y");
+        let got: Vec<String> = t.snapshot().urls().into_iter().map(|x| x.url).collect();
+        assert_eq!(got, vec!["http://a.com".to_string(), "https://b.org/y".to_string()]);
+    }
+
+    #[test]
+    fn urls_ignore_bare_scheme_and_mid_word() {
+        let mut t = Terminal::new(GridSize::new(2, 50));
+        // a bare scheme (no host) and a scheme glued mid-token must not match.
+        t.advance(b"text https:// and xhttps://nope\r\n");
+        assert!(t.snapshot().urls().is_empty());
     }
 }
