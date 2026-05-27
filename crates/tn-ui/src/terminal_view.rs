@@ -54,29 +54,6 @@ fn cola(c: Rgb, a: f32) -> Rgba {
     Rgba { r: c.r as f32 / 255.0, g: c.g as f32 / 255.0, b: c.b as f32 / 255.0, a }
 }
 
-/// Keep a path's tail (`…/parent/dir`) so the current directory stays legible.
-fn short_path_label(p: &str) -> String {
-    let p = p.trim().replace('\\', "/");
-    let parts: Vec<&str> = p.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
-    match parts.len() {
-        0 => p,
-        1 => parts[0].to_string(),
-        n => format!("…/{}/{}", parts[n - 2], parts[n - 1]),
-    }
-}
-
-/// A small rounded "pill" chip for the pane header (shell version / title).
-fn chip(text: &str, p: &Palette) -> Div {
-    div()
-        .text_size(px(10.5))
-        .px_2()
-        .py(px(2.))
-        .rounded(px(999.))
-        .text_color(col(p.fg))
-        .bg(rgba(0xffffff10))
-        .child(SharedString::from(text.to_string()))
-}
-
 /// Map a config [`tn_config::Theme`]'s terminal-color subset into a
 /// [`tn_core::Palette`]. `tn-config` stays free of `tn-core`, so the bridge
 /// lives here in the GPUI layer.
@@ -185,7 +162,10 @@ pub struct TerminalView {
     font_family: SharedString,
     font_size: f32,
     line_height: f32,
-    // Latest OSC window title (OSC 0/2), captured off the reader thread.
+    // Latest OSC window title (OSC 0/2), captured off the reader thread. Kept
+    // for future use (tooltips / meaningful program titles); tab labels use the
+    // clean agent/shell name instead, since pwsh's title is the noisy exe path.
+    #[allow(dead_code)]
     title: Arc<Mutex<Option<String>>>,
     // Screen-space bounds of the text content, captured each paint by a canvas
     // so mouse handlers can map pixels -> cells and resize fits the pane.
@@ -205,6 +185,23 @@ pub struct TerminalView {
     claude_accent: Rgb,
     codex_accent: Rgb,
     ui_accent: Rgb,
+    // Launch program (e.g. "powershell.exe") — for a clean shell label.
+    program: String,
+}
+
+/// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
+fn shell_name_of(program: &str) -> String {
+    let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let base = base
+        .strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".EXE"))
+        .unwrap_or(base);
+    match base.to_ascii_lowercase().as_str() {
+        "powershell" | "pwsh" => "pwsh".to_string(),
+        "cmd" => "cmd".to_string(),
+        other if other.is_empty() => "shell".to_string(),
+        other => other.to_string(),
+    }
 }
 
 impl TerminalView {
@@ -264,12 +261,18 @@ impl TerminalView {
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
 
-        // Per-pane AI usage poller: reads this pane's agent session log for the
-        // app cwd off-thread (the agent runs where it was launched). The agent
-        // hint comes from launch intent; a plain shell auto-detects by freshness.
+        // Per-pane AI usage poller — ONLY for a pane launched AS an agent (launch
+        // intent). A plain shell must not masquerade as Claude/Codex just because
+        // a fresh agent session exists for this cwd: that agent is often a
+        // *separate* process (e.g. the dev's own Claude Code editing this repo).
+        // So a plain pwsh pane stays a shell (no agent header, no usage).
         let agent = launch.agent;
-        if let Some(cwd) = std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string)) {
-            Self::spawn_usage_poller(cx, cwd, agent);
+        if agent.is_some() {
+            if let Some(cwd) =
+                std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string))
+            {
+                Self::spawn_usage_poller(cx, cwd, agent);
+            }
         }
 
         if std::env::var("TN_AUTOQUIT").is_ok() {
@@ -311,6 +314,7 @@ impl TerminalView {
             claude_accent,
             codex_accent,
             ui_accent,
+            program: launch.program.clone(),
         }
     }
 
@@ -442,15 +446,12 @@ impl TerminalView {
                         Some((sref.kind, sref.path, mtime, usage))
                     })
                     .await;
-                if let Some((kind, path, mtime, usage)) = res {
+                if let Some((_kind, path, mtime, usage)) = res {
                     last = Some((path, mtime));
+                    // `agent` is fixed from launch intent; the poller only updates
+                    // the usage snapshot (never relabels the pane).
                     if this
                         .update(cx, |v, cx| {
-                            // Launch intent (if any) wins for the label; detection
-                            // only fills it in for an unhinted plain shell.
-                            if v.agent.is_none() {
-                                v.agent = Some(kind);
-                            }
                             v.usage = Some(usage);
                             cx.emit(UsageUpdated);
                             cx.notify();
@@ -490,7 +491,17 @@ impl TerminalView {
             .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
     }
 
+    /// A clean tab label: the agent name for an agent pane, else the shell name
+    /// (never the raw OSC title, which for pwsh is the noisy `…\powershell.exe`).
+    pub fn tab_label(&self) -> String {
+        match self.agent {
+            Some(a) => a.label().to_string(),
+            None => shell_name_of(&self.program),
+        }
+    }
+
     /// The latest OSC window title for this session, if the program set one.
+    #[allow(dead_code)]
     pub fn title(&self) -> Option<String> {
         self.title.lock().unwrap().clone()
     }
@@ -692,23 +703,22 @@ impl TerminalView {
             .usage
             .as_ref()
             .map(|u| crate::workspace::short_model(&u.model))
-            .unwrap_or_else(|| "…".into());
-        let who = div()
-            .flex()
-            .flex_col()
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(col(self.palette.fg))
-                    .child(SharedString::from(name)),
-            )
-            .child(
+            .filter(|m| !m.is_empty());
+        let mut who = div().flex().flex_col().child(
+            div()
+                .text_size(px(13.))
+                .font_weight(FontWeight::BOLD)
+                .text_color(col(self.palette.fg))
+                .child(SharedString::from(name)),
+        );
+        if let Some(m) = model {
+            who = who.child(
                 div()
                     .text_size(px(11.))
                     .text_color(col(self.palette.ansi[8]))
-                    .child(SharedString::from(model)),
+                    .child(SharedString::from(m)),
             );
+        }
         let avatar = div()
             .w(px(28.))
             .h(px(28.))
@@ -727,6 +737,7 @@ impl TerminalView {
             .px_3()
             .py_2()
             .flex_none()
+            .rounded_t(px(13.)) // top corners follow the pane card
             .font_family(crate::workspace::UI_SANS) // chrome = sans, terminal = mono
             // faint vertical agent-color wash, fading out (refraction, no glow)
             .bg(linear_gradient(
@@ -776,49 +787,11 @@ impl TerminalView {
         head
     }
 
-    /// Shell pane header (phead): terminal glyph + cwd + a version/title chip.
-    fn render_shell_header(&self) -> Div {
-        let cwd = {
-            let m = self.blocks.lock().unwrap();
-            m.current()
-                .and_then(|b| b.cwd.clone())
-                .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
-        };
-        let title = self.title();
-        let label = match &cwd {
-            Some(c) => short_path_label(c),
-            None => title.clone().unwrap_or_else(|| "shell".into()),
-        };
-        let mut head = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .h(px(30.))
-            .flex_none()
-            .font_family(crate::workspace::UI_SANS) // chrome = sans
-            .text_size(px(11.5))
-            .text_color(col(self.palette.ansi[8]))
-            .child(crate::assets::icon("term", 14.).text_color(col(self.ui_accent)))
-            .child(
-                div()
-                    .text_color(col(self.palette.fg))
-                    .child(SharedString::from(label)),
-            )
-            .child(div().flex_1());
-        if let Some(t) = title.filter(|t| !t.trim().is_empty() && cwd.is_some()) {
-            head = head.child(chip(t.trim(), &self.palette));
-        }
-        head
-    }
-
-    /// The per-pane header (agent header for agents, phead for shells).
-    fn render_pane_header(&self) -> Div {
-        match self.agent {
-            Some(a) => self.render_agent_header(a),
-            None => self.render_shell_header(),
-        }
+    /// The per-pane header — an agent header for agent panes only. A plain shell
+    /// gets none: its own prompt already shows the cwd, so a header would just
+    /// duplicate it (and look sparse). The tab still labels the pane "pwsh".
+    fn render_pane_header(&self) -> Option<Div> {
+        self.agent.map(|a| self.render_agent_header(a))
     }
 
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
@@ -970,6 +943,31 @@ impl Render for TerminalView {
         let block_bar = self.render_block_bar(cx);
         let header = self.render_pane_header();
 
+        // Cursor: a rounded block at the cursor cell (positioned over the grid,
+        // which starts at the term-area origin). Solid + accent-tinted when the
+        // pane is focused; a hollow outline when not. Hidden when the app hides
+        // it (vim) or the viewport is scrolled off the cursor row.
+        let (cur_row, cur_col) = snapshot.cursor;
+        let focused = self.focus_handle.is_focused(window);
+        let cursor_el = (snapshot.cursor_visible
+            && cur_row < self.size.rows
+            && cur_col < self.size.cols)
+            .then(|| {
+                let base = div()
+                    .absolute()
+                    .left(px(cur_col as f32 * self.cell_width))
+                    .top(px(cur_row as f32 * self.line_height))
+                    .w(px(self.cell_width))
+                    .h(px(self.line_height))
+                    .rounded(px(2.));
+                if focused {
+                    // translucent block so a character under the cursor stays legible
+                    base.bg(cola(self.palette.cursor, 0.85))
+                } else {
+                    base.border_1().border_color(col(self.palette.cursor))
+                }
+            });
+
         // Terminal area: the canvas captures THIS region's bounds (so the grid
         // fits the space above the block bar) and hosts the row runs. Mouse +
         // scroll handlers live here so clicks on the bar don't start selections.
@@ -1018,7 +1016,8 @@ impl Render for TerminalView {
                                     .child(SharedString::from(r.text))
                             }))
                     })),
-            );
+            )
+            .when_some(cursor_el, |this, c| this.child(c));
 
         div()
             .track_focus(&self.focus_handle)
@@ -1027,12 +1026,13 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .overflow_hidden()
+            .rounded(px(13.)) // match the pane card's inner radius (R_PANEL - border)
             .bg(col(snapshot.bg))
             .text_color(col(snapshot.fg))
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))
             .line_height(px(self.line_height))
-            .child(header)
+            .when_some(header, |this, h| this.child(h))
             .child(term_area)
             .when_some(block_bar, |this, bar| this.child(bar))
     }

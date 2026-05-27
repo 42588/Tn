@@ -14,7 +14,7 @@ use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 use alacritty_terminal::term::color::Colors;
 use alacritty_terminal::term::{viewport_to_point, Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, Processor};
+use alacritty_terminal::vte::ansi::{Color, CursorShape, Processor};
 
 /// Re-export so consumers can match on terminal events without depending on
 /// alacritty_terminal directly.
@@ -189,6 +189,8 @@ pub struct TerminalSnapshot {
     pub cols: usize,
     /// Cursor position within the viewport as (row, col).
     pub cursor: (usize, usize),
+    /// Whether the cursor should be drawn (false when an app hides it, e.g. vim).
+    pub cursor_visible: bool,
     /// Default foreground / background (resolved theme colors).
     pub fg: Rgb,
     pub bg: Rgb,
@@ -456,6 +458,7 @@ impl Terminal {
             rows: self.size.rows,
             cols: self.size.cols,
             cursor: (cursor_row, cur.column.0),
+            cursor_visible: content.cursor.shape != CursorShape::Hidden,
             fg: self.palette.fg,
             bg: self.palette.bg,
             cells,

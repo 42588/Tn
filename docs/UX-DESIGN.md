@@ -82,6 +82,18 @@ pub enum Viewer { File(FileView), Diff(DiffView) }           // 只读文件 / D
 | 拖拽重排 / 停靠 | **拖分屏头到目标上/下/左/右/中心** | 拖拽 + 落点高亮 |
 | 广播输入(同时打字到多屏) | `Ctrl+Shift+I` | 状态栏开关 |
 
+**M4 已实现的 chrome 快捷键**(默认键,`bind_keys` 读 config 可改;上表为分屏的设计目标键位,实现里调整大小/聚焦走 `Ctrl+Shift+方向键` / `Ctrl+Shift+]`):
+
+| 操作 | 默认键 |
+|---|---|
+| 新标签 | `Ctrl+Shift+T` |
+| 左右 / 上下分屏 | `Ctrl+Shift+D` / `Ctrl+Shift+E` |
+| 关闭分屏 · 下一分屏 | `Ctrl+Shift+W` · `Ctrl+Shift+]` |
+| 调整大小 | `Ctrl+Shift+←↑→↓` |
+| 下一标签 · 重载配置 | `Ctrl+Tab` · `Ctrl+Shift+R` |
+| 命令面板(起 Claude/Codex) | `Ctrl+Shift+P` |
+| 文件浏览器侧栏 · 文件/Diff 查看器 | `Ctrl+Shift+B` · `Ctrl+Shift+J` |
+
 **拖拽停靠(drag-dock)语义** —— 自由布局的核心:拖起一个分屏头,移到目标分屏上方时显示**落点高亮区**(四边 + 中心五个区域):
 - 落 **上/下/左/右** → 在目标处插入/扩展对应方向的 `Container`(如已是同向 Container 则插入为新 `Child`,分隔线自动对齐)。
 - 落 **中心** → 与目标合成 `Stack`(标签组,同位多会话切换)。
@@ -246,6 +258,14 @@ pub trait UsageProvider: Send {
 - **微交互**:分屏开合 grow/shrink、Tab 切换淡入、Quick Terminal 滑入(见 [BLUEPRINT.md](BLUEPRINT.md) M5)、焦点描边过渡、agent "Thinking" 呼吸光。
 - **无障碍**:对比度达标、可调字号、尊重 reduced-motion、焦点可视。
 - **组件**:复用 `gpui-component`(面板/输入/列表/弹层)加速一致性与质感。
+
+### 6.3 真机落地修正(gpui 0.2.2 在 Windows 上的取舍,dogfood 后定稿)
+- **窗口材质默认 `Opaque`,不是 acrylic**:gpui 0.2.2 只有 `Opaque/Transparent/Blurred`,而 `Blurred` 在 Windows = **acrylic(真·透背模糊)**,不是 Mica。半透 chrome 叠在 acrylic 上,亮壁纸会从边缘/圆角透进来(像"框外一层透明"),与 Calm Glass「叠在深色材质上」的设定不符。故**默认 `Opaque`**(仅显式 `backdrop = "acrylic"` 才透背);玻璃层叠感来自**内部面板的半透**而非窗口底材。真 Mica 待 gpui 暴露 `DWMWA_SYSTEMBACKDROP_TYPE` 后再上。
+- **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
+- **标签/头部用干净名**:不吃 pwsh 的 OSC 标题(`…\powershell.exe`);标签 = `Claude`/`Codex`/`pwsh`,cwd 走徽章。
+- **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。
+- **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;常亮(闪烁/呼吸待帧时钟机制)。
+- **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
 
 ---
 

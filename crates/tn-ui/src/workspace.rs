@@ -822,13 +822,18 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Root window-surface fill: translucent glass over the acrylic backdrop, or
-    /// an opaque fill when the theme requests a `solid` window.
+    /// Root window-surface fill: a mostly-opaque dark glass over the acrylic
+    /// backdrop (just a hint of blur shows through), or a fully opaque fill when
+    /// the theme requests a `solid` window. Kept high-alpha so a bright desktop
+    /// doesn't bleed through the chrome — the layered translucency that reads as
+    /// "glass" lives in the inner panels, not the window backdrop.
     fn window_glass(&self) -> Rgba {
         let ui = &self.config.theme.ui;
         match ui.window.backdrop {
-            tn_config::Backdrop::Solid => col(ui.chrome_bg),
-            _ => cola(ui.chrome_bg, 0.72), // window-glass token (~.72)
+            // Only explicit acrylic is see-through; mica/solid are opaque so the
+            // desktop never bleeds through the chrome (see lib.rs window_background).
+            tn_config::Backdrop::Acrylic => cola(ui.chrome_bg, 0.92),
+            _ => col(ui.chrome_bg),
         }
     }
 
@@ -852,7 +857,9 @@ impl Workspace {
                     .border_1()
                     .rounded(px(R_PANEL))
                     .overflow_hidden()
-                    .p_1()
+                    // No padding: the TerminalView fills the card and rounds its
+                    // own corners (header top + root) to match. gpui clips
+                    // rectangularly, so inner surfaces must round themselves.
                     .bg(cola(theme.terminal.background, 0.96)) // readable, faintly glassy
                     .border_color(rim)
                     .on_mouse_down(
@@ -1122,20 +1129,14 @@ impl Render for Workspace {
             .tabs
             .iter()
             .enumerate()
-            .map(|(i, tab)| {
+            .map(|(_i, tab)| {
                 let pane = self.panes.get(&tab.focused);
-                let title = pane
-                    .and_then(|v| v.read(cx).title())
-                    .filter(|s| !s.trim().is_empty())
-                    .map(|s| truncate_label(s.trim(), 24));
+                let label = pane
+                    .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
+                    .unwrap_or_else(|| "shell".into());
                 let agent = pane.and_then(|v| v.read(cx).agent());
                 let cwd = pane.and_then(|v| v.read(cx).cwd());
-                (
-                    title.unwrap_or_else(|| format!("Term {}", i + 1)),
-                    tab.root.leaf_count(),
-                    agent,
-                    cwd,
-                )
+                (label, tab.root.leaf_count(), agent, cwd)
             })
             .collect();
 
@@ -1318,8 +1319,8 @@ impl Render for Workspace {
             .h(px(46.))
             .pl_3()
             .pr_2()
-            .border_b(px(1.))
-            .border_color(rgba(RIM)) // glass edge under the titlebar
+            // No bottom border: tabs float on the glass; the body separates by
+            // spacing, not a hard full-width divider (matches the mockup).
             .child(brand)
             .child(tabs)
             // A flexible draggable spacer fills the gap between tabs and controls.
@@ -1388,8 +1389,10 @@ impl Render for Workspace {
             .relative()
             .flex()
             .flex_col()
-            .rounded(px(R_WINDOW)) // rounded window corners (Calm Glass)
-            .bg(self.window_glass()) // translucent over the acrylic backdrop
+            // No rounding here: the fill spans the whole window rect and DWM
+            // rounds the actual window corners. Rounding the fill more than DWM's
+            // radius left a sliver of bare acrylic (blurred desktop) at the edge.
+            .bg(self.window_glass()) // mostly-opaque dark glass over the acrylic backdrop
             .text_color(col(ui.foreground))
             .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
             .child(titlebar)

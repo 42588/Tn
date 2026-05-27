@@ -31,11 +31,17 @@ fn session_ref(kind: AgentKind, path: PathBuf) -> Option<SessionRef> {
 /// was modified most recently. `None` when neither agent has a session here.
 pub fn resolve_session(cwd: &str, hint: Option<AgentKind>) -> Option<SessionRef> {
     match hint {
+        // Prefer the cwd-specific session; fall back to the newest session of
+        // that agent overall — a freshly-launched agent pane's session is the
+        // newest, and its cwd often differs from the app cwd (e.g. Codex in ~).
         Some(AgentKind::ClaudeCode) => {
-            session_ref(AgentKind::ClaudeCode, claude::latest_session_file(cwd)?)
+            let path = claude::latest_session_file(cwd).or_else(claude::latest_claude_session_any)?;
+            session_ref(AgentKind::ClaudeCode, path)
         }
         Some(AgentKind::Codex) => {
-            session_ref(AgentKind::Codex, codex::latest_codex_session_file(cwd)?)
+            let path =
+                codex::latest_codex_session_file(cwd).or_else(codex::latest_codex_session_any)?;
+            session_ref(AgentKind::Codex, path)
         }
         None => {
             let c = claude::latest_session_file(cwd)

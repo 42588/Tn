@@ -62,10 +62,24 @@
 - **Warp block 卡片**:浮起圆角卡 + accent 左条 + ✓/✗/◆ exit chip(图标)。
 
 ### 修复 (Fixed)
-- **"Codex 标签仍显示 Claude"**:旧状态栏全局只读 Claude 用量。改为**状态栏跟随焦点 pane 的 agent**——
-  Codex pane 读 Codex 用量、纯 shell 按日志新鲜度自动识别,不再串台。
+- **"Codex 标签仍显示 Claude"**:旧状态栏全局只读 Claude 用量。改为**状态栏跟随焦点 pane 的 agent**,不再串台。
 - **拉起 agent 崩溃**:直接 `CreateProcessW` 拉无扩展名 npm shim 报 os error 193 → spawn `.expect()`
   在 GPUI 窗口回调(non-unwinding)里 panic → 整进程 abort。改为 pwsh 托管 + **spawn 失败优雅回退 pwsh**(不再崩)。
+
+### 修复 (Fixed) — 真机 dogfood 打磨(Windows 上肉眼跑出来的)
+- **框外一层透明**:gpui `Blurred` 在 Windows = acrylic(透背模糊)非 Mica,亮壁纸从边缘/圆角缝透进来。
+  默认改 `Opaque`(仅显式 `acrylic` 才透背);根 `div` 去掉 `rounded`,让 DWM 圆角(避免比 DWM 半径更圆露缝)。
+- **圆角处露直角矩形**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角)。终端根 `rounded(13)` +
+  agent 头 `rounded_t(13)` 各自圆角,整块成一个圆角卡。
+- **标签/头部显示 `…\powershell.exe` 全路径**:不再吃 pwsh 的 OSC 标题;`tab_label()` = `Claude`/`Codex`/`pwsh`。
+- **普通 shell 冒充 Claude**:只有 launch-intent 起的 agent 才轮询用量 + 标记 agent;普通 shell 不再因
+  "同目录有新鲜 Claude 会话(其实是你自己的 dev 进程)"而误标。
+- **普通 shell 头部多余**:cwd 已由 shell 提示符显示,去掉重复的 phead;agent 窗格保留头部(环/用量不重复)。
+- **Codex 头部空("贴图")**:codex 默认在 `~` 跑、cwd 与 app 目录不符 → 按 cwd 找不到会话。回退到
+  "该 agent 最新会话"(`latest_codex_session_any`/`latest_claude_session_any`),环/型号/花费填上。
+- **看不到光标**:`tn-core` 快照加 `cursor`/`cursor_visible`;在光标格画圆角块(聚焦实心半透 / 失焦空心 /
+  app 隐藏或滚离时不画)。常亮不闪。
+- **标签栏下的横线**:去掉标题栏 `border_b`,标签浮在玻璃上靠留白分隔。
 
 ### 待做 (Pending)
 - 窗口内颜值微调 + 真机 Codex 用量复核 + 标题栏拖动/控制按钮真机点验;连续动画(运行/Thinking,

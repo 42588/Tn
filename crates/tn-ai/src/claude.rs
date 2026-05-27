@@ -135,6 +135,34 @@ pub fn latest_session_file(cwd: &str) -> Option<PathBuf> {
     newest.map(|(_, p)| p)
 }
 
+/// Newest Claude session `*.jsonl` across **all** projects (any cwd). Fallback
+/// for an agent pane whose session cwd doesn't match the app cwd.
+pub fn latest_claude_session_any() -> Option<PathBuf> {
+    let projects = claude_projects_dir()?;
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for proj in std::fs::read_dir(&projects).ok()?.flatten() {
+        if !proj.path().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(proj.path()) else {
+            continue;
+        };
+        for entry in files.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(mtime) = entry.metadata().ok().and_then(|m| m.modified().ok()) else {
+                continue;
+            };
+            if newest.as_ref().is_none_or(|(t, _)| mtime > *t) {
+                newest = Some((mtime, path));
+            }
+        }
+    }
+    newest.map(|(_, p)| p)
+}
+
 /// Read + parse the newest Claude session for `cwd`.
 pub fn usage_for_cwd(cwd: &str) -> Option<AiUsage> {
     let text = std::fs::read_to_string(latest_session_file(cwd)?).ok()?;

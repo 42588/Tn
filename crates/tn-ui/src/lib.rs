@@ -32,12 +32,15 @@ pub fn run() {
         "loaded config"
     );
 
-    // Calm Glass: a Mica/Acrylic theme asks the OS to blur the desktop behind
-    // the window (Windows acrylic), so the translucent chrome reads as frosted
-    // glass over a real material. A `solid` theme stays opaque.
+    // Window material. gpui 0.2.2 only exposes Opaque / Transparent / Blurred,
+    // and `Blurred` on Windows = ACRYLIC (genuinely see-through blur) — NOT true
+    // Mica (which is near-opaque). Acrylic lets a bright desktop bleed through
+    // the edges, which reads as an unwanted transparent halo. So only an explicit
+    // `acrylic` backdrop opts into see-through blur; `mica`/`solid` stay Opaque
+    // (a solid dark window — the "glass" depth lives in the inner panels).
     let window_background = match config.theme.ui.window.backdrop {
-        tn_config::Backdrop::Solid => WindowBackgroundAppearance::Opaque,
-        _ => WindowBackgroundAppearance::Blurred,
+        tn_config::Backdrop::Acrylic => WindowBackgroundAppearance::Blurred,
+        _ => WindowBackgroundAppearance::Opaque,
     };
 
     Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {

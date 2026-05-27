@@ -224,6 +224,16 @@ pub fn latest_codex_session_file(cwd: &str) -> Option<PathBuf> {
         .map(|(_, p)| p)
 }
 
+/// Newest Codex rollout overall (any cwd). Fallback for an agent pane whose
+/// session cwd doesn't match the app cwd (Codex often runs in `~`).
+pub fn latest_codex_session_any() -> Option<PathBuf> {
+    let dir = codex_sessions_dir()?;
+    let mut rollouts = Vec::new();
+    collect_rollouts(&dir, &mut rollouts);
+    rollouts.sort_by(|a, b| b.0.cmp(&a.0));
+    rollouts.into_iter().next().map(|(_, p)| p)
+}
+
 /// Read + parse the newest Codex session for `cwd`.
 pub fn usage_for_cwd_codex(cwd: &str) -> Option<AiUsage> {
     let text = std::fs::read_to_string(latest_codex_session_file(cwd)?).ok()?;
