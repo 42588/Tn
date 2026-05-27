@@ -33,6 +33,41 @@ fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
         .child(SharedString::from(letter.to_string()))
 }
 
+/// Parse `git status --porcelain` output into a map of forward-slash, relative
+/// path → one-letter tag (`U`ntracked / `A`dded / `D`eleted / `R`enamed /
+/// `M`odified). Pure (no IO) so it's unit-testable (待优化清单 §7.4); the priority
+/// order matches how a combined index+worktree status (`MM`, `AM`, …) collapses
+/// to a single chip.
+fn parse_porcelain(stdout: &str) -> HashMap<String, char> {
+    let mut map = HashMap::new();
+    for line in stdout.lines() {
+        if line.len() < 4 {
+            continue;
+        }
+        let xy = &line[..2];
+        let mut path = line[3..].to_string();
+        if let Some(i) = path.find(" -> ") {
+            path = path[i + 4..].to_string(); // rename: keep the new name
+        }
+        let key = path.trim().trim_matches('"').replace('\\', "/");
+        let tag = if xy.contains('?') {
+            'U'
+        } else if xy.contains('A') {
+            'A'
+        } else if xy.contains('D') {
+            'D'
+        } else if xy.contains('R') {
+            'R'
+        } else if xy.contains('M') {
+            'M'
+        } else {
+            continue;
+        };
+        map.insert(key, tag);
+    }
+    map
+}
+
 /// Directories that are noise in a source tree — never listed.
 const IGNORED: &[&str] = &[".git", "target", "node_modules", ".idea", ".vs"];
 /// Cap the visible tree so a huge repo can't blow up a render pass.
@@ -99,31 +134,7 @@ impl ExplorerView {
                 return map;
             }
         };
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            if line.len() < 4 {
-                continue;
-            }
-            let xy = &line[..2];
-            let mut path = line[3..].to_string();
-            if let Some(i) = path.find(" -> ") {
-                path = path[i + 4..].to_string(); // rename: keep the new name
-            }
-            let key = path.trim().trim_matches('"').replace('\\', "/");
-            let tag = if xy.contains('?') {
-                'U'
-            } else if xy.contains('A') {
-                'A'
-            } else if xy.contains('D') {
-                'D'
-            } else if xy.contains('R') {
-                'R'
-            } else if xy.contains('M') {
-                'M'
-            } else {
-                continue;
-            };
-            map.insert(key, tag);
-        }
+        map.extend(parse_porcelain(&String::from_utf8_lossy(&out.stdout)));
         map
     }
 
@@ -323,5 +334,48 @@ impl Render for ExplorerView {
                     .flex_col()
                     .children(rows),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn porcelain_tags_each_status_kind() {
+        // A representative `git status --porcelain` block exercising every tag,
+        // the worktree/index combinations, renames, quoted spaces and backslashes.
+        // `concat!` (not `\`-line-continuation, which strips the leading space
+        // that " M" / " D" worktree statuses depend on).
+        let out = concat!(
+            " M crates/tn-ui/src/explorer.rs\n",
+            "?? new_file.txt\n",
+            "A  staged_add.rs\n",
+            " D removed.rs\n",
+            "R  old\\name.rs -> src/new_name.rs\n",
+            "MM both_sides.rs\n",
+            "AM added_then_modified.rs\n",
+            "?? \"with space.txt\"\n",
+        );
+        let m = parse_porcelain(out);
+        assert_eq!(m.get("crates/tn-ui/src/explorer.rs"), Some(&'M'));
+        assert_eq!(m.get("new_file.txt"), Some(&'U'), "?? -> untracked");
+        assert_eq!(m.get("staged_add.rs"), Some(&'A'));
+        assert_eq!(m.get("removed.rs"), Some(&'D'));
+        // Rename keeps the NEW name, backslash normalized to forward slash.
+        assert_eq!(m.get("src/new_name.rs"), Some(&'R'));
+        assert_eq!(m.get("both_sides.rs"), Some(&'M'), "MM collapses to M");
+        assert_eq!(m.get("added_then_modified.rs"), Some(&'A'), "A wins over M");
+        // A quoted path (git quotes names with spaces) is unquoted.
+        assert_eq!(m.get("with space.txt"), Some(&'U'));
+        assert_eq!(m.len(), 8);
+    }
+
+    #[test]
+    fn porcelain_skips_blank_and_short_lines() {
+        // Empty output (clean repo / not-a-repo) and malformed short lines yield
+        // nothing instead of panicking on the `[..2]` / `[3..]` slices.
+        assert!(parse_porcelain("").is_empty());
+        assert!(parse_porcelain("\n\nx\n M\n").is_empty(), "lines < 4 chars skipped");
     }
 }

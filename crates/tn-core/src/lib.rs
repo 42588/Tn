@@ -673,4 +673,36 @@ mod tests {
             "cursor absolute line advances as output scrolls into history"
         );
     }
+
+    #[test]
+    fn golden_snapshot_of_a_representative_ansi_program() {
+        // Regression guard for the whole VT pipeline (待优化清单 §7.2): one fixed
+        // input mixing SGR color, bold, a background fill, carriage-return
+        // overwrite, and absolute cursor positioning must always yield this exact
+        // grid + colors. Catches silent behavior drift when alacritty_terminal is
+        // upgraded — a golden test the existing per-feature asserts didn't cover.
+        let mut t = Terminal::new(GridSize::new(4, 20));
+        t.advance(b"\x1b[31mred\x1b[0m\r\n"); // SGR fg red, then reset
+        t.advance(b"\x1b[1;42mbold-green\x1b[0m\r\n"); // bold + green background
+        t.advance(b"abcd\rxy\r\n"); // CR overwrite: "abcd" -> "xycd"
+        t.advance(b"\x1b[4;5Htail"); // absolute cursor to row 4, col 5
+
+        let snap = t.snapshot();
+        assert_eq!(
+            snap.to_text(),
+            "red\nbold-green\nxycd\n    tail",
+            "golden grid text drifted (VT parser behavior changed?)"
+        );
+
+        // Colors resolve through the default palette (Tokyo Night). `cells` is
+        // row-major, so `find` hits the first matching cell (row 0 before row 1).
+        let cell = |c: char| *snap.cells.iter().find(|x| x.c == c).unwrap();
+        assert_eq!(cell('r').fg, Rgb::new(0xF7, 0x76, 0x8E), "ANSI red fg");
+        let b = cell('b'); // first char of "bold-green"
+        assert!(b.flags.contains(Flags::BOLD), "bold flag set");
+        assert_eq!(b.bg, Rgb::new(0x9E, 0xCE, 0x6A), "ANSI green bg");
+        // The CR-overwritten 'x' carries the default fg — no SGR leaked across the
+        // reset from the prior line.
+        assert_eq!(cell('x').fg, Rgb::new(0xC0, 0xCA, 0xF5), "default fg after reset");
+    }
 }
