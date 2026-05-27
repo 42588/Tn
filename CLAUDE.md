@@ -112,7 +112,7 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 
 ## 未做 / 后续(打磨项)
 - **M2 SSH 恢复**(parked,见现状):真机端到端 + ssh-agent + known_hosts 校验 + 密码交互 + 重连 + `~/.ssh/config` 导入。
-- **分屏交互**:✅ 分隔线鼠标拖拽(seam 处绝对定位拖拽把手 + canvas 捕获 split 容器 px,按路径定位 split 改两侧权重;待真机点验拖拽手感)· 🧭 拖拽停靠(drag-dock:拖到边=分屏、拖到中=标签组)。
+- **分屏交互**:✅ 分隔线鼠标拖拽(**commit-on-release**:拖动只移动一条 2px 预览线、释放才改权重 resize 一次——避免 ConPTY 每帧 resize 导致历史滚出视野 + 抖动;把手平时隐形、hover 微亮)· 🧭 拖拽停靠(drag-dock:拖到边=分屏、拖到中=标签组)。
 - **自定义 `TerminalElement`**(M1.2b):GPUI `Element`(layout/prepaint/paint)+ 字形图集 + typed-quad 批处理 + 光标/选区绘制
   (见 REFERENCES §2;GPUI 自管图集/DirectWrite,**不写裸 D3D**)。当前 div + run 批处理即现版本。
 - **真机肉眼项**:颜值微调 · 标题栏拖动/控制点验 · 光标闪烁/连续动画(需帧时钟;agent 思考态 PTY 不可观测,不伪造)·

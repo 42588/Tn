@@ -394,6 +394,22 @@ impl Terminal {
         self.term.scroll_display(Scroll::Bottom);
     }
 
+    /// Current `(display_offset, history_size)` — for scrollbar drag math.
+    pub fn scroll_position(&self) -> (usize, usize) {
+        let g = self.term.grid();
+        (g.display_offset(), g.history_size())
+    }
+
+    /// Scroll so the display offset becomes `offset` (0 = bottom; clamped to the
+    /// retained history). Used by scrollbar drag.
+    pub fn scroll_to_offset(&mut self, offset: usize) {
+        let cur = self.term.grid().display_offset() as i32;
+        let target = offset.min(self.term.grid().history_size()) as i32;
+        if target != cur {
+            self.term.scroll_display(Scroll::Delta(target - cur));
+        }
+    }
+
     /// Begin a simple (cell-granularity) text selection at viewport cell
     /// `(row, col)` (0 = top/left).
     pub fn selection_start(&mut self, row: usize, col: usize) {

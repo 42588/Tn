@@ -190,6 +190,7 @@ struct DividerDrag {
     axis: Axis,
     start_weights: Vec<f32>,
     start_pos: f32, // mouse coord along the split axis at mouse-down
+    cur_pos: f32,   // latest mouse coord (drives the live preview line)
 }
 
 /// A tab's layout: a tree whose leaves are panes.
@@ -572,45 +573,45 @@ impl Workspace {
         }
     }
 
-    /// Mouse-move while a divider is held: recompute the two adjacent weights
-    /// from the drag start (absolute, so no drift over the drag).
+    /// Mouse-move while a divider is held: **only** track the cursor for the
+    /// preview line — weights are NOT changed mid-drag. Resizing the panes live
+    /// would resize each pane's PTY grid every frame, which makes ConPTY reprint
+    /// (history scrolls out of view) and the layout jitter. So the actual resize
+    /// is deferred to release (`on_divider_up`); during the drag a thin ghost line
+    /// shows where the seam will land.
     fn on_divider_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Copy out the drag state so we don't hold a borrow of `self` while we
-        // mutate the tree below.
-        let (path, gap, axis, start_weights, start_pos) = {
-            let Some(d) = &self.divider_drag else { return };
-            (d.path.clone(), d.gap, d.axis, d.start_weights.clone(), d.start_pos)
-        };
-        let extent = self.split_extents.borrow().get(&path).copied().unwrap_or(0.0);
+        if let Some(d) = self.divider_drag.as_mut() {
+            d.cur_pos = match d.axis {
+                Axis::Row => f32::from(ev.position.x),
+                Axis::Col => f32::from(ev.position.y),
+            };
+            cx.notify();
+        }
+    }
+
+    /// Mouse-up: commit the divider move — recompute the two adjacent weights
+    /// from the drag delta and apply once (a single resize, like keyboard resize).
+    fn on_divider_up(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.divider_drag.take() else { return };
+        cx.notify();
+        let extent = self.split_extents.borrow().get(&d.path).copied().unwrap_or(0.0);
         if extent <= 1.0 {
             return;
         }
-        let pos = match axis {
-            Axis::Row => f32::from(ev.position.x),
-            Axis::Col => f32::from(ev.position.y),
-        };
-        let sum: f32 = start_weights.iter().sum::<f32>().max(1.0);
-        let pair = start_weights[gap] + start_weights[gap + 1];
+        let sum: f32 = d.start_weights.iter().sum::<f32>().max(1.0);
+        let pair = d.start_weights[d.gap] + d.start_weights[d.gap + 1];
         let min = 0.08 * sum; // keep both sides usably wide
         if pair <= 2.0 * min {
             return; // too small to redistribute
         }
         // Pixel delta → weight units (weights are relative: 1px = sum/extent units).
-        let dw = (pos - start_pos) / extent * sum;
-        let w0 = (start_weights[gap] + dw).clamp(min, pair - min);
-        if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&path) {
-            if gap + 1 < weights.len() {
-                weights[gap] = w0;
-                weights[gap + 1] = pair - w0;
-                cx.notify();
+        let dw = (d.cur_pos - d.start_pos) / extent * sum;
+        let w0 = (d.start_weights[d.gap] + dw).clamp(min, pair - min);
+        if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&d.path) {
+            if d.gap + 1 < weights.len() {
+                weights[d.gap] = w0;
+                weights[d.gap + 1] = pair - w0;
             }
-        }
-    }
-
-    /// Mouse-up anywhere ends a divider drag.
-    fn on_divider_up(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.divider_drag.take().is_some() {
-            cx.notify();
         }
     }
 
@@ -1028,20 +1029,14 @@ impl Workspace {
                     .absolute()
                     .size_full(),
                 );
-                // Draggable divider handles at each interior seam (added last so
-                // they sit on top of the panes + canvas).
+                // Draggable divider handles at each interior seam: an invisible
+                // 8px hit strip that only tints faintly on hover (no persistent
+                // line — the panes' own rims already delineate them). Added last
+                // so they sit on top of the panes + canvas.
+                let accent = self.config.theme.agents.claude;
                 let mut cum = 0.0_f32;
                 for gap in 0..kids.len().saturating_sub(1) {
                     cum += weights[gap] / sum;
-                    let active_drag = self
-                        .divider_drag
-                        .as_ref()
-                        .is_some_and(|d| d.path == path && d.gap == gap);
-                    let line = if active_drag {
-                        cola(self.config.theme.agents.claude, 0.7)
-                    } else {
-                        rgba(HOVER)
-                    };
                     let dpath = path.clone();
                     let start_weights = weights.clone();
                     let mut handle = div().absolute();
@@ -1050,19 +1045,9 @@ impl Workspace {
                     } else {
                         handle.left(px(0.)).right(px(0.)).top(relative(cum)).h(px(8.))
                     };
-                    let line_el = if row {
-                        div().w(px(1.)).h_full().bg(line)
-                    } else {
-                        div().h(px(1.)).w_full().bg(line)
-                    };
                     container = container.child(
                         handle
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .when(!active_drag, |d| {
-                                d.hover(|s| s.bg(cola(self.config.theme.agents.claude, 0.18)))
-                            })
+                            .hover(|s| s.bg(cola(accent, 0.16)))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
@@ -1077,13 +1062,28 @@ impl Workspace {
                                         axis: ax,
                                         start_weights: start_weights.clone(),
                                         start_pos: pos,
+                                        cur_pos: pos,
                                     });
                                     cx.stop_propagation(); // don't focus a pane
                                     cx.notify();
                                 }),
-                            )
-                            .child(line_el),
+                            ),
                     );
+                }
+                // Live preview: a thin accent line at the seam's target position
+                // while this split is being dragged (weights only commit on release).
+                if let Some(d) = self.divider_drag.as_ref().filter(|d| d.path == path) {
+                    let extent = self.split_extents.borrow().get(&path).copied().unwrap_or(0.0);
+                    let seam: f32 = weights[..=d.gap].iter().sum::<f32>() / sum;
+                    let delta = if extent > 1.0 { (d.cur_pos - d.start_pos) / extent } else { 0.0 };
+                    let at = (seam + delta).clamp(0.02, 0.98);
+                    let mut pv = div().absolute();
+                    pv = if row {
+                        pv.top(px(0.)).bottom(px(0.)).left(relative(at)).w(px(2.))
+                    } else {
+                        pv.left(px(0.)).right(px(0.)).top(relative(at)).h(px(2.))
+                    };
+                    container = container.child(pv.bg(cola(accent, 0.6)));
                 }
                 container.into_any_element()
             }

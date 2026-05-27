@@ -241,6 +241,9 @@ pub struct TerminalView {
     // pane stays idle — zero wakes). Typing forces `cursor_on = true`.
     cursor_on: bool,
     focused: bool,
+    // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
+    // px) so the thumb tracks under the cursor. `None` when not dragging.
+    scrollbar_drag: Option<f32>,
     // AI usage for this pane (M4): the agent it hosts + its latest usage
     // snapshot, polled off-thread from the agent's session log.
     agent: Option<AgentKind>,
@@ -398,6 +401,7 @@ impl TerminalView {
             focused_once: false,
             cursor_on: true,
             focused: false,
+            scrollbar_drag: None,
             agent,
             usage: None,
             claude_accent,
@@ -967,6 +971,10 @@ impl TerminalView {
     }
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.scrollbar_drag.is_some() {
+            self.drag_scrollbar(event.position.y.into(), cx);
+            return;
+        }
         if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
             return;
         }
@@ -975,7 +983,43 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Begin dragging the scrollbar thumb; record the grab offset within the
+    /// thumb so it tracks under the cursor.
+    fn begin_scrollbar_drag(&mut self, cursor_y: f32, cx: &mut Context<Self>) {
+        let b = *self.content_bounds.borrow();
+        let track_h = f32::from(b.size.height);
+        let (offset, history) = self.terminal.lock().unwrap().scroll_position();
+        let total = (history + self.size.rows) as f32;
+        if track_h <= 0.0 || total <= 0.0 {
+            return;
+        }
+        let thumb_top = f32::from(b.origin.y)
+            + (history.saturating_sub(offset)) as f32 / total * track_h;
+        self.scrollbar_drag = Some(cursor_y - thumb_top);
+        cx.notify();
+    }
+
+    /// Map the dragged thumb position to a scrollback offset and apply it.
+    fn drag_scrollbar(&mut self, cursor_y: f32, cx: &mut Context<Self>) {
+        let Some(grab_dy) = self.scrollbar_drag else { return };
+        let b = *self.content_bounds.borrow();
+        let track_h = f32::from(b.size.height);
+        if track_h <= 0.0 {
+            return;
+        }
+        let (_, history) = self.terminal.lock().unwrap().scroll_position();
+        let total = (history + self.size.rows) as f32;
+        let frac = ((cursor_y - f32::from(b.origin.y) - grab_dy) / track_h).clamp(0.0, 1.0);
+        let offset = (history as f32 - frac * total).round().clamp(0.0, history as f32) as usize;
+        self.terminal.lock().unwrap().scroll_to_offset(offset);
+        cx.notify();
+    }
+
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.scrollbar_drag.take().is_some() {
+            cx.notify();
+            return;
+        }
         if !self.selecting {
             return;
         }
@@ -1137,15 +1181,21 @@ impl Render for TerminalView {
             let top = ((snapshot.scroll_history.saturating_sub(snapshot.scroll_offset)) as f32
                 / total)
                 .clamp(0.0, 1.0 - thumb_h);
-            let scrolled = snapshot.scroll_offset > 0;
+            let scrolled = snapshot.scroll_offset > 0 || self.scrollbar_drag.is_some();
             div()
                 .absolute()
                 .top(relative(top))
                 .right(px(2.))
-                .w(px(4.))
+                .w(px(5.))
                 .h(relative(thumb_h))
                 .rounded(px(2.))
                 .bg(rgba(if scrolled { 0xffffff66 } else { HOVER }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                        this.begin_scrollbar_drag(ev.position.y.into(), cx);
+                    }),
+                )
         });
 
         // Terminal area: the canvas captures THIS region's bounds (so the grid
