@@ -52,6 +52,7 @@ tn-cli     headless ConPTY 烟雾测试工具(可 `-- <program> [args]` 测任�
 ```powershell
 cargo build --workspace
 cargo test  --workspace                        # 119 单测 + 1 集成测试(tn-core 22 / tn-config 26 / tn-ui 32 / tn-shell 11 / tn-blocks 5 / tn-ai 15 / tn-pty 8 / tn-cli conpty_pipeline 1)
+cargo bench -p tn-core --bench engine          # criterion 热路径基准:advance(VT 解析)+ snapshot/row_runs(每帧渲染数据)
 cargo run   -p tn-cli                          # ConPTY 烟雾测试:起 shell、把网格渲染到 stdout、PASS/FAIL
 cargo run   -p tn-cli -- wsl.exe -d Ubuntu -- echo HELLO_TN_MARKER   # 验证 WSL 经 ConPTY 跑通
 cargo run   -p tn-app                          # 开终端窗口

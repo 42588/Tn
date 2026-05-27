@@ -11,3 +11,11 @@ alacritty_terminal.workspace = true
 anyhow.workspace = true
 parking_lot.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+
+# Hot-path benchmarks (待优化清单 §7.3): `cargo bench -p tn-core`.
+[[bench]]
+name = "engine"
+harness = false

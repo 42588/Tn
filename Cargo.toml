@@ -69,6 +69,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 
+# benchmarking (dev-only; `cargo bench`). Hot-path baselines for perf work.
+criterion = "0.5"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
