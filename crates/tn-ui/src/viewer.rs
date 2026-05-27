@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, Rgba, SharedString};
 use tn_config::Loaded;
 
-use crate::style::{col, UI_SANS};
+use crate::style::{col, HOVER, UI_SANS};
 
 /// Max lines rendered (a viewer is a glance, not a pager).
 const MAX_LINES: usize = 500;
@@ -342,7 +342,7 @@ impl ViewerView {
                 .text_size(px(10.5))
                 .font_weight(gpui::FontWeight::BOLD)
                 .text_color(col(if on { th.ui.foreground } else { th.ui.muted }))
-                .when(on, |d| d.bg(rgba(0xffffff14)))
+                .when(on, |d| d.bg(rgba(HOVER)))
                 .child(label)
         };
         div()

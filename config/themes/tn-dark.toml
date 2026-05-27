@@ -36,13 +36,13 @@ selection_fg  = "#C0CAF5"
 chrome_bg        = "#16161E"   # 标题栏 / 最外层
 surface_1        = "#1F2335"   # 面板 / 卡片
 surface_2        = "#24283B"   # 抬升层 / block 卡片
-foreground       = "#C0CAF5"
-muted            = "#565F89"   # 次要文字 / 注释
+foreground       = "#C6D0F5"   # = mockup --fg(chrome 文字)
+muted            = "#6E76A0"   # 次要文字 / 注释 = mockup --muted
 border           = "#2A2E42"
 accent           = "#7AA2F7"   # 品牌强调(蓝)
 accent_alt       = "#BB9AF7"   # 次强调(紫)
 tab_active_bg    = "#1A1B26"
-tab_inactive_fg  = "#565F89"
+tab_inactive_fg  = "#6E76A0"   # = ui.muted(mockup 用 --muted 画非激活标签)
 block_border     = "#2A2E42"
 block_success    = "#9ECE6A"   # 退出码 0 的左条
 block_error      = "#F7768E"   # 非 0 退出

@@ -15,7 +15,8 @@ use gpui::{hsla, point, prelude::*, px, rgb, BoxShadow, Div, Rgba, Svg};
 pub(crate) const RIM: u32 = 0xffffff12; // glass edge (~white .07) — replaces hard borders
 pub(crate) const SHEEN: u32 = 0xffffff1a; // top 1px mirror highlight (~white .10)
 pub(crate) const INSET: u32 = 0xffffff0a; // header / inset card overlay (~white .04)
-pub(crate) const HOVER: u32 = 0xffffff14; // chip / hover (~white .08)
+pub(crate) const HOVER: u32 = 0xffffff0f; // chip / hover (~white .06, = mockup --g3)
+pub(crate) const DIVIDER: u32 = 0xffffff0f; // status-bar segment divider (~white .06, = mockup `.status .seg2 + .seg2`)
 
 /// UI sans-serif for chrome (tabs / headers / status); paired with the mono
 /// terminal/code font. Ships on Windows 10/11.

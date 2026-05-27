@@ -30,8 +30,8 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, icon, shadowed, soft_shadow, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN,
-    UI_SANS,
+    col, cola, icon, shadowed, soft_shadow, DIVIDER, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW,
+    SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -1141,7 +1141,7 @@ impl Workspace {
                 .h(px(18.))
                 .children(children)
         };
-        let sep = || div().w(px(1.)).h(px(13.)).flex_none().bg(rgba(0xffffff14));
+        let sep = || div().w(px(1.)).h(px(13.)).flex_none().bg(rgba(DIVIDER));
         let num = |s: String| -> AnyElement {
             div().text_color(col(ui.foreground)).child(SharedString::from(s)).into_any_element()
         };
