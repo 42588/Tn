@@ -11,8 +11,8 @@
 
 ## [Unreleased] — M2 WSL + 远程 Linux(SSH)
 
-> owner 执行顺序:M3 → M4 → M5 → **M2**。WSL 这台机器装了(可端到端验证);SSH 无测试主机,
-> 先写 russh 逻辑 + 单测,端到端 owner 自验。
+> owner 执行顺序:M3 → M4 → M5 → **M2**。**WSL ✅ 完成**(端到端验证 + 自动发现发行版)。
+> **SSH 暂停**:已落地编译 + headless 单测,但 owner 决定**等有远程登录需求时再继续**(代码原地保留)。
 
 ### 新增 (Added) — WSL(已端到端验证)
 - **`tn-pty::wsl`**:`parse_distros`(解码 `wsl --list --quiet` 的 **UTF-16LE** 输出 → 发行版名,
@@ -21,7 +21,10 @@
   无 pwsh 集成(发行版跑 bash/zsh)。WSL 会话复用现有 `LocalPty`——ConPTY 托管 `wsl.exe` 如同普通程序,
   **不需要新 PtyBackend**。2 单测。
 - **命令面板 + Quick Terminal 启动器纳入 WSL profile**(`is_launchable`:命令型 或 带 distro 的 wsl)。
-  默认配置的 `Ubuntu` profile 现可一键起。
+- **自动发现所有已装发行版**(`discover_profiles`):启动器 = config `[[profiles]]` + `wsl --list --quiet`
+  枚举到的发行版(去重 config 已有的、滤掉 Docker 内部的 `docker-desktop*`),给个柔蓝点;无需为每个
+  发行版手写 profile(默认配置只有一个 Ubuntu,之前就只显示一个——这是修复)。`wsl.exe` 带
+  `CREATE_NO_WINDOW`,不闪控制台。
 - **`tn-cli` 支持自定义子进程**:`cargo run -p tn-cli -- <program> [args...]`(默认仍是 cmd echo)。
   用它端到端验证 WSL:`tn-cli -- wsl.exe -d Ubuntu -- echo HELLO_TN_MARKER` → **SMOKE PASS**
   (ConPTY 托管 wsl、输出回灌引擎、网格正确)。
@@ -45,10 +48,11 @@
   `render` 里聚焦(浮层的 `track_focus` 元素此帧已存在),与 Quick Terminal 启动器同一套(那个本就在
   render 聚焦,所以一直正常)。
 
-### 待办 (TODO) — SSH 端到端(owner 自验)+ 后续
-- **无测试主机**:连接 / 认证 / 远程 shell 路径**未端到端验证**;owner 用真实主机验。
-- **ssh-agent**(`russh::keys::agent`,Windows OpenSSH/Pageant)+ **known_hosts 校验**(当前 `check_server_key`
-  接受任意主机密钥——仅供首版,真用前必须接入)+ 密码交互输入 + 断连重连 UX + `~/.ssh/config` 导入。
+### 暂停 (Parked) — SSH(owner 决定:等有远程登录需求时再继续)
+- SSH 后端代码已落地(编译 + headless 单测过)并**原地保留**,但**端到端未验证、暂不继续打磨**。
+  恢复时要做:用真实主机端到端验;**ssh-agent**(`russh::keys::agent`,Windows OpenSSH/Pageant)+
+  **known_hosts 校验**(当前 `check_server_key` 接受任意主机密钥——真用前必须接入)+ 密码交互输入 +
+  断连重连 UX + `~/.ssh/config` 导入。
 
 ---
 

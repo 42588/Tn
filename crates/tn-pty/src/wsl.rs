@@ -29,7 +29,17 @@ pub fn parse_distros(bytes: &[u8]) -> Vec<String> {
 /// an empty list if WSL isn't present / the call fails. Shells out to
 /// `wsl.exe --list --quiet`; output is captured (no console window).
 pub fn list_distros() -> Vec<String> {
-    match Command::new("wsl.exe").args(["--list", "--quiet"]).output() {
+    let mut cmd = Command::new("wsl.exe");
+    cmd.args(["--list", "--quiet"]);
+    // Don't flash a console window when called from the GUI process (release has
+    // no console of its own).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
         Ok(out) if out.status.success() => parse_distros(&out.stdout),
         _ => Vec::new(),
     }

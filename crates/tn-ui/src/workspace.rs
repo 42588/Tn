@@ -165,6 +165,41 @@ pub(crate) fn is_launchable(p: &tn_config::Profile) -> bool {
     }
 }
 
+/// The launcher's profiles: the configured `[[profiles]]` plus every installed
+/// WSL distro not already covered by a config profile — so users get *all* their
+/// distros without editing config (the default config ships only one). Shells
+/// out to `wsl.exe` once (cache the result; don't call per render). Docker's
+/// internal `docker-desktop*` distros are skipped (not interactive shells).
+pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
+    let mut profiles = config.config.profiles.clone();
+    let configured: std::collections::HashSet<String> = profiles
+        .iter()
+        .filter(|p| p.kind == tn_config::ProfileKind::Wsl)
+        .filter_map(|p| p.distro.as_deref())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    for distro in tn_pty::wsl::list_distros() {
+        let low = distro.to_ascii_lowercase();
+        if low.starts_with("docker-desktop") || configured.contains(&low) {
+            continue;
+        }
+        profiles.push(tn_config::Profile {
+            name: distro.clone(),
+            kind: tn_config::ProfileKind::Wsl,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: Some(distro),
+            host: None,
+            user: None,
+            agent: None,
+            accent: Some(tn_config::Color::new(0x7A, 0xA2, 0xF7)), // a soft blue for WSL
+            glyph: None,
+        });
+    }
+    profiles
+}
+
 /// Launchable profiles matching the query (case-insensitive substring on name).
 fn launchable_matches<'a>(
     profiles: &'a [tn_config::Profile],
@@ -427,6 +462,9 @@ pub struct Workspace {
     palette_query: String,
     palette_sel: usize,
     palette_focus: FocusHandle,
+    /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
+    /// resolved once at startup (see [`discover_profiles`]).
+    launch_profiles: Vec<tn_config::Profile>,
     /// Focus the palette in the next render. Focusing in the toggle action (before
     /// the overlay is rendered) doesn't reliably land, so keys leaked to the
     /// terminal underneath; we focus it in render where the element exists.
@@ -445,6 +483,8 @@ impl Workspace {
             cx.notify();
         })
         .detach();
+        // Resolve launchable profiles once (config + installed WSL distros).
+        let launch_profiles = discover_profiles(&config);
         let mut ws = Self {
             tabs: Vec::new(),
             active: 0,
@@ -461,6 +501,7 @@ impl Workspace {
             palette_query: String::new(),
             palette_sel: 0,
             palette_focus: cx.focus_handle(),
+            launch_profiles,
             palette_needs_focus: false,
         };
         let id = ws.spawn_pane(cx);
@@ -642,7 +683,7 @@ impl Workspace {
     }
 
     fn palette_match_count(&self) -> usize {
-        launchable_matches(&self.config.config.profiles, &self.palette_query).len()
+        launchable_matches(&self.launch_profiles, &self.palette_query).len()
     }
 
     /// Palette keystrokes: type to filter, ↑↓ to select, Enter launches, Esc closes.
@@ -688,7 +729,7 @@ impl Workspace {
     /// Launch the selected profile in a new tab, then close the palette.
     fn launch_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let spec = {
-            let matches = launchable_matches(&self.config.config.profiles, &self.palette_query);
+            let matches = launchable_matches(&self.launch_profiles, &self.palette_query);
             matches
                 .get(self.palette_sel)
                 .and_then(|p| LaunchSpec::from_profile(p))
@@ -1040,7 +1081,7 @@ impl Workspace {
         }
         let t = &self.config.theme;
         let ui = &t.ui;
-        let matches = launchable_matches(&self.config.config.profiles, &self.palette_query);
+        let matches = launchable_matches(&self.launch_profiles, &self.palette_query);
         let sel = self.palette_sel.min(matches.len().saturating_sub(1));
 
         let query_line = div().px_3().py_2().text_size(px(13.)).child(if self.palette_query.is_empty() {

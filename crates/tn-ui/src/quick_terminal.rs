@@ -78,10 +78,14 @@ pub struct QuickTerminal {
     /// place we hold a `&mut Window` without also being mid-Win32-call.
     pending_focus: bool,
     anim_token: u64,
+    /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
+    /// resolved once (shares the workspace's discovery).
+    launch_profiles: Vec<tn_config::Profile>,
 }
 
 impl QuickTerminal {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
+        let launch_profiles = crate::workspace::discover_profiles(&config);
         Self {
             config,
             term: None,
@@ -94,15 +98,14 @@ impl QuickTerminal {
             topmost_done: false,
             pending_focus: false,
             anim_token: 0,
+            launch_profiles,
         }
     }
 
     /// Launchable profiles (shell / agent / WSL distro) — the launcher's entries.
     /// Shares the command palette's predicate.
     fn launchable(&self) -> Vec<&tn_config::Profile> {
-        self.config
-            .config
-            .profiles
+        self.launch_profiles
             .iter()
             .filter(|p| crate::workspace::is_launchable(p))
             .collect()
