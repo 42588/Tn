@@ -348,4 +348,81 @@ mod tests {
         // A bare single-char key still falls back to the literal byte.
         assert_eq!(encode_key(&ks("z", false, false, false, None), off()), Some(b"z".to_vec()));
     }
+
+    /// Every key Tn knows about, for the no-panic sweep below.
+    fn sweep_keys() -> Vec<String> {
+        let mut keys: Vec<String> = [
+            "up", "down", "left", "right", "home", "end", "insert", "delete", "pageup",
+            "pagedown", "backspace", "tab", "enter", "escape", "space", // handled specials
+            "capslock", "menu", "", "f0", "scroll-lock", "weird-key", // unhandled / edge
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        for n in 1..=24 {
+            keys.push(format!("f{n}"));
+        }
+        for c in "abyz09@#[]\\/;'`~!.".chars() {
+            keys.push(c.to_string());
+        }
+        keys
+    }
+
+    #[test]
+    fn encode_key_never_panics_or_returns_empty() {
+        // 待优化清单 §7.5: sweep key × modifiers × mode. `encode_key` must never
+        // panic (the test would crash) and a `Some` result must be a NON-empty
+        // byte sequence — encoding a handled key to zero bytes would silently
+        // swallow the keystroke. Guards the many branches without a proptest dep.
+        let modes = [
+            InputMode::default(),
+            InputMode { app_cursor: true, ..InputMode::default() },
+            InputMode { line_feed_newline: true, ..InputMode::default() },
+            InputMode {
+                app_cursor: true,
+                line_feed_newline: true,
+                app_keypad: true,
+                bracketed_paste: true,
+                alt_screen: true,
+            },
+        ];
+        let mut produced = 0usize;
+        for key in sweep_keys() {
+            let single = key.chars().count() == 1;
+            for control in [false, true] {
+                for alt in [false, true] {
+                    for shift in [false, true] {
+                        // Mirror real input: a printable single char carries key_char.
+                        let kc = if single && !control { Some(key.as_str()) } else { None };
+                        let k = ks(&key, control, alt, shift, kc);
+                        for mode in modes {
+                            if let Some(bytes) = encode_key(&k, mode) {
+                                assert!(
+                                    !bytes.is_empty(),
+                                    "empty encoding: key={key:?} ctrl={control} alt={alt} shift={shift}"
+                                );
+                                produced += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(produced > 0, "the sweep should have produced encodings");
+    }
+
+    #[test]
+    fn ctrl_shift_and_platform_are_never_sent() {
+        // Ctrl+Shift+* is reserved for Tn UI shortcuts; Win/super combos aren't
+        // terminal input. Both must yield None for any key.
+        for key in ["a", "up", "enter", "f5", "tab"] {
+            assert!(
+                encode_key(&ks(key, true, false, true, None), off()).is_none(),
+                "Ctrl+Shift+{key} must be reserved"
+            );
+            let mut k = ks(key, false, false, false, Some(key));
+            k.modifiers.platform = true;
+            assert!(encode_key(&k, off()).is_none(), "Win+{key} is not terminal input");
+        }
+    }
 }

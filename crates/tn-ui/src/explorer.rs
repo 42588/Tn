@@ -294,22 +294,11 @@ impl Render for ExplorerView {
                     .child(SharedString::from(root_name)),
             );
 
-        // Precompute rows to avoid borrowing `self` inside the children closure.
-        let rows: Vec<gpui::Div> = (0..self.rows.len())
-            .map(|i| {
-                let row = &self.rows[i];
-                self.render_row(
-                    &Row {
-                        path: row.path.clone(),
-                        name: row.name.clone(),
-                        depth: row.depth,
-                        is_dir: row.is_dir,
-                        expanded: row.expanded,
-                    },
-                    cx,
-                )
-            })
-            .collect();
+        // Precompute the row Divs (collecting ends the `self.rows` borrow before
+        // the `.children()` closure). `render_row` takes `&Row`, so we pass the
+        // cached row by reference — no per-row clone (待优化清单 §2.5).
+        let rows: Vec<gpui::Div> =
+            (0..self.rows.len()).map(|i| self.render_row(&self.rows[i], cx)).collect();
 
         div()
             .track_focus(&self.focus_handle)
