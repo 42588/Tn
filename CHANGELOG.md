@@ -9,6 +9,30 @@
 
 ---
 
+## [Unreleased] — M2 WSL + 远程 Linux(SSH)
+
+> owner 执行顺序:M3 → M4 → M5 → **M2**。WSL 这台机器装了(可端到端验证);SSH 无测试主机,
+> 先写 russh 逻辑 + 单测,端到端 owner 自验。
+
+### 新增 (Added) — WSL(已端到端验证)
+- **`tn-pty::wsl`**:`parse_distros`(解码 `wsl --list --quiet` 的 **UTF-16LE** 输出 → 发行版名,
+  剥 BOM/空行/NUL,纯函数 3 单测)+ `list_distros()`(shell out 到 `wsl.exe`,输出捕获、无控制台)。
+- **`LaunchSpec::from_profile` 支持 `kind = "wsl"`**:`wsl.exe -d <distro>`(distro 省略 = 默认发行版),
+  无 pwsh 集成(发行版跑 bash/zsh)。WSL 会话复用现有 `LocalPty`——ConPTY 托管 `wsl.exe` 如同普通程序,
+  **不需要新 PtyBackend**。2 单测。
+- **命令面板 + Quick Terminal 启动器纳入 WSL profile**(`is_launchable`:命令型 或 带 distro 的 wsl)。
+  默认配置的 `Ubuntu` profile 现可一键起。
+- **`tn-cli` 支持自定义子进程**:`cargo run -p tn-cli -- <program> [args...]`(默认仍是 cmd echo)。
+  用它端到端验证 WSL:`tn-cli -- wsl.exe -d Ubuntu -- echo HELLO_TN_MARKER` → **SMOKE PASS**
+  (ConPTY 托管 wsl、输出回灌引擎、网格正确)。
+
+### 进行中 (WIP) — SSH(russh,逻辑 + 单测,端到端 owner 自验)
+- 待:`tn-pty::SshBackend`(实现 `PtyBackend`:专属 tokio 线程把 async channel 桥成同步 Read/Write,
+  `request_pty`→shell,认证链 agent→key→password,`window_change`,keepalive)+ `TerminalView`
+  抽象到 `PtyBackend`(现硬编码 `LocalPty`)+ SSH profile 接线。
+
+---
+
 ## [Unreleased] — M5 Quick Terminal(幽灵下拉终端,headless 闭环 + 待真机肉眼验证)
 
 > Quake/Guake 式悬浮终端:任意 app 里按全局热键唤出一个置顶悬浮终端(直接跟 Claude/Codex 对话),

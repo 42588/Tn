@@ -12,6 +12,8 @@ use std::path::PathBuf;
 mod local;
 pub use local::LocalPty;
 
+pub mod wsl;
+
 /// Pseudo-terminal size in character cells (with optional pixel dimensions,
 /// which some full-screen apps use for sixel/image sizing).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -154,8 +154,15 @@ fn git_branch() -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Profiles launchable now (carry a command = shell / agent) that match the
-/// query (case-insensitive substring on the name). WSL/SSH (no command) are M2.
+/// Whether a profile can be launched now: a command-bearing shell/agent, or a
+/// WSL distro (M2 — `wsl.exe` runs over the local ConPTY). SSH (M2b) needs the
+/// russh backend first.
+pub(crate) fn is_launchable(p: &tn_config::Profile) -> bool {
+    p.command.is_some()
+        || (p.kind == tn_config::ProfileKind::Wsl && p.distro.as_deref().is_some_and(|d| !d.is_empty()))
+}
+
+/// Launchable profiles matching the query (case-insensitive substring on name).
 fn launchable_matches<'a>(
     profiles: &'a [tn_config::Profile],
     query: &str,
@@ -163,7 +170,7 @@ fn launchable_matches<'a>(
     let q = query.to_ascii_lowercase();
     profiles
         .iter()
-        .filter(|p| p.command.is_some())
+        .filter(|p| is_launchable(p))
         .filter(|p| q.is_empty() || p.name.to_ascii_lowercase().contains(&q))
         .collect()
 }

@@ -12,7 +12,9 @@
 //!   2. ConPTY does not reliably deliver EOF on exit, so we poll `try_wait`
 //!      with a hard timeout rather than blocking on read EOF.
 //!
-//! Usage: `cargo smoke` (or `cargo run -p tn-cli`).
+//! Usage: `cargo smoke` (or `cargo run -p tn-cli`). Pass a program + args to
+//! smoke-test an arbitrary child instead of the default, e.g. (WSL, M2):
+//! `cargo run -p tn-cli -- wsl.exe -d Ubuntu -- echo HELLO_TN_MARKER`.
 
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -34,10 +36,19 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let size = GridSize::new(30, 100);
-    // Simplest possible non-interactive child: prints the marker and exits.
-    let spec = SpawnSpec::program("cmd.exe")
-        .arg("/c")
-        .arg(format!("echo {MARKER}"));
+    // Default child: simplest non-interactive command that prints the marker and
+    // exits. Override with CLI args (`tn-cli <program> [args...]`) to smoke-test
+    // another backend's child (e.g. a WSL distro).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let spec = if let Some((program, rest)) = args.split_first() {
+        let mut s = SpawnSpec::program(program);
+        for a in rest {
+            s = s.arg(a);
+        }
+        s
+    } else {
+        SpawnSpec::program("cmd.exe").arg("/c").arg(format!("echo {MARKER}"))
+    };
 
     tracing::info!(
         "spawning `{}` in a {}x{} ConPTY",

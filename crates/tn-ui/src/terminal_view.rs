@@ -126,6 +126,23 @@ impl LaunchSpec {
     }
 
     fn from_profile_inner(p: &tn_config::Profile, persist: bool) -> Option<Self> {
+        // WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`.
+        // ConPTY runs wsl.exe like any program, so no special backend is needed;
+        // no pwsh integration (the distro runs bash/zsh). An empty/absent distro
+        // launches WSL's default distro.
+        if p.kind == tn_config::ProfileKind::Wsl {
+            let mut args = Vec::new();
+            if let Some(distro) = p.distro.as_deref().filter(|d| !d.is_empty()) {
+                args.push("-d".to_string());
+                args.push(distro.to_string());
+            }
+            return Some(Self {
+                program: "wsl.exe".into(),
+                args,
+                integrate_pwsh: false,
+                agent: None,
+            });
+        }
         let command = p.command.clone()?;
         // Agent identity: an explicit `agent = "..."` field wins, else infer from
         // the command (`claude` / `codex`). This is the launch-intent signal the
@@ -1094,3 +1111,35 @@ impl Render for TerminalView {
 }
 
 // Key → byte encoding now lives in `crate::input` (see `input.rs`).
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn first_profile(toml: &str) -> tn_config::Profile {
+        tn_config::Config::from_toml_str(toml)
+            .expect("config parses")
+            .profiles
+            .into_iter()
+            .next()
+            .expect("a profile")
+    }
+
+    #[test]
+    fn wsl_profile_launches_wsl_exe_with_distro() {
+        let p = first_profile("[[profiles]]\nname = \"Ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
+        let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
+        assert_eq!(spec.program, "wsl.exe");
+        assert_eq!(spec.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
+        assert!(!spec.integrate_pwsh); // a distro runs bash/zsh, not pwsh
+        assert!(spec.agent.is_none());
+    }
+
+    #[test]
+    fn wsl_profile_without_distro_runs_default() {
+        let p = first_profile("[[profiles]]\nname = \"WSL\"\nkind = \"wsl\"\n");
+        let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
+        assert_eq!(spec.program, "wsl.exe");
+        assert!(spec.args.is_empty()); // bare `wsl.exe` -> default distro
+    }
+}

@@ -97,10 +97,15 @@ impl QuickTerminal {
         }
     }
 
-    /// Command-bearing profiles (shell / agent) — the launcher's entries. WSL/SSH
-    /// (no command yet) are skipped. Mirrors the command palette's `launchable`.
+    /// Launchable profiles (shell / agent / WSL distro) — the launcher's entries.
+    /// Shares the command palette's predicate.
     fn launchable(&self) -> Vec<&tn_config::Profile> {
-        self.config.config.profiles.iter().filter(|p| p.command.is_some()).collect()
+        self.config
+            .config
+            .profiles
+            .iter()
+            .filter(|p| crate::workspace::is_launchable(p))
+            .collect()
     }
 
     /// Toggle visibility — the action bound to the global hotkey.
