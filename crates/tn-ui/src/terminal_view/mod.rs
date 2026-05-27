@@ -184,11 +184,14 @@ pub struct TerminalView {
 /// current visible grid rows. Pure so it can be unit-tested; see
 /// [`TerminalView::pty_target_rows`] for the rationale (the row-lock that stops
 /// ConPTY's resize-repaint from eating scrollback on a divider drag).
-fn pty_rows_for(is_agent: bool, alt_screen: bool, prev_hwm: usize, grid_rows: usize) -> usize {
+fn pty_rows_for(is_agent: bool, alt_screen: bool, locked_rows: usize, grid_rows: usize) -> usize {
     if is_agent || alt_screen {
         grid_rows // exact: agents redraw by height, fullscreen apps position by row
     } else {
-        prev_hwm.max(grid_rows).max(SHELL_PTY_ROWS_FLOOR) // monotonic, floored
+        // Monotonic: stay at the locked height (seeded to the spawn height, so it
+        // never *grows* in normal use — that would repaint/blank). Only a pane
+        // taller than the lock (huge monitor) bumps it, a rare one-time grow.
+        locked_rows.max(grid_rows)
     }
 }
 
@@ -218,7 +221,15 @@ fn fallback_pwsh(size: PtySize) -> LocalPty {
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, launch: LaunchSpec) -> Self {
         let size = GridSize::new(ROWS, COLS);
-        let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
+        // A local shell spawns its ConPTY at the row-lock height (the floor)
+        // directly, so its rows NEVER grow afterward — a ConPTY row-grow repaints
+        // and repositions content, blanking the prompt / eating scrollback (see
+        // `pty_target_rows` + 踩过的坑). Agents spawn at the visible rows (they
+        // redraw their TUI fully and want a real height). alacritty's grid still
+        // starts at `ROWS` and tracks the pane; only ConPTY's rows are pinned.
+        let is_local_shell = launch.agent.is_none() && launch.ssh.is_none();
+        let spawn_rows = if is_local_shell { SHELL_PTY_ROWS_FLOOR } else { ROWS } as u16;
+        let pty_size = PtySize::new(spawn_rows, COLS as u16);
         // Pick the backend: a remote SSH session, or a local ConPTY. A bad
         // profile must NOT crash the app — pane construction runs inside GPUI's
         // window callback (non-unwinding), so a spawn panic aborts the whole
@@ -347,8 +358,13 @@ impl TerminalView {
             codex_accent,
             ui_accent,
             program: launch.program.clone(),
-            shell_pty_rows: 0,
-            last_pty_size: None,
+            // Seed the lock to the spawn height so a local shell's ConPTY rows
+            // stay put (no grow). Agents leave it 0 (they use exact rows until,
+            // on exit, the pane relocks at its then-current height).
+            shell_pty_rows: if is_local_shell { SHELL_PTY_ROWS_FLOOR } else { 0 },
+            // Seed to the spawn size so the first render doesn't redundantly
+            // resize ConPTY's rows (only its columns, to fit the pane).
+            last_pty_size: Some(pty_size),
             render_cache: None,
             perf: PerfStats::new("pane.render"),
         }
@@ -401,6 +417,11 @@ impl TerminalView {
         if self.agent.is_some() && self.agent_exited.load(Ordering::Relaxed) {
             self.agent = None;
             self.usage = None;
+            // Lock the now-shell at its CURRENT height, not the floor — growing
+            // ConPTY rows here (to 120) would repaint and blank the fresh prompt.
+            // (A later divider-drag bigger can still grow it, but that's rare for
+            // a just-exited agent and far less jarring than a blank-out on exit.)
+            self.shell_pty_rows = self.size.rows;
             true
         } else {
             false
@@ -1048,28 +1069,24 @@ mod tests {
 
     #[test]
     fn shell_pty_rows_never_grow_on_a_divider_drag() {
-        // A shell pane: shrinking then growing back must NOT change the ConPTY
-        // row count (so its repaint never fires to eat scrollback). Columns are
-        // handled separately and always exact.
-        let mut hwm = 0;
-        // First render at a full-window-ish height seeds the (floored) lock.
-        hwm = pty_rows_for(false, false, hwm, 50);
-        assert_eq!(hwm, SHELL_PTY_ROWS_FLOOR, "seeded to the floor (>= the pane)");
-        // Drag smaller, then bigger: the lock stays put — no ConPTY grow.
-        let small = pty_rows_for(false, false, hwm, 12);
-        assert_eq!(small, SHELL_PTY_ROWS_FLOOR, "shrinking does not lower the lock");
-        let big = pty_rows_for(false, false, hwm, 90);
-        assert_eq!(big, SHELL_PTY_ROWS_FLOOR, "growing within the floor does not raise it");
+        // A local shell's ConPTY is spawned at the floor, so the lock starts at
+        // `SHELL_PTY_ROWS_FLOOR`. Dragging the pane smaller or bigger (within the
+        // lock) must NOT change the ConPTY row count — no repaint, no blank, no
+        // scrollback loss. Columns are handled separately and always exact.
+        let lock = SHELL_PTY_ROWS_FLOOR; // seeded at spawn
+        assert_eq!(pty_rows_for(false, false, lock, 50), lock, "shrunk pane keeps the lock");
+        assert_eq!(pty_rows_for(false, false, lock, 12), lock, "shrinking does not lower it");
+        assert_eq!(pty_rows_for(false, false, lock, 90), lock, "growing within the lock keeps it");
     }
 
     #[test]
-    fn shell_pty_rows_are_monotonic_above_the_floor() {
-        // A pane taller than the floor (huge monitor) raises the mark once, then
-        // shrinking keeps it — so a later grow-back still doesn't grow ConPTY.
-        let mut hwm = pty_rows_for(false, false, 0, 200);
-        assert_eq!(hwm, 200);
-        hwm = pty_rows_for(false, false, hwm, 60); // shrink
-        assert_eq!(hwm, 200, "stays at the high-water mark");
+    fn shell_pty_rows_only_grow_beyond_the_lock() {
+        // Only a pane taller than the current lock (huge monitor) bumps it — a
+        // rare one-time grow; thereafter shrinking keeps the new mark.
+        let mut lock = SHELL_PTY_ROWS_FLOOR;
+        lock = pty_rows_for(false, false, lock, 200); // taller than the floor
+        assert_eq!(lock, 200, "exceeds the lock -> raises it");
+        assert_eq!(pty_rows_for(false, false, lock, 60), 200, "then shrinking keeps the mark");
     }
 
     #[test]

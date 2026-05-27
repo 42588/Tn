@@ -38,10 +38,10 @@ fn main() -> anyhow::Result<()> {
     // `TN_RESIZE_EXP=1`: instead of the smoke test, run a ConPTY resize probe
     // (does growing/shrinking the PTY lose scrollback content?). See fn below.
     if let Ok(v) = std::env::var("TN_RESIZE_EXP") {
-        return if v == "interactive" {
-            resize_interactive_probe()
-        } else {
-            resize_experiment()
+        return match v.as_str() {
+            "interactive" => resize_interactive_probe(),
+            "prompt" => prompt_layout_probe(),
+            _ => resize_experiment(),
         };
     }
 
@@ -267,6 +267,101 @@ fn resize_experiment() -> anyhow::Result<()> {
     resize(&term, &mut pty, 20, 80, &mut pty_hwm); // GROW back (within HWM when locked)
     thread::sleep(Duration::from_millis(1500));
     report("regrow 20x80", &collect(&term));
+
+    let _ = pty.killer().and_then(|mut k| k.kill());
+    std::process::exit(0);
+}
+
+/// Probe: reproduce the "blank space above the prompt" report (`TN_RESIZE_EXP=prompt`).
+/// Spawns the user's real pwsh **with their profile** (so oh-my-posh / starship
+/// loads), with ConPTY rows possibly larger than alacritty's grid (the row-lock).
+/// Dumps the visible grid at a fresh prompt and after `ls`, so we can see whether
+/// a tall ConPTY + fancy prompt pushes content down. Env: `TN_PTY_ROWS` (ConPTY,
+/// default 120), `TN_GRID_ROWS` (alacritty, default 40).
+fn prompt_layout_probe() -> anyhow::Result<()> {
+    let pty_rows: u16 = std::env::var("TN_PTY_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+    let grid_rows: usize =
+        std::env::var("TN_GRID_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    let cols = 90u16;
+    // Mimic the real app: spawn at the initial ROWS (34), then the first render
+    // resizes ConPTY to the row-lock (120) + alacritty to the pane height. That
+    // 34->120 resize is what oh-my-posh/PSReadLine react to. `TN_SPAWN_ROWS`=0
+    // skips it (spawn straight at the final size).
+    let spawn_rows: u16 =
+        std::env::var("TN_SPAWN_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(34);
+    let initial = if spawn_rows == 0 { pty_rows } else { spawn_rows };
+    // `TN_PTY_NOGROW=1` = the FIX: spawn ConPTY straight at the lock height
+    // (`pty_rows`) and never grow its rows — only alacritty resizes. The buggy
+    // path (default) grows ConPTY `initial`->`pty_rows` on the resize step.
+    let nogrow = std::env::var("TN_PTY_NOGROW").is_ok();
+    let conpty_spawn = if nogrow { pty_rows } else { initial };
+    // -NoLogo only (NOT -NoProfile): load the user's profile so their real prompt
+    // renders, exactly like a Tn shell pane.
+    let spec = SpawnSpec::program("powershell.exe").arg("-NoLogo");
+    let mut pty = LocalPty::spawn(&spec, PtySize::new(conpty_spawn, cols))?;
+    let mut reader = pty.take_reader()?;
+    let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.writer()?));
+    // alacritty grid starts at the spawn rows, then (below) resizes to grid_rows.
+    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(initial as usize, cols as usize))));
+    let reader_term = Arc::clone(&term);
+    let reader_writer = Arc::clone(&writer);
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let replies: Vec<String> = {
+                let mut t = reader_term.lock().unwrap();
+                t.advance(&buf[..n]);
+                t.drain_events()
+                    .into_iter()
+                    .filter_map(|ev| match ev {
+                        TermEvent::PtyWrite(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect()
+            };
+            let mut w = reader_writer.lock().unwrap();
+            for reply in replies {
+                let _ = w.write_all(reply.as_bytes());
+            }
+            let _ = w.flush();
+        }
+    });
+    let dump = |label: &str| {
+        let snap = term.lock().unwrap().snapshot();
+        let rows = snap.rows_text();
+        let first = rows.iter().position(|l| !l.trim().is_empty());
+        let last = rows.iter().rposition(|l| !l.trim().is_empty());
+        println!(
+            "\n----- {label} (ConPTY {pty_rows} / grid {grid_rows}) — first non-blank row = {:?}, last = {:?} -----",
+            first, last
+        );
+        for (i, line) in rows.iter().enumerate() {
+            println!("{i:>2}|{line}");
+        }
+        println!("----- end -----");
+    };
+
+    thread::sleep(Duration::from_millis(2000)); // profile + prompt load at spawn size
+    // First-render resize: alacritty -> grid_rows. ConPTY grows to the lock only
+    // in the buggy path; the fix (`nogrow`) leaves ConPTY at its spawn height.
+    if spawn_rows != 0 {
+        term.lock().unwrap().resize(GridSize::new(grid_rows, cols as usize));
+        if !nogrow {
+            let _ = pty.resize(PtySize::new(pty_rows, cols));
+        }
+        thread::sleep(Duration::from_millis(800));
+    }
+    dump("fresh prompt");
+    {
+        let mut w = writer.lock().unwrap();
+        let _ = w.write_all(b"ls\r");
+        let _ = w.flush();
+    }
+    thread::sleep(Duration::from_millis(1500));
+    dump("after ls");
 
     let _ = pty.killer().and_then(|mut k| k.kill());
     std::process::exit(0);
