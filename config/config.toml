@@ -17,6 +17,18 @@ theme = "Tn Dark"             # 主题名 = %APPDATA%\Tn\themes\*.toml 里的 na
 # opacity  = 0.96            # 覆盖主题的窗口不透明度(暂未启用)
 # backdrop = "mica"          # mica | acrylic | solid,覆盖主题窗口质感(暂未启用)
 
+# Quick Terminal —— Quake/Guake 式下拉悬浮终端(M5)。全局热键随时唤出/隐藏,
+# 边缘滑入,失焦自动隐藏;最适合不打断当前工作就召唤 Claude/Codex。见 docs/BLUEPRINT.md §8 M5。
+[quick_terminal]
+enabled        = true            # 是否注册全局热键
+hotkey         = "ctrl+alt+space" # 切换热键:modifier(ctrl/alt/shift/win)用 + 连接 + 单个键
+position       = "top"           # top | bottom | left | right | center —— 停靠/滑入的边
+height_percent = 45.0            # 占工作区高度的百分比(top/bottom/center 用)
+width_percent  = 60.0            # 占工作区宽度的百分比(left/right/center 用)
+animation_ms   = 150             # 滑入/滑出动画时长(毫秒;0 = 不动画)
+autohide       = true            # 失焦时自动隐藏
+# profile      = "Claude"        # 在其中启动的 [[profiles]] 名;省略 = 默认 pwsh
+
 # 会话启动器条目 —— 配置即数据(见 docs/UX-DESIGN.md §6)。
 # M4 命令面板消费;当前版本仅解析保存,不影响运行。
 [[profiles]]

@@ -260,16 +260,17 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 - [ ] 窗口内颜值微调 + 标题栏拖动/控制真机点验;连续动画(运行/Thinking——agent 思考态 PTY 不可观测,未伪造);per-pane cwd 经 OSC 7 实时跟随;真机 Codex 用量复核。
 - **退出标准**:在 Tn 里启动 Claude Code/Codex 明显优于普通终端。
 
-### M5 — Quick Terminal(幽灵模式)🧭
+### M5 — Quick Terminal(幽灵模式)🚧 功能闭环(headless 已验证,待真机肉眼验证)
 **目标**:Quake/Guake 风格的下拉/滑入式悬浮终端——任意 app 里按全局快捷键即唤出一个置顶悬浮终端(直接跟 Claude/Codex 对话),用完滑走。**对 vibe coding 价值极高**:不打断当前工作即可召唤 AI 终端。设计取自 Ghostty 的 Quick Terminal(见 [REFERENCES.md](REFERENCES.md);源码 `src/cli/toggle_quick_terminal.zig`、`Config.zig` 的 `quick-terminal-*`)。
-- 依赖:仅需 M0 的窗口能力即可起步;与 M4 的 AI 快启叠加最香。**独立特性,可在 M1 之后任意时机插入**。
+- 依赖:仅需 M0 的窗口能力即可起步;与 M4 的 AI 快启叠加最香。**独立特性,可在 M1 之后任意时机插入**(owner 选择在 M2 之前先做)。
 - 实现三要素(Windows/GPUI):
-  - [ ] **全局热键**:Win32 `RegisterHotKey`(必要时低级键盘钩子),前台任意 app 都能唤出;动作 `toggle_quick_terminal`。
-  - [ ] **悬浮窗**:GPUI 开一个**无边框、`WS_EX_TOPMOST`、不进任务栏**的窗口(macOS 走 overlay window / Linux 走 wlr-layer-shell —— 跨平台时再分支)。
-  - [ ] **边缘滑入/滑出动画**(GPUI 动画),位置 `top/bottom/left/right/center`。
-  - [ ] **失焦自动隐藏**(autohide,监听 blur);跟随当前虚拟桌面。
-- 配置(`[quick_terminal]`,镜像 Ghostty 命名):`enabled / position / size(% 或 px)/ animation_duration / autohide / hotkey / screen`。
-- **退出标准**:全局热键一键唤出/隐藏悬浮终端,带滑动动画与失焦自动隐藏;可一键在其中起 Claude/Codex。
+  - [x] **全局热键**:`tn-ui::platform` 专属线程 `RegisterHotKey(None,…)` + `GetMessageW` 私有消息循环,`WM_HOTKEY` 经 channel 通知前台 → `QuickTerminal::toggle`。VK/MOD 映射(字母/数字/F1–F24/space/grave/…)。`enabled=false` 或热键不可解析时优雅跳过。
+  - [x] **悬浮窗**:GPUI `WindowKind::PopUp`(Windows = `WS_EX_TOOLWINDOW` 无边框 + 不进任务栏)+ 经 raw HWND 设 `WS_EX_TOPMOST`;启动时开**隐藏**窗口、预启动 shell(首唤即时)。
+  - [x] **边缘滑入/滑出动画**:`tn_config::quick_terminal` 纯几何(`shown/hidden/frame_rect` + `ease_out_cubic`,11 单测)+ 前台执行器 16ms 帧循环驱动 `SetWindowPos`(物理像素,仅移动不缩放);`anim_token` 反向 toggle 取消在途动画。位置 `top/bottom/left/right/center`。
+  - [x] **失焦自动隐藏**:`cx.observe_window_activation` → 失焦且 `autohide` 时滑出并 `ShowWindow(SW_HIDE)`。(跟随当前虚拟桌面 = OS 默认行为。)
+  - [ ] **真机肉眼验证**:外观/动画顺滑、`SetForegroundWindow` 取焦后键入直达 agent、失焦不误触、多显示器/高 DPI 定位、首帧不空白。
+- 配置(`[quick_terminal]`):`enabled / position / height_percent / width_percent / animation_ms / autohide / hotkey / profile`(默认 `ctrl+alt+space` / `top` / 45%;`profile` 省略 = pwsh)。
+- **退出标准**:全局热键一键唤出/隐藏悬浮终端,带滑动动画与失焦自动隐藏;可一键在其中起 Claude/Codex。(headless 闭环达成;**真机肉眼验证待 owner**。)
 
 ---
 

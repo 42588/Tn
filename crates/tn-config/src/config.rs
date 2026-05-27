@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::color::Color;
+use crate::quick_terminal::QuickTerminal;
 use crate::theme::Backdrop;
 
 /// The authoritative default `config.toml` (written on first run).
@@ -20,6 +21,8 @@ pub struct Config {
     pub general: General,
     pub font: Font,
     pub appearance: Appearance,
+    #[serde(default)]
+    pub quick_terminal: QuickTerminal,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -178,6 +181,18 @@ mod tests {
         // Template ships example profiles + keybindings.
         assert!(c.profiles.iter().any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("claude")));
         assert!(c.keybindings.iter().any(|k| k.id == "new_tab"));
+        // Quick Terminal section parses and matches its documented defaults.
+        assert!(c.quick_terminal.enabled);
+        assert_eq!(c.quick_terminal.hotkey, "ctrl+alt+space");
+        assert_eq!(c.quick_terminal.position, crate::QuickTermPosition::Top);
+    }
+
+    #[test]
+    fn quick_terminal_defaults_when_section_absent() {
+        // A config with no [quick_terminal] still gets the built-in defaults.
+        let c = Config::from_toml_str("[font]\nsize = 16.0\n").expect("partial parses");
+        assert_eq!(c.quick_terminal, crate::QuickTerminal::default());
+        assert!(c.quick_terminal.enabled);
     }
 
     #[test]

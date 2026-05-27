@@ -9,17 +9,21 @@ mod assets;
 mod block_view;
 mod explorer;
 mod input;
+mod platform;
+mod quick_terminal;
 mod terminal_view;
 mod viewer;
 mod workspace;
 
 use std::sync::Arc;
 
+use futures::StreamExt;
 use gpui::{
-    px, size, App, AppContext, Application, Bounds, TitlebarOptions, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions,
+    px, size, App, AppContext, Application, AsyncApp, Bounds, TitlebarOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions,
 };
 
+use quick_terminal::QuickTerminal;
 use workspace::Workspace;
 
 /// Open the main window and run the GPUI event loop (blocks until quit).
@@ -46,33 +50,104 @@ pub fn run() {
     Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         workspace::bind_keys(cx, &config);
 
-        // Quit when the last window is closed (gpui doesn't do this by default),
-        // so closing the window exits cleanly instead of leaving the process up.
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
+        let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
+        let main_config = config.clone();
+        let main_window = cx
+            .open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("Tn".into()),
+                        // Hide the OS caption — the workspace draws its own integrated
+                        // titlebar (brand + tabs + window controls). Drag + min/max/
+                        // close are wired via `window_control_area` regions.
+                        appears_transparent: true,
+                        ..Default::default()
+                    }),
+                    window_background,
+                    ..Default::default()
+                },
+                move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),
+            )
+            .expect("failed to open window");
+        let main_id = main_window.window_id();
+
+        // Quick Terminal (M5): a borderless, topmost drop-down window summoned by
+        // a global hotkey. Opened hidden up front (its shell pre-spawns) so the
+        // first summon is instant. Win32 details (topmost, slide, hotkey) live in
+        // `platform.rs` — see CLAUDE.md M5.
+        spawn_quick_terminal(cx, config.clone(), window_background);
+
+        // Quit when the MAIN workspace window closes (gpui doesn't quit on its
+        // own). We can't just check `windows().is_empty()`: the Quick Terminal is
+        // an always-open (hidden) window, so it would keep the app alive
+        // invisibly after the user closes the main window. Quit once the main
+        // window is gone — that also tears down the quick window + its shell.
+        cx.on_window_closed(move |cx| {
+            let main_open = cx.windows().iter().any(|w| w.window_id() == main_id);
+            if !main_open {
                 cx.quit();
             }
         })
         .detach();
 
-        let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Tn".into()),
-                    // Hide the OS caption — the workspace draws its own integrated
-                    // titlebar (brand + tabs + window controls). Drag + min/max/
-                    // close are wired via `window_control_area` regions.
-                    appears_transparent: true,
-                    ..Default::default()
-                }),
-                window_background,
-                ..Default::default()
-            },
-            move |_window, cx| cx.new(|cx| Workspace::new(cx, config.clone())),
-        )
-        .expect("failed to open window");
         cx.activate(true);
     });
+}
+
+/// Open the hidden Quick Terminal window and wire its global hotkey toggle.
+/// No-op (with a log) when disabled or the hotkey is unparseable.
+fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>, bg: WindowBackgroundAppearance) {
+    // The headless self-test (TN_AUTOQUIT) drives the first pane and quits; a
+    // second self-testing TerminalView would race it. Keep that mode focused.
+    if std::env::var("TN_AUTOQUIT").is_ok() {
+        return;
+    }
+    let qt = &config.config.quick_terminal;
+    if !qt.enabled {
+        return;
+    }
+    let Some(spec) = tn_config::parse_hotkey(&qt.hotkey) else {
+        tracing::warn!(hotkey = %qt.hotkey, "invalid quick_terminal hotkey; not registered");
+        return;
+    };
+
+    // Placeholder bounds; the window is repositioned (and resized) to the docking
+    // edge before it is ever shown, so these never appear on screen.
+    let bounds = Bounds::centered(None, size(px(1000.), px(420.)), cx);
+    let win_cfg = config.clone();
+    let window = match cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions { appears_transparent: true, ..Default::default() }),
+            kind: WindowKind::PopUp, // borderless + off-taskbar (WS_EX_TOOLWINDOW)
+            is_movable: false,
+            is_resizable: false,
+            is_minimizable: false,
+            focus: false,
+            show: false,
+            window_background: bg,
+            ..Default::default()
+        },
+        move |_window, cx| cx.new(|cx| QuickTerminal::new(cx, win_cfg.clone())),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::error!("failed to open quick terminal window: {e}");
+            return;
+        }
+    };
+
+    // Listen for the global hotkey on a dedicated thread; toggle on the main
+    // thread (where the window lives) each time it fires.
+    let Some(mut rx) = platform::spawn_hotkey_listener(&spec) else {
+        tracing::warn!(hotkey = %qt.hotkey, "could not register quick_terminal hotkey");
+        return;
+    };
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        while rx.next().await.is_some() {
+            let _ = window.update(cx, |qt, window, cx| qt.toggle(window, cx));
+        }
+    })
+    .detach();
 }

@@ -32,6 +32,12 @@ tn-ui = { path = "crates/tn-ui" }
 # GPU UI framework (Zed). DirectX 11 + DirectWrite on Windows.
 gpui = "0.2"
 
+# Win32 glue for the Quick Terminal (M5): global hotkey (RegisterHotKey) +
+# topmost/borderless floating window (SetWindowPos) that gpui doesn't expose.
+# Pinned to gpui's `windows` version so the crate is shared, not duplicated.
+windows = "0.61"
+raw-window-handle = "0.6"  # extract the OS HWND from a gpui Window
+
 # terminal engine + pty
 alacritty_terminal = "0.26"
 portable-pty = "0.9"

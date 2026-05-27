@@ -10,6 +10,7 @@
 mod color;
 mod config;
 mod paths;
+mod quick_terminal;
 mod theme;
 
 use std::collections::HashMap;
@@ -22,6 +23,9 @@ pub use config::{
     DEFAULT_CONFIG_TOML,
 };
 pub use paths::{config_dir, config_path, themes_dir};
+pub use quick_terminal::{
+    ease_out_cubic, lerp_rect, parse_hotkey, HotkeySpec, QuickTermPosition, QuickTerminal, Rect,
+};
 pub use theme::{
     Ansi16, AgentColors, Backdrop, Corner, Mode, TerminalColors, Theme, UiColors, WindowChrome,
     TN_DARK_TOML,

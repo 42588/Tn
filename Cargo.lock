@@ -5598,6 +5598,7 @@ dependencies = [
  "anyhow",
  "futures",
  "gpui",
+ "raw-window-handle",
  "tn-ai",
  "tn-blocks",
  "tn-config",
@@ -5605,6 +5606,7 @@ dependencies = [
  "tn-pty",
  "tn-shell",
  "tracing",
+ "windows 0.61.3",
 ]
 
 [[package]]

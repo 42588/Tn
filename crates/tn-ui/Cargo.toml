@@ -17,3 +17,13 @@ gpui.workspace = true
 futures.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+raw-window-handle.workspace = true
+
+# Quick Terminal (M5) global hotkey + topmost window glue — Windows only.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Graphics_Gdi",
+] }

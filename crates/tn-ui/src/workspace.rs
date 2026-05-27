@@ -1327,6 +1327,49 @@ impl Render for Workspace {
             .child(div().flex_1().h_full().window_control_area(WindowControlArea::Drag))
             .child(controls);
 
+        // Mouse close buttons for the side panels. Toggling them by key uses
+        // Ctrl+Shift+J / Ctrl+Shift+B, but the system IME/layout-switch hotkey
+        // (also Ctrl+Shift) can swallow those on Chinese/multi-layout Windows —
+        // so each panel must also be closeable by click, or it gets stuck open.
+        let viewer_close = div()
+            .absolute()
+            .top_1()
+            .right_1()
+            .w(px(20.))
+            .h(px(20.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .hover(|s| s.bg(rgba(HOVER)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    this.viewer_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(icon("close", 11., ui.muted));
+        let explorer_close = div()
+            .absolute()
+            .top_1()
+            .right_1()
+            .w(px(20.))
+            .h(px(20.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .hover(|s| s.bg(rgba(HOVER)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    this.explorer_open = false;
+                    cx.notify();
+                }),
+            )
+            .child(icon("close", 11., ui.muted));
+
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
@@ -1342,8 +1385,10 @@ impl Render for Workspace {
                         .w(px(214.))
                         .flex_none()
                         .min_h(px(0.))
+                        .relative() // positioning context for the close button
                         .overflow_hidden()
-                        .child(self.explorer.clone()),
+                        .child(self.explorer.clone())
+                        .child(explorer_close),
                 )
             })
             .child(
@@ -1362,8 +1407,10 @@ impl Render for Workspace {
                         .w(px(420.))
                         .flex_none()
                         .min_h(px(0.))
+                        .relative() // positioning context for the close button
                         .overflow_hidden()
-                        .child(self.viewer.clone()),
+                        .child(self.viewer.clone())
+                        .child(viewer_close),
                 )
             });
 

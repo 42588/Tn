@@ -44,6 +44,11 @@ use crate::block_view;
 /// on every terminal frame.
 pub struct UsageUpdated;
 
+/// Emitted once the pane's child process exits (detected via ConPTY `try_wait`,
+/// since ConPTY doesn't reliably EOF the reader). The quick terminal listens for
+/// this to fall back to its launcher when the hosted agent/shell exits.
+pub struct ProcessExited;
+
 /// Convert a tn-core RGB color to a GPUI color.
 fn col(c: Rgb) -> Rgba {
     gpui::rgb(((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32)
@@ -109,6 +114,18 @@ impl LaunchSpec {
     /// can't execute directly — pwsh resolves them via PATH + PATHEXT, and the
     /// shell survives the agent's exit (back to a prompt).
     pub fn from_profile(p: &tn_config::Profile) -> Option<Self> {
+        Self::from_profile_inner(p, true)
+    }
+
+    /// Like [`from_profile`], but the pwsh hosting a non-pwsh agent omits
+    /// `-NoExit`, so exiting the agent exits the PTY. The quick terminal uses
+    /// this so "exit claude" returns to its launcher instead of leaving a
+    /// lingering pwsh prompt under a stale agent header.
+    pub fn from_profile_ephemeral(p: &tn_config::Profile) -> Option<Self> {
+        Self::from_profile_inner(p, false)
+    }
+
+    fn from_profile_inner(p: &tn_config::Profile, persist: bool) -> Option<Self> {
         let command = p.command.clone()?;
         // Agent identity: an explicit `agent = "..."` field wins, else infer from
         // the command (`claude` / `codex`). This is the launch-intent signal the
@@ -131,14 +148,22 @@ impl LaunchSpec {
                 agent,
             });
         }
-        // Host the command in pwsh (single-quote-escaped call operator).
+        // Host the command in pwsh (single-quote-escaped call operator). With
+        // `persist` we keep `-NoExit` so the shell survives the agent's exit
+        // (a prompt); without it, pwsh exits when the agent does.
         let mut invoke = format!("& '{}'", command.replace('\'', "''"));
         for a in &p.args {
             invoke.push_str(&format!(" '{}'", a.replace('\'', "''")));
         }
+        let mut args = vec!["-NoLogo".to_string()];
+        if persist {
+            args.push("-NoExit".into());
+        }
+        args.push("-Command".into());
+        args.push(invoke);
         Some(Self {
             program: "powershell.exe".into(),
-            args: vec!["-NoLogo".into(), "-NoExit".into(), "-Command".into(), invoke],
+            args,
             integrate_pwsh: false,
             agent,
         })
@@ -231,6 +256,7 @@ impl TerminalView {
         });
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
+        let pty = Arc::new(Mutex::new(pty));
 
         // Build the engine with the configured scrollback + theme palette.
         let palette = palette_from(&config.theme);
@@ -260,6 +286,9 @@ impl TerminalView {
             blocks.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
+        // Watch the child so a pane (esp. the quick terminal) can react to its
+        // shell/agent exiting. Harmless for the main window (no subscriber).
+        Self::spawn_exit_watcher(cx, pty.clone());
 
         // Per-pane AI usage poller — ONLY for a pane launched AS an agent (launch
         // intent). A plain shell must not masquerade as Claude/Codex just because
@@ -296,7 +325,7 @@ impl TerminalView {
         Self {
             terminal,
             writer,
-            pty: Arc::new(Mutex::new(pty)),
+            pty,
             focus_handle: cx.focus_handle(),
             size,
             cell_width,
@@ -398,6 +427,31 @@ impl TerminalView {
             while wake_rx.next().await.is_some() {
                 dirty.store(false, Ordering::Relaxed);
                 if this.update(cx, |_view, cx| cx.notify()).is_err() {
+                    break; // view dropped
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Poll the PTY child; emit [`ProcessExited`] once, when it exits. ConPTY
+    /// doesn't reliably EOF the reader (see CLAUDE.md), so `try_wait` is the
+    /// authoritative signal. Cheap (a brief lock every 400ms).
+    fn spawn_exit_watcher(cx: &mut Context<Self>, pty: Arc<Mutex<LocalPty>>) {
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                exec.timer(Duration::from_millis(400)).await;
+                let exited = pty
+                    .lock()
+                    .ok()
+                    .and_then(|mut p| p.try_wait().ok().flatten())
+                    .is_some();
+                if exited {
+                    let _ = this.update(cx, |_v, cx| cx.emit(ProcessExited));
+                    break;
+                }
+                if this.update(cx, |_, _| ()).is_err() {
                     break; // view dropped
                 }
             }
@@ -907,6 +961,7 @@ impl TerminalView {
 }
 
 impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
+impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

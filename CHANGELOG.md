@@ -9,6 +9,70 @@
 
 ---
 
+## [Unreleased] — M5 Quick Terminal(幽灵下拉终端,headless 闭环 + 待真机肉眼验证)
+
+> Quake/Guake 式悬浮终端:任意 app 里按全局热键唤出一个置顶悬浮终端(直接跟 Claude/Codex 对话),
+> 边缘滑入,失焦自动隐藏。**headless 部分**(配置 schema、滑入几何、热键解析、热键注册)已在此环境验证;
+> **窗口外观 / 滑动动画 / 失焦隐藏 / 取焦输入** = 真机肉眼验证(沿用 M3/M4 节奏)。
+
+### 新增 (Added) — headless(可单测/已验证)
+- **`tn-config::quick_terminal`**(新模块,纯函数 + schema):`[quick_terminal]` 配置
+  (`enabled / position(top·bottom·left·right·center) / height_percent / width_percent /
+  animation_ms / autohide / hotkey / profile`,字段全 `#[serde(default)]` 可继承)+ **滑入几何**
+  (`shown_rect/hidden_rect/frame_rect(work_area)` 按停靠边算屏上/屏外矩形 + `ease_out_cubic` 缓动,
+  单位无关 f32,平台层换算物理像素)+ **热键串解析** `parse_hotkey("ctrl+alt+space")→HotkeySpec`
+  (`+` 分隔、大小写/别名无关、要求至少一个 ctrl/alt/win)。12 单测(总 83)。
+- **默认 `config.toml`** 加 `[quick_terminal]` 段(带注释,默认 `ctrl+alt+space` / `top` / 45%)。
+
+### 新增 (Added) — GPUI/Win32 接线(编译通过,行为待真机验证)
+- **`tn-ui::platform`**(Windows-only,非 Windows 有 no-op stub):**全局热键监听线程**
+  (`RegisterHotKey(None,…)` + `GetMessageW` 私有消息循环 → `WM_HOTKEY` 经 channel 通知前台;
+  VK/MOD 映射含字母/数字/F1–F24/space/grave 等)+ **置顶/滑动/取焦**(经 raw HWND:`WS_EX_TOPMOST` +
+  `SetWindowPos` 物理像素移动 + `ShowWindow`/`SetForegroundWindow` + `GetMonitorInfoW` 工作区)。
+  HWND 从 gpui `Window` 的 `HasWindowHandle`(UFCS 绕开同名 inherent 方法)取。
+- **`tn-ui::quick_terminal`**(`QuickTerminal` GPUI 视图):独立**无边框置顶 `WindowKind::PopUp` 窗口**;
+  `toggle/reveal/hide` + **滑入动画**(前台执行器 16ms 帧循环驱动 `SetWindowPos`,`anim_token` 反向 toggle
+  取消在途动画,故 `SetWindowPos` 恒在窗口自己的线程、无跨线程封送)+ **失焦自动隐藏**
+  (`cx.observe_window_activation`)。**唤出时弹启动器**(镜像命令面板):无会话时列出可启动 `[[profiles]]`
+  (Claude/Codex/pwsh,↑↓/Enter/Esc/点击),选中即起一个普通 `TerminalView`(agent 自带头部 + 用量环);
+  会话隐藏后保留;**换 agent = 退出当前会话**(它经 `ProcessExited` 回到启动器,再选别的),旧会话 drop 即杀。
+  Calm Glass 暖描边。
+- **退出 agent/shell 自动回启动器**:`TerminalView` 加 `spawn_exit_watcher`(400ms `try_wait` 轮询 →
+  `ProcessExited` 事件;ConPTY 不可靠 EOF,故用 try_wait)。quick 窗口用 `LaunchSpec::from_profile_ephemeral`
+  起 agent(**省掉 `-NoExit`**,退出 claude 即退出 PTY)→ 订阅 `ProcessExited` 回到启动器(`exit` 退出 pwsh
+  同理)。主窗口不订阅、无影响。
+- **`tn-ui::run`**:启动时开**隐藏**的 quick 窗口(`show:false`,shell 预启动)+ 起热键线程 +
+  `App::spawn` 前台循环把热键 → `qt_window.update(|qt,window,cx| qt.toggle(…))`;`TN_AUTOQUIT` 下跳过
+  (避免第二个自测 `TerminalView` 争抢 quit)。热键不可解析/`enabled=false` 优雅跳过(记日志,不崩)。
+
+### 修复 (Fixed) — 真机 dogfood
+- **窗口尺寸不生效(卡在占位尺寸)**:外部 `SetWindowPos`/`ShowWindow` 会**同步**把 `WM_SIZE` 派回
+  gpui 窗口过程并 `borrow_mut` 窗口状态;原先在 `toggle`(处于 `window.update` 借用中)里**内联**调用 →
+  **重入借用**被 gpui 静默丢弃("RefCell already borrowed"),窗口停在占位尺寸(几何其实算对了:
+  2560×693 物理、scale 1.5)。改为把**所有**窗口操作(topmost/set_bounds/show)丢进 `cx.spawn` 前台任务
+  (借用释放后跑)、取焦移到 `render`;autohide 隐藏也走同一延迟路径。详见 CLAUDE.md「踩过的坑」。
+- **关主窗口后进程残留**:quick 窗口是**常开**的(隐藏≠关闭),故 `on_window_closed` 里的
+  `windows().is_empty()` 永不为真 → 关掉主窗口后 `tn.exe` 带着预启动 shell 在后台残留。改为**记录主窗口
+  id、仅当它从 `cx.windows()` 消失时 `cx.quit()`**(退出会一并销毁 quick 窗口 + 杀其 shell)。
+  **隐藏语义**(回答常见疑问):点别处/再按热键**只隐藏不杀进程**——会话(历史/对话/cwd)保留,
+  下次唤出即原会话;子进程只在 **app 退出**时经 `LocalPty::Drop` 终止。
+- **右上"切换"chip 与 agent 头部重叠**(真机发现):agent 会话的 `TerminalView` 头部本就占满顶栏
+  (左名字、右用量环),浮动 chip 压在用量环上、还重复显示 agent 名 → 看着乱。**移除浮动 chip**,改用
+**改用"退出当前会话即回启动器"**作为换 agent 的路径(见上 `ProcessExited`)。**注**:曾尝试在 quick 窗口里
+  绑 `Ctrl+Shift+L` / `Ctrl+Tab`(`key_context`+`on_action`,镜像主窗口)——但**在 PopUp 窗口里两个都无反应**
+  (动作派发未到达 quick 窗口根;非 IME,因 `Ctrl+Tab` 也不触发)。既然"退出会话回启动器"已能换 agent、且与单会话
+  模型一致,遂**移除该 in-window 切换键**,不留无效提示。真正的窗口内切换键留待排查 gpui PopUp 的 keymap 派发。
+- **退出 claude 后界面没回到普通 shell/启动器**(真机发现):agent 原以 `-NoExit` 托管,退出 claude 只回到
+  一个挂着**陈旧 Claude 头部**的 pwsh 提示符。改为 ephemeral 启动 + `ProcessExited` 监听(见上),退出即回启动器。
+- **主窗口文件/Diff 查看器打开后关不掉**(真机发现):查看器靠点文件(explorer `OpenFile`)打开、只能用
+  `Ctrl+Shift+J` 关——而 `Ctrl+Shift` 在中文 Windows 被 IME 吞,面板就**卡死打开、无鼠标关闭路径**。给查看器
+  与浏览器侧栏各加一个**鼠标 `✕` 关闭按钮**(右上角,`absolute`),不依赖键盘。同根因(`Ctrl+Shift` 被吞)。
+
+### 待办 (TODO) — 真机肉眼验证
+- 滑动动画顺滑度;取焦后键入直达 agent;失焦自动隐藏不误触;多显示器/高 DPI 定位;首帧不空白。
+
+---
+
 ## [Unreleased] — M4 托管 AI + 用量 + 命令面板 + 颜值(功能闭环,待窗口内颜值微调)
 
 ### 新增 (Added) — AI 用量(headless)
