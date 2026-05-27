@@ -123,65 +123,85 @@ impl LaunchSpec {
     }
 
     fn from_profile_inner(p: &tn_config::Profile, persist: bool) -> Option<Self> {
-        // WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`.
-        // ConPTY runs wsl.exe like any program, so no special backend is needed;
-        // no pwsh integration (the distro runs bash/zsh). An empty/absent distro
-        // launches WSL's default distro.
-        if p.kind == tn_config::ProfileKind::Wsl {
-            let mut args = Vec::new();
-            if let Some(distro) = p.distro.as_deref().filter(|d| !d.is_empty()) {
-                args.push("-d".to_string());
-                args.push(distro.to_string());
+        // One launch path per profile kind (待优化清单 §6.3). WSL/SSH ignore the
+        // command field; everything else needs a command, then forks on whether
+        // it's a native pwsh (run directly + integrated) or another program
+        // (hosted inside pwsh, since Windows can't `CreateProcessW` an npm shim).
+        match p.kind {
+            tn_config::ProfileKind::Wsl => Some(Self::launch_wsl(p)),
+            tn_config::ProfileKind::Ssh => Self::launch_ssh(p),
+            _ => {
+                let command = p.command.clone()?;
+                // Agent identity: an explicit `agent = "..."` wins, else infer from
+                // the command (`claude` / `codex`). This launch-intent signal is
+                // what the status bar reads, so a Codex pane never shows Claude's
+                // usage.
+                let agent = p
+                    .agent
+                    .as_deref()
+                    .and_then(tn_ai::agent_kind_for_command)
+                    .or_else(|| tn_ai::agent_kind_for_command(&command));
+                let lc = command.to_ascii_lowercase();
+                if lc.contains("powershell") || lc.contains("pwsh") {
+                    Some(Self::launch_pwsh(command, &p.args, agent))
+                } else {
+                    Some(Self::launch_hosted(command, &p.args, agent, persist))
+                }
             }
-            return Some(Self {
-                program: "wsl.exe".into(),
-                args,
-                integrate_pwsh: false,
-                agent: None,
-                ssh: None,
-            });
         }
-        // SSH (M2b): a remote session over russh. `host` (optionally `host:port`)
-        // + `user` build an `SshConfig`; the view spawns an `SshBackend`.
-        if p.kind == tn_config::ProfileKind::Ssh {
-            let host = p.host.clone()?;
-            let cfg = tn_pty::SshConfig::parse(&host, p.user.as_deref());
-            return Some(Self {
-                program: format!("{}@{}", cfg.user, cfg.host),
-                args: Vec::new(),
-                integrate_pwsh: false,
-                agent: None,
-                ssh: Some(cfg),
-            });
+    }
+
+    /// WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`. ConPTY
+    /// runs `wsl.exe` like any program, so no special backend is needed; no pwsh
+    /// integration (the distro runs bash/zsh). An empty/absent distro launches
+    /// WSL's default distro.
+    fn launch_wsl(p: &tn_config::Profile) -> Self {
+        let mut args = Vec::new();
+        if let Some(distro) = p.distro.as_deref().filter(|d| !d.is_empty()) {
+            args.push("-d".to_string());
+            args.push(distro.to_string());
         }
-        let command = p.command.clone()?;
-        // Agent identity: an explicit `agent = "..."` field wins, else infer from
-        // the command (`claude` / `codex`). This is the launch-intent signal the
-        // status bar reads, so a Codex pane never shows Claude's usage.
-        let agent = p
-            .agent
-            .as_deref()
-            .and_then(tn_ai::agent_kind_for_command)
-            .or_else(|| tn_ai::agent_kind_for_command(&command));
-        let lc = command.to_ascii_lowercase();
-        if lc.contains("powershell") || lc.contains("pwsh") {
-            let mut args = p.args.clone();
-            if args.is_empty() {
-                args.push("-NoLogo".into());
-            }
-            return Some(Self {
-                program: command,
-                args,
-                integrate_pwsh: true,
-                agent,
-                ssh: None,
-            });
+        Self { program: "wsl.exe".into(), args, integrate_pwsh: false, agent: None, ssh: None }
+    }
+
+    /// SSH (M2b): a remote session over russh. `host` (optionally `host:port`) +
+    /// `user` build an `SshConfig`; the view spawns an `SshBackend`. `None` if the
+    /// profile carries no host.
+    fn launch_ssh(p: &tn_config::Profile) -> Option<Self> {
+        let host = p.host.clone()?;
+        let cfg = tn_pty::SshConfig::parse(&host, p.user.as_deref());
+        Some(Self {
+            program: format!("{}@{}", cfg.user, cfg.host),
+            args: Vec::new(),
+            integrate_pwsh: false,
+            agent: None,
+            ssh: Some(cfg),
+        })
+    }
+
+    /// Native PowerShell: run directly with OSC 133 integration. Empty args
+    /// default to `-NoLogo`.
+    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentKind>) -> Self {
+        let mut args = profile_args.to_vec();
+        if args.is_empty() {
+            args.push("-NoLogo".into());
         }
-        // Host the command in pwsh (single-quote-escaped call operator). With
-        // `persist` we keep `-NoExit` so the shell survives the agent's exit
-        // (a prompt); without it, pwsh exits when the agent does.
+        Self { program: command, args, integrate_pwsh: true, agent, ssh: None }
+    }
+
+    /// Host a non-pwsh command inside pwsh (single-quote-escaped call operator),
+    /// because Windows can't `CreateProcessW` an extensionless npm shim. With
+    /// `persist` we keep `-NoExit` so the shell survives the agent's exit (back to
+    /// a prompt); without it, pwsh exits when the agent does (the quick terminal's
+    /// "exit claude → launcher" path).
+    fn launch_hosted(
+        command: String,
+        profile_args: &[String],
+        agent: Option<AgentKind>,
+        persist: bool,
+    ) -> Self {
         let mut invoke = format!("& '{}'", command.replace('\'', "''"));
-        for a in &p.args {
+        for a in profile_args {
             invoke.push_str(&format!(" '{}'", a.replace('\'', "''")));
         }
         let mut args = vec!["-NoLogo".to_string()];
@@ -190,13 +210,7 @@ impl LaunchSpec {
         }
         args.push("-Command".into());
         args.push(invoke);
-        Some(Self {
-            program: "powershell.exe".into(),
-            args,
-            integrate_pwsh: false,
-            agent,
-            ssh: None,
-        })
+        Self { program: "powershell.exe".into(), args, integrate_pwsh: false, agent, ssh: None }
     }
 }
 
@@ -1398,6 +1412,65 @@ mod tests {
         let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
         assert!(spec.args.is_empty()); // bare `wsl.exe` -> default distro
+    }
+
+    // ── Launch-path coverage (待优化清单 §6.3) ─────────────────────────────────
+    // The SSH / native-pwsh / hosted-agent paths were previously untested; these
+    // pin each one so the per-kind refactor (and future edits) stay honest.
+
+    #[test]
+    fn ssh_profile_builds_config_and_label() {
+        let p = first_profile(
+            "[[profiles]]\nname=\"box\"\nkind=\"ssh\"\nhost=\"example.com\"\nuser=\"alice\"\n",
+        );
+        let spec = LaunchSpec::from_profile(&p).expect("ssh profile is launchable");
+        let cfg = spec.ssh.expect("ssh config present");
+        assert_eq!(cfg.host, "example.com");
+        assert_eq!(cfg.user, "alice");
+        assert_eq!(spec.program, "alice@example.com"); // the pane label
+        assert!(!spec.integrate_pwsh);
+        assert!(spec.agent.is_none());
+    }
+
+    #[test]
+    fn ssh_profile_without_host_is_none() {
+        let p = first_profile("[[profiles]]\nname=\"box\"\nkind=\"ssh\"\nuser=\"alice\"\n");
+        assert!(LaunchSpec::from_profile(&p).is_none(), "no host -> not launchable");
+    }
+
+    #[test]
+    fn native_pwsh_runs_directly_with_integration() {
+        let p = first_profile("[[profiles]]\nname=\"PS\"\ncommand=\"powershell.exe\"\n");
+        let spec = LaunchSpec::from_profile(&p).expect("pwsh is launchable");
+        assert_eq!(spec.program, "powershell.exe");
+        assert!(spec.integrate_pwsh, "native pwsh gets OSC 133 integration");
+        assert_eq!(spec.args, vec!["-NoLogo".to_string()]); // empty args defaulted
+        assert!(spec.ssh.is_none());
+        assert!(spec.agent.is_none());
+    }
+
+    #[test]
+    fn agent_command_is_hosted_in_pwsh_with_noexit() {
+        let p = first_profile("[[profiles]]\nname=\"Claude\"\ncommand=\"claude\"\n");
+        let spec = LaunchSpec::from_profile(&p).expect("claude is launchable");
+        assert_eq!(spec.program, "powershell.exe", "hosted inside pwsh");
+        assert!(!spec.integrate_pwsh);
+        assert_eq!(spec.agent, Some(AgentKind::ClaudeCode), "agent inferred from command");
+        assert!(spec.args.contains(&"-NoExit".to_string()), "persistent keeps -NoExit");
+        assert!(
+            spec.args.iter().any(|a| a.contains("& 'claude'")),
+            "command hosted via call operator, got {:?}",
+            spec.args
+        );
+    }
+
+    #[test]
+    fn ephemeral_hosted_agent_omits_noexit() {
+        let p = first_profile("[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\n");
+        let spec = LaunchSpec::from_profile_ephemeral(&p).expect("codex is launchable");
+        assert_eq!(spec.agent, Some(AgentKind::Codex));
+        assert!(!spec.args.contains(&"-NoExit".to_string()), "ephemeral drops -NoExit");
+        assert!(spec.args.iter().any(|a| a.contains("& 'codex'")));
     }
 
     // ── Row-lock (ConPTY resize-repaint scrollback fix) ───────────────────────
