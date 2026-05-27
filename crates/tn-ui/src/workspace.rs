@@ -6,14 +6,17 @@
 //! flexible-tiling model in docs/UX-DESIGN.md. Divider-drag and drag-dock are
 //! later refinements; this cut gives tabs + keyboard splits + click-to-focus.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    actions, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative, rgb,
-    rgba, AnyElement, App, AppContext, AsyncApp, BoxShadow, Context, Div, Entity, FocusHandle,
-    KeyBinding, KeyDownEvent, MouseButton, Rgba, SharedString, WeakEntity, Window, WindowControlArea,
+    actions, canvas, div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative,
+    rgb, rgba, AnyElement, App, AppContext, AsyncApp, BoxShadow, Context, Div, Entity, FocusHandle,
+    KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Rgba,
+    SharedString, WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -219,6 +222,17 @@ enum Axis {
     Col, // children stacked (horizontal dividers)
 }
 
+/// An in-progress divider drag (mouse). Identifies a split (by tree path in the
+/// active tab) and the gap being dragged, plus the start state for an absolute
+/// (drift-free) weight recompute on each mouse move.
+struct DividerDrag {
+    path: Vec<usize>,
+    gap: usize, // seam between kids[gap] and kids[gap + 1]
+    axis: Axis,
+    start_weights: Vec<f32>,
+    start_pos: f32, // mouse coord along the split axis at mouse-down
+}
+
 /// A tab's layout: a tree whose leaves are panes.
 enum Node {
     Leaf(PaneId),
@@ -269,6 +283,18 @@ impl Node {
                 }
                 kids.iter_mut().any(|k| k.split(target, new, axis))
             }
+        }
+    }
+
+    /// The node at `path` (a sequence of child indices from this node). `[]` is
+    /// `self`. Used by divider-drag to address a specific split.
+    fn at_path_mut(&mut self, path: &[usize]) -> Option<&mut Node> {
+        match path.split_first() {
+            None => Some(self),
+            Some((i, rest)) => match self {
+                Node::Split { kids, .. } => kids.get_mut(*i)?.at_path_mut(rest),
+                Node::Leaf(_) => None,
+            },
         }
     }
 
@@ -465,6 +491,11 @@ pub struct Workspace {
     /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
     /// resolved once at startup (see [`discover_profiles`]).
     launch_profiles: Vec<tn_config::Profile>,
+    /// Active divider drag (mouse), if any.
+    divider_drag: Option<DividerDrag>,
+    /// Each split container's extent (px along its axis), captured per render by
+    /// a canvas, keyed by tree path — lets a divider drag map pixels → weight.
+    split_extents: Rc<RefCell<HashMap<Vec<usize>, f32>>>,
     /// Focus the palette in the next render. Focusing in the toggle action (before
     /// the overlay is rendered) doesn't reliably land, so keys leaked to the
     /// terminal underneath; we focus it in render where the element exists.
@@ -502,6 +533,8 @@ impl Workspace {
             palette_sel: 0,
             palette_focus: cx.focus_handle(),
             launch_profiles,
+            divider_drag: None,
+            split_extents: Rc::new(RefCell::new(HashMap::new())),
             palette_needs_focus: false,
         };
         let id = ws.spawn_pane(cx);
@@ -577,6 +610,48 @@ impl Workspace {
         let fid = self.tabs[self.active].focused;
         if let Some(view) = self.panes.get(&fid).cloned() {
             view.update(cx, |tv, cx| f(tv, cx));
+        }
+    }
+
+    /// Mouse-move while a divider is held: recompute the two adjacent weights
+    /// from the drag start (absolute, so no drift over the drag).
+    fn on_divider_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Copy out the drag state so we don't hold a borrow of `self` while we
+        // mutate the tree below.
+        let (path, gap, axis, start_weights, start_pos) = {
+            let Some(d) = &self.divider_drag else { return };
+            (d.path.clone(), d.gap, d.axis, d.start_weights.clone(), d.start_pos)
+        };
+        let extent = self.split_extents.borrow().get(&path).copied().unwrap_or(0.0);
+        if extent <= 1.0 {
+            return;
+        }
+        let pos = match axis {
+            Axis::Row => f32::from(ev.position.x),
+            Axis::Col => f32::from(ev.position.y),
+        };
+        let sum: f32 = start_weights.iter().sum::<f32>().max(1.0);
+        let pair = start_weights[gap] + start_weights[gap + 1];
+        let min = 0.08 * sum; // keep both sides usably wide
+        if pair <= 2.0 * min {
+            return; // too small to redistribute
+        }
+        // Pixel delta → weight units (weights are relative: 1px = sum/extent units).
+        let dw = (pos - start_pos) / extent * sum;
+        let w0 = (start_weights[gap] + dw).clamp(min, pair - min);
+        if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&path) {
+            if gap + 1 < weights.len() {
+                weights[gap] = w0;
+                weights[gap + 1] = pair - w0;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Mouse-up anywhere ends a divider drag.
+    fn on_divider_up(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.divider_drag.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -893,7 +968,13 @@ impl Workspace {
         }
     }
 
-    fn render_node(&self, node: &Node, focused: PaneId, cx: &mut Context<Self>) -> AnyElement {
+    fn render_node(
+        &self,
+        node: &Node,
+        focused: PaneId,
+        cx: &mut Context<Self>,
+        path: Vec<usize>,
+    ) -> AnyElement {
         match node {
             Node::Leaf(id) => {
                 let id = *id;
@@ -937,8 +1018,12 @@ impl Workspace {
                 weights,
             } => {
                 let row = *axis == Axis::Row;
+                let ax = *axis;
                 let sum: f32 = weights.iter().sum::<f32>().max(1.0);
+                // `.relative()` so the absolutely-positioned dividers + the
+                // extent-capture canvas position within this container.
                 let mut container = div()
+                    .relative()
                     .size_full()
                     .min_w(px(0.))
                     .min_h(px(0.))
@@ -949,7 +1034,7 @@ impl Workspace {
                 } else {
                     container.flex_col()
                 };
-                for (kid, w) in kids.iter().zip(weights.iter()) {
+                for (i, (kid, w)) in kids.iter().zip(weights.iter()).enumerate() {
                     let frac = w / sum;
                     // min_w/min_h 0 + overflow_hidden: without these a flex child's
                     // default `min-size: auto` lets a too-tall pane inflate past its
@@ -960,7 +1045,86 @@ impl Workspace {
                     } else {
                         wrap.w_full().h(relative(frac))
                     };
-                    container = container.child(wrap.child(self.render_node(kid, focused, cx)));
+                    let mut child_path = path.clone();
+                    child_path.push(i);
+                    container = container.child(wrap.child(self.render_node(kid, focused, cx, child_path)));
+                }
+                // Capture this split's pixel extent (along its axis) so a divider
+                // drag can map pixels → weight (canvas overlays, no mouse handler
+                // → transparent to hit-testing).
+                let extents = self.split_extents.clone();
+                let cap_path = path.clone();
+                container = container.child(
+                    canvas(
+                        move |bounds, _w, _cx| {
+                            let ext = if row {
+                                f32::from(bounds.size.width)
+                            } else {
+                                f32::from(bounds.size.height)
+                            };
+                            extents.borrow_mut().insert(cap_path.clone(), ext);
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .size_full(),
+                );
+                // Draggable divider handles at each interior seam (added last so
+                // they sit on top of the panes + canvas).
+                let mut cum = 0.0_f32;
+                for gap in 0..kids.len().saturating_sub(1) {
+                    cum += weights[gap] / sum;
+                    let active_drag = self
+                        .divider_drag
+                        .as_ref()
+                        .is_some_and(|d| d.path == path && d.gap == gap);
+                    let line = if active_drag {
+                        cola(self.config.theme.agents.claude, 0.7)
+                    } else {
+                        rgba(HOVER)
+                    };
+                    let dpath = path.clone();
+                    let start_weights = weights.clone();
+                    let mut handle = div().absolute();
+                    handle = if row {
+                        handle.top(px(0.)).bottom(px(0.)).left(relative(cum)).w(px(8.))
+                    } else {
+                        handle.left(px(0.)).right(px(0.)).top(relative(cum)).h(px(8.))
+                    };
+                    let line_el = if row {
+                        div().w(px(1.)).h_full().bg(line)
+                    } else {
+                        div().h(px(1.)).w_full().bg(line)
+                    };
+                    container = container.child(
+                        handle
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(!active_drag, |d| {
+                                d.hover(|s| s.bg(cola(self.config.theme.agents.claude, 0.18)))
+                            })
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                    let pos = if row {
+                                        f32::from(ev.position.x)
+                                    } else {
+                                        f32::from(ev.position.y)
+                                    };
+                                    this.divider_drag = Some(DividerDrag {
+                                        path: dpath.clone(),
+                                        gap,
+                                        axis: ax,
+                                        start_weights: start_weights.clone(),
+                                        start_pos: pos,
+                                    });
+                                    cx.stop_propagation(); // don't focus a pane
+                                    cx.notify();
+                                }),
+                            )
+                            .child(line_el),
+                    );
                 }
                 container.into_any_element()
             }
@@ -1472,7 +1636,7 @@ impl Render for Workspace {
                     .min_w(px(0.))
                     .min_h(px(0.))
                     .overflow_hidden()
-                    .child(self.render_node(&self.tabs[active].root, focused, cx)),
+                    .child(self.render_node(&self.tabs[active].root, focused, cx, Vec::new())),
             )
             // File/diff viewer (right column): auto-opens on file click,
             // toggle with Ctrl+Shift+J.
@@ -1514,6 +1678,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_explorer))
             .on_action(cx.listener(Self::toggle_viewer))
+            // Divider drag: the handle's mouse-down sets `divider_drag`; the move
+            // (tracked at the root so it keeps working when the cursor leaves the
+            // thin handle) recomputes weights; mouse-up anywhere ends it.
+            .on_mouse_move(cx.listener(Self::on_divider_move))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_divider_up))
             .size_full()
             .relative()
             .flex()
@@ -1570,5 +1739,27 @@ mod tests {
         }
         let Node::Split { weights, .. } = &n else { panic!() };
         assert!(weights[0] >= 0.1 - 1e-6);
+    }
+
+    #[test]
+    fn at_path_mut_navigates_to_nested_split() {
+        // root[Row]: Leaf(0), inner[Col]: Leaf(1), Leaf(2)
+        let inner = split(Axis::Col, vec![Node::Leaf(1), Node::Leaf(2)]);
+        let mut n = split(Axis::Row, vec![Node::Leaf(0), inner]);
+        // [] = root split (Row); [1] = the inner split (Col); [0] = a leaf.
+        assert!(matches!(n.at_path_mut(&[]), Some(Node::Split { axis: Axis::Row, .. })));
+        assert!(matches!(n.at_path_mut(&[1]), Some(Node::Split { axis: Axis::Col, .. })));
+        assert!(matches!(n.at_path_mut(&[0]), Some(Node::Leaf(0))));
+        // A divider drag sets the inner split's weights via this path.
+        if let Some(Node::Split { weights, .. }) = n.at_path_mut(&[1]) {
+            weights[0] = 2.0;
+            weights[1] = 0.5;
+        }
+        let Node::Split { kids, .. } = &n else { panic!() };
+        let Node::Split { weights: iw, .. } = &kids[1] else { panic!() };
+        assert_eq!(iw, &vec![2.0, 0.5]);
+        // Out-of-range / through-a-leaf paths are None.
+        assert!(n.at_path_mut(&[9]).is_none());
+        assert!(n.at_path_mut(&[0, 0]).is_none());
     }
 }
