@@ -490,26 +490,54 @@ impl TerminalView {
             // shared Terminal (待优化清单 §2.3). Heap-boxed to keep the thread stack
             // small.
             let mut buf = vec![0u8; 65536];
-            loop {
+            // Outer guard (待优化清单 §8.1): a panic anywhere in the reader loop is
+            // logged with context instead of the thread dying silently (which
+            // would leave the pane frozen with no clue why).
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let (replies, events, abs_line): (Vec<String>, _, u64) = {
+                        // The bypass parser is independent of the terminal lock;
+                        // run it first so we know whether this batch produced any
+                        // block events (and thus whether the anchor line is needed).
+                        let events = shell.advance(&buf[..n]);
+                        // Inner guard: catch an alacritty panic *while still holding
+                        // the lock* so the stack unwinds only to here and the guard
+                        // drops normally — the Mutex is never poisoned, so the
+                        // foreground (GPUI callbacks, non-unwinding) can't be taken
+                        // down by a later `.lock().unwrap()`. On panic we stop the
+                        // reader (the grid is half-mutated) but the app lives on.
+                        let processed = {
                             let mut t = terminal.lock().unwrap();
-                            t.advance(&buf[..n]);
-                            let mut replies = Vec::new();
-                            for e in t.drain_events() {
-                                match e {
-                                    TermEvent::PtyWrite(s) => replies.push(s),
-                                    TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
-                                    TermEvent::ResetTitle => *title.lock().unwrap() = None,
-                                    _ => {}
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                t.advance(&buf[..n]);
+                                let mut replies = Vec::new();
+                                for e in t.drain_events() {
+                                    match e {
+                                        TermEvent::PtyWrite(s) => replies.push(s),
+                                        TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
+                                        TermEvent::ResetTitle => *title.lock().unwrap() = None,
+                                        _ => {}
+                                    }
                                 }
+                                // The cursor anchor is only used when this batch
+                                // produced block events — the common case is none,
+                                // so skip the extra grid borrow (待优化清单 §2.4).
+                                let abs_line =
+                                    if events.is_empty() { 0 } else { t.cursor_abs_line() };
+                                (replies, abs_line)
+                            }))
+                            // `t` drops here, normally, even on the Err path.
+                        };
+                        let (replies, abs_line) = match processed {
+                            Ok(v) => v,
+                            Err(_) => {
+                                tracing::error!(
+                                    "terminal reader: alacritty panicked on output; \
+                                     this pane is frozen (app + other panes unaffected)"
+                                );
+                                break;
                             }
-                            // Same bytes feed the bypass parser; the post-advance
-                            // cursor line anchors this batch of block events.
-                            let events = shell.advance(&buf[..n]);
-                            (replies, events, t.cursor_abs_line())
                         };
                         if !replies.is_empty() {
                             let mut w = writer.lock().unwrap();
@@ -528,13 +556,17 @@ impl TerminalView {
                         // Wake the foreground only on the false->true transition,
                         // so a burst of reads enqueues at most one pending wake.
                         // (Relaxed: the terminal Mutex carries the data ordering.)
-                        if !dirty.swap(true, Ordering::Relaxed) && wake_tx.unbounded_send(()).is_err()
+                        if !dirty.swap(true, Ordering::Relaxed)
+                            && wake_tx.unbounded_send(()).is_err()
                         {
                             break; // view dropped
                         }
                     }
                     Err(_) => break,
                 }
+            }));
+            if outcome.is_err() {
+                tracing::error!("terminal reader thread panicked; this pane stopped updating");
             }
         });
     }
@@ -1406,5 +1438,26 @@ mod tests {
         // positioning) must always get the real grid rows, not the lock.
         assert_eq!(pty_rows_for(true, false, 999, 30), 30, "agent: exact");
         assert_eq!(pty_rows_for(false, true, 999, 30), 30, "alt-screen: exact");
+    }
+
+    #[test]
+    fn inner_catch_unwind_leaves_the_lock_unpoisoned() {
+        // The reader (待优化清单 §8.1) catches an alacritty panic *inside* the lock
+        // scope, so the stack unwinds only to the catch and the guard drops
+        // normally — the Mutex is NOT poisoned, so the foreground (GPUI callbacks,
+        // non-unwinding) can still lock it instead of aborting the whole process.
+        // This models `spawn_reader`'s inner guard with a plain Mutex.
+        let m = std::sync::Mutex::new(0i32);
+        let caught = {
+            let mut g = m.lock().unwrap();
+            *g = 1;
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                *g = 2;
+                panic!("simulated alacritty hiccup");
+            }))
+            // `g` drops here, normally, even though the closure panicked.
+        };
+        assert!(caught.is_err(), "the panic was caught, not propagated");
+        assert!(m.lock().is_ok(), "the lock must survive a caught panic un-poisoned");
     }
 }
