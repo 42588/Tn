@@ -59,6 +59,8 @@ pub struct SpawnSpec {
 }
 
 impl SpawnSpec {
+    /// Start a spec for `program` (an executable name or path); chain
+    /// [`arg`](Self::arg) / [`cwd`](Self::cwd) / [`env`](Self::env) to refine it.
     pub fn program(program: impl Into<String>) -> Self {
         Self {
             program: program.into(),
@@ -66,16 +68,19 @@ impl SpawnSpec {
         }
     }
 
+    /// Append one command-line argument (builder style).
     pub fn arg(mut self, a: impl Into<String>) -> Self {
         self.args.push(a.into());
         self
     }
 
+    /// Set the child's working directory.
     pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
         self.cwd = Some(cwd.into());
         self
     }
 
+    /// Add one environment variable for the child.
     pub fn env(mut self, k: impl Into<String>, v: impl Into<String>) -> Self {
         self.env.push((k.into(), v.into()));
         self

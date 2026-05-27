@@ -156,6 +156,6 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 - `gpui::Pixels.0` 私有 → `f32::from(px)`。GPUI async:`cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| …)`、`WeakEntity::update(cx, |v, cx| …)`、`bg_executor.timer(d).await`、`cx.quit()`;`Context<T>` 解引用为 `App`。
 
 ## 约定
-- 提交结尾带:`Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`。行尾 LF(`.gitattributes`)。
+- 提交结尾带:`Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`。行尾 LF(`.gitattributes` + `.editorconfig`,UTF-8)。
 - 多行提交信息用 Bash 工具的 `git commit -F -` + 单引号 heredoc(PowerShell here-string 里的 `"` 会破坏解析)。
 - 改依赖版本走根 `Cargo.toml` 的 `[workspace.dependencies]`。`main` 上 WIP,里程碑完成时单次提交。

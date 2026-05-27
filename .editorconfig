@@ -1,0 +1,21 @@
+# EditorConfig (https://editorconfig.org) — keeps editors consistent with the
+# repo's .gitattributes (LF) and UTF-8 convention. Addresses 待优化清单 §9.1: a
+# reviewer saw mojibake reading CLAUDE.md, so we pin charset explicitly.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+
+[*.rs]
+indent_size = 4
+
+[*.{toml,md,html,css,js,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+# Markdown can use trailing whitespace for hard line breaks.
+trim_trailing_whitespace = false

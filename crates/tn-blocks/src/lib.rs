@@ -97,6 +97,7 @@ pub struct BlockModel {
 }
 
 impl BlockModel {
+    /// An empty model (no blocks, no cwd). Feed it via [`on_event`](Self::on_event).
     pub fn new() -> Self {
         Self::default()
     }

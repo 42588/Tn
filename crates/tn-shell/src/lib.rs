@@ -49,6 +49,7 @@ impl Default for ShellParser {
 }
 
 impl ShellParser {
+    /// A fresh parser with no buffered escape-sequence state.
     pub fn new() -> Self {
         Self { parser: Parser::new() }
     }
