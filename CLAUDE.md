@@ -40,7 +40,8 @@ tn-ui      GPUI 前端(唯一链接 gpui 的库):style(共享 Calm Glass 令牌 
            状态栏 + 命令面板 + Calm Glass chrome)· platform(Windows-only:全局热键 + 置顶/滑动 SetWindowPos)·
            quick_terminal(无边框置顶 PopUp 窗口 + 启动器)。
 tn-app     二进制 `tn`:开窗 + 接线 + 崩溃保护 + 文件日志。
-tn-cli     headless ConPTY 烟雾测试工具(可 `-- <program> [args]` 测任意子进程)。
+tn-cli     headless ConPTY 烟雾测试工具(可 `-- <program> [args]` 测任意子进程;`TN_RESIZE_EXP=1|locked|interactive`
+           = ConPTY resize 探针,实测增高吃滚动历史 + 验证行锁定修法)。
 ```
 依赖方向(无环):`tn-blocks → tn-shell → tn-core`;`tn-ui → 全部 headless crate`。
 **铁律**:`gpui` 只能出现在 `tn-ui`/`tn-app`;其余 crate 必须能 **headless** 编译与测试。别把 alacritty 的类型
@@ -65,7 +66,8 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 - **终端内核 + 渲染**(`tn-core` + `terminal_view`):每格 fg/bg 颜色(`row_runs()` run 批处理成样式盒,div 渲染)·
   可见光标块(聚焦实心 + **~530ms 闪烁**[键入即点亮]/失焦空心稳定,滚离/alt 隐藏)· **push + vsync 重绘**(reader→`mpsc::unbounded` wake,`dirty`
   原子去重,前台 `cx.spawn` await 后 `cx.notify()`;DEC 2026 同步输出由 vte `Processor` 内部缓冲 → 整帧快照无撕裂)·
-  resize 联动(按 pane 自身 canvas bounds 算行列)· 滚动历史(主屏滚历史 / alt 屏→方向键)+ **右缘滚动条**
+  resize 联动(按 pane 自身 canvas bounds 算行列;**普通 shell 行锁定** ConPTY 行数防 resize-repaint 吃滚动历史,见坑)·
+  滚动历史(主屏滚历史 / alt 屏→方向键)+ **右缘滚动条**
   (snapshot 带 scroll_offset/history,thumb 按视口/总量,滚动时变亮)· 选择(左键拖拽 +
   **双击选词 / 三击选行**,`MouseDownEvent.click_count`→`SelectKind`)+ 复制(`Ctrl+Shift+C`)/ 粘贴
   (`Ctrl+Shift+V`、`Shift+Insert`,bracketed-paste 感知)。
@@ -112,7 +114,7 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 
 ## 未做 / 后续(打磨项)
 - **M2 SSH 恢复**(parked,见现状):真机端到端 + ssh-agent + known_hosts 校验 + 密码交互 + 重连 + `~/.ssh/config` 导入。
-- **分屏交互**:✅ 分隔线鼠标拖拽(**commit-on-release**:拖动只移动一条 2px 预览线、释放才改权重 resize 一次——避免 ConPTY 每帧 resize 导致历史滚出视野 + 抖动;把手平时隐形、hover 微亮)· 🧭 拖拽停靠(drag-dock:拖到边=分屏、拖到中=标签组)。
+- **分屏交互**:✅ 分隔线鼠标拖拽(**commit-on-release**:拖动只移动一条 2px 预览线、释放才改权重 resize 一次——避免 ConPTY 每帧 resize 导致抖动;把手平时隐形、hover 微亮)+ **行锁定**(普通 shell 拖大不再吃滚动历史,见坑)· 🧭 拖拽停靠(drag-dock:拖到边=分屏、拖到中=标签组)。
 - **自定义 `TerminalElement`**(M1.2b):GPUI `Element`(layout/prepaint/paint)+ 字形图集 + typed-quad 批处理 + 光标/选区绘制
   (见 REFERENCES §2;GPUI 自管图集/DirectWrite,**不写裸 D3D**)。当前 div + run 批处理即现版本。
 - **真机肉眼项**:颜值微调 · 标题栏拖动/控制点验 · 光标闪烁/连续动画(需帧时钟;agent 思考态 PTY 不可观测,不伪造)·
@@ -128,6 +130,7 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 - **portable-pty `LocalPty` Drop 不杀子进程**:给 `LocalPty` 加 `Drop → child.clone_killer().kill()`;关标签时 drop 视图链(`panes.remove` → drop `TerminalView` → drop `Arc<...>` → kill)。
 - **russh(SSH)默认 crypto `aws-lc-rs` 本机编译失败**(要 NASM + cl.exe stdalign 探测):换 `russh = { default-features = false, features = ["ring", "flate2", "rsa"] }`(`ring` 自带预生成汇编,无需 NASM)。
 - **russh 是 async,PtyBackend 同步**:SshBackend 用专属线程跑 current-thread tokio + `select!` 循环,`ChannelMsg::Data` 经 `std::mpsc` 喂同步 reader(recv 阻塞=自然 EOF)。`select!` 里只让 `channel.wait()`(&mut)出现在分支表达式;`data_bytes`/`window_change`(&self)放分支体里(wait 借用此时已释放)——照搬 russh 官方 example,否则 `channel` &mut+& 冲突。
+- **ConPTY 增高(grow rows)会吃掉滚动历史**(拖分隔线把 pane 拉大时最明显):alacritty 把 `delta` 行从滚动历史**拉进可视区顶部**(reflow 单独不丢——见 `tn-core::resize_preserves_content_via_scrollback`),紧接着 ConPTY 的 **resize-repaint** 异步到达、用它自己的空白/陈旧缓冲**覆盖**这些刚拉上来的行 → 两边都没了,正好丢 `delta` 行(用 `cargo run -p tn-cli`(`TN_RESIZE_EXP=1`)实测:12→24 行丢 LINE_18–29)。根因是 alacritty 的 reflow 跟 conhost 不一致(WT 不犯是因为两者同源)。**修法 = 普通 shell 行锁定**(`terminal_view::pty_rows_for`):alacritty 永远精确(渲染对、自有历史无损 reflow),但 ConPTY 行数取**单调、带 floor(120,超任何整窗 pane)的高水位**——拖分隔线永不增高 ConPTY → 不重绘 → 不丢。列数永远精确(管换行)。**agent pane(Claude/Codex 按高度重绘)与 alt-screen(vim 绝对定位)仍精确**。ConPTY 行数 ≫ 可视网格对 shell 无害:输出按换行流式滚动、alacritty 自己的网格底部对齐渲染(`TN_RESIZE_EXP=interactive` 实测 10× 比例仍连贯)。
 
 **gpui 渲染 / 材质**
 - **gpui 0.2.2 on Windows**:可直接编译(DX11+DirectWrite,无需 Vulkan);首次编译数分钟。运行时 `HRESULT(0x887A002D)` 只是可选 DXGI *debug* 层缺失——无害。
