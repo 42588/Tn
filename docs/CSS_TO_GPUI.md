@@ -1,0 +1,911 @@
+# CSS → gpui 翻译词典
+
+> 供 AI（Claude Code / Codex）在根据 `design/mockup.html` 写 Rust 代码时查阅。
+> 每个 CSS 模式给出「HTML 怎么写 → gpui 怎么写」的对照，优先使用项目现有 token（`style.rs`、`tn-dark.toml`）。
+>
+> **本文件每一条都对照过 `gpui 0.2.2` 源码或 mockup/主题原件核实**，引用位置（cargo registry 内）：
+> `gpui-0.2.2/src/{styled.rs, color.rs, geometry.rs, text_system.rs, window.rs, elements/div.rs}`、
+> `gpui-macros-0.2.2/src/styles.rs`（spacing / rounded / border 等 fluent 方法由此宏生成）。
+> 带 **⚠** 的条目是 gpui 0.2.2 **无法精确还原**的 CSS 特性（见 §14）；带 **✗** 的是**曾经写错、已修正**的点。
+
+---
+
+## 速查：最常用的 20 个翻译
+
+| # | HTML / CSS | gpui Rust | 备注 |
+|---|-----------|-----------|------|
+| 1 | `color: var(--fg)` | `text_color(col(ui.foreground))` | = mockup `--fg #C6D0F5`（主题已对齐） |
+| 2 | `color: var(--muted)` | `text_color(col(ui.muted))` | = mockup `--muted #6E76A0`（主题已对齐） |
+| 3 | `color: var(--accent)` | `text_color(col(ui.accent))` | |
+| 4 | `background: var(--g1)` | `bg(linear_gradient(180., …))` | g1 是渐变，见 §7；无 backdrop-filter（⚠ §14） |
+| 5 | `border: 1px solid var(--rim)` | `border_1().border_color(rgba(RIM))` | |
+| 6 | `border-radius: 14px` | `rounded(px(R_PANEL))` | |
+| 7 | `border-radius: 11px` | `rounded(px(R_CARD))` | |
+| 8 | `display: flex; flex-direction: column` | `div().flex().flex_col()` | |
+| 9 | `display: flex; flex-direction: row; align-items: center` | `div().flex().flex_row().items_center()` | |
+| 10 | `gap: 11px` | `gap(px(11.))` | mockup 精确值，不用 scale（见 §2） |
+| 11 | `padding: 0 14px` | `px(px(14.))` | mockup 精确值 |
+| 12 | `font-family: var(--ui)` | `font_family(UI_SANS)` | `"Segoe UI"` |
+| 13 | `font-family: var(--mono)` | `font_family("Cascadia Code")` | |
+| 14 | `font-size: 12.5px` | `text_size(px(12.5))` | |
+| 15 | `font-weight: 560` | `font_weight(FontWeight(560.))` | ✗ **可精确还原**：`FontWeight(pub f32)`，见 §4 |
+| 16 | `box-shadow: 0 24px 58px -36px rgba(0,0,0,0.88)` | `shadowed(d, vec![soft_shadow(24., 58., -36., 0.88)])` | |
+| 17 | `linear-gradient(180deg, a, b)` | `bg(linear_gradient(180., linear_color_stop(a, 0.), linear_color_stop(b, 1.)))` | 角度同 CSS，见 §7 |
+| 18 | `:hover { background: ... }` | `.hover(\|s\| s.bg(...))` | |
+| 19 | `.active { ... }` | `.when(is_active, \|d\| d.bg(...))` | |
+| 20 | `opacity: 0.04` | `.opacity(0.04)` | ✗ **gpui 有 `opacity()`**（`Styled` trait），见 §3 |
+
+---
+
+## 1. 设计 Token 映射
+
+### 颜色变量 → Rust 常量
+
+mockup.html 的 CSS 变量映射到 `tn-dark.toml`（运行时载入为 `Loaded`）。其中 `ui` = `&config.theme.ui`，`t` = `&config.theme`。
+
+| CSS 变量（mockup 字面量） | 来源（toml 路径） | 在 gpui 中的写法 | 一致性 |
+|---------|------------------|-----------------|--------|
+| `--fg: #C6D0F5` | `[ui] foreground` = `#C6D0F5` | `col(ui.foreground)` | ✅ 完全一致（主题已对齐 mockup） |
+| `--fg-dim: #A6AFD4` | 无直接映射 | `rgb(0xA6AFD4)` | 裸值 |
+| `--muted: #6E76A0` | `[ui] muted` = `#6E76A0` | `col(ui.muted)` | ✅ 完全一致（主题已对齐 mockup） |
+| `--faint: #474E72` | 无直接映射 | `rgb(0x474E72)` | 裸值 |
+| `--accent: #7AA2F7` | `[ui] accent` = `#7AA2F7` | `col(ui.accent)` | ✅ 完全一致 |
+| `--violet: #BB9AF7` | `[ui] accent_alt` = `#BB9AF7` | `col(ui.accent_alt)` | ✅ |
+| `--green: #9ECE6A` | `[ansi] green` = `#9ECE6A` | `col(t.ansi.green)` | ✅ |
+| `--red: #F7768E` | `[ansi] red` = `#F7768E` | `col(t.ansi.red)` | ✅ |
+| `--yellow: #E0AF68` | `[ansi] yellow` = `#E0AF68` | `col(t.ansi.yellow)` | ✅ |
+| `--cyan: #7DCFFF` | `[ansi] cyan` = `#7DCFFF` | `col(t.ansi.cyan)` | ✅ |
+| `--claude: #F0916D` | `[agents] claude` = `#F0916D` | `col(t.agents.claude)` | ✅ |
+| `--codex: #73DACA` | `[agents] codex` = `#73DACA` | `col(t.agents.codex)` | ✅ |
+
+> **全部颜色 token 现与 mockup 完全一致**（2026-05 按"设计稿为准"把 `tn-dark.toml` 的 `foreground`/`muted` 对齐到 mockup `--fg`/`--muted`）。
+> 一律用 token（`col(ui.foreground)` 等)以跟随主题切换。`col()` 定义见 `style.rs`，等价于 `rgb((r<<16)|(g<<8)|b)`，返回不透明 `Rgba`。
+
+### 材质 Token（白叠加，alpha-only）
+
+`style.rs` 用 `u32` 常量存 `0xRRGGBBAA`，经 `rgba()` 解析。alpha 换算：`round(α × 255)`。
+
+| CSS 变量 | `style.rs` 常量 | 常量值 | 实际 alpha | 对应 mockup α | 语义 |
+|---------|----------------|--------|-----------|--------------|------|
+| `--rim: rgba(255,255,255,0.07)` | `RIM` | `0xffffff12` | `0x12`=18/255≈**0.071** | 0.07 ✅ | 玻璃面板边缘 |
+| `--sheen: rgba(255,255,255,0.10)` | `SHEEN` | `0xffffff1a` | `0x1a`=26/255≈**0.102** | 0.10 ✅ | 顶部镜面高光（CSS inset） |
+| `--g2: rgba(255,255,255,0.04)` | `INSET` | `0xffffff0a` | `0x0a`=10/255≈**0.039** | 0.04 ✅ | header / 内嵌叠加 |
+| `--g3: rgba(255,255,255,0.06)` | `HOVER` | `0xffffff0f` | `0x0f`=15/255≈**0.059** | 0.06 ✅ | chip / hover |
+| `.status .seg2+.seg2`（`.06`，非 `--var`） | `DIVIDER` | `0xffffff0f` | `0x0f`=15/255≈**0.059** | 0.06 ✅ | 状态栏段分隔竖线 |
+
+> 四个白叠加 token 现都对齐 mockup（`HOVER` 2026-05 由 `0x14`≈.078 改回 `0x0f`≈.06，按"设计稿为准"）。
+
+材质 Token 用法：
+```
+CSS:  border: 1px solid var(--rim);
+gpui: border_1().border_color(rgba(RIM))
+
+CSS:  box-shadow: 0 1px 0 var(--sheen) inset;
+gpui: border_t(px(1.)).border_color(rgba(SHEEN))   /* ⚠ inset 不可用，用顶 border 高光，见 §5 */
+
+CSS:  background: var(--g2);
+gpui: bg(rgba(INSET))
+
+CSS:  background: var(--g3);
+gpui: bg(rgba(HOVER))
+```
+
+### 圆角 Token
+
+`style.rs`：`R_WINDOW=16.0`、`R_PANEL=14.0`、`R_CARD=11.0`（与 mockup `--r-win/--r-pane/--r-card` 一致）。
+
+| CSS 变量 | `style.rs` 常量 | 值 | 用法 |
+|---------|----------------|-----|------|
+| `--r-win: 16px` | `R_WINDOW` | `16.0` | `rounded(px(R_WINDOW))` |
+| `--r-pane: 14px` | `R_PANEL` | `14.0` | `rounded(px(R_PANEL))` |
+| `--r-card: 11px` | `R_CARD` | `11.0` | `rounded(px(R_CARD))` |
+| `--r-pill: 999px` | — | — | `rounded_full()`（宏生成，suffix=`full`） |
+
+---
+
+## 2. 布局
+
+### Flex 容器
+
+`flex/flex_col/flex_row/items_center/justify_center/flex_1/flex_none` 均为 `Styled` trait / 宏生成方法。
+
+```
+CSS:  display: flex; flex-direction: column;
+gpui: div().flex().flex_col()
+
+CSS:  display: flex; flex-direction: row;
+gpui: div().flex().flex_row()
+
+CSS:  display: flex; align-items: center;
+gpui: div().flex().items_center()
+
+CSS:  display: flex; justify-content: center;
+gpui: div().flex().justify_center()
+
+CSS:  flex: 1;
+gpui: div().flex_1()
+
+CSS:  flex: 0 0 auto;
+gpui: div().flex_none()
+```
+
+### 间距（gap / padding）
+
+gpui 的 `gap_N` / `p_N` 等是宏生成的 **rem 倍数**（`gpui-macros/styles.rs`）：宏 doc-string 明确标注 `_1`="4px (0.25rem)"、`_2`="8px (0.5rem)"、
+`_3`="12px (0.75rem)"，`0p5`=`rems(0.125)`=2px。**前提是默认 1rem = 16px。**
+
+| gpui 方法 | 像素值（默认 rem） | rem |
+|----------|------------------|-----|
+| `gap_0p5()` / `p_0p5()` | 2px | 0.125 |
+| `gap_1()` / `p_1()` | 4px | 0.25 |
+| `gap_2()` / `p_2()` | 8px | 0.5 |
+| `gap_3()` / `p_3()` | 12px | 0.75 |
+| `gap_4()` / `p_4()` | 16px | 1.0 |
+
+**mockup 的间距值多为非 4 倍数（精确值），直接用 `px()` 而非 scale：**
+
+| 样式 | mockup 值 | gpui |
+|------|----------|------|
+| `gap` | `3px` (tabs) | `gap(px(3.))` |
+| `gap` | `9px` (phead / brand / tool) | `gap(px(9.))` |
+| `gap` | `11px` (pane columns) | `gap(px(11.))` |
+| `padding` | `0 14px` (.tab) | `px(px(14.))` |
+| `padding` | `0 13px` (.phead / .vh) | `px(px(13.))` |
+| `padding` | `10px 14px` (.agenthead) | `py(px(10.)).px(px(14.))` |
+| `padding` | `11px 13px` (.say) | `py(px(11.)).px(px(13.))` |
+| `padding` | `5px 12px 11px` (.work) | `pt(px(5.)).px(px(12.)).pb(px(11.))` |
+| `padding` | `0 10px` (.tnode) | `px(px(10.))` |
+| `padding` | `2px 9px` (.chip) | `py(px(2.)).px(px(9.))` |
+| `padding` | `4px 5px 4px 12px` (.usage) | `py(px(4.)).pl(px(12.)).pr(px(5.))` |
+
+### 绝对定位
+
+`relative(fraction)` 是 `geometry.rs:relative()` 自由函数，返回 `DefiniteLength`（百分比）。`px()` 是 `geometry.rs:px()`。
+
+```
+CSS:  position: absolute; left: 0; right: 0; top: 0; height: 36%;
+gpui: div().absolute().left(px(0.)).right(px(0.)).top(px(0.)).h(relative(0.36))
+
+CSS:  position: absolute; inset: 0;
+gpui: div().absolute().size_full()
+```
+
+### ✗ `pointer-events: none`
+
+gpui 0.2.2 **没有 `.pointer_events_none()` 方法**（写了会编译失败）。其语义靠默认行为实现：
+**不挂任何鼠标监听的 `div()` 本就不拦截鼠标**，事件自然穿透到下层——所以 mockup 里装饰性 overlay 的 `pointer-events:none` 在 gpui **无需任何方法**。
+
+需要**相反**效果（一个区域吞掉所有鼠标、不让下层收到）时才用：`.occlude()` 或 `.block_mouse_except_scroll()`（均在 `elements/div.rs`）。
+
+### 溢出与裁剪
+
+```
+CSS:  overflow: hidden;
+gpui: div().overflow_hidden()
+
+CSS:  overflow: hidden; min-width: 0; min-height: 0;
+gpui: div().overflow_hidden().min_w(px(0.)).min_h(px(0.))
+```
+
+**重要**：gpui 的 Taffy flex 引擎默认 `min-size: auto`，内容可能撑破父容器。每个 flex 层级都要显式加 `min_w(px(0.))` / `min_h(px(0.))` + `overflow_hidden()`。
+
+---
+
+## 3. 颜色与透明度
+
+### 不透明色
+
+`rgb(hex: u32)`(`0xRRGGBB`)、`rgba(hex: u32)`(`0xRRGGBBAA`) 都在 `color.rs`，返回 `Rgba`。
+
+```
+CSS:  color: var(--fg);
+gpui: text_color(col(ui.foreground))
+
+CSS:  background: #1A1B26;
+gpui: bg(rgb(0x1A1B26))
+
+CSS:  color: var(--claude);
+gpui: text_color(col(t.agents.claude))
+```
+
+### 半透明色 —— 硬性约定：alpha 永远写成小数，不准手算十六进制
+
+> **约定**：带透明度的颜色，**alpha 必须以小数形式出现、由代码折算**，绝不手写算出来的 `0x..AA` 字节。
+> 手算 `round(α×255) → hex`（如把 22% 误当 `0x33`=20%、实应 `0x38`）是这类偏差的**唯一来源**——交给函数就根除了。
+
+按**基色是什么**分三种，各有唯一对应写法：
+
+| 基色 | 写法 | 例 |
+|------|------|----|
+| **主题 token**（accent / claude / ansi…） | **`cola(token, a)`** ← 首选 | `border_color(cola(t.agents.claude, 0.24))` |
+| **白叠加**（`rgba(255,255,255,X)`） | 命名常量 `rgba(RIM/SHEEN/INSET/HOVER)` | `bg(rgba(HOVER))` |
+| **一次性字面色**（基色非任何 token，如面板渐变 `#2A2E44`） | `rgba(0xRRGGBBAA)`，**旁边必须写出 `round(α×255)` 算式** | `rgba(0x2a2e446b) /* round(0.42×255)=107=0x6b */` |
+
+```
+/* 首选：主题色 + 半透 —— alpha 是小数，cola() 替你折算，永不算错、还跟随主题 */
+CSS:  border-color: rgba(240,145,109,0.24);   /* = claude @ 24% */
+gpui: border_color(cola(t.agents.claude, 0.24))     // ✅ 不要写成 rgba(0xF0916D3d)
+
+/* 末选：基色不属于任何 token 的一次性字面色（如 mockup 面板渐变基色） */
+CSS:  background: rgba(42,46,68,0.42);
+gpui: bg(rgba(0x2a2e446b))           /* round(0.42×255)=107=0x6b —— 算式必须写出来供核对 */
+```
+
+`cola(c, a)` 接受 `tn_config::Color` 或 `tn_core::Rgb`，返回 `Rgba { r,g,b 来自 c, a }`（`style.rs`）。
+
+> ⚠ **别拿不对的 token 硬套 `cola`**：mockup 面板渐变首停是 `rgba(42,46,68,…)` = `#2A2E44`，而 `ui.surface_1` = `#1F2335`，**基色不同**。
+> 这属于上表第三种「一次性字面色」，用 `rgba(0x2a2e446b)`（带算式）；**不要**写 `cola(ui.surface_1, 0.42)`——那会换成另一种颜色。
+
+### opacity —— gpui **有** `opacity()`
+
+✗ 旧版本曾误称「gpui 0.2.2 无 opacity」。实际上 `Styled::opacity(opacity: f32)`（`styled.rs:652`）存在，
+设置**元素及其子元素**的整体不透明度，语义等同 CSS `opacity`：
+
+```
+CSS:  opacity: 0.04;
+gpui: .opacity(0.04)
+```
+
+（注意：CSS 里很多 `opacity` 用在被我们整体忽略的图层上——如 noise overlay（⚠ §11）——那些仍然不画。但 `opacity` 这个方法本身可用。）
+
+### 颜色空间
+
+gpui 内部用 sRGB（`rgb()` / `rgba()`）。CSS 的 `oklch(...)`、`color(display-p3 ...)` 等现代颜色空间不支持，需预先转 sRGB。
+渐变插值默认也走 sRGB（`ColorSpace::Srgb` 是 `#[default]`，`color.rs`），与 CSS `linear-gradient` 默认一致——无需额外设置即可还原中间色。
+
+---
+
+## 4. 字体
+
+```
+CSS:  font-family: var(--ui);        /* Inter, Segoe UI, ... */
+gpui: font_family(UI_SANS)           /* "Segoe UI"，定义在 style.rs */
+
+CSS:  font-family: var(--mono);      /* Cascadia Code, ... */
+gpui: font_family("Cascadia Code")
+
+CSS:  font-size: 12.5px;
+gpui: text_size(px(12.5))
+
+CSS:  -webkit-font-smoothing: antialiased;
+gpui: 【gpui 自动处理，无需设置】
+```
+
+### ✗ 字体粗细 —— 可**精确**还原
+
+`text_system.rs`：`pub struct FontWeight(pub f32)`，字段公开、实现 `From<f32>`。所以**任意数值都能精确表达**，旧版本「只有命名常量 / 精度损失」的说法是错的。
+
+```rust
+// 精确还原 mockup 的任意字重：
+.font_weight(FontWeight(560.))
+// 注意 font_weight 形参类型是具体的 FontWeight（不是 impl Into），需显式包一层。
+```
+
+命名常量只是整百的语法糖：`THIN`100 / `EXTRA_LIGHT`200 / `LIGHT`300 / `NORMAL`400 / `MEDIUM`500 / `SEMIBOLD`600 / `BOLD`700 / `EXTRA_BOLD`800 / `BLACK`900。
+
+mockup 实际用到的字重 → 精确写法：
+
+| CSS font-weight | gpui（精确） | 也可写 |
+|-----------------|-------------|--------|
+| `400` | `FontWeight(400.)` | `FontWeight::NORMAL` |
+| `510` | `FontWeight(510.)` | — |
+| `520` | `FontWeight(520.)` | — |
+| `540` | `FontWeight(540.)` | — |
+| `560` | `FontWeight(560.)` | — |
+| `640` | `FontWeight(640.)` | — |
+| `660` | `FontWeight(660.)` | — |
+| `680` | `FontWeight(680.)` | — |
+| `760` | `FontWeight(760.)` | — |
+| `800` | `FontWeight(800.)` | `FontWeight::EXTRA_BOLD` |
+
+> 实际能否渲染出 510 vs 520 的差别，取决于安装字体是否含可变/对应字重轴；但 **gpui API 层面是无损的**，不存在「被迫量化到 500/700」的限制。
+
+### 字体大小层级（mockup 实际值，已含 10/12px）
+
+| CSS | gpui | 用于 |
+|-----|------|------|
+| `9px` | `text_size(px(9.))` | ring label / git tag |
+| `10px` | `text_size(px(10.))` | 极小标注 |
+| `10.5px` | `text_size(px(10.5))` | chip / block duration |
+| `11px` | `text_size(px(11.))` | 状态栏 / badge / exit chip |
+| `11.5px` | `text_size(px(11.5))` | pane 头 / viewer 头 / tool description |
+| `12px` | `text_size(px(12.))` | 次要正文 |
+| `12.5px` | `text_size(px(12.5))` | 终端 / 代码 / 文件树 / agent body |
+| `13px` | `text_size(px(13.))` | agent 名 |
+| `14px` | `text_size(px(14.))` | 品牌名 |
+
+### ⚠ 缺失的 CSS 字体属性（gpui 0.2.2 确无）
+
+| CSS | 状态 |
+|-----|------|
+| `letter-spacing: -0.006em` | 无此 API，**忽略**（mockup 影响极小） |
+| `font-feature-settings: "cv05","ss01","tnum"` | 无此 API，**忽略** |
+| `white-space: nowrap` | 用单行布局 + 省略号截断近似 |
+
+---
+
+## 5. 边框与描边
+
+`border_1()`（suffix=1，=1px）、`border_0()`、`border_t(px(1.))`（前缀可带 `AbsoluteLength` 实参）、`border_color<C: Into<Hsla>>` 均由 `gpui-macros/styles.rs` 生成。
+
+```
+CSS:  border: 1px solid var(--rim);
+gpui: border_1().border_color(rgba(RIM))
+
+CSS:  border-top: 1px solid var(--sheen);
+gpui: border_t(px(1.)).border_color(rgba(SHEEN))
+
+CSS:  border: 0;
+gpui: border_0()
+
+CSS:  border-color: rgba(240,145,109,0.24);   /* 聚焦描边，claude 暖色 */
+gpui: border_color(cola(t.agents.claude, 0.24))   /* claude @ 24%；token 基色一律 cola，见 §3 约定 */
+```
+
+### ⚠ box-shadow: inset
+
+gpui 0.2.2 的 `box_shadow`（`BoxShadow` 结构体，无 inset 字段）**不支持** inset。mockup 的内阴影高光用独立元素模拟：
+
+```
+CSS:
+  box-shadow: 0 1px 0 var(--sheen) inset;
+
+gpui（二选一）：
+  // A：顶部 1px border 当高光（workspace.rs 现用法）—— 仅当该元素的边框只有这一处
+  border_t(px(1.)).border_color(rgba(SHEEN))
+
+  // B：在 relative 父容器里放一条 absolute 1px 高光 —— 元素另需异色边框时用这个
+  div().relative().child(
+      div().absolute().top(px(0.)).left(px(0.)).right(px(0.)).h(px(1.)).bg(rgba(SHEEN))
+  )
+```
+
+> ⚠ **`border_color` 是单色、作用于四边**（gpui 0.2.2 无 per-side 边色）。所以当一个元素**既要 rim 全框、又要 sheen 顶高光**时，
+> 不能用「`border_1().border_color(RIM)` + `border_t().border_color(SHEEN)`」——后一个 `border_color` 会把整框染成 SHEEN。
+> 此时 rim 用 `border_color`，sheen 顶高光改用方式 B 的独立 div（见示例 1）。
+
+---
+
+## 6. 阴影
+
+`soft_shadow(y, blur, spread, alpha)` 与 `shadowed(div, Vec<BoxShadow>)` 定义在 `style.rs`
+（`shadowed` 直接写 `d.style().box_shadow = Some(shadows)`，因为 gpui 0.2.2 无 fluent `.shadow_*`）。
+`BoxShadow{ color, offset, blur_radius, spread_radius }`（`color.rs`/`window.rs`），**仅 outset、单条目可叠多条**。
+
+```
+CSS:
+  box-shadow: 0 24px 58px -36px rgba(0,0,0,0.88);
+
+gpui:
+  shadowed(div(), vec![soft_shadow(24., 58., -36., 0.88)])
+```
+
+### mockup 阴影值 → gpui 速查
+
+| mockup CSS | gpui |
+|-----------|------|
+| `0 24px 58px -36px rgba(0,0,0,0.88)` | `soft_shadow(24., 58., -36., 0.88)` |
+| `0 30px 64px -36px rgba(0,0,0,0.9)` | `soft_shadow(30., 64., -36., 0.9)` |
+| `0 10px 26px -20px rgba(0,0,0,0.7)` | `soft_shadow(10., 26., -20., 0.7)` |
+| `0 64px 140px -34px rgba(0,0,0,0.82)` | `soft_shadow(64., 140., -34., 0.82)` |
+| `0 2px 8px -3px rgba(0,0,0,0.6)` | `soft_shadow(2., 8., -3., 0.6)` |
+
+> `soft_shadow` 的 `x` 偏移恒为 0（`offset = point(px(0.), px(y))`）。mockup 阴影 x 也都是 0，正好对应。
+
+### 多重阴影拆解
+
+`box_shadow = Some(vec![...])` 本身能放**多条 outset 阴影**；但其中夹带的 **inset 高光**和**外 ring** 需另想办法：
+
+```
+CSS:
+  box-shadow:
+    0 0 0 1px rgba(255,255,255,0.06),         /* ① 外边 ring（spread=1, blur=0） */
+    0 1px 0 rgba(255,255,255,0.11) inset,      /* ② 顶部高光 INSET */
+    0 64px 140px -34px rgba(0,0,0,0.82);       /* ③ 大范围柔影 */
+
+gpui（拆解）：
+  // ① 外 ring → 用 border 代替（更稳，1px ring 视觉等价边框）
+  border_1().border_color(rgba(0xffffff0f))    /* round(0.06×255)=15=0x0f */
+
+  // ② inset 高光 → 顶 border 或独立元素（见 §5）
+  .border_t(px(1.)).border_color(rgba(0xffffff1c))   /* round(0.11×255)=28=0x1c */
+
+  // ③ 柔影 → soft_shadow（可与其它 outset 阴影共置 vec）
+  shadowed(div(), vec![soft_shadow(64., 140., -34., 0.82)])
+```
+
+---
+
+## 7. 渐变
+
+`linear_gradient(angle: f32, from, to)` 与 `linear_color_stop(color, percentage)` 在 `color.rs`。
+
+### 角度语义（与 CSS 一致）
+
+gpui 源码 doc-string：**「`0.` 等价于 top；数值增大顺时针旋转」**，范围 0–360。这与 CSS `linear-gradient` 完全相同：
+
+- CSS `0deg`（to top）= gpui `0.`
+- CSS `180deg`（to bottom）= gpui `180.`
+- CSS `90deg`（to right）= gpui `90.`
+
+`linear_color_stop` 的 `percentage` 范围是 **0.0–1.0**（不是 0–100）。
+
+### 线性渐变
+
+```
+CSS:
+  background: linear-gradient(180deg,
+    rgba(42,46,68,0.42),
+    rgba(26,28,44,0.52));
+
+gpui:
+  bg(linear_gradient(180.,
+    linear_color_stop(rgba(0x2a2e446b), 0.),    /* round(0.42×255)=107=0x6b */
+    linear_color_stop(rgba(0x1a1c2c85), 1.)))   /* round(0.52×255)=133=0x85 */
+```
+
+### 品牌按钮渐变
+
+```
+CSS:  background: linear-gradient(145deg, var(--accent), var(--violet));
+gpui:
+  bg(linear_gradient(145.,
+    linear_color_stop(col(ui.accent), 0.),
+    linear_color_stop(col(ui.accent_alt), 1.)))
+```
+
+### ⚠ 径向渐变
+
+`color.rs` 只有 `linear_gradient`，**无 `radial_gradient`**（已逐符号确认）。mockup 里两团极淡径向环境色
+（`rgba(122,162,247,0.07)` at 14% -10% 等）**忽略**——去掉不影响辨识度。
+
+---
+
+## 8. 背景与材质
+
+### 窗口底材
+
+```
+CSS:
+  background:
+    radial-gradient(..., rgba(122,162,247,0.07), transparent 58%),   /* ⚠ 忽略 */
+    radial-gradient(..., rgba(115,218,202,0.045), transparent 58%),  /* ⚠ 忽略 */
+    linear-gradient(160deg, #0c0d15, #0a0a12 55%, #08080e);
+
+gpui:
+  bg(col(ui.chrome_bg))                              /* 默认 Opaque 单色底 */
+
+  /* 仅当 [ui.window] backdrop = "acrylic" 时用半透 */
+  bg(cola(ui.chrome_bg, 0.92))
+```
+
+Calm Glass 的深度感来自**内部面板半透明叠加**而非窗口底材本身。
+
+### 磨砂面板（.pane 的 g1）
+
+```
+CSS:
+  background: linear-gradient(180deg,
+    rgba(42,46,68,0.42), rgba(26,28,44,0.52));
+  backdrop-filter: blur(9px) saturate(116%);        /* ⚠ gpui 无 per-div blur，见 §14 */
+
+gpui:
+  bg(linear_gradient(180.,
+    linear_color_stop(rgba(0x2a2e446b), 0.),
+    linear_color_stop(rgba(0x1a1c2c85), 1.)))
+  border_1().border_color(rgba(RIM))                /* rim 代替 backdrop 通透感 */
+```
+
+### 顶部镜面高光（specular highlight）
+
+mockup 用 `::before` 伪元素生成 specular highlight，gpui 用独立 absolute div（无需 `pointer-events:none`，非交互 div 本就不挡鼠标）：
+
+```
+CSS:
+  .pane::before {
+    content: "";
+    position: absolute; left: 0; right: 0; top: 0; height: 36%;
+    background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent);
+  }
+
+gpui:
+  div().relative().child(
+    div()
+      .absolute()
+      .left(px(0.)).right(px(0.)).top(px(0.))
+      .h(relative(0.36))
+      .bg(linear_gradient(180.,
+        linear_color_stop(rgba(0xffffff0a), 0.),    /* round(0.04×255)=10=0x0a */
+        linear_color_stop(rgba(0x00000000), 1.)))   /* transparent */
+  )
+```
+
+---
+
+## 9. 伪元素 → gpui 替代方案
+
+gpui **没有** `::before` / `::after`，所有装饰必须是独立 DOM 元素：
+
+| CSS 伪元素 | mockup 用途 | gpui |
+|-----------|------------|------|
+| `::before` (`.win`) | 窗口顶部 specular | 独立 `div().absolute()` |
+| `::after` (`.win`) | noise 纹理 | ⚠ 忽略（无 SVG filter） |
+| `::before` (`body`) | noise 纹理 | ⚠ 忽略 |
+| `::after` (`body`) | vignette | ⚠ 忽略 |
+| `::before` (`.pane`) | specular 高光渐变 | 独立 `div().absolute()` |
+| `::after` (`.tab.active`) | 顶部强调色条 | 独立 `div().absolute()` |
+| `::before` (`.block`) | 左侧状态色条 | 独立 `div().absolute()` |
+| `::before` (`.tnode.ind*`) | 缩进连接线 | 独立 `div()` |
+
+---
+
+## 10. SVG 图标
+
+mockup 用 `<symbol>` + `<use>`：`<svg><use href="#i-spark"/></svg>`。项目图标定义在 `assets.rs` 的 `ICON_BODIES`。两个 `icon` 函数：
+
+```rust
+// A：style.rs 的 icon(name, size, color) —— 已设好 text_color
+crate::style::icon("spark", 13., ui.accent)
+
+// B：assets.rs 的 icon(name, size) —— 不带颜色，需自行 .text_color()
+crate::assets::icon("spark", 13.).text_color(col(ui.accent))
+```
+
+**注意**：gpui 将 SVG 渲染为 alpha 遮罩，SVG 自身的 `stroke` 颜色被忽略，颜色由 `text_color()` 决定；**漏设 text_color 图标全透明不可见**。
+
+### 图标名对照（16 个键，已逐一核对 `ICON_BODIES`）
+
+| mockup `<symbol id="">` | `assets.rs` 键名 | 描述 |
+|------------------------|-----------------|------|
+| `i-folder` | `folder` | 文件夹 |
+| `i-file` | `file` | 文件 |
+| `i-chev-r` | `chev-r` | 右箭头 |
+| `i-chev-d` | `chev-d` | 下箭头 |
+| `i-spark` | `spark` | AI 星芒 |
+| `i-check` | `check` | 对勾（完成） |
+| `i-diamond` | `diamond` | 菱形（运行中） |
+| `i-circle` | `circle` | 圆（待办） |
+| `i-term` | `term` | 终端 |
+| `i-branch` | `branch` | git 分支 |
+| `i-min` | `min` | 最小化 |
+| `i-max` | `max` | 最大化 |
+| `i-close` | `close` | 关闭 |
+| `i-plus` | `plus` | 加号 |
+| `i-pen` | `pen` | 编辑（笔） |
+| `i-explorer` | `explorer` | 资源管理器 |
+
+---
+
+## 11. 动画
+
+gpui 0.2.2 **没有 CSS animation / transition 等价物**，所有动效通过 `cx.spawn` + `bg_executor.timer()` + `cx.notify()` 手动驱动。
+
+| CSS 动画 | mockup 用途 | gpui |
+|---------|------------|------|
+| `@keyframes pulse`（opacity + scale） | 「Thinking」呼吸点 | `opacity` 布尔 toggle + notify（⚠ 无 `transform: scale`，只脉冲透明度） |
+| `@keyframes spin`（rotate 360°） | 运行中菱形自转 | timer 步进角度 + 重绘（gpui 无 `transform`，需按帧重算/重画） |
+| `@keyframes blink`（opacity steps） | 光标闪烁 | `cursor_on` 布尔 + 530ms timer |
+
+> ⚠ gpui 0.2.2 无 `transform: scale/rotate/translate` 的 fluent API；旋转/缩放动画需自行按帧重算几何或换素材，不能直接「转 div」。
+
+---
+
+## 12. 交互状态
+
+### Hover / 条件样式
+
+`hover(f: FnOnce(StyleRefinement)->StyleRefinement)`、`when(cond, f)`、`when_some(opt, f)` 均已确认（`elements/div.rs` / `util.rs`）。
+
+```
+CSS:  .newtab:hover { background: var(--g2); }
+gpui: .hover(|s| s.bg(rgba(INSET)))
+
+CSS:  .tab.active { color: var(--fg); }
+gpui: .when(is_active, |d| d.text_color(col(ui.foreground)))
+```
+
+### 多重条件
+
+```
+CSS:  .tab.claude.active::after { background: var(--claude); }
+gpui:
+  .when(is_active && agent == Some(AgentKind::ClaudeCode), |d| {
+      d.child(/* 顶部强调条 */ div().absolute().bg(col(t.agents.claude)))
+  })
+```
+
+### 窗口控制（自绘标题栏）
+
+`WindowControlArea` 变体 = `{ Drag, Close, Max, Min }`（`window.rs`）；`window_control_area(area)` 在 `Div`（`elements/div.rs`）。点击由 OS（NC 命中码）处理。
+
+```
+CSS:  .wctl .b.close:hover { background: rgba(247,118,142,0.22); }
+gpui:
+  div()
+    .window_control_area(WindowControlArea::Close)   // OS 直接处理点击
+    .hover(|s| s.bg(cola(t.ansi.red, 0.22)))         // 危险悬停 = 红 @ 22%（#F7768E 即 ansi.red）；cola 折算，旧写 rgba(0x..33)=20% 偏淡
+```
+
+**重要**：`window_control_area` 标记的区域由 OS 处理点击（Min/Max/Close），**不要再加 `on_mouse_down`**（会双重触发）。
+
+### 鼠标 / 键盘事件
+
+裸方法签名 `Fn(&Event, &mut Window, &mut App)`；`cx.listener(...)` 包一层把视图 `this` 加到最前，得到 4 参闭包。
+
+```
+CSS:  onclick / onmousedown
+gpui: .on_mouse_down(MouseButton::Left, cx.listener(move |this, ev, window, cx| { ... }))
+
+CSS:  onscroll
+gpui: .on_scroll_wheel(cx.listener(|this, ev, window, cx| { ... }))
+
+CSS:  onkeydown
+gpui: .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| { ... }))
+```
+
+---
+
+## 13. 完整对照示例
+
+### 示例 1：磨砂面板（.pane）
+
+**CSS（核心样式）：**
+```css
+.pane {
+  background: linear-gradient(180deg, rgba(42,46,68,0.42), rgba(26,28,44,0.52));
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.07);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.10) inset,     /* ⚠ inset */
+              0 24px 58px -36px rgba(0,0,0,0.88);
+}
+.pane::before {                                           /* specular */
+  position: absolute; left: 0; right: 0; top: 0; height: 36%;
+  background: linear-gradient(180deg, rgba(255,255,255,0.04), transparent);
+}
+.pane.active {
+  border-color: rgba(240,145,109,0.24);
+  box-shadow: 0 1px 0 rgba(255,255,255,0.13) inset,     /* ⚠ inset */
+              0 0 0 1px rgba(240,145,109,0.10),          /* 暖色 ring */
+              0 30px 64px -36px rgba(0,0,0,0.9);
+}
+```
+
+**gpui（对照现有 workspace.rs 模式）：**
+```rust
+fn render_pane(
+    is_focused: bool,
+    config: &Arc<Loaded>,
+    content: impl IntoElement,
+) -> Div {
+    let ui = &config.theme.ui;
+
+    let pane = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .rounded(px(R_PANEL))
+        .overflow_hidden()
+        .min_w(px(0.)).min_h(px(0.))
+        // ── 渐变底 + rim 描边 ──
+        .bg(linear_gradient(180.,
+            linear_color_stop(rgba(0x2a2e446b), 0.),
+            linear_color_stop(rgba(0x1a1c2c85), 1.)))
+        .border_1()
+        .border_color(if is_focused {
+            cola(config.theme.agents.claude, 0.24)  // claude @ 24%（token 基色用 cola，见 §3）
+        } else {
+            rgba(RIM)         // rim 占用了唯一的 border_color，故 sheen 顶高光改用独立 div ↓
+        })
+        // ── inset 顶高光（代替 inset box-shadow；不能再用 border_t，见 §5 单色边框警告）──
+        .child(
+            div().absolute().top(px(0.)).left(px(0.)).right(px(0.)).h(px(1.))
+                .bg(rgba(SHEEN))
+        )
+        // ── specular highlight（代替 ::before；非交互 div 不挡鼠标，无需 pointer-events:none）──
+        .child(
+            div()
+                .absolute()
+                .left(px(0.)).right(px(0.)).top(px(0.))
+                .h(relative(0.36))
+                .bg(linear_gradient(180.,
+                    linear_color_stop(rgba(0xffffff0a), 0.),
+                    linear_color_stop(rgba(0x00000000), 1.)))
+        )
+        // ── 内容 ──
+        .child(content);
+
+    // ── 投影（聚焦时更深）──
+    let shadows = if is_focused {
+        vec![soft_shadow(30., 64., -36., 0.9)]
+    } else {
+        vec![soft_shadow(24., 58., -36., 0.88)]
+    };
+    shadowed(pane, shadows)
+}
+```
+
+### 示例 2：标签页（.tab）
+
+**CSS：**
+```css
+.tab {
+  display: flex; align-items: center; gap: 7px;
+  height: 34px; padding: 0 14px;
+  border-radius: 11px 11px 0 0;
+  font-size: 12.5px; font-weight: 520;
+  color: var(--muted);
+}
+.tab.active {
+  color: var(--fg);
+  background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.01));
+}
+.tab.claude.active::after {                               /* 顶部强调色条 */
+  position: absolute; left: 13px; right: 13px; top: 0; height: 2px;
+  background: var(--claude);
+}
+```
+
+**gpui（对照现有 workspace.rs 模式）：**
+```rust
+fn render_tab(
+    label: &str,
+    is_active: bool,
+    agent_color: Option<Rgb>,   // claude / codex 强调色
+    ui: &UiColors,
+) -> Div {
+    let accent = agent_color.unwrap_or(ui.accent);
+
+    div()
+        .relative()
+        .flex().flex_row().items_center()
+        .gap(px(7.))
+        .h(px(34.))
+        .px(px(14.))
+        .rounded_t(px(R_CARD))
+        .text_size(px(12.5))
+        .font_weight(FontWeight(520.))               // 精确还原 mockup 520（见 §4）
+        // ── 非激活态 ──
+        .when(!is_active, |d| {
+            d.text_color(col(ui.muted))
+                .border_1().border_color(rgba(0x00000000))  // 透明边，hover 不抖动
+                .hover(|s| s.bg(rgba(INSET)))
+        })
+        // ── 激活态 ──
+        .when(is_active, move |d| {
+            d.text_color(col(ui.foreground))
+                .bg(linear_gradient(180.,
+                    linear_color_stop(rgba(0xffffff0e), 0.),   // round(0.055×255)=14=0x0e
+                    linear_color_stop(rgba(0xffffff03), 1.)))  // round(0.01×255)=3=0x03
+                .border_1().border_color(rgba(RIM))
+                // 顶部强调色条（代替 ::after）
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .left(px(13.)).right(px(13.))          // mockup 实为 13px
+                        .h(px(2.))
+                        .rounded_full()
+                        .bg(col(accent))
+                )
+        })
+        // ── 图标 + 文字 ──
+        .child(icon("spark", 13., if is_active { accent } else { ui.muted }))
+        .child(SharedString::from(label))
+}
+```
+
+### 示例 3：文件树节点（.tnode）
+
+**CSS：**
+```css
+.tnode {
+  display: flex; align-items: center; gap: 7px;
+  height: 26px; padding: 0 10px;
+  border-radius: 8px;
+  color: var(--fg-dim);
+}
+.tnode.active {
+  background: linear-gradient(180deg, rgba(255,255,255,0.075), rgba(255,255,255,0.025));
+  color: var(--fg);
+}
+.tnode .tag.m {
+  color: var(--yellow);
+  background: rgba(224,175,104,0.15);
+}
+```
+
+**gpui（对照现有 explorer.rs 模式）：**
+```rust
+fn render_row(
+    name: &str,
+    is_selected: bool,
+    git_tag: Option<(char, Color)>,  // ('M', yellow) 等
+    indent: f32,
+    ui: &UiColors,
+    t: &Theme,
+) -> Div {
+    let glyph_color = if is_selected { t.agents.claude } else { ui.muted };
+
+    div()
+        .flex().flex_row().items_center()
+        .gap(px(7.))
+        .h(px(26.))                                      // mockup 实为 26px
+        .pl(px(indent)).pr_2()
+        .rounded(px(8.))                                 // mockup 实为 8px
+        .text_size(px(12.5))
+        .when(is_selected, |d| {
+            d.bg(rgba(HOVER)).text_color(col(ui.foreground))
+        })
+        .when(!is_selected, |d| {
+            d.text_color(col(ui.muted))
+                .hover(|s| s.bg(rgba(INSET)))
+        })
+        // chevron 占位（文件无箭头）
+        .child(div().w(px(13.)).flex_none())
+        // 文件图标
+        .child(icon("file", 14., glyph_color))
+        // 文件名
+        .child(SharedString::from(name))
+        // git 状态标签（tag.m 用 cola 精确 0.15 alpha）
+        .when_some(git_tag, |d, (ch, c)| {
+            d.child(div().flex_1()).child(
+                div()
+                    .flex_none()
+                    .w(px(15.)).h(px(15.))
+                    .rounded(px(5.))
+                    .flex().items_center().justify_center()
+                    .text_size(px(9.))
+                    .font_weight(FontWeight(800.))       // mockup tag 字重 800
+                    .text_color(col(c))
+                    .bg(cola(c, 0.15))                   // rgba(224,175,104,0.15)
+                    .child(SharedString::from(ch.to_string()))
+            )
+        })
+}
+```
+
+---
+
+## 14. ⚠ gpui 0.2.2 真正无法复制的 CSS 特性（已逐符号核对）
+
+| CSS 特性 | 核对结论 | 替代方案 |
+|---------|---------|---------|
+| `backdrop-filter: blur()` | 仅 `WindowBackgroundAppearance::Blurred` 整窗有效，无 per-div | 半透明背景色（`cola`）近似 |
+| `mix-blend-mode` | 无 | **忽略** |
+| SVG `<filter>`（feTurbulence 噪声） | 无 | **忽略** |
+| `radial-gradient()` | `color.rs` 无该函数 | **忽略** |
+| `box-shadow: inset` | `BoxShadow` 无 inset 字段 | 顶 border / 独立 1px div |
+| `transform: scale/rotate/translate` | 无 fluent API | 按帧重算几何 / 换素材 |
+| `letter-spacing` | 无 | **忽略** |
+| `font-feature-settings` | 无 | **忽略** |
+| `text-transform` | 无 | 手动转换字符串 |
+| `position: sticky` | 无 | 用 absolute 模拟 |
+| `z-index` | 无显式属性 | DOM 顺序决定层级 |
+| `display: grid` | 有 `grid_cols/grid_rows`（实验性，少用） | 优先用 flex 模拟 |
+
+> **不在本表**（即 gpui **能**做、旧版本曾误列为「不支持」的）：`opacity`（`Styled::opacity`）、自定义 `font-weight` 数值（`FontWeight(f32)`）。
+> 另：`pointer-events: none` 不需要任何方法——非交互 div 默认不挡鼠标（反向用 `occlude()`）。
+
+---
+
+## 15. 使用清单
+
+### 实现新 UI 区域时
+
+1. 找到 mockup 中对应的 HTML 节点和 CSS 类
+2. 在此文档中查找每个 CSS 属性的 gpui 翻译
+3. **优先用 `style.rs` 的 token**（`R_PANEL`、`RIM`、`HOVER` 等）而非裸值
+4. **颜色用 `col(ui.xxx)` / `cola(ui.xxx, alpha)`** 而非硬编码 hex（除非要逐像素还原 mockup）
+5. 间距用 `px()` 精确值，不依赖 gpui spacing scale
+6. 字重用 `FontWeight(N.)` 精确还原；**半透明色首选 `cola(token, a)`（alpha 写小数）**，仅一次性字面色才用 `rgba(0x..AA)` 且写出 `round(α×255)` 算式（见 §3 约定）
+7. 对照 mockup 截图验证：圆角、间距、颜色、阴影深度
+
+### 常见陷阱
+
+- **忘记 `min_w(px(0.))` / `min_h(px(0.))`**：Taffy `min-size: auto` 导致内容撑破 flex 容器
+- **`overflow_hidden` 不裁剪圆角子元素**：圆角卡里有独立背景的子元素需自己 `rounded()`
+- **`window_control_area` 加 `on_mouse_down`**：OS 动作被双重触发
+- **用裸 hex 而非 `col()`**：主题切换会失效
+- **手算带 alpha 的 `rgba(0x..AA)`**：易把 22% 写成 `0x33`(=20%)。主题色用 `cola(色, 0.22)`、白叠加用命名常量；字面色才用 hex 且必须写出 `round(α×255)` 算式（§3 约定）
+- **忘记给 SVG 图标设 `text_color`**：图标透明不可见
+- **写 `.pointer_events_none()`**：✗ gpui 0.2.2 无此方法，编译失败——非交互 div 本就穿透，无需任何调用

@@ -268,6 +268,7 @@ pub trait UsageProvider: Send {
 - **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。
 - **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;常亮(闪烁/呼吸待帧时钟机制)。
 - **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
+- **tabular 数字(`tnum`)开不了**:§6.1 想用 `tnum` 对齐 token/花费/时长,但 gpui 0.2.2 **无 `font-feature-settings` API**(已对源码确认),无法开启该 OpenType 特性。退路:选本身即等宽数字的字体,或接受比例数字。详见 [CSS_TO_GPUI.md](CSS_TO_GPUI.md) §4。
 
 ---
 
@@ -277,7 +278,7 @@ pub trait UsageProvider: Send {
 |---|---|---|---|
 | 标签 + n-ary 容器树分屏 | tn-ui | M1 | ✅ |
 | 分屏交互(键盘切分/改尺寸/点击聚焦/焦点描边) | tn-ui | M1 | ✅ |
-| 分隔线鼠标拖拽 + 拖拽停靠(drag-dock) | tn-ui | M1 | 🧭 未做(`Node::resize` 权重数学已就绪) |
+| 分隔线鼠标拖拽 / 拖拽停靠(drag-dock) | tn-ui | M1 | 分隔线拖拽 ✅(commit-on-release);drag-dock 🧭 未做 |
 | 文件树 + 文件/Diff 查看器(只读) | tn-ui | M4 | ✅ |
 | 每格颜色 + 焦点描边 | tn-ui | M1 | ✅ |
 | 自定义 `TerminalElement`(字形图集 + typed-quad) | tn-ui | M1.2b | 🧭 未做(当前 div + run 批处理) |
