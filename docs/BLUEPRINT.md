@@ -124,7 +124,9 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 
 ### 3.6 resize 联动 ✅
 
-`render` 里用 `window.viewport_size()` 除以**实测的等宽字符宽度**(`text_system().advance(font_id, size, 'm')`)算出列数、除以行高算出行数;若与当前网格不同,则 `Terminal::resize` + `PtyBackend::resize`(ConPTY `window_change`)。
+`render` 里用 `window.viewport_size()` 除以**实测的等宽字符宽度**(`text_system().advance(font_id, size, 'm')`)算出列数、除以行高算出行数;若与当前网格不同,则 `Terminal::resize_conpty` + `PtyBackend::resize`(ConPTY `window_change`)。
+
+**为何是 `resize_conpty` 而非 `resize`**:ConPTY 行/列仍**精确跟随** alacritty(尺寸不匹配会复活高频空白,见 [CLAUDE.md 踩过的坑](../CLAUDE.md));但 alacritty 标准 resize 在**长高时底锚定**——把 `delta` 行从滚动历史**提升进视口顶部**,而 ConPTY 紧接着用**顶锚定**的 repaint 覆盖这些格、且 alacritty 已把它们移出历史环 → 永久丢失(探针 `TN_RESIZE_EXP`:12→24 丢 12 行)。`resize_conpty` 在 ConPTY 重绘**之前**把被提升的行用 `scroll_up` 推回滚动区,使长高变**顶锚定**(新行是底部空白、历史留在历史环不被 repaint 触及)——与 ConPTY 的 repaint 对齐 → 零丢失(`TN_RESIZE_EXP=topgrow` 验证 40/40 存活),且恰好与原生 Windows 控制台"长高=内容留原位、下方开空白"一致。
 
 ---
 
@@ -180,7 +182,8 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 | 许可证 | **开源 GPL-3.0-or-later** | 规避 GPUI 依赖树里 GPL-3.0 传递依赖的冲突([zed#55470](https://github.com/zed-industries/zed/issues/55470)) |
 | MVP 顺序 | 本地内核 → WSL/SSH → blocks → AI | 先有能日用的扎实终端 |
 | 渲染 | **按 `generation` 缓存渲染数据** | 引擎每次 grid 变更 +1;空闲/光标闪烁等无变化帧复用 snapshot+row_runs,不每帧重走全网格 |
-| ConPTY 行数 | **始终精确跟随 alacritty**(曾试"shell 行锁定"防 resize 吃历史,因 ConPTY≠alacritty 致高频空白已**撤销**) | ConPTY 行增高会吃历史/顶飞提示符,但任何尺寸不匹配会复活空白;取舍:拖大 pane 丢少量旧历史,commit-on-release 最小化 |
+| ConPTY 行数 | **始终精确跟随 alacritty**(曾试"shell 行锁定"防 resize 吃历史,因 ConPTY≠alacritty 致高频空白已**撤销**) | 尺寸不匹配会复活空白;故不锁行 |
+| resize 长高 | **引擎顶锚定长高**(`resize_conpty`:resize 后 `scroll_up` 把被提升的历史推回滚动区) | 标准底锚定会被 ConPTY 顶锚定 repaint 覆盖丢历史;顶锚定零丢失(`TN_RESIZE_EXP=topgrow` 40/40),且合 Windows 原生长高语义 |
 | agent 退出 | **`-NoExit` 托管 agent 用哨兵标题自报退出** | pwsh 存活故无 `ProcessExited`;退出后清身份回落 shell,而非进程树轮询(脆弱) |
 
 ---

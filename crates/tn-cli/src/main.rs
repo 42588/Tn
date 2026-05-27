@@ -239,10 +239,23 @@ fn resize_experiment() -> anyhow::Result<()> {
     // exactly, but ConPTY's rows are pinned to a high-water mark (never grow),
     // so its repaint can't clobber pulled-up scrollback. Default exercises the
     // naive path (resize both) that loses content.
-    let locked = std::env::var("TN_RESIZE_EXP").map(|v| v == "locked").unwrap_or(false);
+    // Strategies: `naive` (default) resizes both exactly — alacritty bottom-
+    // anchors a grow, ConPTY repaints top-anchored, clobbering pulled-up history.
+    // `locked` pins ConPTY rows to a high-water mark (the reverted fix; breaks
+    // normal commands via ConPTY≠alacritty mismatch). `topgrow` keeps ConPTY ==
+    // alacritty but uses `resize_conpty` so alacritty top-anchors a grow (pushes
+    // pulled rows back into scrollback) to match ConPTY's repaint — the candidate.
+    let mode = std::env::var("TN_RESIZE_EXP").unwrap_or_default();
+    let locked = mode == "locked";
+    let topgrow = mode == "topgrow";
     let mut pty_hwm = start.rows as u16;
     let resize = |term: &Arc<Mutex<Terminal>>, pty: &mut LocalPty, rows: u16, cols: u16, hwm: &mut u16| {
-        term.lock().unwrap().resize(GridSize::new(rows as usize, cols as usize));
+        let size = GridSize::new(rows as usize, cols as usize);
+        if topgrow {
+            term.lock().unwrap().resize_conpty(size);
+        } else {
+            term.lock().unwrap().resize(size);
+        }
         let pty_rows = if locked {
             *hwm = (*hwm).max(rows);
             *hwm
@@ -252,7 +265,14 @@ fn resize_experiment() -> anyhow::Result<()> {
         let _ = pty.resize(PtySize::new(pty_rows, cols));
     };
 
-    println!("strategy: {}", if locked { "row-lock (fix)" } else { "naive (resize both)" });
+    println!(
+        "strategy: {}",
+        match (locked, topgrow) {
+            (true, _) => "row-lock (reverted fix)",
+            (_, true) => "topgrow (resize_conpty: top-anchor grow)",
+            _ => "naive (resize both)",
+        }
+    );
     thread::sleep(Duration::from_millis(2500)); // let all 40 lines land
     report("start 12x80", &collect(&term));
 

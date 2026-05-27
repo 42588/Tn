@@ -468,9 +468,50 @@ impl Terminal {
     }
 
     /// Resize the grid to a new viewport size.
+    ///
+    /// Standard terminal semantics (bottom-anchored): on a row *grow* alacritty
+    /// pulls `delta` rows out of scrollback into the top of the viewport. For a
+    /// ConPTY-backed pane prefer [`resize_conpty`], which avoids losing those
+    /// rows to ConPTY's resize-repaint.
     pub fn resize(&mut self, size: GridSize) {
         self.size = size;
         self.term.resize(size);
+        self.bump();
+    }
+
+    /// Resize a **ConPTY-backed** pane: like [`resize`](Self::resize) but on a
+    /// row *grow* it keeps content **top-anchored** — the new rows are blanks at
+    /// the bottom, and scrollback stays in scrollback (it is not pulled up into
+    /// the viewport).
+    ///
+    /// Why this exists (see CLAUDE.md 踩过的坑 / `TN_RESIZE_EXP`): alacritty's
+    /// standard grow is bottom-anchored — it pulls `delta` lines from history
+    /// into the viewport top. But ConPTY repaints *its* (top-anchored) viewport
+    /// right after a resize and overwrites exactly those pulled-up cells; since
+    /// alacritty already promoted them out of the history ring, they're lost for
+    /// good (probe: 12→24 drops 12 lines of scrollback). By pushing the pulled
+    /// rows back into scrollback *before* ConPTY's repaint lands, the history
+    /// stays in the ring (untouched by the repaint) and the grid already matches
+    /// ConPTY's top-anchored repaint. Net: dragging a split bigger no longer eats
+    /// scrollback. (This also matches how native Windows consoles grow — content
+    /// stays put, blank space opens below — rather than Unix's reveal-history.)
+    pub fn resize_conpty(&mut self, size: GridSize) {
+        let old_rows = self.size.rows;
+        // History present *before* the grow == the pool grow_lines pulls from.
+        let history_before = self.term.grid().history_size();
+        self.size = size;
+        self.term.resize(size);
+        if size.rows > old_rows {
+            let delta = size.rows - old_rows;
+            // grow_lines pulled `min(history_before, delta)` rows up; push exactly
+            // those back down into scrollback (scroll_up over the full viewport
+            // rotates the top rows into history and clears blanks at the bottom).
+            let pulled = history_before.min(delta);
+            if pulled > 0 {
+                let rows = size.rows as i32;
+                self.term.grid_mut().scroll_up(&(Line(0)..Line(rows)), pulled);
+            }
+        }
         self.bump();
     }
 
@@ -771,6 +812,41 @@ mod tests {
         assert!(t.scroll_position().1 >= 18, "shrunk rows go to scrollback");
         t.resize(GridSize::new(6, 20)); // grow back
         assert_eq!(t.snapshot().to_text(), before, "grow restores the prior view from history");
+    }
+
+    #[test]
+    fn resize_conpty_grow_is_top_anchored_and_keeps_scrollback() {
+        // `resize_conpty` (ConPTY-backed panes) top-anchors a grow: the prior
+        // visible rows stay put, the new rows are blank at the bottom, and the
+        // rows alacritty momentarily pulled from history are pushed back into
+        // scrollback. This is what keeps ConPTY's top-anchored resize-repaint
+        // from clobbering pulled-up history (probe: TN_RESIZE_EXP=topgrow → no
+        // loss, vs `resize` losing 12 lines). Contrast with the bottom-anchored
+        // `resize` above, which reveals older history at the top on a grow.
+        let first_nonempty = |t: &mut Terminal| -> String {
+            t.snapshot().rows_text().into_iter().find(|l| !l.trim().is_empty()).unwrap_or_default()
+        };
+        let mut t = Terminal::with_scrollback(GridSize::new(6, 20), 1000);
+        for i in 0..20 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        let top_before = first_nonempty(&mut t);
+        let hist_before = t.scroll_position().1;
+        assert!(hist_before > 0, "precondition: there is scrollback to (not) reveal");
+
+        t.resize_conpty(GridSize::new(12, 20)); // grow taller
+
+        assert_eq!(
+            first_nonempty(&mut t).trim(),
+            top_before.trim(),
+            "top-anchored grow: the first visible line is unchanged (a bottom-anchored \
+             `resize` would instead reveal an older line here)"
+        );
+        assert!(
+            t.scroll_position().1 >= hist_before,
+            "pulled rows were pushed back: scrollback didn't shrink (was {hist_before}, now {})",
+            t.scroll_position().1
+        );
     }
 
     #[test]

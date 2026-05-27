@@ -698,16 +698,16 @@ impl Render for TerminalView {
             let cols = ((bw / self.cell_width).floor() as usize).max(1);
             let rows_n = ((bh / self.line_height).floor() as usize).max(1);
             let new_size = GridSize::new(rows_n, cols);
-            // ConPTY tracks the visible grid EXACTLY. (We tried locking shell rows
-            // to a tall value so a divider-drag-grow wouldn't repaint+clobber
-            // scrollback — but ConPTY rows ≠ alacritty rows caused worse, frequent
-            // blanking: once output scrolls alacritty but not ConPTY, their cursor
-            // coordinates diverge and the prompt mislands. So we keep them equal
-            // and accept that dragging a pane *bigger* may drop a few lines of OLD
-            // scrollback — minimized by commit-on-release. See 踩过的坑.)
+            // ConPTY tracks the visible grid EXACTLY (rows ≠ alacritty rows caused
+            // worse, frequent blanking — once output scrolls alacritty but not
+            // ConPTY their cursors diverge and the prompt mislands; the reverted
+            // row-lock. See 踩过的坑). To stop a divider-drag-*grow* eating
+            // scrollback, the engine top-anchors the grow (`resize_conpty`) so
+            // ConPTY's top-anchored repaint can't clobber pulled-up history —
+            // verified zero-loss by `TN_RESIZE_EXP=topgrow`.
             if new_size != self.size {
                 self.size = new_size;
-                self.terminal.lock().unwrap().resize(new_size);
+                self.terminal.lock().unwrap().resize_conpty(new_size);
                 let _ = self.pty.lock().unwrap().resize(PtySize::new(rows_n as u16, cols as u16));
             }
         }

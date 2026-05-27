@@ -102,7 +102,7 @@ pub enum Viewer { File(FileView), Diff(DiffView) }           // 只读文件 / D
 - 拖到 **Tab 栏** → 移成新 Tab;拖出窗口 → 新窗口(后期)。
 
 **实现要点:**
-- **分隔线**是容器内相邻两 `Child` 间的可拖 handle;拖动 → 调整这两个 `Child.weight` → 重布局 → 各 Session `Terminal::resize` + `PtyBackend::resize`(列在前,见 [REFERENCES.md](REFERENCES.md) §三)。同容器内分隔线对齐、可整体拖。
+- **分隔线**是容器内相邻两 `Child` 间的可拖 handle;拖动 → 调整这两个 `Child.weight` → 重布局 → 各 Session `Terminal::resize_conpty` + `PtyBackend::resize`(列在前,见 [REFERENCES.md](REFERENCES.md) §三)。同容器内分隔线对齐、可整体拖。**拉大窗格不再吃滚动历史**(`resize_conpty` 顶锚定长高,见下 §resize 取舍 / [BLUEPRINT §3.6](BLUEPRINT.md))。
 - **关闭叶子**:从父 `Container.children` 移除;若容器只剩 1 个 Child → 坍缩;`Stack` 只剩 1 个 → 退化为 `Leaf`;焦点转移到最近兄弟。
 - **方向焦点**:按几何位置找目标方向最近的叶子(WezTerm 算法),跨容器有效。
 - **zoom**:`Tab.zoomed = Some(pane)`,渲染时只画该屏全幅,退出还原树;不改树结构。
@@ -267,7 +267,7 @@ pub trait UsageProvider: Send {
 - **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
 - **标签/头部用干净名**:不吃 pwsh 的 OSC 标题(`…\powershell.exe`);标签 = `Claude`/`Codex`/`pwsh`,cwd 走徽章。
 - **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。**agent 退出即回落 shell**:主窗口 agent 托管在 `pwsh -NoExit` 里(退出 claude/codex 后 pwsh 还在),退出后经哨兵标题检测**自动清掉头部 + 用量、标签回 `pwsh`**——否则会一直挂着已退出 agent 的头部(还常显示别的会话的陈旧用量)。
-- **resize 取舍(ConPTY 精确跟随)**:ConPTY 行/列始终与 alacritty 一致(见 [BLUEPRINT §5](BLUEPRINT.md))。**曾试"行锁定"**(ConPTY 锁高)避免拖大 pane 吃滚动历史,但 ConPTY≠alacritty 导致**普通命令也大片空白**(光标坐标错位),已撤销。现状:拖分隔线**拉大**可能丢几行**旧**历史(当前内容不受影响),commit-on-release 已把影响降到最小;退 agent 回落 shell **不再空白**(已无 ConPTY 增高)。
+- **resize 取舍(ConPTY 精确跟随 + 顶锚定长高)**:ConPTY 行/列始终与 alacritty 一致(见 [BLUEPRINT §5](BLUEPRINT.md))。**曾试"行锁定"**(ConPTY 锁高)避免拖大 pane 吃滚动历史,但 ConPTY≠alacritty 导致**普通命令也大片空白**(光标坐标错位),已撤销。**现行修法**:保持 ConPTY 精确跟随,改在**引擎侧**用 `resize_conpty` 让长高**顶锚定**(resize 后 `scroll_up` 把被提升的历史推回滚动区)——这样 ConPTY 顶锚定的 repaint 不再覆盖丢历史,**拖大窗格零丢失**(`TN_RESIZE_EXP=topgrow` 验证 40/40)。可见效果:拖大窗格时内容留原位、**下方开空白**(与原生 Windows 控制台一致),旧历史完整保留在滚动区可滚回;退 agent 回落 shell 不空白。**真机肉眼项**:交互式 shell(PSReadLine/oh-my-posh)在拖动后重绘提示符的观感需肉眼确认。
 - **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;**聚焦时 ~530ms 闪烁(键入即点亮),失焦稳定不闪**——blink 任务仅在聚焦时 toggle+notify,空闲零唤醒。
 - **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
 - **tabular 数字(`tnum`)开不了**:§6.1 想用 `tnum` 对齐 token/花费/时长,但 gpui 0.2.2 **无 `font-feature-settings` API**(已对源码确认),无法开启该 OpenType 特性。退路:选本身即等宽数字的字体,或接受比例数字。详见 [CSS_TO_GPUI.md](CSS_TO_GPUI.md) §4。
