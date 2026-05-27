@@ -14,28 +14,25 @@
 //!     completes or its timeout fires, so snapshots are always whole frames.
 
 use std::cell::RefCell;
-use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::io::Write;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Instant;
 
 use futures::channel::mpsc;
-use futures::StreamExt;
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba, AsyncApp,
-    Bounds, ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
+    canvas, div, prelude::*, px, relative, rgba, Bounds,
+    ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, WeakEntity, Window,
+    SharedString, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
-use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, TermEvent, Terminal};
+use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec, SshBackend};
-use tn_shell::{Integration, ShellParser};
+use tn_shell::Integration;
 
 use crate::block_view;
 
@@ -50,7 +47,12 @@ pub struct UsageUpdated;
 pub struct ProcessExited;
 
 use crate::perf::PerfStats;
-use crate::style::{col, cola, HOVER, UI_SANS};
+use crate::style::{col, cola, HOVER};
+
+mod header; // agent pane header UI (avatar / model / usage ring)
+mod io; // off-thread workers (reader / repaint / blink / exit-watcher / usage poller)
+mod launch; // LaunchSpec: profile -> spawnable pane
+pub use launch::LaunchSpec;
 
 /// Cached per-frame render data (待优化清单 §2.1), keyed by the engine's
 /// [`generation`](tn_core::Terminal::generation). A repaint that changed nothing
@@ -88,147 +90,6 @@ pub(crate) fn palette_from(theme: &tn_config::Theme) -> Palette {
         cursor: c(t.cursor),
         selection_fg: c(t.selection_fg),
         selection_bg: c(t.selection_bg),
-    }
-}
-
-/// How to launch a pane's process: program + args + whether to inject the pwsh
-/// shell-integration script. Built from a `tn_config::Profile` (command-bearing
-/// shell/agent profiles), or the default local PowerShell via [`LaunchSpec::pwsh`].
-#[derive(Clone, Debug)]
-pub struct LaunchSpec {
-    pub program: String,
-    pub args: Vec<String>,
-    pub integrate_pwsh: bool,
-    /// Which agent this pane hosts (launch-intent signal for per-pane usage).
-    /// `None` for a plain shell — usage is then auto-detected by log freshness.
-    pub agent: Option<AgentKind>,
-    /// When set, this pane is a remote SSH session (M2): the view spawns an
-    /// [`SshBackend`] instead of a local ConPTY, and `program`/`args` are unused
-    /// (`program` is just the `user@host` label).
-    pub ssh: Option<tn_pty::SshConfig>,
-}
-
-impl LaunchSpec {
-    /// Default local PowerShell pane, with OSC 133 shell integration.
-    pub fn pwsh() -> Self {
-        Self {
-            program: "powershell.exe".into(),
-            args: vec!["-NoLogo".into()],
-            ssh: None,
-            integrate_pwsh: true,
-            agent: None,
-        }
-    }
-
-    /// Derive from a config profile if it carries a command (shell + agent).
-    /// WSL/SSH profiles (no command yet, M2) return `None`.
-    ///
-    /// Native pwsh runs directly (with integration). Any other command (Claude /
-    /// Codex / scripts) is **hosted inside pwsh** via `-NoExit -Command "& '…'"`,
-    /// because on Windows those are extensionless npm shims that `CreateProcessW`
-    /// can't execute directly — pwsh resolves them via PATH + PATHEXT, and the
-    /// shell survives the agent's exit (back to a prompt).
-    pub fn from_profile(p: &tn_config::Profile) -> Option<Self> {
-        Self::from_profile_inner(p, true)
-    }
-
-    /// Like [`from_profile`], but the pwsh hosting a non-pwsh agent omits
-    /// `-NoExit`, so exiting the agent exits the PTY. The quick terminal uses
-    /// this so "exit claude" returns to its launcher instead of leaving a
-    /// lingering pwsh prompt under a stale agent header.
-    pub fn from_profile_ephemeral(p: &tn_config::Profile) -> Option<Self> {
-        Self::from_profile_inner(p, false)
-    }
-
-    fn from_profile_inner(p: &tn_config::Profile, persist: bool) -> Option<Self> {
-        // One launch path per profile kind (待优化清单 §6.3). WSL/SSH ignore the
-        // command field; everything else needs a command, then forks on whether
-        // it's a native pwsh (run directly + integrated) or another program
-        // (hosted inside pwsh, since Windows can't `CreateProcessW` an npm shim).
-        match p.kind {
-            tn_config::ProfileKind::Wsl => Some(Self::launch_wsl(p)),
-            tn_config::ProfileKind::Ssh => Self::launch_ssh(p),
-            _ => {
-                let command = p.command.clone()?;
-                // Agent identity: an explicit `agent = "..."` wins, else infer from
-                // the command (`claude` / `codex`). This launch-intent signal is
-                // what the status bar reads, so a Codex pane never shows Claude's
-                // usage.
-                let agent = p
-                    .agent
-                    .as_deref()
-                    .and_then(tn_ai::agent_kind_for_command)
-                    .or_else(|| tn_ai::agent_kind_for_command(&command));
-                let lc = command.to_ascii_lowercase();
-                if lc.contains("powershell") || lc.contains("pwsh") {
-                    Some(Self::launch_pwsh(command, &p.args, agent))
-                } else {
-                    Some(Self::launch_hosted(command, &p.args, agent, persist))
-                }
-            }
-        }
-    }
-
-    /// WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`. ConPTY
-    /// runs `wsl.exe` like any program, so no special backend is needed; no pwsh
-    /// integration (the distro runs bash/zsh). An empty/absent distro launches
-    /// WSL's default distro.
-    fn launch_wsl(p: &tn_config::Profile) -> Self {
-        let mut args = Vec::new();
-        if let Some(distro) = p.distro.as_deref().filter(|d| !d.is_empty()) {
-            args.push("-d".to_string());
-            args.push(distro.to_string());
-        }
-        Self { program: "wsl.exe".into(), args, integrate_pwsh: false, agent: None, ssh: None }
-    }
-
-    /// SSH (M2b): a remote session over russh. `host` (optionally `host:port`) +
-    /// `user` build an `SshConfig`; the view spawns an `SshBackend`. `None` if the
-    /// profile carries no host.
-    fn launch_ssh(p: &tn_config::Profile) -> Option<Self> {
-        let host = p.host.clone()?;
-        let cfg = tn_pty::SshConfig::parse(&host, p.user.as_deref());
-        Some(Self {
-            program: format!("{}@{}", cfg.user, cfg.host),
-            args: Vec::new(),
-            integrate_pwsh: false,
-            agent: None,
-            ssh: Some(cfg),
-        })
-    }
-
-    /// Native PowerShell: run directly with OSC 133 integration. Empty args
-    /// default to `-NoLogo`.
-    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentKind>) -> Self {
-        let mut args = profile_args.to_vec();
-        if args.is_empty() {
-            args.push("-NoLogo".into());
-        }
-        Self { program: command, args, integrate_pwsh: true, agent, ssh: None }
-    }
-
-    /// Host a non-pwsh command inside pwsh (single-quote-escaped call operator),
-    /// because Windows can't `CreateProcessW` an extensionless npm shim. With
-    /// `persist` we keep `-NoExit` so the shell survives the agent's exit (back to
-    /// a prompt); without it, pwsh exits when the agent does (the quick terminal's
-    /// "exit claude → launcher" path).
-    fn launch_hosted(
-        command: String,
-        profile_args: &[String],
-        agent: Option<AgentKind>,
-        persist: bool,
-    ) -> Self {
-        let mut invoke = format!("& '{}'", command.replace('\'', "''"));
-        for a in profile_args {
-            invoke.push_str(&format!(" '{}'", a.replace('\'', "''")));
-        }
-        let mut args = vec!["-NoLogo".to_string()];
-        if persist {
-            args.push("-NoExit".into());
-        }
-        args.push("-Command".into());
-        args.push(invoke);
-        Self { program: "powershell.exe".into(), args, integrate_pwsh: false, agent, ssh: None }
     }
 }
 
@@ -509,243 +370,6 @@ impl TerminalView {
         rows
     }
 
-    /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
-    /// capture title changes; push a (coalesced) wake to the foreground.
-    fn spawn_reader(
-        mut reader: Box<dyn Read + Send>,
-        terminal: Arc<Mutex<Terminal>>,
-        writer: SharedWriter,
-        dirty: Arc<AtomicBool>,
-        wake_tx: mpsc::UnboundedSender<()>,
-        title: Arc<Mutex<Option<String>>>,
-        blocks: Arc<Mutex<BlockModel>>,
-    ) {
-        thread::spawn(move || {
-            // Shell-integration bypass parser + a session clock. The parser is
-            // stateful (a sequence can split across reads), so it lives here.
-            let mut shell = ShellParser::new();
-            let start = Instant::now();
-            // 64 KiB: high-throughput output (cat big files, build logs) drains in
-            // far fewer read calls than the old 8 KiB, cutting lock churn on the
-            // shared Terminal (待优化清单 §2.3). Heap-boxed to keep the thread stack
-            // small.
-            let mut buf = vec![0u8; 65536];
-            // Outer guard (待优化清单 §8.1): a panic anywhere in the reader loop is
-            // logged with context instead of the thread dying silently (which
-            // would leave the pane frozen with no clue why).
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
-                match reader.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        // The bypass parser is independent of the terminal lock;
-                        // run it first so we know whether this batch produced any
-                        // block events (and thus whether the anchor line is needed).
-                        let events = shell.advance(&buf[..n]);
-                        // Inner guard: catch an alacritty panic *while still holding
-                        // the lock* so the stack unwinds only to here and the guard
-                        // drops normally — the Mutex is never poisoned, so the
-                        // foreground (GPUI callbacks, non-unwinding) can't be taken
-                        // down by a later `.lock().unwrap()`. On panic we stop the
-                        // reader (the grid is half-mutated) but the app lives on.
-                        let processed = {
-                            let mut t = terminal.lock().unwrap();
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                t.advance(&buf[..n]);
-                                let mut replies = Vec::new();
-                                for e in t.drain_events() {
-                                    match e {
-                                        TermEvent::PtyWrite(s) => replies.push(s),
-                                        TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
-                                        TermEvent::ResetTitle => *title.lock().unwrap() = None,
-                                        _ => {}
-                                    }
-                                }
-                                // The cursor anchor is only used when this batch
-                                // produced block events — the common case is none,
-                                // so skip the extra grid borrow (待优化清单 §2.4).
-                                let abs_line =
-                                    if events.is_empty() { 0 } else { t.cursor_abs_line() };
-                                (replies, abs_line)
-                            }))
-                            // `t` drops here, normally, even on the Err path.
-                        };
-                        let (replies, abs_line) = match processed {
-                            Ok(v) => v,
-                            Err(_) => {
-                                tracing::error!(
-                                    "terminal reader: alacritty panicked on output; \
-                                     this pane is frozen (app + other panes unaffected)"
-                                );
-                                break;
-                            }
-                        };
-                        if !replies.is_empty() {
-                            let mut w = writer.lock().unwrap();
-                            for r in replies {
-                                let _ = w.write_all(r.as_bytes());
-                            }
-                            let _ = w.flush();
-                        }
-                        if !events.is_empty() {
-                            let at_ms = start.elapsed().as_millis() as u64;
-                            let mut bm = blocks.lock().unwrap();
-                            for ev in events {
-                                bm.on_event(ev, abs_line, at_ms);
-                            }
-                        }
-                        // Wake the foreground only on the false->true transition,
-                        // so a burst of reads enqueues at most one pending wake.
-                        // (Relaxed: the terminal Mutex carries the data ordering.)
-                        if !dirty.swap(true, Ordering::Relaxed)
-                            && wake_tx.unbounded_send(()).is_err()
-                        {
-                            break; // view dropped
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }));
-            if outcome.is_err() {
-                tracing::error!("terminal reader thread panicked; this pane stopped updating");
-            }
-        });
-    }
-
-    /// Foreground task: await reader wakes and repaint. GPUI coalesces the
-    /// `notify()` calls onto its vsync frame clock; we render the final state.
-    fn spawn_repaint_loop(
-        cx: &mut Context<Self>,
-        dirty: Arc<AtomicBool>,
-        mut wake_rx: mpsc::UnboundedReceiver<()>,
-    ) {
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // `dirty` dedup guarantees at most one wake is queued at a time, so a
-            // single notify per wake already coalesces a burst of reads. GPUI
-            // then folds repeated notifies into one paint at the next vsync.
-            while wake_rx.next().await.is_some() {
-                dirty.store(false, Ordering::Relaxed);
-                if this.update(cx, |_view, cx| cx.notify()).is_err() {
-                    break; // view dropped
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Blink the cursor (~530ms) while the pane is focused. Toggling + notifying
-    /// only when `focused` keeps an unfocused pane at zero wakes (preserving the
-    /// idle-cost-nothing design); an unfocused pane shows a steady hollow cursor.
-    fn spawn_blink_loop(cx: &mut Context<Self>) {
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                exec.timer(Duration::from_millis(CURSOR_BLINK_MS)).await;
-                let alive = this
-                    .update(cx, |v, cx| {
-                        if v.focused {
-                            v.cursor_on = !v.cursor_on;
-                            cx.notify();
-                        } else if !v.cursor_on {
-                            v.cursor_on = true; // restore steady cursor on blur
-                            cx.notify();
-                        }
-                    })
-                    .is_ok();
-                if !alive {
-                    break; // view dropped
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Poll the PTY child; emit [`ProcessExited`] once, when it exits. ConPTY
-    /// doesn't reliably EOF the reader (see CLAUDE.md), so `try_wait` is the
-    /// authoritative signal. Cheap (a brief lock every 400ms).
-    fn spawn_exit_watcher(cx: &mut Context<Self>, pty: Arc<Mutex<Box<dyn PtyBackend>>>) {
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                exec.timer(Duration::from_millis(400)).await;
-                let exited = pty
-                    .lock()
-                    .ok()
-                    .and_then(|mut p| p.try_wait().ok().flatten())
-                    .is_some();
-                if exited {
-                    let _ = this.update(cx, |_v, cx| cx.emit(ProcessExited));
-                    break;
-                }
-                if this.update(cx, |_, _| ()).is_err() {
-                    break; // view dropped
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Headless self-test (TN_AUTOQUIT=1): run a command, dump the rendered grid
-    /// to stdout, then quit. Lets us verify live rendering without a human.
-    fn spawn_self_test(cx: &mut Context<Self>, terminal: Arc<Mutex<Terminal>>, writer: SharedWriter) {
-        {
-            let mut w = writer.lock().unwrap();
-            let _ = w.write_all(b"echo TN_GUI_OK\r\n");
-            let _ = w.flush();
-        }
-        let executor = cx.background_executor().clone();
-        cx.spawn(async move |_this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            executor.timer(Duration::from_secs(4)).await;
-            let text = terminal.lock().unwrap().snapshot().to_text();
-            println!("\n----- rendered terminal grid -----\n{text}\n----- end grid -----");
-            let _ = cx.update(|cx| cx.quit());
-        })
-        .detach();
-    }
-
-    /// Poll this pane's agent usage off the main thread, re-parsing only when the
-    /// resolved session file changes (path or mtime) — an idle agent costs a
-    /// cheap `stat`, preserving the idle-zero-wakeup property. Emits
-    /// [`UsageUpdated`] on change so the workspace status bar repaints.
-    fn spawn_usage_poller(cx: &mut Context<Self>, cwd: String, hint: Option<AgentKind>) {
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut last: Option<(PathBuf, SystemTime)> = None;
-            loop {
-                let cwd2 = cwd.clone();
-                let prev = last.clone();
-                let res = exec
-                    .spawn(async move {
-                        let sref = tn_ai::resolve_session(&cwd2, hint)?;
-                        let mtime = std::fs::metadata(&sref.path).ok()?.modified().ok()?;
-                        if prev.as_ref() == Some(&(sref.path.clone(), mtime)) {
-                            return None; // unchanged — skip the re-parse
-                        }
-                        let text = std::fs::read_to_string(&sref.path).ok()?;
-                        let usage = tn_ai::parse_session(sref.kind, &text)?;
-                        Some((sref.kind, sref.path, mtime, usage))
-                    })
-                    .await;
-                if let Some((_kind, path, mtime, usage)) = res {
-                    last = Some((path, mtime));
-                    // `agent` is fixed from launch intent; the poller only updates
-                    // the usage snapshot (never relabels the pane).
-                    if this
-                        .update(cx, |v, cx| {
-                            v.usage = Some(usage);
-                            cx.emit(UsageUpdated);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break; // view dropped
-                    }
-                }
-                exec.timer(Duration::from_secs(4)).await;
-            }
-        })
-        .detach();
-    }
-
     /// The focus handle for this pane, so the workspace can route focus.
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
@@ -921,156 +545,6 @@ impl TerminalView {
                 ));
         }
         Some(bar)
-    }
-
-    /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
-    /// for a plain shell.
-    fn agent_accent(&self) -> Rgb {
-        match self.agent {
-            Some(AgentKind::ClaudeCode) => self.claude_accent,
-            Some(AgentKind::Codex) => self.codex_accent,
-            None => self.ui_accent,
-        }
-    }
-
-    /// A two-tone context-usage ring (grey track + agent-colored arc) with a
-    /// centered percent label — the mockup's signature per-agent readout.
-    fn usage_ring(&self, pct: u32, accent: Rgb) -> Div {
-        div()
-            .relative()
-            .w(px(32.))
-            .h(px(32.))
-            .flex_none()
-            .child(
-                gpui::svg()
-                    .path(crate::assets::ring_track_path())
-                    .absolute()
-                    .size_full()
-                    .text_color(rgba(0xffffff1f)),
-            )
-            .child(
-                gpui::svg()
-                    .path(crate::assets::ring_path(pct))
-                    .absolute()
-                    .size_full()
-                    .text_color(col(accent)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(9.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(col(self.palette.fg))
-                    .child(SharedString::from(format!("{pct}%"))),
-            )
-    }
-
-    /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
-    /// indicator — we can't observe the agent's think state from the PTY, so we
-    /// don't fake one (Calm Glass: honest chrome).
-    fn render_agent_header(&self, agent: AgentKind) -> Div {
-        let accent = self.agent_accent();
-        let name = match agent {
-            AgentKind::ClaudeCode => "Claude Code",
-            AgentKind::Codex => "Codex",
-        };
-        let model = self
-            .usage
-            .as_ref()
-            .map(|u| crate::workspace::short_model(&u.model))
-            .filter(|m| !m.is_empty());
-        let mut who = div().flex().flex_col().child(
-            div()
-                .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(col(self.palette.fg))
-                .child(SharedString::from(name)),
-        );
-        if let Some(m) = model {
-            who = who.child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(col(self.palette.ansi[8]))
-                    .child(SharedString::from(m)),
-            );
-        }
-        let avatar = div()
-            .w(px(28.))
-            .h(px(28.))
-            .rounded(px(9.))
-            .flex()
-            .items_center()
-            .justify_center()
-            .flex_none()
-            .bg(cola(accent, 0.14))
-            .child(crate::assets::icon("spark", 16.).text_color(col(accent)));
-        let mut head = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
-            .flex_none()
-            .rounded_t(px(13.)) // top corners follow the pane card
-            .font_family(UI_SANS) // chrome = sans, terminal = mono
-            // faint vertical agent-color wash, fading out (refraction, no glow)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(cola(accent, 0.10), 0.),
-                linear_color_stop(cola(accent, 0.0), 0.78),
-            ))
-            .child(avatar)
-            .child(who)
-            .child(div().flex_1());
-        if let Some(u) = &self.usage {
-            let pct = (u.context_frac() * 100.0).round() as u32;
-            let meta = div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(col(self.palette.ansi[8]))
-                        .child(SharedString::from(format!(
-                            "{} / {}",
-                            crate::workspace::human_tokens(u.context_used as u64),
-                            crate::workspace::human_tokens(u.context_max as u64)
-                        ))),
-                )
-                .when(u.cost_usd > 0.0, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(col(self.palette.ansi[2]))
-                            .child(SharedString::from(format!("${:.2}", u.cost_usd))),
-                    )
-                });
-            head = head.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(meta)
-                    .child(self.usage_ring(pct, accent)),
-            );
-        }
-        head
-    }
-
-    /// The per-pane header — an agent header for agent panes only. A plain shell
-    /// gets none: its own prompt already shows the cwd, so a header would just
-    /// duplicate it (and look sparse). The tab still labels the pane "pwsh".
-    fn render_pane_header(&self) -> Option<Div> {
-        self.agent.map(|a| self.render_agent_header(a))
     }
 
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
