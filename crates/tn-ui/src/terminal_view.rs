@@ -34,7 +34,7 @@ use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{GridSize, Palette, Rgb, TermEvent, Terminal};
-use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec};
+use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec, SshBackend};
 use tn_shell::{Integration, ShellParser};
 
 use crate::block_view;
@@ -92,6 +92,10 @@ pub struct LaunchSpec {
     /// Which agent this pane hosts (launch-intent signal for per-pane usage).
     /// `None` for a plain shell — usage is then auto-detected by log freshness.
     pub agent: Option<AgentKind>,
+    /// When set, this pane is a remote SSH session (M2): the view spawns an
+    /// [`SshBackend`] instead of a local ConPTY, and `program`/`args` are unused
+    /// (`program` is just the `user@host` label).
+    pub ssh: Option<tn_pty::SshConfig>,
 }
 
 impl LaunchSpec {
@@ -100,6 +104,7 @@ impl LaunchSpec {
         Self {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
+            ssh: None,
             integrate_pwsh: true,
             agent: None,
         }
@@ -141,6 +146,20 @@ impl LaunchSpec {
                 args,
                 integrate_pwsh: false,
                 agent: None,
+                ssh: None,
+            });
+        }
+        // SSH (M2b): a remote session over russh. `host` (optionally `host:port`)
+        // + `user` build an `SshConfig`; the view spawns an `SshBackend`.
+        if p.kind == tn_config::ProfileKind::Ssh {
+            let host = p.host.clone()?;
+            let cfg = tn_pty::SshConfig::parse(&host, p.user.as_deref());
+            return Some(Self {
+                program: format!("{}@{}", cfg.user, cfg.host),
+                args: Vec::new(),
+                integrate_pwsh: false,
+                agent: None,
+                ssh: Some(cfg),
             });
         }
         let command = p.command.clone()?;
@@ -163,6 +182,7 @@ impl LaunchSpec {
                 args,
                 integrate_pwsh: true,
                 agent,
+                ssh: None,
             });
         }
         // Host the command in pwsh (single-quote-escaped call operator). With
@@ -183,6 +203,7 @@ impl LaunchSpec {
             args,
             integrate_pwsh: false,
             agent,
+            ssh: None,
         })
     }
 }
@@ -195,8 +216,9 @@ type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 pub struct TerminalView {
     terminal: Arc<Mutex<Terminal>>,
     writer: SharedWriter,
-    // Owns the ConPTY master + child; used for resize and kept alive.
-    pty: Arc<Mutex<LocalPty>>,
+    // The pane's PTY backend (local ConPTY or remote SSH); used for resize +
+    // exit detection, and kept alive (drop kills the child / disconnects).
+    pty: Arc<Mutex<Box<dyn PtyBackend>>>,
     focus_handle: FocusHandle,
     size: GridSize,
     cell_width: f32,
@@ -246,31 +268,49 @@ fn shell_name_of(program: &str) -> String {
     }
 }
 
+/// Last-resort local pwsh, used when the intended backend can't spawn — keeps
+/// pane construction infallible (it runs in GPUI's non-unwinding callback, where
+/// a panic would abort the process).
+fn fallback_pwsh(size: PtySize) -> LocalPty {
+    LocalPty::spawn(&SpawnSpec::program("powershell.exe").arg("-NoLogo"), size)
+        .expect("fallback pwsh spawn failed")
+}
+
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, launch: LaunchSpec) -> Self {
         let size = GridSize::new(ROWS, COLS);
-        // Build the spawn spec from the launch profile, then inject the pwsh
-        // OSC 133 shell-integration script (pwsh only) via -EncodedCommand — no
-        // temp file, no echoed input. Bypassable with TN_NO_SHELL_INTEGRATION.
-        let mut spec = SpawnSpec::program(&launch.program);
-        for a in &launch.args {
-            spec = spec.arg(a);
-        }
-        if launch.integrate_pwsh && std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
-            spec = spec
-                .arg("-NoExit")
-                .arg("-EncodedCommand")
-                .arg(Integration::new().encoded_command());
-        }
-        // A bad profile command must NOT crash the app: pane construction runs
-        // inside GPUI's window callback (non-unwinding), so a spawn panic aborts
-        // the whole process. Fall back to a plain pwsh instead.
         let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
-        let mut pty = LocalPty::spawn(&spec, pty_size).unwrap_or_else(|e| {
-            tracing::error!(program = %launch.program, "spawn failed: {e}; falling back to pwsh");
-            LocalPty::spawn(&SpawnSpec::program("powershell.exe").arg("-NoLogo"), pty_size)
-                .expect("fallback pwsh spawn failed")
-        });
+        // Pick the backend: a remote SSH session, or a local ConPTY. A bad
+        // profile must NOT crash the app — pane construction runs inside GPUI's
+        // window callback (non-unwinding), so a spawn panic aborts the whole
+        // process; fall back to a plain pwsh instead.
+        let mut pty: Box<dyn PtyBackend> = if let Some(cfg) = &launch.ssh {
+            match SshBackend::spawn(cfg.clone(), pty_size) {
+                Ok(b) => Box::new(b),
+                Err(e) => {
+                    tracing::error!(host = %cfg.host, "ssh spawn failed: {e}; falling back to pwsh");
+                    Box::new(fallback_pwsh(pty_size))
+                }
+            }
+        } else {
+            // Build the spawn spec, then inject the pwsh OSC 133 shell-integration
+            // script (pwsh only) via -EncodedCommand — no temp file, no echoed
+            // input. Bypassable with TN_NO_SHELL_INTEGRATION.
+            let mut spec = SpawnSpec::program(&launch.program);
+            for a in &launch.args {
+                spec = spec.arg(a);
+            }
+            if launch.integrate_pwsh && std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
+                spec = spec
+                    .arg("-NoExit")
+                    .arg("-EncodedCommand")
+                    .arg(Integration::new().encoded_command());
+            }
+            Box::new(LocalPty::spawn(&spec, pty_size).unwrap_or_else(|e| {
+                tracing::error!(program = %launch.program, "spawn failed: {e}; falling back to pwsh");
+                fallback_pwsh(pty_size)
+            }))
+        };
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
         let pty = Arc::new(Mutex::new(pty));
@@ -454,7 +494,7 @@ impl TerminalView {
     /// Poll the PTY child; emit [`ProcessExited`] once, when it exits. ConPTY
     /// doesn't reliably EOF the reader (see CLAUDE.md), so `try_wait` is the
     /// authoritative signal. Cheap (a brief lock every 400ms).
-    fn spawn_exit_watcher(cx: &mut Context<Self>, pty: Arc<Mutex<LocalPty>>) {
+    fn spawn_exit_watcher(cx: &mut Context<Self>, pty: Arc<Mutex<Box<dyn PtyBackend>>>) {
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {

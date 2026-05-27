@@ -102,7 +102,7 @@ tn-cli     headless ConPTY 烟雾测试工具
 | **M3** | shell 集成 + Warp 式命令块 | ✅ |
 | **M4** | Claude/Codex 托管 + AI 用量 + 命令面板 + Calm Glass UI | ✅ |
 | **M5** | Quick Terminal 幽灵下拉终端 | ✅ |
-| **M2** | WSL + 远程 Linux(SSH) | 🚧 进行中 |
+| **M2** | WSL + 远程 Linux(SSH) | 🚧 WSL ✅ · SSH 编译+单测✅(端到端待真机) |
 
 > 执行顺序经 owner 调整为 **M3 → M4 → M5 → M2**(M3/M4/M5 作用于本地终端、不依赖 M2)。完整里程碑退出标准见 [BLUEPRINT §8](docs/BLUEPRINT.md)。
 

@@ -154,12 +154,15 @@ fn git_branch() -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Whether a profile can be launched now: a command-bearing shell/agent, or a
-/// WSL distro (M2 — `wsl.exe` runs over the local ConPTY). SSH (M2b) needs the
-/// russh backend first.
+/// Whether a profile can be launched now: a command-bearing shell/agent, a WSL
+/// distro (`wsl.exe` over the local ConPTY), or an SSH host (russh backend).
 pub(crate) fn is_launchable(p: &tn_config::Profile) -> bool {
-    p.command.is_some()
-        || (p.kind == tn_config::ProfileKind::Wsl && p.distro.as_deref().is_some_and(|d| !d.is_empty()))
+    use tn_config::ProfileKind;
+    match p.kind {
+        ProfileKind::Wsl => p.distro.as_deref().is_some_and(|d| !d.is_empty()),
+        ProfileKind::Ssh => p.host.as_deref().is_some_and(|h| !h.is_empty()),
+        _ => p.command.is_some(),
+    }
 }
 
 /// Launchable profiles matching the query (case-insensitive substring on name).
@@ -424,6 +427,10 @@ pub struct Workspace {
     palette_query: String,
     palette_sel: usize,
     palette_focus: FocusHandle,
+    /// Focus the palette in the next render. Focusing in the toggle action (before
+    /// the overlay is rendered) doesn't reliably land, so keys leaked to the
+    /// terminal underneath; we focus it in render where the element exists.
+    palette_needs_focus: bool,
 }
 
 impl Workspace {
@@ -454,6 +461,7 @@ impl Workspace {
             palette_query: String::new(),
             palette_sel: 0,
             palette_focus: cx.focus_handle(),
+            palette_needs_focus: false,
         };
         let id = ws.spawn_pane(cx);
         ws.tabs.push(Tab {
@@ -608,7 +616,7 @@ impl Workspace {
         if self.palette_open {
             self.palette_query.clear();
             self.palette_sel = 0;
-            self.palette_focus.focus(window);
+            self.palette_needs_focus = true; // focus in render (see field doc)
         } else {
             self.refocus_active(window, cx);
         }
@@ -1123,6 +1131,12 @@ impl Render for Workspace {
             if let Some(view) = self.panes.get(&fid) {
                 view.read(cx).focus_handle().focus(window);
             }
+        }
+        // Focus the palette overlay here (its track_focus element exists this
+        // frame), so ↑↓/Enter/Esc reach it instead of the terminal underneath.
+        if self.palette_open && self.palette_needs_focus {
+            self.palette_needs_focus = false;
+            self.palette_focus.focus(window);
         }
 
         let active = self.active;

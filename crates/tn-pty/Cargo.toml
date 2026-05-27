@@ -10,3 +10,5 @@ rust-version.workspace = true
 portable-pty.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+russh.workspace = true
+tokio.workspace = true

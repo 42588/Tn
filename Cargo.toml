@@ -47,6 +47,11 @@ vte = "0.15"   # low-level VT parser for the shell-integration OSC bypass (tn-sh
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "sync", "macros", "time"] }
 futures = "0.3"
 
+# SSH backend (M2b). russh gives async channels; we bridge to the sync PtyBackend.
+# Use the `ring` crypto backend instead of the default `aws-lc-rs` (the latter
+# needs NASM + a working cl.exe stdalign probe, which isn't guaranteed locally).
+russh = { version = "0.61", default-features = false, features = ["ring", "flate2", "rsa"] }
+
 # data / utils
 anyhow = "1"
 thiserror = "2"

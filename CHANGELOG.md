@@ -26,10 +26,29 @@
   用它端到端验证 WSL:`tn-cli -- wsl.exe -d Ubuntu -- echo HELLO_TN_MARKER` → **SMOKE PASS**
   (ConPTY 托管 wsl、输出回灌引擎、网格正确)。
 
-### 进行中 (WIP) — SSH(russh,逻辑 + 单测,端到端 owner 自验)
-- 待:`tn-pty::SshBackend`(实现 `PtyBackend`:专属 tokio 线程把 async channel 桥成同步 Read/Write,
-  `request_pty`→shell,认证链 agent→key→password,`window_change`,keepalive)+ `TerminalView`
-  抽象到 `PtyBackend`(现硬编码 `LocalPty`)+ SSH profile 接线。
+### 新增 (Added) — SSH(russh;编译通过 + headless 单测,端到端 owner 自验)
+- **`tn-pty::SshBackend`**(实现 `PtyBackend`):专属线程跑 current-thread tokio,
+  `client::connect` → 认证 → `channel_open_session` → `request_pty` → `request_shell`,然后一个 `select!`
+  循环把 **async channel 桥成同步 Read/Write**——远程 `ChannelMsg::Data` 经 `std::mpsc` 喂同步 reader
+  (recv 阻塞 = 自然 EOF),同步 writer 把输入推上 tokio channel → `channel.data_bytes`,`resize` →
+  `window_change`,`ExitStatus`/Close → `Mutex<Option<i32>>`+`Condvar`(wait/try_wait),drop 即断开。
+  keepalive 30s(空闲不掉线)。`SshConfig`(host[:port] / user / 自动找 `~/.ssh/id_*`)5 单测。
+- **`TerminalView` 抽象到 `Box<dyn PtyBackend>`**(原硬编码 `LocalPty`):`LaunchSpec` 加 `ssh: Option<SshConfig>`;
+  `from_profile` 支持 `kind="ssh"`(host+user → `SshConfig`);命令面板/启动器纳入 SSH profile(`is_launchable`)。
+  本地 pwsh 路径 `TN_AUTOQUIT` 验不回归。
+- **russh 用 `ring` crypto 后端**(非默认 `aws-lc-rs`——后者要 NASM + cl.exe stdalign 探测,本地不一定有)。
+- 默认 `config.toml` 加**注释版 SSH 示例 profile**。
+
+### 修复 (Fixed) — 真机 dogfood
+- **命令面板(Ctrl+Shift+P)键盘导航失灵**(↑↓/Enter/Esc 漏到底层终端):`toggle_palette` 在动作里
+  `palette_focus.focus()`——但那时浮层还没渲染、焦点没落上,键就被底层 `TerminalView` 接走了。改为在
+  `render` 里聚焦(浮层的 `track_focus` 元素此帧已存在),与 Quick Terminal 启动器同一套(那个本就在
+  render 聚焦,所以一直正常)。
+
+### 待办 (TODO) — SSH 端到端(owner 自验)+ 后续
+- **无测试主机**:连接 / 认证 / 远程 shell 路径**未端到端验证**;owner 用真实主机验。
+- **ssh-agent**(`russh::keys::agent`,Windows OpenSSH/Pageant)+ **known_hosts 校验**(当前 `check_server_key`
+  接受任意主机密钥——仅供首版,真用前必须接入)+ 密码交互输入 + 断连重连 UX + `~/.ssh/config` 导入。
 
 ---
 

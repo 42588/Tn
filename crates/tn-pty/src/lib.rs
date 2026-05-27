@@ -12,6 +12,9 @@ use std::path::PathBuf;
 mod local;
 pub use local::LocalPty;
 
+mod ssh;
+pub use ssh::{SshBackend, SshConfig};
+
 pub mod wsl;
 
 /// Pseudo-terminal size in character cells (with optional pixel dimensions,

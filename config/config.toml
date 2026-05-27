@@ -58,6 +58,17 @@ command = "codex"
 accent  = "#73DACA"
 glyph   = "✾"
 
+# 远程 SSH 主机示例(M2b)。去掉注释并改成你的主机即可在命令面板/Quick Terminal 启动。
+# kind="ssh" + host(可写 "host:port",默认端口 22)+ user(省略 = $USERNAME)。
+# 认证:依次尝试 ~/.ssh/id_ed25519 | id_ecdsa | id_rsa。
+# 注:ssh-agent、host-key 校验(known_hosts)、密码交互输入尚未接入(WIP);当前接受任意主机密钥。
+# [[profiles]]
+# name = "我的服务器"
+# kind = "ssh"
+# host = "example.com"        # 或 "example.com:2222"
+# user = "ubuntu"
+# accent = "#7AA2F7"
+
 # 键位:动作表([[actions]])与绑定表([[keybindings]])分离,
 # 一个动作可绑多键、用户按 id 改键(见 docs/REFERENCES.md §七)。
 # 这些是内置默认值的镜像;配置里的绑定叠加在默认之上(M1 为追加语义:

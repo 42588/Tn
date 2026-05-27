@@ -7,3 +7,6 @@ Thumbs.db
 # Claude Code local / runtime files (personal, not shared)
 .claude/settings.local.json
 .claude/scheduled_tasks.lock
+
+# MCP tool caches (local, not shared)
+.web-rooter/

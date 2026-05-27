@@ -235,11 +235,11 @@ TOML,分层覆盖:内置默认 → `%APPDATA%\Tn\config.toml` → env → CLI。
 
 > **执行顺序调整(owner)**:先做 **M3 → M4**,再回头做 **M2**。M3/M4 作用于本地终端、不依赖 M2。
 
-### M2 — WSL + 远程 Linux 🚧(在 M5 之后做;WSL ✅ / SSH 进行中)
+### M2 — WSL + 远程 Linux 🚧(在 M5 之后做;WSL ✅ 端到端 / SSH ✅ 编译+单测、端到端待真机)
 - [x] **WSL**(`tn-pty::wsl`)——**无需专属 backend**:ConPTY 托管 `wsl.exe` 如同普通程序,复用 `LocalPty`。`wsl --list --quiet`(UTF-16LE)枚举 → `parse_distros`(纯函数,单测);`LaunchSpec::from_profile` 支持 `kind="wsl"` → `wsl.exe -d <distro>`;命令面板 / Quick Terminal 启动器纳入 WSL profile。端到端验证:`tn-cli -- wsl.exe -d Ubuntu -- echo …` SMOKE PASS。
-- [ ] `tn-pty::SshBackend`(russh:连接、认证链 agent→key→password、远程 pty、`window_change`、keepalive、重连)——**最高风险**;无测试主机,先写逻辑 + 单测,端到端 owner 自验。需把 `TerminalView` 从硬编码 `LocalPty` 抽象到 `Box<dyn PtyBackend>`。
-- [ ] Profile 选择器 + 主机列表(可选导入 `~/.ssh/config`);断连 UX。
-- **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。(WSL 达成;SSH 待真机。)
+- [x] **`tn-pty::SshBackend`**(russh,`ring` 后端)——实现 `PtyBackend`:专属线程跑 tokio,connect→auth(key→password)→pty→shell→`select!` 循环把 async channel 桥成同步 Read/Write;`window_change`、keepalive 30s、drop 即断开;`SshConfig`(host[:port]/user/自动找 `~/.ssh/id_*`)。`TerminalView` 已抽象到 `Box<dyn PtyBackend>`,`LaunchSpec.ssh` + `from_profile(kind="ssh")` + `is_launchable` 接线。**编译 + headless 单测过**;**端到端无测试主机,owner 自验**。
+- [ ] **SSH 后续**:ssh-agent(`russh::keys::agent`)+ **known_hosts 校验**(当前接受任意主机密钥)+ 密码交互 + 断连重连 UX + `~/.ssh/config` 导入。
+- **退出标准**:pwsh / WSL / SSH 三种 Tab 并存,SSH 空闲不掉线。(WSL 达成;SSH 编译+单测达成,端到端待真机。)
 
 ### M3 — shell 集成 + block UI ✅ 完成(待窗口内肉眼复核 UI)
 - [x] `tn-shell`([crates/tn-shell](../crates/tn-shell)):旁路 `vte::Parser` 只处理 `osc_dispatch`,解析 OSC 133(FTCS A/B/C/D[;exit])、633(+E 命令行、P;Cwd=)、7(file://→cwd,%XX 解码 + Windows 盘符)→ `BlockEvent`;`Integration`(per-session nonce + pwsh 集成脚本,prompt 钩子发 D/A/B、PSReadLine Enter 发 C)+ `encoded_command()`(UTF-16LE base64,经 `-EncodedCommand` 注入)。11 测试。
