@@ -95,7 +95,40 @@
           <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
         </div>
         <div class="qlfoot">
-          <span class="k">Space</span><span class="k">Esc</span> 关闭 · <span class="k">Ctrl+S</span> 保存
+          <span class="k">Esc</span> 关闭 · Diff 只读审阅,<span class="k">⇥</span> 切 File 编辑
+          <span class="sp"></span>
+          <span class="k">↑</span><span class="k">↓</span> 换文件 · 速览跟随
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">速览 · File 模式(可编辑:整文件 + 行号 + 语法高亮 · Ctrl+S 保存;编辑只落此模式) <span class="id">.quicklook · File on · .cursor</span><span class="impl">quick_look::render(File)</span></div>
+    <div class="canvas mid">
+      <div class="quicklook" style="inset:30px;">
+        <span class="seam"></span>
+        <div class="vh">
+          <svg class="i"><use href="#i-file"/></svg>
+          <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
+          <span class="sp"></span>
+          <span class="by"><svg class="i"><use href="#i-pen"/></svg> 编辑中</span>
+          <span class="tabset"><span class="tg">Diff</span><span class="tg on">File</span></span>
+        </div>
+        <div class="code">
+          <div class="cl"><span class="ln">12</span><span class="mk"></span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
+          <div class="cl"><span class="ln">13</span><span class="mk"></span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
+          <div class="cl"><span class="ln">14</span><span class="mk"></span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
+          <div class="cl"><span class="ln">15</span><span class="mk"></span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
+          <div class="cl"><span class="ln">16</span><span class="mk"></span>            <span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
+          <div class="cl"><span class="ln">17</span><span class="mk"></span>            quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));<span class="cursor"></span></div>
+          <div class="cl"><span class="ln">18</span><span class="mk"></span>        }</div>
+          <div class="cl"><span class="ln">19</span><span class="mk"></span>        win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
+          <div class="cl"><span class="ln">20</span><span class="mk"></span>    }</div>
+          <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
+        </div>
+        <div class="qlfoot">
+          <span class="k">Ctrl+S</span> 保存 · <span class="k">Esc</span> 关闭 · <span class="k">⇥</span> 切 Diff 审阅
           <span class="sp"></span>
           <span class="k">↑</span><span class="k">↓</span> 换文件 · 速览跟随
         </div>
