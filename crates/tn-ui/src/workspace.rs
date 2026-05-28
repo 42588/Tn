@@ -1142,13 +1142,18 @@ impl Workspace {
                 .flex_row()
                 .items_center()
                 .gap(px(6.))
-                .px_3()
+                .px(px(13.)) // §16 .seg2 padding 0 13
                 .h(px(18.))
                 .children(children)
         };
         let sep = || div().w(px(1.)).h(px(13.)).flex_none().bg(rgba(DIVIDER));
         let num = |s: String| -> AnyElement {
-            div().text_color(col(ui.foreground)).child(SharedString::from(s)).into_any_element()
+            // mockup .status .num:weight 640 · fg-dim #A6AFD4(无主题 token → 字面量)
+            div()
+                .font_weight(gpui::FontWeight(640.))
+                .text_color(gpui::rgb(0xA6AFD4))
+                .child(SharedString::from(s))
+                .into_any_element()
         };
 
         let mut bar = div()
@@ -1156,11 +1161,17 @@ impl Workspace {
             .flex_row()
             .items_center()
             .h(px(30.))
-            .px_2()
+            .px(px(6.)) // §16 .status padding 0 6
             .border_t(px(1.))
-            .border_color(rgba(SHEEN)) // top mirror edge catches the light
-            .bg(cola(ui.chrome_bg, 0.55)) // glass over the acrylic backdrop
+            .border_color(rgba(SHEEN)) // box-shadow 0 1px 0 sheen inset → 顶部高光线
+            // mockup .status bg:linear-gradient(180, transparent → black .2)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba(0x00000000), 0.),
+                linear_color_stop(rgba(0x00000033), 1.), // black @ .2
+            ))
             .text_size(px(11.))
+            .font_weight(gpui::FontWeight(510.)) // §16 .status weight 510
             .text_color(col(ui.muted));
 
         // branch
