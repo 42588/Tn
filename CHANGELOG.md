@@ -13,6 +13,31 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — M4 颜值打磨(面板逐组件对齐 mockup · 2026-05-28)
+
+> 把面板从"数值对齐但发平"打磨到"磨砂玻璃 + 悬浮"。详见 [docs/UX-DESIGN.md](docs/UX-DESIGN.md) §6.1/§6.3、
+> 经验坑见 [CLAUDE.md](CLAUDE.md)「踩过的坑」。设计真源仍是 [design/mockup.html](design/mockup.html),三道守卫把关。
+
+### 变更 (Changed)
+- **面板补回 mockup 玻璃层**:终端 pane / explorer / viewer 三处面板根加 **specular 柔光洗**
+  (`style::specular_top`,顶 36% 白 .04→透明、顶角随面板圆角)+ **浮起投影**(全 pane 24/58/-36/.88,
+  聚焦 30/64/-36/.9);`.work` 间距 `p_1/gap_2` → **pt5 px12 pb11 + gap 11**;**分屏面板之间补 11px 间距**
+  (split 子 wrap 内侧 padding,不挪分隔线 seam)。
+- **去掉面板外层 wrapper 的 `overflow_hidden`**(split 容器/子 wrap/三列/body):它会裁掉 `box_shadow`
+  → 投影本来全被裁没;叶子面板自身 `overflow_hidden` + `min:0` 已兜内容,去掉外层裁剪后投影才"浮起"。
+  headless `TN_AUTOQUIT` 验证 grid 仍收敛、taffy 溢出坑未复活。
+- **窗口底材改回纯色**:去掉整窗半透玻璃竖渐变层——大窗下断层色带明显(mockup 靠噪点+模糊抹平,我们没有)。
+
+### 移除 (Removed)
+- **各窗格顶部的 1px sheen 白线**:`overflow_hidden` 不跟圆角 → 这条硬线在圆角戳出来扎眼(owner 取向同 tab)。
+  改只留 specular 柔光;`style::sheen_line` 助手删除(`SHEEN` 令牌仍用于状态栏/命令面板)。
+
+### 试验后回退 (Reverted)
+- **窗口级 acrylic 真模糊**:曾默认开 acrylic(`Blurred`)+ 接通 `window.opacity` 旋钮让面板透出 blurred 桌面
+  →**owner 试用后否决**(透明观感不喜欢、面板比磨砂边距更实显"透明矩形框"、大面积半透还色带),
+  **回退保持 `Opaque`**。`window_glass()` 的 Acrylic 分支 + `opacity` 旋钮代码留存备用。
+  根因:gpui 做不了*逐元素* `backdrop-filter` 模糊。
+
 ## [Unreleased] — M2 WSL + 远程 Linux(SSH)
 
 > owner 执行顺序:M3 → M4 → M5 → **M2**。**WSL ✅ 完成**(端到端验证 + 自动发现发行版)。

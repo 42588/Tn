@@ -243,9 +243,11 @@ pub trait UsageProvider: Send {
 
 **高度 / 阴影(面板分隔靠阴影,不靠边框)**:面板 `inset 0 1px 0 sheen, 0 24px 58px -36px rgba(0,0,0,.88)` + 顶部约 36% 高度的镜面渐变(`white .04 → 透明`);**焦点面板**仅加 `0 0 0 1px rgba(240,145,109,.10)` 暖色细描边 + 更深投影(浮起一档),**无光晕**。
 
+> **gpui 实现取舍(2026-05,见 §6.3)**:`inset 0 1px 0 sheen` 的 1px 镜面**硬线**在 gpui 圆角处戳成扎眼白线,**已砍掉**——只保留**顶部 specular 柔光洗**(`white .04 → 透明`、顶角随面板圆角)做折射高光;`0 24px 58px` **浮起投影保留**(但需面板外层不 `overflow_hidden`,否则被裁不显——机制见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」)。
+
 **环境(窗外,透过玻璃折射)**:`blue .07`(左上)+ `teal .045`(右下)两团**极淡**冷光 + 深中性渐变;grain `opacity .04`;边缘 vignette。刻意压到几乎察觉不到 —— 只为给玻璃一点可折射的颜色,不是"打光"。
 
-**间距**:4 的倍数(4 / 8 / 12 / 16 / 24);面板间 gap 8–12、内边距 12–15。**圆角**:窗口 16、面板 14、卡片 11、pill 999。
+**间距**:4 的倍数(4 / 8 / 12 / 16 / 24);`.work` padding **5/12/11**、面板间 gap **11**(**分屏面板之间同 11px**,靠 split 子 wrap 内侧 padding 实现,不挪分隔线 seam——见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」)、面板内边距 12–15。**圆角**:窗口 16、面板 14、卡片 11、pill 999。
 
 **图标**:统一**线性 SVG 图标集**(Lucide 式几何,`stroke-width 1.65`、`currentColor`、圆角端点)—— 文件夹 / 文件 / 折叠箭头 / sparkle(AI)/ 对勾(完成)/ 菱形(运行中,自转)/ 空心圆(待办)/ 终端 / 分支 / 笔 / 窗口控件。**禁止**用临时 Unicode 字形(✻ ◐ ✓)充当图标。
 
@@ -263,8 +265,11 @@ pub trait UsageProvider: Send {
 - **组件**:复用 `gpui-component`(面板/输入/列表/弹层)加速一致性与质感。
 
 ### 6.3 真机落地修正(gpui 0.2.2 在 Windows 上的取舍,dogfood 后定稿)
-- **窗口材质默认 `Opaque`,不是 acrylic**:gpui 0.2.2 只有 `Opaque/Transparent/Blurred`,而 `Blurred` 在 Windows = **acrylic(真·透背模糊)**,不是 Mica。半透 chrome 叠在 acrylic 上,亮壁纸会从边缘/圆角透进来(像"框外一层透明"),与 Calm Glass「叠在深色材质上」的设定不符。故**默认 `Opaque`**(仅显式 `backdrop = "acrylic"` 才透背);玻璃层叠感来自**内部面板的半透**而非窗口底材。真 Mica 待 gpui 暴露 `DWMWA_SYSTEMBACKDROP_TYPE` 后再上。
-- **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
+- **窗口材质默认 `Opaque`,不是 acrylic**:gpui 0.2.2 只有 `Opaque/Transparent/Blurred`,而 `Blurred` 在 Windows = **acrylic(真·透背模糊)**,不是 Mica。半透 chrome 叠在 acrylic 上,亮壁纸会从边缘/圆角透进来(像"框外一层透明"),与 Calm Glass「叠在深色材质上」的设定不符。故**默认 `Opaque`**(仅显式 `backdrop = "acrylic"` 才透背);玻璃层叠感来自**内部面板的半透**而非窗口底材。真 Mica 待 gpui 暴露 `DWMWA_SYSTEMBACKDROP_TYPE` 后再上。**(2026-05 dogfood 复核:真试了默认开 acrylic + 降 `window.opacity` 让面板透出 blurred 桌面 → owner 否决——透明观感不喜欢、面板比磨砂边距更实显成"透明矩形框"、大面积半透还色带,已回退确认保持 `Opaque`。且 gpui **无逐元素 `backdrop-filter` 模糊**,面板"真磨砂"做不了,玻璃感只能 specular + 投影 + 层叠近似。)**
+- **圆角靠内层元素自己圆**:gpui `overflow_hidden` 只裁矩形(`ContentMask` 无圆角),不会按父圆角裁子元素。故"圆角卡里有独立背景的子元素"(agent 头、终端底、specular 洗光)各自 `rounded`,否则圆角处露直角。根 `div` 不 `rounded`,交给 DWM 圆角(避免比 DWM 半径更圆露缝)。
+- **玻璃顶高光只用 specular 柔光洗,砍掉 1px sheen 硬线**:mockup 面板有 `inset 0 1px sheen` 顶高光线,但 gpui `overflow_hidden` 不跟圆角 → 这条 1px 白线在圆角处戳出来扎眼(owner 此前也砍过 tab 的同类淡白线)。**面板顶部只留 specular 渐隐洗光**(折射、不刺眼);sheen 令牌仍用于状态栏/命令面板的细高光。
+- **面板靠「浮起投影 + rim + 11px 间距」分隔,投影要真显需外层不裁**:gpui `overflow_hidden` 连 `box_shadow` 一起裁,曾经面板外层层层 `overflow_hidden` 把投影全裁没——去掉外层裁剪(叶子面板自裁内容即可)投影才渗进间距、透过半透状态栏显成真"悬浮玻璃卡"。机制详见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」。
+- **窗口底材用纯色、不铺整窗大渐变**:大面积半透渐变在大窗会断层色带(mockup 靠噪点 dither + backdrop 模糊抹平,我们没有);景深交给面板自身 g1 + specular + 投影。残余色带要彻底治需噪点叠层(后置)。
 - **标签/头部用干净名**:不吃 pwsh 的 OSC 标题(`…\powershell.exe`);标签 = `Claude`/`Codex`/`pwsh`,cwd 走徽章。
 - **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。**agent 退出即回落 shell**:主窗口 agent 托管在 `pwsh -NoExit` 里(退出 claude/codex 后 pwsh 还在),退出后经哨兵标题检测**自动清掉头部 + 用量、标签回 `pwsh`**——否则会一直挂着已退出 agent 的头部(还常显示别的会话的陈旧用量)。
 - **resize 取舍(ConPTY 精确跟随 + 顶锚定长高)**:ConPTY 行/列始终与 alacritty 一致(见 [BLUEPRINT §5](BLUEPRINT.md))。**曾试"行锁定"**(ConPTY 锁高)避免拖大 pane 吃滚动历史,但 ConPTY≠alacritty 导致**普通命令也大片空白**(光标坐标错位),已撤销。**现行修法**:保持 ConPTY 精确跟随,改在**引擎侧**用 `resize_conpty` 让长高**顶锚定**(resize 后 `scroll_up` 把被提升的历史推回滚动区)——这样 ConPTY 顶锚定的 repaint 不再覆盖丢历史,**拖大窗格零丢失**(`TN_RESIZE_EXP=topgrow` 验证 40/40)。可见效果:拖大窗格时内容留原位、**下方开空白**(与原生 Windows 控制台一致),旧历史完整保留在滚动区可滚回;退 agent 回落 shell 不空白。**已真机肉眼确认(2026-05-28)**:拖大不再吃历史,交互式 shell(PSReadLine/oh-my-posh)重绘观感正常。

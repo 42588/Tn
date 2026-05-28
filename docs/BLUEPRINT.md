@@ -216,7 +216,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 6. **gpui async 接口**:`cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| …)`;`WeakEntity::update(cx, |v, cx| cx.notify())`;定时器 `background_executor().timer(dur).await`;退出 `cx.quit()`。
 7. **cargo 不在 bash PATH**:在 `%USERPROFILE%\.cargo\bin\cargo.exe`,PowerShell 里用全路径或重开 shell。
 
-> 更多近期硬坑(ConPTY 行**增高**吃历史/顶飞提示符、reader panic 经 Mutex 中毒拖垮 app、`-NoExit` 托管 agent 退出检测)详见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」,不在此复述。
+> 更多近期硬坑(ConPTY 行**增高**吃历史/顶飞提示符、reader panic 经 Mutex 中毒拖垮 app、`-NoExit` 托管 agent 退出检测、**`overflow_hidden` 既裁投影又不跟圆角 / 分屏间距用 wrap 内侧 padding / 大面积半透渐变色带 / acrylic 透背 dogfood 后被否**)详见 [CLAUDE.md](../CLAUDE.md)「踩过的坑」,不在此复述。
 
 ---
 
@@ -231,7 +231,7 @@ tn-cli ──► tn-core + tn-pty           # headless,验证内核
 | **M1 可日用本地终端** | 每格颜色 · Tab + n-ary 平铺分屏 + 键盘改尺寸 + 分隔线拖拽 · 滚动/选择/复制粘贴 · 输入层(WT `_encodeRegular`)· push+vsync 重绘 · `tn-config`(schema/主题/字体/可配键位/热重载) | ✅ |
 | **M2 WSL + 远程 Linux** | **WSL** 端到端(复用 `LocalPty` 跑 `wsl.exe`,无专属 backend)· **SSH** `SshBackend`(russh)编译 + headless 单测过 | WSL ✅ / SSH ⏸ parked |
 | **M3 shell 集成 + block** | `tn-shell`(旁路 vte 解析 OSC 133/633/7)· `tn-blocks` 状态机 · Warp block 底栏(alt-screen 自动隐藏) | ✅ |
-| **M4 AI 托管 + 命令面板 + 颜值** | `tn-ai` 用量(Claude/Codex JSONL)+ agent 检测 · 命令面板托管(pwsh 解析 npm shim)· Calm Glass 全量 UI(标题栏/侧栏/查看器/状态栏) | ✅(颜值持续微调) |
+| **M4 AI 托管 + 命令面板 + 颜值** | `tn-ai` 用量(Claude/Codex JSONL)+ agent 检测 · 命令面板托管(pwsh 解析 npm shim)· Calm Glass 全量 UI(标题栏/侧栏/查看器/状态栏)· **面板逐组件对齐 mockup**(specular 柔光 + 浮起投影 + 11px 间距;无 1px sheen 硬线;窗口 `Opaque`——acrylic 透背 dogfood 后被 owner 否) | ✅(颜值持续微调) |
 | **M5 Quick Terminal** | 全局热键 + 无边框置顶 PopUp + 边缘滑入 + 失焦自动隐藏 + 启动器 | ✅(headless;真机肉眼验待 owner) |
 
 **M2 SSH(⏸ parked)**:`SshBackend` 实现 `PtyBackend`——专属线程跑 current-thread tokio,connect→auth(key→password)→pty→shell→`select!` 把 async channel 桥成同步 Read/Write;`window_change`/keepalive 30s/drop 断开;`SshConfig`(host[:port]/user/自动找 `~/.ssh/id_*`);`TerminalView` 已抽象到 `Box<dyn PtyBackend>`,`LaunchSpec.ssh` + `from_profile(kind="ssh")` 接线。**编译 + headless 单测过**,代码原地保留。owner 决定**等有远程登录需求时再做端到端**——在此之前别主动推进。
