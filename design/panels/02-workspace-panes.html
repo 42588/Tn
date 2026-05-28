@@ -19,7 +19,7 @@
   <p class="lead">面板 = g1 磨砂玻璃 + specular 柔光 + 浮起投影(焦点暖描边)。Agent 面板挂头部 + 用量环;Shell 面板挂 cwd 头 + 终端正文 + block 卡。gpui:<code>terminal_view/</code>(<code>header.rs</code> / <code>block_view.rs</code>)。</p>
 
   <div class="demo">
-    <div class="label">Agent 面板(Claude · 焦点态:头部用量环 + 工具流 + 气泡) <span class="id">.pane.active / .agenthead / .agentbody</span><span class="impl">terminal_view::header render_agent_header</span></div>
+    <div class="label">Agent 面板(Claude · 焦点态:可靠头部 + 用量环 + 终端正文 CLI 原样) <span class="id">.pane.active / .agenthead / .body</span><span class="impl">terminal_view::header render_agent_header + 终端</span></div>
     <div class="canvas tall">
       <div class="pane active col">
         <div class="agenthead">
@@ -36,14 +36,17 @@
               <div class="lbl">42%</div>
             </div>
           </div>
-          <div class="think"><span class="dotpulse"></span> Thinking…</div>
         </div>
-        <div class="agentbody">
-          <div class="tool"><span class="gl done"><svg class="i"><use href="#i-check"/></svg></span><div><span class="tdim">Read</span> <span class="tcode">crates/tn-ui/src/terminal_view.rs</span> <span class="tdim">(218 lines)</span></div></div>
-          <div class="tool"><span class="gl done"><svg class="i"><use href="#i-check"/></svg></span><div><span class="tdim">Grep</span> <span class="tcode">"paint_text"</span> <span class="tdim">→ 2 files</span></div></div>
-          <div class="tool"><span class="gl run"><svg class="i"><use href="#i-diamond"/></svg></span><div>Editing <span class="tcode">crates/tn-ui/src/element.rs</span> <span class="tdim">— 用字形图集批量提交 quad</span></div></div>
-          <div class="tool"><span class="gl pend"><svg class="i"><use href="#i-circle"/></svg></span><div class="tdim">为每格上色,合并背景 / 光标 / 选区为 typed-quad…</div></div>
-          <div class="say">我会把逐行 <span class="k">paint_text</span> 改成 <span class="k">paint_quads</span> 批处理(见右侧 diff),这样每格颜色与连字都能正确渲染。继续吗?</div>
+        <div class="body">
+          <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
+          <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
+          <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
+          <div class="row">&nbsp;</div>
+          <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧 diff),</div>
+          <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
+          <div class="row">&nbsp;</div>
+          <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
+          <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
         </div>
       </div>
     </div>
@@ -64,7 +67,6 @@
               <circle cx="16" cy="16" r="13" stroke="var(--codex)" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-dasharray="81.7" stroke-dashoffset="67"/>
             </svg><div class="lbl">18%</div></div>
           </div>
-          <div class="think"><span class="dotpulse"></span> Thinking…</div>
         </div>
       </div>
     </div>
