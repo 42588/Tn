@@ -51,8 +51,15 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
     一致 + caret 对齐。缓冲逻辑抽成纯 `op_*` 自由函数,**headless 单测 6 条**(多字节/拆并行/列钳)。
 - 单测 33 → **39**。
 
-### 待接 (Deferred)
-- **编辑器增量**(非阻塞):选区 + 复制粘贴、撤销/重做、鼠标点位、查找替换;编辑态语法高亮(当前纯文本 + caret)。
+### 编辑器增量 (Added)
+- **Quick Look 自绘编辑器补全全套增量**(原 deferred 项全部落地):
+  - **选区**:`Shift`+方向/Home/End/PgUp·Dn 扩选;无 Shift 移动折叠到近/远端;`Ctrl+A` 全选。
+  - **复制/剪切/粘贴**:`Ctrl+C/X/V`(无选区时整行;粘贴多行 `op_insert_multiline`;经 gpui clipboard)。
+  - **撤销/重做**:`Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`,(buffer,cursor) 快照栈(`Rc` 廉价)+ **连续打字合并成一步**(coalesce)。
+  - **鼠标点位**:点击置光标、`Shift`-点击扩选;`char_w` 经 `text_system().advance` 量一次,code 区 canvas 捕获 bounds 映射 x→列(行号 `i` 已知,免滚动偏移)。
+  - **编辑态语法高亮 + 选区底色 + caret 三合一**:`edit_row` 按字符展开 tint、按 (tint,选中) 分组成 run、caret 切 run 内联插入。
+  - **查找/替换**:`Ctrl+F` 查找 / `Ctrl+H` 替换条;`Enter`/`Shift+Enter` 下/上个匹配(选中 + 滚入视区,环绕)· `Tab` 切查找/替换框 · `Ctrl+Enter` 全部替换 · `Esc` 关;输入由 `on_key` 的 `find_key` 捕获。
+- 纯逻辑(`op_delete_range`/`op_insert_multiline`/`selected_text`/`all_matches`/`replace_all_in`/`find_in_chars`)抽成自由函数,**新增 5 条 headless 单测**(单测 39 → 44)。
 
 ### 待接 (Deferred)
 - **键盘两态 + 编辑**:prototype 的 `Space` 开 / `↑↓` 换文件实时跟随 / `Enter` 进编辑态 / 方向键归编辑器 /
