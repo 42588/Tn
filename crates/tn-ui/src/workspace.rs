@@ -1717,21 +1717,14 @@ impl Render for Workspace {
             // No rounding here: the fill spans the whole window rect and DWM
             // rounds the actual window corners. Rounding the fill more than DWM's
             // radius left a sliver of bare acrylic (blurred desktop) at the edge.
+            // Flat window fill (no full-window gradient): a large translucent
+            // gradient over the whole window banded badly at real (large) window
+            // sizes — the mockup hides that with a feTurbulence noise dither + a
+            // backdrop blur, neither of which we have. Flat reads cleaner here; the
+            // depth lives in the inner panels' own gradients + shadows.
             .bg(self.window_glass()) // mostly-opaque dark glass over the acrylic backdrop
             .text_color(col(ui.foreground))
             .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
-            // mockup .win 玻璃竖渐变:半透白光叠在不透明 window_glass 之上,给窗口
-            // 一层细微的上亮下沉折射(无 glow)。绝对铺满 → 画在最底、内容之上覆盖。
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(rgba(0x1516229e), 0.), // rgba(21,22,34,.62) round(.62×255)=158=0x9e
-                        linear_color_stop(rgba(0x0f1019b8), 1.), // rgba(15,16,25,.72) round(.72×255)=184=0xb8
-                    )),
-            )
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))
