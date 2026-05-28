@@ -205,14 +205,15 @@ mod token_drift {
     }
 }
 
-/// Spec-sheet generator (docs/CSS_TO_GPUI.md §17 流程的"照抄不估"那步): mechanically
-/// extract `design/mockup.html` into `design/SPEC.md` — a per-component table of
-/// exact px/weight/radius/color values (`var()` resolved) + a single-source token
-/// registry built from the live `tn-dark.toml` + `style.rs`. Implementing a gpui
-/// view then copies numbers instead of eyeballing the prototype.
+/// Spec generator: mechanically extract `design/mockup.html` into the
+/// **auto-generated §16 of `docs/CSS_TO_GPUI.md`** (between the `SPEC:AUTO-*`
+/// markers) — a per-component table of exact px/weight/radius/color values
+/// (`var()` resolved) + a single-source token registry built from the live
+/// `tn-dark.toml` + `style.rs`. Implementing a gpui view then copies numbers
+/// instead of eyeballing the prototype.
 ///
-/// Normal `cargo test` only *exercises* the generator (asserts non-empty). To
-/// (re)write the file: `TN_GEN_SPEC=1 cargo test -p tn-ui spec_gen`.
+/// Normal `cargo test` only *exercises* the generator + checks the markers exist.
+/// To (re)write §16: `TN_GEN_SPEC=1 cargo test -p tn-ui spec_gen`.
 #[cfg(test)]
 mod spec_gen {
     use super::*;
@@ -305,13 +306,8 @@ mod spec_gen {
         let t = Theme::tn_dark();
         let mut o = String::new();
 
-        o.push_str("# Tn 界面规格单（SPEC）\n\n");
-        o.push_str("> **本文件由 `TN_GEN_SPEC=1 cargo test -p tn-ui spec_gen` 生成**,取自 `design/mockup.html`\n");
-        o.push_str("> + `tn-dark.toml` + `style.rs`。**勿手改**——改原件后重跑。实现 gpui 界面时**照抄数值、别看图估**;\n");
-        o.push_str("> 网页↔代码的颜色一致性另由 `style::token_drift` 测试守卫。翻译查 [CSS_TO_GPUI.md](CSS_TO_GPUI.md)。\n\n");
-
-        // §1 — token 单一真源(③):从 live 主题 + 常量生成
-        o.push_str("## 1. 设计令牌（单一真源）\n\n");
+        // 16.1 — token 单一真源:从 live 主题 + 常量生成
+        o.push_str("### 16.1 设计令牌（单一真源）\n\n");
         o.push_str("> 颜色定义在 `tn-dark.toml`、白叠加/圆角定义在 `style.rs`;mockup 的同名变量是**受守卫的副本**。\n\n");
         o.push_str("| mockup `--var` | 值 | gpui 写法 | 定义处 |\n|---|---|---|---|\n");
         for (var, c, gp) in [
@@ -345,8 +341,8 @@ mod spec_gen {
             let _ = writeln!(o, "| `{var}` | `{r}px` | `{gp}` | style.rs |");
         }
 
-        // §2 — 逐组件精确值(④)
-        o.push_str("\n## 2. 组件规格（mockup 逐类精确值,`var()` 已解析）\n\n");
+        // 16.2 — 逐组件精确值(④)
+        o.push_str("\n### 16.2 组件规格（mockup 逐类精确值,`var()` 已解析）\n\n");
         let classes = [
             "work", "pane", "phead", "cwd", "chip", "sidebar", "tnode", "tag",
             "agenthead", "who", "nm", "model", "usage", "tok", "cost", "ring",
@@ -375,17 +371,30 @@ mod spec_gen {
         o
     }
 
-    #[test]
-    fn spec_md_generates() {
-        let md = build(&mockup());
-        // exercise: the generator must produce the token registry + component specs.
-        assert!(md.contains("--fg"), "token registry missing");
-        assert!(md.contains("**`.pane`**"), "component specs missing");
-        assert!(md.len() > 800, "spec suspiciously short ({} bytes)", md.len());
+    const DOC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/CSS_TO_GPUI.md");
+    const MARK_START: &str = "<!-- SPEC:AUTO-START -->";
+    const MARK_END: &str = "<!-- SPEC:AUTO-END -->";
 
+    #[test]
+    fn spec_section_generates() {
+        let body = build(&mockup());
+        // exercise: the generated body must carry the token registry + component specs.
+        assert!(body.contains("--fg"), "token registry missing");
+        assert!(body.contains("**`.pane`**"), "component specs missing");
+        assert!(body.len() > 800, "spec suspiciously short ({} bytes)", body.len());
+
+        // the host doc must keep the markers so §16 can be spliced in.
+        let doc = std::fs::read_to_string(DOC).unwrap_or_else(|e| panic!("read {DOC}: {e}"));
+        let si = doc.find(MARK_START).expect("CSS_TO_GPUI.md missing SPEC:AUTO-START");
+        let ei = doc.find(MARK_END).expect("CSS_TO_GPUI.md missing SPEC:AUTO-END");
+        assert!(si < ei, "SPEC markers out of order");
+
+        // TN_GEN_SPEC=1 → splice the generated body between the markers (idempotent).
         if std::env::var_os("TN_GEN_SPEC").is_some() {
-            let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/SPEC.md");
-            std::fs::write(p, md).unwrap_or_else(|e| panic!("write {p}: {e}"));
+            let head = &doc[..si + MARK_START.len()];
+            let tail = &doc[ei..];
+            let merged = format!("{head}\n\n{}\n\n{tail}", body.trim());
+            std::fs::write(DOC, merged).unwrap_or_else(|e| panic!("write {DOC}: {e}"));
         }
     }
 }
