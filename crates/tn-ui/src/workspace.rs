@@ -177,10 +177,40 @@ fn launchable_matches<'a>(
         .collect()
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Axis {
     Row, // children side by side (vertical dividers)
     Col, // children stacked (horizontal dividers)
+}
+
+/// Where a `新会话` split places the new pane relative to the focused one.
+#[derive(Clone, Copy, PartialEq)]
+enum SplitDir {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+impl SplitDir {
+    fn axis(self) -> Axis {
+        match self {
+            SplitDir::Left | SplitDir::Right => Axis::Row,
+            SplitDir::Up | SplitDir::Down => Axis::Col,
+        }
+    }
+    /// Insert before the focused pane (left/up) vs after (right/down).
+    fn before(self) -> bool {
+        matches!(self, SplitDir::Left | SplitDir::Up)
+    }
+    /// `(icon, label)` for the direction tile.
+    fn label(self) -> (&'static str, &'static str) {
+        match self {
+            SplitDir::Left => ("←", "左"),
+            SplitDir::Right => ("→", "右"),
+            SplitDir::Up => ("↑", "上"),
+            SplitDir::Down => ("↓", "下"),
+        }
+    }
 }
 
 /// An in-progress divider drag (mouse). Identifies a split (by tree path in the
@@ -215,15 +245,18 @@ impl Node {
 
     /// Insert `new` next to leaf `target`, splitting along `axis`. Returns true
     /// if `target` was found.
-    fn split(&mut self, target: PaneId, new: PaneId, axis: Axis) -> bool {
+    /// Split `target` along `axis`, inserting the `new` leaf `before` it (left/up)
+    /// or after it (right/down).
+    fn split(&mut self, target: PaneId, new: PaneId, axis: Axis, before: bool) -> bool {
         match self {
             Node::Leaf(id) if *id == target => {
                 let old = Node::Leaf(*id);
-                *self = Node::Split {
-                    axis,
-                    kids: vec![old, Node::Leaf(new)],
-                    weights: vec![1.0, 1.0],
+                let kids = if before {
+                    vec![Node::Leaf(new), old]
+                } else {
+                    vec![old, Node::Leaf(new)]
                 };
+                *self = Node::Split { axis, kids, weights: vec![1.0, 1.0] };
                 true
             }
             Node::Leaf(_) => false,
@@ -238,12 +271,13 @@ impl Node {
                         .iter()
                         .position(|k| matches!(k, Node::Leaf(id) if *id == target))
                     {
-                        kids.insert(pos + 1, Node::Leaf(new));
-                        weights.insert(pos + 1, 1.0);
+                        let at = if before { pos } else { pos + 1 };
+                        kids.insert(at, Node::Leaf(new));
+                        weights.insert(at, 1.0);
                         return true;
                     }
                 }
-                kids.iter_mut().any(|k| k.split(target, new, axis))
+                kids.iter_mut().any(|k| k.split(target, new, axis, before))
             }
         }
     }
@@ -377,6 +411,7 @@ actions!(
         TogglePalette,
         ToggleExplorer,
         ToggleQuickLook,
+        NewSession,
         Quit
     ]
 );
@@ -403,6 +438,7 @@ fn default_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-p", TogglePalette, ctx),
         KeyBinding::new("ctrl-shift-b", ToggleExplorer, ctx),
         KeyBinding::new("ctrl-shift-j", ToggleQuickLook, ctx),
+        KeyBinding::new("ctrl-shift-n", NewSession, ctx),
         KeyBinding::new("ctrl-shift-q", Quit, ctx),
     ]
 }
@@ -429,6 +465,7 @@ fn binding_for(keys: &str, command: &str) -> Option<KeyBinding> {
             KeyBinding::new(keys, ToggleQuickLook, ctx)
         }
         "quit" => KeyBinding::new(keys, Quit, ctx),
+        "new_session" => KeyBinding::new(keys, NewSession, ctx),
         _ => return None,
     })
 }
@@ -488,6 +525,15 @@ pub struct Workspace {
     palette_query: String,
     palette_sel: usize,
     palette_focus: FocusHandle,
+    /// `新会话` split launcher (app menu): pick a split direction, then a profile,
+    /// then open the session in a new split. `split_dir = None` = phase 1 (picking
+    /// direction); `Some(dir)` = phase 2 (picking the profile). Distinct from the
+    /// command palette (which opens a session in a new *tab*).
+    split_launcher_open: bool,
+    split_dir: Option<SplitDir>,
+    split_sel: usize,
+    split_focus: FocusHandle,
+    split_needs_focus: bool,
     /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
     /// resolved once at startup (see [`discover_profiles`]).
     launch_profiles: Vec<tn_config::Profile>,
@@ -574,6 +620,11 @@ impl Workspace {
             palette_query: String::new(),
             palette_sel: 0,
             palette_focus: cx.focus_handle(),
+            split_launcher_open: false,
+            split_dir: None,
+            split_sel: 0,
+            split_focus: cx.focus_handle(),
+            split_needs_focus: false,
             launch_profiles,
             divider_drag: None,
             split_extents: Rc::new(RefCell::new(HashMap::new())),
@@ -774,7 +825,7 @@ impl Workspace {
         let new_id = self.spawn_pane(cx);
         let active = self.active;
         let target = self.tabs[active].focused;
-        self.tabs[active].root.split(target, new_id, axis);
+        self.tabs[active].root.split(target, new_id, axis, false);
         self.tabs[active].focused = new_id;
         cx.notify();
     }
@@ -975,8 +1026,23 @@ impl Workspace {
         let new_id = self.spawn_pane(cx);
         let active = self.active;
         let target = self.tabs[active].focused;
-        self.tabs[active].root.split(target, new_id, axis);
+        self.tabs[active].root.split(target, new_id, axis, false);
         self.focus_pane(new_id, window, cx);
+    }
+
+    /// `新会话` split direction (app menu). Maps to a (`Axis`, before?) split.
+    fn split_session(&mut self, dir: SplitDir, spec: LaunchSpec, window: &mut Window, cx: &mut Context<Self>) {
+        let active = self.active;
+        let new_id = self.spawn_pane_with(cx, spec);
+        if self.tabs[active].welcome {
+            // No pane to split on a welcome tab — fill the tab with the session.
+            self.tabs[active] = Tab::panes(Node::Leaf(new_id), new_id);
+        } else {
+            let target = self.tabs[active].focused;
+            self.tabs[active].root.split(target, new_id, dir.axis(), dir.before());
+        }
+        self.focus_pane(new_id, window, cx);
+        cx.notify();
     }
 
     fn split_right(&mut self, _: &SplitRight, window: &mut Window, cx: &mut Context<Self>) {
@@ -1408,7 +1474,7 @@ impl Workspace {
                 .border_color(rgba(RIM))
                 .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
                 .child(specular_top())
-                .child(mi("spark", "新会话…", Some("⌃⇧P"), false, Box::new(|this, w, cx| this.toggle_palette(&TogglePalette, w, cx))))
+                .child(mi("spark", "新会话…", Some("⌃⇧N"), false, Box::new(|this, w, cx| this.new_session(&NewSession, w, cx))))
                 .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
                 .child(sep())
                 .child(mi("folder", "打开文件夹…", None, false, Box::new(|this, _w, cx| this.menu_open_folder(cx))))
@@ -1564,6 +1630,227 @@ impl Workspace {
                 .child(panel),
         )
     }
+
+    /// `新会话` (app menu / Ctrl+Shift+N): open the split launcher at phase 1.
+    fn new_session(&mut self, _: &NewSession, _w: &mut Window, cx: &mut Context<Self>) {
+        self.split_launcher_open = true;
+        self.split_dir = None;
+        self.split_sel = 0;
+        self.split_needs_focus = true;
+        cx.notify();
+    }
+
+    fn close_split_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.split_launcher_open = false;
+        self.refocus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Split-launcher keyboard: phase 1 (arrow keys pick a split direction) → phase 2
+    /// (↑↓ pick a profile, Enter splits + launches it there). Esc backs out / closes.
+    fn on_split_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        cx.stop_propagation();
+        match self.split_dir {
+            None => {
+                let dir = match key {
+                    "left" => Some(SplitDir::Left),
+                    "right" => Some(SplitDir::Right),
+                    "up" => Some(SplitDir::Up),
+                    "down" => Some(SplitDir::Down),
+                    "escape" => return self.close_split_launcher(window, cx),
+                    _ => None,
+                };
+                if let Some(d) = dir {
+                    self.split_dir = Some(d);
+                    self.split_sel = 0;
+                    cx.notify();
+                }
+            }
+            Some(dir) => {
+                let n = self.launch_profiles.len();
+                match key {
+                    "up" => {
+                        self.split_sel = self.split_sel.saturating_sub(1);
+                        cx.notify();
+                    }
+                    "down" => {
+                        if self.split_sel + 1 < n {
+                            self.split_sel += 1;
+                        }
+                        cx.notify();
+                    }
+                    "enter" => {
+                        if let Some(spec) =
+                            self.launch_profiles.get(self.split_sel).and_then(LaunchSpec::from_profile)
+                        {
+                            self.split_launcher_open = false;
+                            self.split_session(dir, spec, window, cx);
+                        }
+                    }
+                    "escape" => {
+                        self.split_dir = None; // back to direction picking
+                        cx.notify();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// `新会话` split-launcher overlay (app menu), or `None` when closed. Phase 1 =
+    /// a direction cross (←↑↓→ around the focused pane); phase 2 = the profile list.
+    /// On launch it splits the focused pane in the chosen direction (vs the command
+    /// palette, which opens in a new *tab*).
+    fn render_split_launcher(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.split_launcher_open {
+            return None;
+        }
+        let t = &self.config.theme;
+        let ui = &t.ui;
+
+        let body = match self.split_dir {
+            // ── phase 1: pick the split direction (click a tile / press an arrow) ──
+            None => {
+                let dir_tile = |d: SplitDir| {
+                    let (arrow, label) = d.label();
+                    div()
+                        .w(px(74.))
+                        .h(px(54.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(2.))
+                        .rounded(px(R_CARD))
+                        .bg(rgba(INSET))
+                        .border_1()
+                        .border_color(rgba(RIM))
+                        .hover(|s| s.bg(rgba(HOVER)).border_color(cola(ui.accent, 0.5)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                this.split_dir = Some(d);
+                                this.split_sel = 0;
+                                cx.notify();
+                            }),
+                        )
+                        .child(div().text_size(px(18.)).text_color(col(ui.accent)).child(arrow))
+                        .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(label))
+                };
+                let center = div()
+                    .w(px(74.))
+                    .h(px(54.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(R_CARD))
+                    .bg(cola(ui.accent, 0.10))
+                    .border_1()
+                    .border_color(cola(ui.accent, 0.3))
+                    .child(div().text_size(px(11.)).text_color(col(ui.muted)).child("当前"));
+                let spacer = || div().w(px(74.));
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(div().flex().flex_row().gap(px(6.)).child(spacer()).child(dir_tile(SplitDir::Up)).child(spacer()))
+                    .child(div().flex().flex_row().gap(px(6.)).child(dir_tile(SplitDir::Left)).child(center).child(dir_tile(SplitDir::Right)))
+                    .child(div().flex().flex_row().gap(px(6.)).child(spacer()).child(dir_tile(SplitDir::Down)).child(spacer()))
+            }
+            // ── phase 2: pick the launcher profile ──
+            Some(_) => {
+                let sel = self.split_sel.min(self.launch_profiles.len().saturating_sub(1));
+                let rows = self.launch_profiles.iter().enumerate().map(|(i, p)| {
+                    let is_sel = i == sel;
+                    let dot = p.accent.unwrap_or(t.agents.claude);
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .px_3()
+                        .py_1()
+                        .rounded(px(R_CARD))
+                        .when(is_sel, |d| d.bg(rgba(HOVER)))
+                        .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, w, cx| {
+                                this.split_sel = i;
+                                if let Some(dir) = this.split_dir {
+                                    if let Some(spec) =
+                                        this.launch_profiles.get(i).and_then(LaunchSpec::from_profile)
+                                    {
+                                        this.split_launcher_open = false;
+                                        this.split_session(dir, spec, w, cx);
+                                    }
+                                }
+                            }),
+                        )
+                        .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot)))
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(p.name.clone())),
+                        )
+                });
+                div().flex().flex_col().p_1().gap_1().children(rows)
+            }
+        };
+
+        let (title, hint) = match self.split_dir {
+            None => ("新会话 · 选择分屏位置", "方向键 / 点击选择 · Esc 取消"),
+            Some(d) => match d {
+                SplitDir::Left => ("新会话 · 左侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                SplitDir::Right => ("新会话 · 右侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                SplitDir::Up => ("新会话 · 上方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                SplitDir::Down => ("新会话 · 下方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+            },
+        };
+
+        let panel = shadowed(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(360.))
+                .rounded(px(R_WINDOW))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(cola(ui.palette_bg, 0.86))
+                .child(div().h(px(1.)).bg(rgba(SHEEN)))
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(title))
+                        .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(hint)),
+                )
+                .child(div().h(px(1.)).bg(rgba(RIM)))
+                .child(div().p_2().child(body)),
+            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)],
+        );
+
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(rgba(0x0a0b11cc))
+                .track_focus(&self.split_focus)
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_split_key(ev, w, cx)))
+                .child(div().h(px(120.)))
+                .child(panel),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -1599,6 +1886,11 @@ impl Render for Workspace {
         if self.palette_open && self.palette_needs_focus {
             self.palette_needs_focus = false;
             self.palette_focus.focus(window);
+        }
+        // Same for the 新会话 split launcher (focus its overlay so arrows/Enter land).
+        if self.split_launcher_open && self.split_needs_focus {
+            self.split_needs_focus = false;
+            self.split_focus.focus(window);
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // active pane now (the event callback had no `window`).
@@ -1922,6 +2214,7 @@ impl Render for Workspace {
         });
 
         let palette = self.render_palette(cx);
+        let split_launcher = self.render_split_launcher(cx);
         let app_menu = self.render_app_menu(cx);
 
         let root = div()
@@ -1940,6 +2233,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_explorer))
             .on_action(cx.listener(Self::toggle_quick_look))
+            .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(|_this, _: &Quit, _w, cx| cx.quit()))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
@@ -1966,6 +2260,7 @@ impl Render for Workspace {
             .child(self.render_status_bar(cx))
             .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p))
+            .when_some(split_launcher, |d, s| d.child(s))
             .when_some(app_menu, |d, m| d.child(m));
 
         // No render-data cache here (tab labels/cwd live in the child panes and
@@ -2006,6 +2301,34 @@ mod tests {
         assert_eq!(weights, &vec![1.0, 1.0]); // outer untouched
         let Node::Split { weights: iw, .. } = &kids[1] else { panic!() };
         assert!((iw[1] - 1.3).abs() < 1e-6); // inner pane grew
+    }
+
+    #[test]
+    fn split_before_inserts_left_or_after_inserts_right() {
+        // `新会话` split direction: before=false (right/down) → new pane AFTER target;
+        // before=true (left/up) → new pane BEFORE target.
+        let mut n = Node::Leaf(0);
+        assert!(n.split(0, 1, Axis::Row, false)); // split right
+        let Node::Split { kids, .. } = &n else { panic!() };
+        assert!(matches!((&kids[0], &kids[1]), (Node::Leaf(0), Node::Leaf(1))), "right → [0,1]");
+
+        let mut n = Node::Leaf(0);
+        assert!(n.split(0, 1, Axis::Row, true)); // split left
+        let Node::Split { kids, .. } = &n else { panic!() };
+        assert!(matches!((&kids[0], &kids[1]), (Node::Leaf(1), Node::Leaf(0))), "left → [1,0]");
+
+        // Aligned n-ary insert respects before/after position.
+        let mut n = split(Axis::Row, vec![Node::Leaf(0), Node::Leaf(1)]);
+        assert!(n.split(1, 2, Axis::Row, true)); // insert 2 before pane 1
+        let Node::Split { kids, .. } = &n else { panic!() };
+        let ids: Vec<_> = kids.iter().map(|k| matches!(k, Node::Leaf(_)).then(|| if let Node::Leaf(i) = k { *i } else { 0 }).unwrap()).collect();
+        assert_eq!(ids, vec![0, 2, 1], "before pane 1 → [0,2,1]");
+
+        // SplitDir mapping
+        assert_eq!(SplitDir::Right.axis(), Axis::Row);
+        assert_eq!(SplitDir::Down.axis(), Axis::Col);
+        assert!(SplitDir::Left.before() && SplitDir::Up.before());
+        assert!(!SplitDir::Right.before() && !SplitDir::Down.before());
     }
 
     #[test]

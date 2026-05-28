@@ -13,6 +13,23 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 新会话=分屏启动器 + Quick Look 焦点修复(2026-05-29)
+
+### 修复 (Fixed)
+- **Quick Look 打开文件后 `Esc` 无法退出**:`explorer::on_row_click` 打开文件前会 `focus_handle.focus()`
+  把焦点抢到**文件树**,而浮层随后在 render 里抢焦点的请求被这次抢占盖过 → 浮层始终拿不到键盘焦点,其
+  `Esc`/`↑↓` 处理永不触发(树又不处理 `Esc`,故"按 Esc 没反应")。**修**:打开**文件**时不再聚焦树(只
+  在展开**目录**时聚焦,保 `↑↓` nav),让浮层经 `needs_focus` 稳拿焦点。
+
+### 变更 (Changed)
+- **app 菜单「新会话」改为分屏启动器**(原先与「新标签」都最终"开个会话",感觉重复)。现在二者职责清晰:
+  - **新标签(⌃⇧T)**=新建标签 + 欢迎启动页(可视磁贴选 profile)——逻辑不变。
+  - **新会话…(⌃⇧N)**=`render_split_launcher` 浮层:**① 选分屏方向**(←↑↓→ 十字,方向键 / 点击)→
+    **② 选启动器**(profile 列表,↑↓ / Enter / 点击)→ 在焦点窗格的该方向**分屏**打开新会话(欢迎标签则填入本标签)。
+  - 后端:`Node::split` 加 `before` 参数(左/上 = 插在前;右/下 = 插在后)+ `SplitDir` 枚举 + `Workspace::split_session`。
+    新增 `NewSession` 动作 + `Ctrl+Shift+N` 绑定。命令面板(⌃⇧P,新标签内启动)保持不变。
+- 单测 +1(`split_before_inserts_left_or_after_inserts_right`);47 → 48。
+
 ## [Unreleased] — 原型同步轨道:app 菜单 popup(2026-05-29)
 
 > [`design/panels/01`](design/panels/01-window-chrome.html) 的「点 Tn logo 弹下拉」端口进 gpui。

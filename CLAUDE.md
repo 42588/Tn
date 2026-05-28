@@ -134,7 +134,7 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
 
 **快捷键**:`Ctrl+Alt+Space` Quick Terminal(全局)· `Ctrl+Shift+P` 命令面板 · `Ctrl+Shift+T` 新标签 ·
 `Ctrl+Shift+D`/`E` 右/下分屏 · `Ctrl+Shift+W` 关窗格 · `Ctrl+Shift+]`/`Ctrl+Tab` 下个窗格/标签 · `Ctrl+Shift+方向键`
-改尺寸 · `Ctrl+Shift+B`/`J` 浏览器/Quick Look 速览 · `Ctrl+Shift+C`/`V` 复制/粘贴 · `Ctrl+Shift+R` 热重载 · `Ctrl+Shift+Q` 退出(亦在 app 菜单)。
+改尺寸 · `Ctrl+Shift+B`/`J` 浏览器/Quick Look 速览 · `Ctrl+Shift+C`/`V` 复制/粘贴 · `Ctrl+Shift+R` 热重载 · `Ctrl+Shift+N` 新会话(分屏启动器,亦在 app 菜单)· `Ctrl+Shift+Q` 退出(亦在 app 菜单)。
 
 ## 未做 / 后续(打磨项)
 - **M2 SSH 恢复**(parked,见现状):真机端到端 + ssh-agent + known_hosts 校验 + 密码交互 + 重连 + `~/.ssh/config` 导入。

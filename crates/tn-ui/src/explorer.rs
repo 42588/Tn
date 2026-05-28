@@ -202,16 +202,18 @@ impl ExplorerView {
     }
 
     fn on_row_click(&mut self, path: PathBuf, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // Focus the tree so keyboard nav (↑↓ / Space / Enter) works after a click.
-        // The explorer is already on screen, so focusing here lands (the focus-in-
-        // render caveat only bites not-yet-rendered overlays).
-        self.focus_handle.focus(window);
         if is_dir {
+            // Keep the tree focused so ↑↓ / Space keep working after expanding.
+            self.focus_handle.focus(window);
             if !self.expanded.remove(&path) {
                 self.expanded.insert(path);
             }
             self.rebuild();
         } else {
+            // Opening a FILE: do NOT focus the tree — the Quick Look overlay grabs
+            // focus (its `needs_focus`) so its own keys (↑↓ 换文件 / Esc 关 / Enter
+            // 编辑) work. Focusing the tree here would steal focus from the opening
+            // overlay → its `Esc` never fires (踩过的坑).
             self.selected = Some(path.clone());
             cx.emit(OpenFile(path));
         }
