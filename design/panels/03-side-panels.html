@@ -17,7 +17,7 @@
 
 <div class="stage">
   <h1>③ 侧栏 <span class="dim">— 文件资源管理器 · 速览编辑(Space)</span></h1>
-  <p class="lead">左 = 文件树(git M/U 标记 + 缩进连接线 + 活动行)。<b>不设常驻查看器</b>:选中文件按 <code>Space</code> 从树右缘滑出<b>速览浮层</b>(Diff/File 切换 + 行号槽 + 语法/增删着色),浮在终端之上、<code>↑↓</code> 换文件实时跟随、直接可编辑,Esc/Space 收起把空间还给终端。gpui:<code>explorer.rs</code> / <code>quick_look</code>(viewer.rs 改浮层)。</p>
+  <p class="lead">左 = 文件树(git M/U 标记 + 缩进连接线 + 活动行)。<b>不设常驻查看器</b>:选中文件按 <code>Space</code> 从树右缘滑出<b>速览浮层</b>(Diff/File 切换 + 行号槽 + 语法/增删着色),浮在终端之上;<b>预览态</b>焦点在树(<code>↑↓</code> 换文件实时跟随),<code>Enter</code> 进<b>编辑态</b>(方向键 / Tab 归编辑器 · <code>Ctrl+S</code> 保存),Esc/Space 收起把空间还给终端。gpui:<code>explorer.rs</code> / <code>quick_look</code>(viewer.rs 改浮层)。</p>
 
   <div class="demo">
     <div class="label">资源管理器(文件树) <span class="id">.pane.sidebar / .tree / .tnode</span><span class="impl">explorer::render / render_row</span></div>
@@ -44,7 +44,7 @@
   </div>
 
   <div class="demo">
-    <div class="label">速览编辑(选中文件按 Space → 贴树右缘滑出浮层 · ↑↓ 换文件实时跟随 · 直接可编辑) <span class="id">.quicklook / .seam / .vh / .code</span><span class="impl">quick_look::render(贴 explorer 右缘 · 浮于终端)</span></div>
+    <div class="label">速览 · 预览态(Space 滑出;焦点在树:↑↓ 换文件实时跟随 · ⇥ 切 Diff/File · Enter 进编辑) <span class="id">.quicklook / .seam / .vh / .code</span><span class="impl">quick_look::render(贴 explorer 右缘 · 浮于终端)</span></div>
     <div class="canvas tall">
       <!-- 背后的终端(变暗示意:速览浮于其上) -->
       <div class="pane col" style="position:absolute; left:282px; right:40px; top:40px; bottom:40px;">
@@ -95,16 +95,16 @@
           <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
         </div>
         <div class="qlfoot">
-          <span class="k">Esc</span> 关闭 · Diff 只读审阅,<span class="k">⇥</span> 切 File 编辑
+          <span class="k">↑↓</span> 换文件 · <span class="k">⇥</span> 切 File · <span class="k">Enter</span> 编辑
           <span class="sp"></span>
-          <span class="k">↑</span><span class="k">↓</span> 换文件 · 速览跟随
+          Diff 只读审阅 · <span class="k">Esc</span> 关闭
         </div>
       </div>
     </div>
   </div>
 
   <div class="demo">
-    <div class="label">速览 · File 模式(可编辑:整文件 + 行号 + 语法高亮 · Ctrl+S 保存;编辑只落此模式) <span class="id">.quicklook · File on · .cursor</span><span class="impl">quick_look::render(File)</span></div>
+    <div class="label">速览 · 编辑态(Enter 进入;焦点在浮层:方向键 / ⇥ / 打字归编辑器 · Ctrl+S 保存 · Esc 退出回预览) <span class="id">.quicklook · File on · .cursor</span><span class="impl">quick_look::render(File · editing)</span></div>
     <div class="canvas mid">
       <div class="quicklook" style="inset:30px;">
         <span class="seam"></span>
@@ -128,9 +128,9 @@
           <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
         </div>
         <div class="qlfoot">
-          <span class="k">Ctrl+S</span> 保存 · <span class="k">Esc</span> 关闭 · <span class="k">⇥</span> 切 Diff 审阅
+          <span class="k">Ctrl+S</span> 保存 · <span class="k">Esc</span> 退出编辑
           <span class="sp"></span>
-          <span class="k">↑</span><span class="k">↓</span> 换文件 · 速览跟随
+          方向键 / <span class="k">⇥</span> 归编辑器(移动光标 / 缩进)
         </div>
       </div>
     </div>
