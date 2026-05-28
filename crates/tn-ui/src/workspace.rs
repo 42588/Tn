@@ -1461,8 +1461,8 @@ impl Render for Workspace {
             }))
             .child(
                 div()
-                    .w(px(28.))
-                    .h(px(28.))
+                    .w(px(29.)) // §16 .newtab 29×29
+                    .h(px(29.))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -1480,14 +1480,14 @@ impl Render for Workspace {
         let brand = div()
             .flex()
             .items_center()
-            .gap_2()
+            .gap(px(9.)) // mockup .brand gap 9
             .pl_1()
             .pr_2()
             .window_control_area(WindowControlArea::Drag)
             .child(
                 div()
-                    .w(px(22.))
-                    .h(px(22.))
+                    .w(px(21.)) // mockup .brand .mark 21×21
+                    .h(px(21.))
                     .rounded(px(7.))
                     .flex()
                     .items_center()
@@ -1502,7 +1502,7 @@ impl Render for Workspace {
             .child(
                 div()
                     .text_size(px(14.))
-                    .font_weight(gpui::FontWeight::BOLD)
+                    .font_weight(gpui::FontWeight(680.)) // mockup .name weight 680
                     .text_color(col(ui.foreground))
                     .child("Tn"),
             );
@@ -1513,13 +1513,13 @@ impl Render for Workspace {
         let danger_bg = cola(self.config.theme.ansi.red, 0.22);
         let ctl_btn = |name: &'static str, area: WindowControlArea, danger: bool| {
             div()
-                .w(px(34.))
-                .h(px(28.))
+                .w(px(35.)) // mockup .wctl .b 35×30
+                .h(px(30.))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(8.))
-                .hover(move |s| s.bg(if danger { danger_bg } else { rgba(HOVER) }))
+                .rounded(px(9.)) // mockup .b radius 9
+                .hover(move |s| s.bg(if danger { danger_bg } else { rgba(INSET) })) // mockup hover = g2(.04)
                 .window_control_area(area)
                 .child(icon(name, 13., ui.muted))
         };
@@ -1536,10 +1536,10 @@ impl Render for Workspace {
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
+            .gap(px(14.)) // mockup .titlebar gap 14
             .h(px(46.))
-            .pl_3()
-            .pr_2()
+            .pl(px(16.)) // mockup .titlebar padding-left 16
+            .pr(px(10.)) // mockup .titlebar padding-right 10
             // No bottom border: tabs float on the glass; the body separates by
             // spacing, not a hard full-width divider (matches the mockup).
             .child(brand)
