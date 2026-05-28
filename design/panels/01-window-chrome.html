@@ -14,6 +14,15 @@
   <symbol id="i-max" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
   <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M7 9.5l5 5 5-5"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="13" rx="2"/><path d="M9.5 5.5v13"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M13 5h6v6"/><path d="M19 5l-8 8"/><path d="M17 13.5V18a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8a1.5 1.5 0 0 1 1.5-1.5H11"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 8h10"/><path d="M4 16h7"/><circle cx="17.5" cy="8" r="2.3"/><circle cx="14.5" cy="16" r="2.3"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M17 13.5A6.5 6.5 0 1 1 10.5 7 5 5 0 0 0 17 13.5z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19.5 4.5V9H15"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11.5v4.5"/><path d="M12 8.2h.01"/></symbol>
+  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4.5v6.5"/><path d="M7.8 7.8a6.5 6.5 0 1 0 8.4 0"/></symbol>
 </defs></svg>
 
 <div class="stage">
@@ -28,6 +37,7 @@
           <div class="brand">
             <div class="mark"><svg class="i sm" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
             <div class="name">Tn</div>
+            <svg class="i caret"><use href="#i-chev-d"/></svg>
           </div>
           <div class="tabs">
             <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
@@ -40,6 +50,46 @@
             <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
             <div class="b close"><svg class="i sm"><use href="#i-close"/></svg></div>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">app 菜单(点 Tn logo:会话 / 文件·工作区 / 设置) <span class="id">.brand.open / .appmenu / .mi</span><span class="impl">workspace::render → app_menu(popup)</span></div>
+    <div class="canvas" style="height:440px;padding:0;">
+      <div class="win" style="height:100%;width:100%;">
+        <div class="titlebar">
+          <div class="brand open">
+            <div class="mark"><svg class="i sm" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
+            <div class="name">Tn</div>
+            <svg class="i caret"><use href="#i-chev-d"/></svg>
+          </div>
+          <div class="tabs">
+            <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
+            <div class="tab pwsh"><svg class="i"><use href="#i-term"/></svg> pwsh</div>
+            <div class="newtab"><svg class="i"><use href="#i-plus"/></svg></div>
+          </div>
+          <div class="wctl">
+            <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
+            <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
+            <div class="b close"><svg class="i sm"><use href="#i-close"/></svg></div>
+          </div>
+        </div>
+        <div class="appmenu" style="left:12px;top:44px;">
+          <div class="mi"><svg class="i"><use href="#i-spark"/></svg> 新会话… <span class="k">⌃⇧P</span></div>
+          <div class="mi"><svg class="i"><use href="#i-plus"/></svg> 新标签 <span class="k">⌃⇧T</span></div>
+          <div class="sep"></div>
+          <div class="mi"><svg class="i"><use href="#i-folder"/></svg> 打开文件夹…</div>
+          <div class="mi"><svg class="i"><use href="#i-external"/></svg> 在资源管理器中显示</div>
+          <div class="mi"><svg class="i"><use href="#i-sidebar"/></svg> 文件浏览器 <span class="k">⌃⇧B</span></div>
+          <div class="sep"></div>
+          <div class="mi"><svg class="i"><use href="#i-sliders"/></svg> 设置</div>
+          <div class="mi"><svg class="i"><use href="#i-moon"/></svg> 主题…</div>
+          <div class="mi"><svg class="i"><use href="#i-refresh"/></svg> 重载配置 <span class="k">⌃⇧R</span></div>
+          <div class="sep"></div>
+          <div class="mi"><svg class="i"><use href="#i-info"/></svg> 关于 Tn</div>
+          <div class="mi danger"><svg class="i"><use href="#i-power"/></svg> 退出 <span class="k">⌃⇧Q</span></div>
         </div>
       </div>
     </div>

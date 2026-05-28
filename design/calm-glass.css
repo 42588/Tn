@@ -115,6 +115,23 @@ body {
 .wctl .b{ width:35px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; }
 .wctl .b:hover{ background:var(--g2); color:var(--fg); } .wctl .b.close:hover{ background:rgba(247,118,142,0.22); color:#ffd9e0; }
 
+/* ===================== app menu(点 Tn logo 弹的下拉)===================== */
+/* logo 旁淡 caret 提示可点;点开弹 Calm Glass 下拉(会话 / 文件·工作区 / 设置)。注:brand 现为窗口拖动区,改可点后拖窗挪到标签条空白 */
+.brand .caret{ width:13px; height:13px; color:var(--muted); opacity:.55; transition:opacity .12s; }
+.brand:hover .caret, .brand.open .caret{ opacity:1; }
+.appmenu{ position:absolute; z-index:30; width:248px; border-radius:var(--r-card); overflow:hidden; padding:6px;
+  background:linear-gradient(180deg, rgba(31,35,53,0.97), rgba(22,24,38,0.97));
+  border:1px solid var(--rim); box-shadow:0 30px 80px -24px rgba(0,0,0,0.9); }
+.appmenu .mi{ display:flex; align-items:center; gap:10px; height:32px; padding:0 10px; border-radius:8px;
+  font-size:12.5px; color:var(--fg-dim); }
+.appmenu .mi .i{ width:15px; height:15px; color:var(--muted); flex:0 0 auto; }
+.appmenu .mi:hover{ background:var(--g3); color:var(--fg); }
+.appmenu .mi:hover .i{ color:var(--fg-dim); }
+.appmenu .mi .k{ margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--faint); }
+.appmenu .sep{ height:1px; margin:5px 8px; background:rgba(255,255,255,0.06); }
+.appmenu .mi.danger:hover{ background:rgba(247,118,142,0.16); color:#ffd9e0; }
+.appmenu .mi.danger:hover .i{ color:#ffd9e0; }
+
 /* ===================== workspace + panes ===================== */
 .work{ flex:1; display:flex; gap:11px; padding:5px 12px 11px; min-height:0; position:relative; z-index:2; }
 .col{ display:flex; flex-direction:column; gap:11px; min-width:0; min-height:0; }
