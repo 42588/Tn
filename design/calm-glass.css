@@ -103,29 +103,34 @@ body {
 /* ===================== workspace + panes ===================== */
 .work{ flex:1; display:flex; gap:11px; padding:5px 12px 11px; min-height:0; position:relative; z-index:2; }
 .col{ display:flex; flex-direction:column; gap:11px; min-width:0; min-height:0; }
-.pane{ position:relative; background:var(--g1); border-radius:var(--r-pane); display:flex; flex-direction:column;
-  min-height:0; min-width:0; overflow:hidden; border:1px solid var(--rim);
-  /* 厚 = 多层投影(接触/主/环境)+ 底部内阴影给"玻璃厚度";景深靠阴影不靠泛光 */
+.pane{ position:relative; border-radius:var(--r-pane); display:flex; flex-direction:column;
+  min-height:0; min-width:0; overflow:hidden;
+  /* specular 顶洗光并入背景层(克制折射),把 ::before 让给「玻璃渐变描边」 */
+  background:linear-gradient(180deg, rgba(255,255,255,0.035), transparent 32%), var(--g1);
   backdrop-filter:blur(22px) saturate(116%); -webkit-backdrop-filter:blur(22px) saturate(116%);
+  /* 厚 = 多层投影 + 底部内阴影;最外圈 1px 暗线把面板从背景「切」出来(精致定义,非泛光) */
   box-shadow:
-    0 1px 0 rgba(255,255,255,0.05) inset,
+    0 0 0 1px rgba(0,0,0,0.28),
     0 -22px 46px -30px rgba(0,0,0,0.55) inset,
     0 2px 5px -2px rgba(0,0,0,0.55),
     0 22px 48px -26px rgba(0,0,0,0.72),
     0 52px 104px -46px rgba(0,0,0,0.92); }
-/* specular 顶洗光(克制折射,绝不泛光)— gpui 用 style::specular_top 还原 */
-.pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:32%; z-index:1; pointer-events:none;
-  border-radius:var(--r-pane) var(--r-pane) 0 0;
-  background:linear-gradient(180deg, rgba(255,255,255,0.035), transparent); }
-/* 细噪点颗粒(磨砂哑光质感 + 抹平大面积渐变色带;soft-light 比 overlay 更哑、不增亮)*/
+/* 玻璃渐变描边:顶承光(亮)→ 侧渐隐 → 底微回光;1px、跟随圆角(mask 环)。premium 关键 */
+.pane::before{ content:""; position:absolute; inset:0; border-radius:inherit; padding:1px; z-index:3; pointer-events:none;
+  background:linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.055) 30%, rgba(255,255,255,0.02) 72%, rgba(255,255,255,0.07));
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude; }
+/* 细噪点哑光颗粒(soft-light 不增亮,抹平色带)*/
 .pane::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none; border-radius:inherit;
   background:var(--noise); background-size:170px 170px; opacity:.05; mix-blend-mode:soft-light; }
 .pane > *{ position:relative; z-index:2; }
-.pane.active{ border-color:rgba(240,145,109,0.26);
+/* 焦点:描边转暖(珊瑚承光)+ 更深浮起 */
+.pane.active::before{ background:linear-gradient(180deg, rgba(240,145,109,0.42), rgba(240,145,109,0.13) 32%, rgba(240,145,109,0.05) 72%, rgba(240,145,109,0.15)); }
+.pane.active{
   box-shadow:
-    0 1px 0 rgba(255,255,255,0.07) inset,
+    0 0 0 1px rgba(0,0,0,0.28),
     0 -22px 48px -30px rgba(0,0,0,0.55) inset,
-    0 0 0 1px rgba(240,145,109,0.10),
     0 4px 9px -2px rgba(0,0,0,0.58),
     0 30px 64px -28px rgba(0,0,0,0.8),
     0 64px 120px -48px rgba(0,0,0,0.94); }
