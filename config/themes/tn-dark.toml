@@ -33,7 +33,7 @@ selection_fg  = "#C0CAF5"
 
 # UI chrome(窗口/标签/面板/分屏/命令面板等)
 [ui]
-chrome_bg        = "#16161E"   # 标题栏 / 最外层
+chrome_bg        = "#0E0F19"   # 标题栏 / 最外层(= mockup .app over desktop 合成色:深冷,gap 不洗白面板)
 surface_1        = "#1F2335"   # 面板 / 卡片
 surface_2        = "#24283B"   # 抬升层 / block 卡片
 foreground       = "#C6D0F5"   # = mockup --fg(chrome 文字)

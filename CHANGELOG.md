@@ -29,6 +29,16 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 ### 变更 (Changed)
 - **explorer 改干净定宽面板**:侧栏 `214px → 224px` 定宽,**去掉外层「资源管理器」标签栏 + 关闭 ×**
   (1:1 贴 mockup `.sidebar`);开合走 `Ctrl+Shift+B`。viewer(legacy)的关闭栏保留至 Quick Look 端口。
+- **玻璃面板保真打磨(真机肉眼对齐 mockup)**:
+  - **g1 玻璃渐变**修正——原型 `--g1` 早先改冷加深(`rgba(34,42,70,.46)→rgba(16,20,38,.58)`)但 gpui 侧漏跟、
+    各抄旧值致面板偏灰偏透;抽成单一真源 `G1_TOP/G1_BOT`(render_node + explorer 共用)+ **新增第 5 道
+    `--g1` 守卫**(`token_drift` 解析 mockup 渐变两停)。
+  - **面板浮起**:单层软投影 → mockup `.pane` **投影栈**(外圈 1px 暗发丝线"切"出背景 + 分层柔投影;`pane_shadows`)。
+  - **冷能量渐变描边**(mockup `.pane::before`):gpui 边框单色无法渐变 → 用 **1px padding reveal**(`glass_pane`):
+    外层冷白→accent 竖渐变底 + 1px 内边距,内容圆角内缩 1px、**fill 烤成不透明**(`pane_fill`,防渐变透底洗白)→
+    1px 环即"顶冷白承光 / 底 accent 回光 / 侧渐变"的连续描边,聚焦更亮(**去掉旧暖橙焦点边**)。
+  - **窗口底色** `chrome_bg #16161E → #0E0F19`(贴 mockup `.app` over desktop 合成色,gap 不洗白面板);
+    **specular** 顶洗光对齐 `.035`/32%;**explorer** 目录名 fg-dim→fg(亮)、缩进引导竖线、缩进 16/树边距 6。
 
 ## [Unreleased] — M4 颜值打磨(面板逐组件对齐 mockup · 2026-05-28)
 

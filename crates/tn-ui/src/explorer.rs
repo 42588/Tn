@@ -17,7 +17,7 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::style::{col, cola, icon, shadowed, soft_shadow, specular_top, INSET, RIM, R_PANEL};
+use crate::style::{col, cola, glass_pane, icon, pane_fill, specular_top, INSET, R_PANEL};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -205,7 +205,7 @@ impl ExplorerView {
         let ui = &self.config.theme.ui;
         let t = &self.config.theme;
         let is_sel = self.selected.as_deref() == Some(row.path.as_path());
-        let indent = 10.0 + row.depth as f32 * 14.0;
+        let indent = 10.0 + row.depth as f32 * 16.0; // mockup .tnode padding 10 + margin-left 16/级
         let path = row.path.clone();
         let is_dir = row.is_dir;
 
@@ -213,6 +213,7 @@ impl ExplorerView {
             .flex()
             .flex_row()
             .items_center()
+            .relative() // anchor the indent guide line
             .gap(px(7.)) // §16 .tnode gap 7
             .h(px(26.)) // §16 .tnode height 26
             .pr_2()
@@ -233,6 +234,23 @@ impl ExplorerView {
                 cx.listener(move |this, _e, _w, cx| this.on_row_click(path.clone(), is_dir, cx)),
             );
 
+        // Indent guide (mockup .tnode[class*="ind"]::before): a 1px vertical line
+        // 8px left of the content, full row height (flush rows → continuous tree
+        // guides). 白 .05 overlay。
+        if row.depth > 0 {
+            r = r.child(
+                div()
+                    .absolute()
+                    .left(px(indent - 8.0))
+                    .top(px(0.))
+                    .bottom(px(0.))
+                    .w(px(1.))
+                    // mockup .tnode::before 是白 .05,但真机无 backdrop-blur 衬托会看不见 →
+                    // 提到 .12 才读得出引导线(白叠加,round(.12×255)=31)
+                    .bg(rgba(0xffffff1f)),
+            );
+        }
+
         // chevron (directories only; files get a matching-width spacer)
         if row.is_dir {
             let chev = if row.expanded { "chev-d" } else { "chev-r" };
@@ -250,9 +268,10 @@ impl ExplorerView {
         };
         let mut r = r.child(icon(glyph, 14., glyph_color)).child(
             div()
-                // mockup .tnode color = fg-dim;active → fg(#A6AFD4 无主题 token → 字面量)
-                .text_color(if is_sel { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
-                .when(row.is_dir, |d| d.font_weight(gpui::FontWeight::MEDIUM))
+                // mockup: .tnode 文件 = fg-dim;.tnode.dir = fg(亮)、weight 540;active → fg。
+                // (#A6AFD4 = fg-dim,无主题 token → 字面量)
+                .text_color(if is_sel || is_dir { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
+                .when(is_dir, |d| d.font_weight(gpui::FontWeight(540.)))
                 .child(SharedString::from(row.name.clone())),
         );
         // git-status tag (files only), right-aligned.
@@ -312,24 +331,19 @@ impl Render for ExplorerView {
         let rows: Vec<gpui::Div> =
             (0..self.rows.len()).map(|i| self.render_row(&self.rows[i], cx)).collect();
 
-        let root = div()
+        // Inner content, rounded 1px tighter so the gradient-border ring shows
+        // (see style::glass_pane); g1 glass + specular + header + tree.
+        let inner = div()
             .track_focus(&self.focus_handle)
             .size_full()
-            .relative() // anchor the absolute specular / sheen layers
+            .relative() // anchor the absolute specular layer
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(px(R_PANEL))
-            .border_1()
-            .border_color(rgba(RIM))
-            // mockup .sidebar 是 .pane:g1 玻璃渐变(与 viewer/agent 面板一致)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0x2a2e446b), 0.),
-                linear_color_stop(rgba(0x1a1c2c85), 1.),
-            ))
-            // mockup .pane::before specular 柔光洗 + 浮起投影(无 glow;不加 sheen 硬线)
+            .rounded(px(R_PANEL - 1.))
+            // mockup .sidebar 是 .pane:g1 玻璃(baked opaque,防 glass_pane 渐变边透底)
+            .bg(pane_fill(ui.chrome_bg))
             .child(specular_top())
             .child(header)
             .child(
@@ -337,13 +351,13 @@ impl Render for ExplorerView {
                     .flex_1()
                     .min_h(px(0.))
                     .overflow_hidden()
-                    .px_1()
-                    .pb_1()
+                    .p(px(6.)) // mockup .tree padding 6
                     .flex()
                     .flex_col()
                     .children(rows),
             );
-        shadowed(root, vec![soft_shadow(24.0, 58.0, -36.0, 0.88)])
+        // mockup .pane::before 竖向渐变描边 + 浮起投影(与终端面板一致;explorer 恒非焦点)
+        glass_pane(inner, false, ui.accent)
     }
 }
 

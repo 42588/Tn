@@ -30,8 +30,8 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, icon, shadowed, soft_shadow, specular_top, DIVIDER, HOVER, INSET, RIM, R_CARD,
-    R_PANEL, R_WINDOW, SHEEN, UI_SANS,
+    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, specular_top, DIVIDER, HOVER,
+    INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -947,51 +947,30 @@ impl Workspace {
                 let id = *id;
                 let view = self.panes.get(&id).expect("pane exists").clone();
                 let is_focused = id == focused;
-                let theme = &self.config.theme;
-                // Focused pane: a faint warm rim + a lift (deeper shadow) so the
-                // eye finds it instantly — no glow. Others: a plain glass rim,
-                // sitting flat. (docs/产品设计 §6.2 active-split focus.)
-                let rim = if is_focused {
-                    cola(theme.agents.claude, 0.45)
-                } else {
-                    rgba(RIM)
-                };
-                let pane = div()
+                // Inner content: g1 glass, rounded ONE px tighter than the outer so
+                // the 1px gradient-border ring shows through (see `glass_pane`).
+                // The TerminalView fills it + rounds its own corners to match; gpui
+                // clips rectangularly so inner surfaces round themselves.
+                let inner = div()
                     .size_full()
-                    .relative() // anchor the absolute specular / sheen layers
-                    .border_1()
-                    .rounded(px(R_PANEL))
+                    .relative() // anchor the absolute specular layer
+                    .rounded(px(R_PANEL - 1.))
                     .overflow_hidden()
-                    // No padding: the TerminalView fills the card and rounds its
-                    // own corners (header top + root) to match. gpui clips
-                    // rectangularly, so inner surfaces must round themselves.
-                    // mockup .pane = g1 玻璃(与 explorer/viewer/agent 面板统一)
-                    .bg(linear_gradient(
-                        180.,
-                        linear_color_stop(rgba(0x2a2e446b), 0.),
-                        linear_color_stop(rgba(0x1a1c2c85), 1.),
-                    ))
-                    .border_color(rim)
+                    .bg(pane_fill(self.config.theme.ui.chrome_bg))
+                    // mockup .pane specular 柔光洗(折射,无 glow);先于 view 添加 → 画在
+                    // 内容之下,经半透明 header 透出。
+                    .child(specular_top())
+                    .child(view);
+                // mockup .pane::before 竖向渐变描边(顶冷白承光 → 底 accent 回光,跟圆角)
+                // + .pane 浮起投影栈;focused 边更亮、浮得更高(NO 暖橙、NO glow)。
+                glass_pane(inner, is_focused, self.config.theme.ui.accent)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _ev, window, cx| {
                             this.focus_pane(id, window, cx);
                         }),
                     )
-                    // mockup .pane::before specular 柔光洗(折射,无 glow);先于 view
-                    // 添加 → 画在内容之下,经半透明 header 透出。不加 1px sheen 硬线
-                    // (gpui overflow_hidden 不跟圆角、会在圆角戳出白线;owner 取向同 tab)。
-                    .child(specular_top())
-                    .child(view);
-                // Every pane floats on a soft shadow (mockup .pane); the focused
-                // one lifts higher (mockup .pane.active). The warm rim is already
-                // applied above via `rim`.
-                let shadows = if is_focused {
-                    vec![soft_shadow(30.0, 64.0, -36.0, 0.9)]
-                } else {
-                    vec![soft_shadow(24.0, 58.0, -36.0, 0.88)]
-                };
-                shadowed(pane, shadows).into_any_element()
+                    .into_any_element()
             }
             Node::Split {
                 axis,

@@ -21,6 +21,14 @@ pub(crate) const INSET: u32 = 0xffffff0a; // header / inset card overlay (~white
 pub(crate) const HOVER: u32 = 0xffffff0f; // chip / hover (~white .06, = mockup --g3)
 pub(crate) const DIVIDER: u32 = 0xffffff0f; // status-bar segment divider (~white .06, = mockup `.status .seg2 + .seg2`)
 
+// Pane glass fill = mockup `--g1`(冷调加深、提对比;两停渐变).Opaque 窗口下没有
+// backdrop-blur,故 g1 偏实(alpha 高)以读出磨砂色。集中在此 = 单一真源,render_node
+// 与 explorer 共用、不再各抄一份(曾各抄 → 原型改 g1 而代码漏跟、漂成偏灰偏透);
+// `token_drift` 已把它对着 mockup `--g1` 守住。
+pub(crate) const G1_TOP: u32 = 0x222a4675; // rgba(34,42,70,0.46) → a=round(.46×255)=117=0x75
+pub(crate) const G1_BOT: u32 = 0x10142694; // rgba(16,20,38,0.58) → a=round(.58×255)=148=0x94
+
+
 /// UI sans-serif for chrome (tabs / headers / status); paired with the mono
 /// terminal/code font. Ships on Windows 10/11.
 pub(crate) const UI_SANS: &str = "Segoe UI";
@@ -76,6 +84,58 @@ pub(crate) fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
     d
 }
 
+/// Composite a translucent overlay (`0xRRGGBBAA`) over an opaque base → opaque
+/// color. Used to *bake* the translucent g1 glass over the (flat) window so the
+/// pane fill is OPAQUE: the [`glass_pane`] gradient-border sits BEHIND the fill,
+/// and a translucent fill would let that bright edge gradient bleed through the
+/// whole pane (washing it bright). An opaque fill blocks it to the 1px ring.
+fn over(ov: u32, base: (u8, u8, u8)) -> Rgba {
+    let a = (ov & 0xff) as f32 / 255.0;
+    let ch = |shift: u32, b: u8| {
+        let o = ((ov >> shift) & 0xff) as f32;
+        (o * a + b as f32 * (1.0 - a)).round() as u32
+    };
+    rgb((ch(24, base.0) << 16) | (ch(16, base.1) << 8) | ch(8, base.2))
+}
+
+/// The pane glass fill = mockup `--g1` baked **opaque** over the window `bg`.
+/// Shared by terminal panes (`render_node`) + explorer so the deep cool glass
+/// can't drift ([`G1_TOP`]/[`G1_BOT`], guarded against mockup). Opaque (not the
+/// raw translucent g1) so [`glass_pane`]'s gradient border doesn't bleed through.
+pub(crate) fn pane_fill(bg: impl Rgb8) -> gpui::Background {
+    let base = bg.channels();
+    linear_gradient(
+        180.,
+        linear_color_stop(over(G1_TOP, base), 0.),
+        linear_color_stop(over(G1_BOT, base), 1.),
+    )
+    .into()
+}
+
+/// mockup `.pane` / `.pane.active` box-shadow stack: an outer 1px **dark hairline**
+/// (`0 0 0 1px rgba(0,0,0,.28)`) that crisply *cuts* the pane out of the backdrop,
+/// plus layered soft drops for float — depth, not glow. (gpui 0.2.2 has no inset
+/// box-shadow, so the mockup's inset bottom shadow is omitted.) Shared by panes +
+/// explorer so the lift stays identical.
+pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
+    let hairline = soft_shadow(0.0, 0.0, 1.0, 0.28); // 0 0 0 1px rgba(0,0,0,.28)
+    if focused {
+        vec![
+            hairline,
+            soft_shadow(4.0, 9.0, -2.0, 0.58),
+            soft_shadow(30.0, 64.0, -28.0, 0.8),
+            soft_shadow(64.0, 120.0, -48.0, 0.94),
+        ]
+    } else {
+        vec![
+            hairline,
+            soft_shadow(2.0, 5.0, -2.0, 0.55),
+            soft_shadow(22.0, 48.0, -26.0, 0.72),
+            soft_shadow(52.0, 104.0, -46.0, 0.92),
+        ]
+    }
+}
+
 /// The frosted "specular" top wash on a glass pane (mockup `.pane::before`): an
 /// absolute, non-interactive top-36% gradient from white @ 4% → transparent.
 /// Refracted light, NOT glow. Add as a glass pane's FIRST child so it paints
@@ -91,14 +151,37 @@ pub(crate) fn specular_top() -> Div {
         .left(px(0.))
         .right(px(0.))
         .top(px(0.))
-        .h(relative(0.36))
+        .h(relative(0.32)) // mockup .pane 顶洗光 transparent 32%
         .rounded_t(px(R_PANEL))
         .bg(linear_gradient(
             180.,
-            // white @ .04 = round(.04×255)=10=0x0a (= INSET)
-            linear_color_stop(rgba(0xffffff0a), 0.),
+            // mockup .pane white @ .035 = round(.035×255)=9=0x09
+            linear_color_stop(rgba(0xffffff09), 0.),
             linear_color_stop(rgba(0x00000000), 1.),
         ))
+}
+
+/// Wrap a glass pane's inner content with the mockup `.pane::before` **gradient
+/// edge** + the float shadow. gpui can't gradient a border, so this uses the
+/// 1px-padding reveal trick: an outer div with a vertical `cool-white → accent`
+/// gradient background + 1px padding, with the rounded inner content on top — the
+/// 1px ring that shows through *is* a continuous gradient border that follows the
+/// rounded corners (top reads cool-white 承光, bottom accent 回光, sides the
+/// gradient between = the mockup's non-uniform edge). `inner` must be built with
+/// `rounded(R_PANEL - 1.)` + `overflow_hidden`. Focused = brighter top + more
+/// accent bottom (+ deeper shadow). Cool-white = glass refraction tint (not a
+/// theme token); accent goes through `cola` so it's never a bare theme hex.
+pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
+    let top = if focused { rgba(0xd2e1ff5c) } else { rgba(0xbed6ff40) }; // 冷白承光 .36 / .25
+    let edge = linear_gradient(
+        180.,
+        linear_color_stop(top, 0.),
+        linear_color_stop(cola(accent, if focused { 0.20 } else { 0.14 }), 1.), // accent 回光
+    );
+    shadowed(
+        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(inner),
+        pane_shadows(focused),
+    )
 }
 
 /// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG
@@ -201,6 +284,26 @@ mod token_drift {
         s.strip_suffix("px").expect("Npx").parse().unwrap()
     }
 
+    /// mockup `--g1: linear-gradient(180deg, rgba(...), rgba(...))` two stops ==
+    /// `style.rs` `G1_TOP`/`G1_BOT` (`0xRRGGBBAA`, `AA == round(alpha*255)`).
+    fn assert_g1(css: &str, top: u32, bot: u32) {
+        // Pull the two `rgba(...)` substrings out of the gradient.
+        let s0 = css.find("rgba(").expect("--g1 stop0");
+        let e0 = css[s0..].find(')').expect("g1 stop0 )") + s0 + 1;
+        let s1 = css[e0..].find("rgba(").expect("--g1 stop1") + e0;
+        let e1 = css[s1..].find(')').expect("g1 stop1 )") + s1 + 1;
+        let chk = |seg: &str, tok: u32, w: &str| {
+            let (r, g, b, a) = rgba_alpha(seg);
+            let want = ((r as u32) << 24)
+                | ((g as u32) << 16)
+                | ((b as u32) << 8)
+                | (a * 255.0).round() as u32;
+            assert_eq!(want, tok, "{w}: mockup {seg} → {want:#010x} != {tok:#010x}");
+        };
+        chk(&css[s0..e0], top, "--g1 top → G1_TOP");
+        chk(&css[s1..e1], bot, "--g1 bot → G1_BOT");
+    }
+
     #[test]
     fn mockup_tokens_match_theme_and_style() {
         let html = mockup_html();
@@ -225,6 +328,9 @@ mod token_drift {
         assert_white(css_var(root, "--g2"), INSET, "--g2 → INSET");
         assert_white(css_var(root, "--g3"), HOVER, "--g3 → HOVER");
         assert_white(css_var(root, "--g3"), DIVIDER, "--g3 → DIVIDER (= chip/hover .06)");
+
+        // ── pane glass gradient: mockup --g1 two rgba stops == G1_TOP / G1_BOT ──
+        assert_g1(css_var(root, "--g1"), G1_TOP, G1_BOT);
 
         // ── corner radii ──
         assert_eq!(px_val(css_var(root, "--r-win")), R_WINDOW, "--r-win → R_WINDOW");
