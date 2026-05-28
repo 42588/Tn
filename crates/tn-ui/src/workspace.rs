@@ -1529,6 +1529,10 @@ impl Render for Workspace {
                     .font_weight(gpui::FontWeight(680.)) // mockup .name weight 680
                     .text_color(col(ui.foreground))
                     .child("Tn"),
+            )
+            .child(
+                // mockup .brand .caret 13×13 · muted · opacity .55(视觉先行;点击展开 app 菜单 = 后续 ④)
+                crate::assets::icon("chev-d", 13.).text_color(cola(ui.muted, 0.55)),
             );
 
         // Window controls: the OS performs the action from the marked region
@@ -1572,11 +1576,11 @@ impl Render for Workspace {
             .child(div().flex_1().h_full().window_control_area(WindowControlArea::Drag))
             .child(controls);
 
-        // A slim close bar sits *above* each side panel (not overlaid on its
-        // header, which would cover the viewer's Diff/File tabs). Toggling panels
-        // by key uses Ctrl+Shift+J / Ctrl+Shift+B, but the system IME/layout-switch
-        // hotkey (also Ctrl+Shift) can swallow those on Chinese/multi-layout
-        // Windows — so the panels must be closeable by click, or they get stuck.
+        // The explorer is a clean pane (mockup .sidebar): no wrapper bar — it
+        // toggles via Ctrl+Shift+B only. The viewer (legacy; → Quick Look 待端口)
+        // keeps a slim close bar above it: its own header hosts Diff/File tabs we
+        // can't overlay, and the Ctrl+Shift+J toggle can be swallowed by the
+        // IME/layout-switch hotkey on Chinese Windows, so it stays click-closeable.
         let bar_label = |label: &'static str| {
             div()
                 .flex()
@@ -1602,15 +1606,6 @@ impl Render for Workspace {
                 .hover(|s| s.bg(rgba(HOVER)))
                 .child(icon("close", 10., ui.muted))
         };
-        let explorer_bar = bar_label("资源管理器").child(
-            close_x(ui).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _e, _w, cx| {
-                    this.explorer_open = false;
-                    cx.notify();
-                }),
-            ),
-        );
         let viewer_bar = bar_label("查看器").child(
             close_x(ui).on_mouse_down(
                 MouseButton::Left,
@@ -1638,16 +1633,16 @@ impl Render for Workspace {
             // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
             .when(self.explorer_open, |d| {
                 d.child(
+                    // mockup .sidebar:flex 0 0 224px —— 干净面板,无外层「资源管理器」标签栏。
                     // No overflow_hidden: the explorer pane clips its own content
                     // (+ min_h 0 bounds it), so the column passes the pane's drop
                     // shadow through to float in the gap. (See render_node.)
                     div()
-                        .w(px(214.))
+                        .w(px(224.))
                         .flex_none()
                         .min_h(px(0.))
                         .flex()
                         .flex_col()
-                        .child(explorer_bar)
                         .child(
                             div()
                                 .flex_1()

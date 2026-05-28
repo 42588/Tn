@@ -853,6 +853,7 @@ impl Render for TerminalView {
             .relative()
             .flex_1()
             .min_h(px(0.))
+            .min_w(px(0.)) // mockup .abody .body min-width:0(agent 面板正文与活动栏同处 flex 行)
             .overflow_hidden()
             .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
                 this.on_scroll(ev, window, cx)
@@ -901,6 +902,20 @@ impl Render for TerminalView {
             .when_some(scrollbar, |this, s| this.child(s))
             .when_some(bell_overlay, |this, o| this.child(o));
 
+        // agent 面板:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
+        // shell 面板:正文满宽、无活动栏(mockup shell pane 无 .arail)。
+        let body_region = if self.agent.is_some() {
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_row() // mockup .abody
+                .child(term_area)
+                .child(self.render_activity_rail())
+        } else {
+            term_area
+        };
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -915,7 +930,7 @@ impl Render for TerminalView {
             .text_size(px(self.font_size))
             .line_height(px(self.line_height))
             .when_some(header, |this, h| this.child(h))
-            .child(term_area)
+            .child(body_region)
             .when_some(block_bar, |this, bar| this.child(bar))
     }
 }

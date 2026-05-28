@@ -11,7 +11,7 @@ use tn_ai::AgentKind;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, HOVER, INSET, UI_SANS};
+use crate::style::{col, cola, icon, HOVER, INSET, R_CARD, UI_SANS};
 
 impl TerminalView {
     /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
@@ -204,6 +204,150 @@ impl TerminalView {
                     .text_color(gpui::rgb(0xA6AFD4))
                     .bg(rgba(HOVER))
                     .child(SharedString::from(shell)),
+            )
+    }
+
+    /// 活动栏里的一张「文件 + 增删」行(mockup `.afile`):图标 + 文件名 + 右侧 +N/−N。
+    fn arail_file(&self, name: &str, plus: &str, minus: Option<&str>) -> Div {
+        let green = col(self.palette.ansi[2]);
+        let red = col(self.palette.ansi[1]);
+        let mut pm = div()
+            .flex()
+            .flex_row()
+            .gap(px(5.)) // §16 .pm gap 5
+            .flex_none()
+            .text_size(px(10.))
+            .font_weight(FontWeight(680.))
+            .child(div().text_color(green).child(SharedString::from(plus.to_string()))); // .ad green
+        if let Some(m) = minus {
+            pm = pm.child(div().text_color(red).child(SharedString::from(m.to_string()))); // .dl red
+        }
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.)) // §16 .afile gap 7
+            .font_family(self.font_family.clone()) // .afile = mono
+            .text_size(px(11.5))
+            .text_color(gpui::rgb(0xA6AFD4)) // §16 fg-dim(无 token)
+            .child(icon("file", 13., self.ui_muted)) // .afile .i 13 muted
+            .child(
+                // .nm:占满中间、可裁(文件名通常很短)
+                div()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .overflow_hidden()
+                    .child(SharedString::from(name.to_string())),
+            )
+            .child(pm) // .pm 右靠(margin-left:auto)
+    }
+
+    /// 活动栏迷你 diff 的一行(mockup `.adiff div`):+ 绿 / − 红。
+    fn arail_dline(&self, is_add: bool, text: &str) -> Div {
+        let c = if is_add { self.palette.ansi[2] } else { self.palette.ansi[1] };
+        div()
+            .overflow_hidden()
+            .text_color(col(c))
+            .child(SharedString::from(text.to_string()))
+    }
+
+    /// agent 活动栏(mockup `.arail`):运行状态行 + 「本次改动」diff 卡 + 提示。
+    /// 视觉先行 —— 此处为 mockup 示例内容(占位);真实数据(git diff / JSONL,不解析
+    /// 终端正文)后续接线。只在 agent 面板渲染(shell 面板正文满宽、无栏)。
+    pub(super) fn render_activity_rail(&self) -> Div {
+        div()
+            .flex_none()
+            .w(px(212.)) // §16 .arail flex 0 0 212
+            .flex()
+            .flex_col()
+            .gap(px(11.)) // §16 .arail gap 11
+            .pt(px(12.))
+            .px(px(12.))
+            .pb(px(14.)) // §16 .arail padding 12 12 14
+            .min_h(px(0.))
+            .overflow_hidden() // mockup overflow:auto;滚动留后续,先裁剪
+            .border_l(px(1.))
+            .border_color(rgba(0xffffff0d)) // border-left white .05 = round(.05×255)=13
+            .font_family(UI_SANS) // 状态/标签/提示 = sans;.afile/.adiff 局部转 mono
+            .child(
+                // .astat:状态点 + 运行中 · Update + 右对齐时长
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(7.))
+                    .text_size(px(11.))
+                    .text_color(gpui::rgb(0xA6AFD4)) // fg-dim(无 token)
+                    .child(
+                        div()
+                            .w(px(7.))
+                            .h(px(7.))
+                            .rounded_full()
+                            .flex_none()
+                            .bg(col(self.agent_accent())), // .dot = agent 色(mockup --claude)
+                    )
+                    .child(div().flex_1().child(SharedString::from("运行中 · Update"))) // 文本撑开,.t 右靠
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(col(self.ui_muted)) // .t muted
+                            .child(SharedString::from("1m12s")),
+                    ),
+            )
+            .child(
+                // .alabel
+                div()
+                    .text_size(px(10.))
+                    .font_weight(FontWeight(680.))
+                    .text_color(col(self.ui_muted))
+                    .pt(px(2.))
+                    .px(px(2.)) // padding 2 2 0
+                    .child(SharedString::from("本次改动")),
+            )
+            .child(
+                // .achip.cur:当前文件卡(accent 描边)+ 迷你 diff
+                div()
+                    .rounded(px(R_CARD))
+                    .bg(cola(self.ui_accent, 0.06)) // .cur bg accent@.06
+                    .border_1()
+                    .border_color(cola(self.ui_accent, 0.22)) // mockup inset 1px(gpui 无 inset 投影→内描边)
+                    .py(px(8.))
+                    .px(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(self.arail_file("element.rs", "+3", Some("−1")))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .font_family(self.font_family.clone()) // .adiff = mono
+                            .text_size(px(10.))
+                            .line_height(px(15.5)) // line-height 1.55 × 10
+                            .child(self.arail_dline(false, "- win.paint_text(cell.ch)"))
+                            .child(self.arail_dline(true, "+ let g = atlas.glyph(ch)"))
+                            .child(self.arail_dline(true, "+ quads.push(Quad::…)")),
+                    ),
+            )
+            .child(
+                // .achip:第二张卡
+                div()
+                    .rounded(px(R_CARD))
+                    .bg(rgba(INSET)) // .achip bg white@.04
+                    .py(px(8.))
+                    .px(px(10.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .child(self.arail_file("lib.rs", "+1", None)),
+            )
+            .child(
+                // .ahint
+                div()
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(0x474E72)) // faint(无 token)
+                    .px(px(2.))
+                    .child(SharedString::from("点卡片 = Space 速览全 diff")),
             )
     }
 

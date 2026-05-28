@@ -13,6 +13,23 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 原型同步轨道:主界面 1:1 复刻(2026-05-29)
+
+> [`design/mockup.html`](design/mockup.html) 重设计后的主界面端口进 gpui,逐组件 1:1 还原。
+> 数据流取向不变:活动栏数据来自 `git diff` + 已解析 JSONL,**不解析终端正文**(见 [CLAUDE.md](CLAUDE.md))。
+> 四道守卫(`token_drift` / `roots_mirror` / `no_hardcoded` / `spec_gen`)全绿,33 lib 测试通过。
+
+### 新增 (Added)
+- **agent 活动栏(`.arail`)**:agent 面板正文右侧并排活动栏(`render_activity_rail`,[terminal_view/header.rs](crates/tn-ui/src/terminal_view/header.rs))
+  ——运行状态行(状态点 + 运行中 · Update + 时长)+ 「本次改动」diff 卡(文件 + `+N/−N` + 迷你 diff)+ 提示。
+  正文与栏同处 `.abody` flex 行(正文 `min_w(0)`);**仅 agent 面板有栏,shell 面板正文满宽**。
+  **视觉外壳完成、当前为 mockup 占位示例内容**;真实 git/JSONL 数据接线为紧接的下一步。
+- **品牌 caret `Tn ▾`**:标题栏品牌名后加 `chev-d`(muted @ .55);点击展开 app 菜单 popup 为后续项。
+
+### 变更 (Changed)
+- **explorer 改干净定宽面板**:侧栏 `214px → 224px` 定宽,**去掉外层「资源管理器」标签栏 + 关闭 ×**
+  (1:1 贴 mockup `.sidebar`);开合走 `Ctrl+Shift+B`。viewer(legacy)的关闭栏保留至 Quick Look 端口。
+
 ## [Unreleased] — M4 颜值打磨(面板逐组件对齐 mockup · 2026-05-28)
 
 > 把面板从"数值对齐但发平"打磨到"磨砂玻璃 + 悬浮"。详见 [docs/产品设计.md](docs/产品设计.md) §6.1/§6.3、
