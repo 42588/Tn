@@ -13,7 +13,7 @@ use std::sync::Arc;
 use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, Rgba, SharedString};
 use tn_config::Loaded;
 
-use crate::style::{col, HOVER, UI_SANS};
+use crate::style::{col, cola, HOVER, RIM, UI_SANS};
 
 /// Max lines rendered (a viewer is a glance, not a pager).
 const MAX_LINES: usize = 500;
@@ -305,8 +305,9 @@ impl ViewerView {
         }
         let rows = self.diff.iter().map(|d| {
             let (bg, mark, mark_col, txt_col) = match d.kind {
-                DiffKind::Add => (rgba(0x9ECE6A17), "+", col(th.ansi.green), col(th.ui.foreground)),
-                DiffKind::Del => (rgba(0xF7768E17), "-", col(th.ansi.red), col(th.ui.muted)),
+                // mockup .cl.add/.del:bg=绿/红 @ .09;.ln/.mk 同色;正文不暗化(del 不 muted)
+                DiffKind::Add => (cola(th.ansi.green, 0.09), "+", col(th.ansi.green), col(th.ui.foreground)),
+                DiffKind::Del => (cola(th.ansi.red, 0.09), "-", col(th.ansi.red), col(th.ui.foreground)),
                 DiffKind::Hunk => (rgba(0x00000000), " ", col(th.ui.accent_alt), col(th.ui.accent_alt)),
                 DiffKind::Ctx => (rgba(0x00000000), " ", col(th.ui.muted), col(th.ui.foreground)),
             };
@@ -315,7 +316,8 @@ impl ViewerView {
                 .flex()
                 .flex_row()
                 .bg(bg)
-                .child(div().w(px(40.)).flex_none().pr_2().text_color(col(th.ui.muted)).child(SharedString::from(no)))
+                // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
+                .child(div().w(px(38.)).flex_none().mr(px(14.)).text_right().text_size(px(11.)).text_color(gpui::rgb(0x474E72)).child(SharedString::from(no)))
                 .child(div().w(px(14.)).flex_none().text_color(mark_col).child(mark))
                 .child(div().text_color(txt_col).child(SharedString::from(d.text.clone())))
         });
@@ -422,10 +424,10 @@ impl Render for ViewerView {
             .overflow_hidden()
             .rounded(px(14.))
             .border_1()
-            .border_color(rgba(0xffffff12))
-            .bg(rgba(0x1a1b2680)) // frosted code panel
+            .border_color(rgba(RIM))
+            .bg(cola(self.config.theme.terminal.background, 0.5)) // 磨砂代码面板:#1A1B26 @ .5
             .font_family(SharedString::from(self.config.font().family.clone()))
-            .text_size(px(12.))
+            .text_size(px(12.5)) // mockup .code font-size:12.5px
             .child(
                 // header + invisible click targets aligned to the right tab chips
                 div()
