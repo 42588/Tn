@@ -82,20 +82,18 @@ fn status_color(data: &BlockBar, pal: &BarPalette) -> Rgba {
 /// `.exit`), matching the block's state + exit code.
 fn exit_chip(data: &BlockBar, pal: &BarPalette) -> Div {
     let color = status_color(data, pal);
-    let bg = Rgba { a: 0.16, ..color };
+    // mockup .exit:内联 · gap 3 · 10px · weight 680 · 状态色(无药丸底/无边)
     let chip = div()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(4.))
-        .px_2()
-        .py(px(1.))
-        .rounded(px(999.))
-        .bg(bg)
+        .gap(px(3.))
+        .text_size(px(10.))
+        .font_weight(gpui::FontWeight(680.))
         .text_color(color);
     match (data.state, data.exit) {
         (BlockState::Running, _) => chip
-            .child(crate::assets::icon("diamond", 10.).text_color(color))
+            .child(crate::assets::icon("diamond", 11.).text_color(color))
             .child(SharedString::from("运行中")),
         (BlockState::Finished, Some(0)) => {
             chip.child(crate::assets::icon("check", 11.).text_color(color))
