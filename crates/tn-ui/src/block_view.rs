@@ -159,17 +159,16 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         .flex()
         .flex_row()
         .items_center()
-        .gap_2()
-        .h(px(32.))
+        .gap(px(9.)) // mockup .bh gap 9
         .mx_2()
-        .mb_1()
-        .pl_2()
-        .pr_2()
-        .rounded(px(11.))
-        .text_size(px(11.))
-        .border_1()
-        .border_color(rgba(0xffffff12)) // glass rim
-        .bg(rgba(0xffffff0d)) // translucent card
+        .mb(px(10.)) // mockup .block margin-bottom 10
+        .py(px(8.)) // mockup .bh padding 8(上下)
+        .pl(px(14.)) // mockup .bh padding-left 14
+        .pr(px(12.)) // mockup .bh padding-right 12
+        .rounded(px(11.)) // --r-card
+        .text_size(px(12.)) // mockup .bh font-size 12
+        // mockup .block:bg 白 @ .035,无边框(去掉原 glass rim)
+        .bg(rgba(0xffffff09)) // round(.035×255)=9
         // left status stripe
         .child(div().w(px(3.)).h(px(16.)).rounded_full().bg(stripe))
         // command line (monospace, inherited from the pane root)
@@ -177,7 +176,14 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         .child(div().flex_1());
 
     if let Some(ms) = data.duration_ms {
-        row = row.child(div().text_color(pal.dim).child(SharedString::from(fmt_duration(ms))));
+        // mockup .dur:10.5 · 640 · muted
+        row = row.child(
+            div()
+                .text_size(px(10.5))
+                .font_weight(gpui::FontWeight(640.))
+                .text_color(pal.dim)
+                .child(SharedString::from(fmt_duration(ms))),
+        );
     }
     row = row.child(exit_chip(data, pal));
     if let Some(cwd) = &data.cwd {
