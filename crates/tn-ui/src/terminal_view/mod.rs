@@ -171,6 +171,10 @@ pub struct TerminalView {
     claude_accent: Rgb,
     codex_accent: Rgb,
     ui_accent: Rgb,
+    // Chrome text colors for pane headers (mockup .phead/.nm/.model use ui.*, not
+    // the terminal palette). fg-dim has no theme token → literal in header.rs.
+    ui_fg: Rgb,
+    ui_muted: Rgb,
     // Launch program (e.g. "powershell.exe") — for a clean shell label.
     program: String,
     // Cached render data + the engine generation it was built from (待优化清单
@@ -249,6 +253,8 @@ impl TerminalView {
         let claude_accent = to_rgb(config.theme.agents.claude);
         let codex_accent = to_rgb(config.theme.agents.codex);
         let ui_accent = to_rgb(config.theme.ui.accent);
+        let ui_fg = to_rgb(config.theme.ui.foreground);
+        let ui_muted = to_rgb(config.theme.ui.muted);
         let visual_bell = config.config.appearance.visual_bell;
         let audio_bell = config.config.appearance.audio_bell;
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
@@ -344,6 +350,8 @@ impl TerminalView {
             claude_accent,
             codex_accent,
             ui_accent,
+            ui_fg,
+            ui_muted,
             program: launch.program.clone(),
             render_cache: None,
             perf: PerfStats::new("pane.render"),

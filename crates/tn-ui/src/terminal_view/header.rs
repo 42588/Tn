@@ -11,7 +11,7 @@ use tn_ai::AgentKind;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, UI_SANS};
+use crate::style::{col, cola, HOVER, INSET, UI_SANS};
 
 impl TerminalView {
     /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
@@ -54,8 +54,8 @@ impl TerminalView {
                     .items_center()
                     .justify_center()
                     .text_size(px(9.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(col(self.palette.fg))
+                    .font_weight(FontWeight(760.)) // §16 .lbl weight 760
+                    .text_color(col(self.ui_fg)) // §16 .lbl color = fg
                     .child(SharedString::from(format!("{pct}%"))),
             )
     }
@@ -77,15 +77,16 @@ impl TerminalView {
         let mut who = div().flex().flex_col().child(
             div()
                 .text_size(px(13.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(col(self.palette.fg))
+                .font_weight(FontWeight(680.)) // §16 .nm weight 680
+                .text_color(col(self.ui_fg)) // §16 .nm color = fg
                 .child(SharedString::from(name)),
         );
         if let Some(m) = model {
             who = who.child(
                 div()
                     .text_size(px(11.))
-                    .text_color(col(self.palette.ansi[8]))
+                    .font_weight(FontWeight(520.)) // §16 .model weight 520
+                    .text_color(col(self.ui_muted)) // §16 .model color = muted
                     .child(SharedString::from(m)),
             );
         }
@@ -103,17 +104,17 @@ impl TerminalView {
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .gap(px(11.)) // §16 .agenthead gap 11
+            .py(px(10.)) // §16 .agenthead padding 10px 14px
+            .px(px(14.))
             .flex_none()
             .rounded_t(px(13.)) // top corners follow the pane card
             .font_family(UI_SANS) // chrome = sans, terminal = mono
-            // faint vertical agent-color wash, fading out (refraction, no glow)
+            // mockup .agenthead bg:rgba(claude,0.07) → transparent 72%(折射,无 glow)
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(cola(accent, 0.10), 0.),
-                linear_color_stop(cola(accent, 0.0), 0.78),
+                linear_color_stop(cola(accent, 0.07), 0.),
+                linear_color_stop(cola(accent, 0.0), 0.72),
             ))
             .child(avatar)
             .child(who)
@@ -127,8 +128,8 @@ impl TerminalView {
                 .child(
                     div()
                         .text_size(px(11.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(col(self.palette.ansi[8]))
+                        .font_weight(FontWeight(640.)) // §16 .tok weight 640
+                        .text_color(gpui::rgb(0xA6AFD4)) // §16 .tok color = fg-dim(无 token)
                         .child(SharedString::from(format!(
                             "{} / {}",
                             crate::workspace::human_tokens(u.context_used as u64),
@@ -139,17 +140,23 @@ impl TerminalView {
                     d.child(
                         div()
                             .text_size(px(10.5))
-                            .font_weight(FontWeight::BOLD)
-                            .text_color(col(self.palette.ansi[2]))
+                            .font_weight(FontWeight(640.)) // §16 .cost weight 640
+                            .text_color(col(self.palette.ansi[2])) // green
                             .child(SharedString::from(format!("${:.2}", u.cost_usd))),
                     )
                 });
             head = head.child(
+                // mockup .usage 药丸:gap 11 · padding 4 5 4 12 · radius 999 · bg g2(.04)
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap_2()
+                    .gap(px(11.))
+                    .py(px(4.))
+                    .pl(px(12.))
+                    .pr(px(5.))
+                    .rounded_full()
+                    .bg(rgba(INSET))
                     .child(meta)
                     .child(self.usage_ring(pct, accent)),
             );
@@ -157,10 +164,54 @@ impl TerminalView {
         head
     }
 
-    /// The per-pane header — an agent header for agent panes only. A plain shell
-    /// gets none: its own prompt already shows the cwd, so a header would just
-    /// duplicate it (and look sparse). The tab still labels the pane "pwsh".
+    /// Plain-shell pane header (mockup `.phead`): term icon + cwd + shell-name chip.
+    /// 完整复刻 mockup —— 覆盖了早先"普通 shell 极简无头"的取舍(owner 选择严格对齐)。
+    fn render_shell_header(&self) -> Div {
+        let shell = super::shell_name_of(&self.program);
+        let cwd = self.cwd();
+        let head = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(9.)) // §16 .phead gap 9
+            .h(px(36.)) // §16 .phead height 36
+            .px(px(13.)) // §16 .phead padding 0 13
+            .flex_none()
+            .rounded_t(px(13.))
+            .font_family(UI_SANS)
+            .text_size(px(11.5)) // §16 .phead 11.5
+            .font_weight(FontWeight(560.)) // §16 .phead weight 560
+            .text_color(col(self.ui_muted)) // §16 .phead color = muted
+            .child(crate::assets::icon("term", 14.).text_color(col(self.ui_accent)));
+        let head = match cwd {
+            Some(c) => head.child(
+                // mockup .phead .cwd = fg-dim(#A6AFD4 无主题 token → 字面量)
+                div()
+                    .text_color(gpui::rgb(0xA6AFD4))
+                    .child(SharedString::from(crate::workspace::short_cwd(&c))),
+            ),
+            None => head,
+        };
+        head.child(div().flex_1()) // .sp
+            .child(
+                // mockup .chip:10.5 · 560 · py2 px9 · radius999 · fg-dim · bg g3(.06)
+                div()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight(560.))
+                    .py(px(2.))
+                    .px(px(9.))
+                    .rounded_full()
+                    .text_color(gpui::rgb(0xA6AFD4))
+                    .bg(rgba(HOVER))
+                    .child(SharedString::from(shell)),
+            )
+    }
+
+    /// Per-pane header — agent header for agents, else a shell `.phead`(cwd + chip).
     pub(super) fn render_pane_header(&self) -> Option<Div> {
-        self.agent.map(|a| self.render_agent_header(a))
+        Some(match self.agent {
+            Some(a) => self.render_agent_header(a),
+            None => self.render_shell_header(),
+        })
     }
 }

@@ -83,8 +83,8 @@ pub(crate) fn human_tokens(n: u64) -> String {
     }
 }
 
-/// Short cwd for the tab badge: the last two path components (`proj/tn`).
-fn short_cwd(p: &str) -> String {
+/// Short cwd for the tab badge / shell header: last two path components (`proj/tn`).
+pub(crate) fn short_cwd(p: &str) -> String {
     let p = p.trim().replace('\\', "/");
     let parts: Vec<&str> = p.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
     match parts.len() {
