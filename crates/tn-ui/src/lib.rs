@@ -15,6 +15,7 @@ mod quick_terminal;
 mod style;
 mod terminal_view;
 mod viewer;
+mod welcome;
 mod workspace;
 
 use std::sync::Arc;
@@ -67,6 +68,11 @@ pub fn run() {
                         ..Default::default()
                     }),
                     window_background,
+                    // Open hidden, then reveal after the first frame paints (the
+                    // Workspace does this in its first `render`). Avoids the brief
+                    // transparent/blank window flash before the DX swapchain
+                    // presents its first frame.
+                    show: false,
                     ..Default::default()
                 },
                 move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),

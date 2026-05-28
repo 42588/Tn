@@ -13,6 +13,30 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 原型同步轨道:欢迎 launchpad(2026-05-29)
+
+> [`design/panels/05`](design/panels/05-states.html) 的欢迎页端口进 gpui:默认新标签/首标签 = 启动磁贴 + 快捷键提示。
+
+### 新增 (Added)
+- **欢迎 launchpad**([welcome.rs](crates/tn-ui/src/welcome.rs) `WelcomeView`):wmark + 「开一个新会话」+ **启动磁贴**
+  (发现的 profile:Claude 珊瑚 / Codex 青绿 / pwsh 蓝 / WSL 紫,spark/term 图标)+ **快捷键提示**。是与终端面板
+  同款的玻璃面板。点磁贴 `LaunchRequested(index)` → 在**当前标签**启动该 profile(welcome → pane)。
+- **新标签 = 欢迎页**:`Tab` 加 `welcome` 态;**+ / `Ctrl+Shift+T`** 与正常启动的首标签都开 launchpad(`TN_AUTOQUIT`/
+  `TN_DEMO` 下首标签仍开 pwsh,保 headless 自测)。welcome 标签的 split/resize 空操作,标签名「欢迎」。
+
+### 修复 (Fixed)
+- **关欢迎标签导致 abort**:welcome 标签的 dummy `root`/`focused` 原用 `0`,与**首个真实 pane id(0)** 撞 →
+  关欢迎标签时 `collect_leaves` 误删 pane 0 → 首标签下一帧 `panes.get(0).expect` 在 GPUI 非 unwinding 回调里
+  panic → 进程 abort。改 dummy id 为 `PaneId::MAX`(永不与真实 pane 撞)+ welcome 标签跳过 pane 回收。
+- **启动时先闪一个透明窗口**:主窗口原 `show:true` 立即显示,但 DX swapchain 首帧未呈现 → 透明/空白闪一下才出
+  界面。改 `show:false` 开窗,`Workspace` 首帧 `render` 后用 spawned 任务(等 ~40ms 首帧呈现)调 `platform::show`
+  揭示(读 HWND 在 render 内安全,`ShowWindow` 须在 update 借用**外**调,否则重入窗口过程,见坑)。`TN_AUTOQUIT`
+  下不揭示(保 headless)。
+
+### 待接 (Deferred)
+- **「最近」目录列表**:需 recent-sessions 数据源(claude/codex 会话 cwd + mtime;Claude 工程目录名编码有损),
+  单独成项,不伪造。
+
 ## [Unreleased] — 原型同步轨道:主界面 1:1 复刻(2026-05-29)
 
 > [`design/mockup.html`](design/mockup.html) 重设计后的主界面端口进 gpui,逐组件 1:1 还原。

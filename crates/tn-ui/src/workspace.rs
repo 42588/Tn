@@ -24,6 +24,7 @@ use crate::explorer::{ExplorerView, OpenFile};
 use crate::perf::PerfStats;
 use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
 use crate::viewer::ViewerView;
+use crate::welcome::{LaunchRequested, WelcomeView};
 
 type PaneId = u64;
 
@@ -337,6 +338,26 @@ fn collect_leaves(node: &Node, out: &mut Vec<PaneId>) {
 struct Tab {
     root: Node,
     focused: PaneId,
+    /// A new tab opens on the welcome launchpad (no pane yet); clicking a launch
+    /// tile spawns the pane and flips this off. While `true`, `root`/`focused`
+    /// are unused dummies and the pane-tree actions (split/resize/close) no-op.
+    welcome: bool,
+}
+
+/// Dummy pane id for a welcome tab's unused `root`/`focused`. Must never collide
+/// with a real pane id (those start at 0 and increment), or closing a welcome tab
+/// would `panes.remove` a real pane — so we use the top of the id space.
+const WELCOME_DUMMY: PaneId = PaneId::MAX;
+
+impl Tab {
+    /// A fresh welcome-launchpad tab (no pane — dummy root/focused never touched).
+    fn welcome() -> Self {
+        Tab { root: Node::Leaf(WELCOME_DUMMY), focused: WELCOME_DUMMY, welcome: true }
+    }
+    /// A tab holding a (single, to start) pane tree.
+    fn panes(root: Node, focused: PaneId) -> Self {
+        Tab { root, focused, welcome: false }
+    }
 }
 
 actions!(
@@ -434,6 +455,9 @@ pub struct Workspace {
     panes: HashMap<PaneId, Entity<TerminalView>>,
     next_id: PaneId,
     focused_init: bool,
+    /// The main window opens hidden; revealed after the first frame paints (avoids
+    /// the pre-paint transparent flash). Tracks the one-shot reveal.
+    revealed: bool,
     config: Arc<Loaded>,
     /// File explorer sidebar (left column) + whether it's shown.
     explorer: Entity<ExplorerView>,
@@ -442,6 +466,10 @@ pub struct Workspace {
     /// clicking a file in the explorer).
     viewer: Entity<ViewerView>,
     viewer_open: bool,
+    /// Welcome launchpad shown as a new tab's content (until a tile is clicked).
+    /// One shared entity (stateless chrome); its `LaunchRequested` launches into
+    /// the active tab.
+    welcome: Entity<WelcomeView>,
     /// Current git branch of the app cwd (status bar), resolved at startup.
     branch: Option<String>,
     /// Command palette (Ctrl+Shift+P) state.
@@ -482,17 +510,27 @@ impl Workspace {
         .detach();
         // Resolve launchable profiles once (config + installed WSL distros).
         let launch_profiles = discover_profiles(&config);
+        // Welcome launchpad (new-tab default): clicking a tile launches that
+        // profile into the active tab (welcome → panes).
+        let welcome = cx.new(|cx| WelcomeView::new(cx, config.clone(), launch_profiles.clone()));
+        cx.subscribe(&welcome, |ws, _welcome, ev: &LaunchRequested, cx| {
+            ws.launch_in_active_tab(ev.0, cx);
+            cx.notify();
+        })
+        .detach();
         let mut ws = Self {
             tabs: Vec::new(),
             active: 0,
             panes: HashMap::new(),
             next_id: 0,
             focused_init: false,
+            revealed: false,
             config,
             explorer,
             explorer_open: true,
             viewer,
             viewer_open: false,
+            welcome,
             branch: git_branch(),
             palette_open: false,
             palette_query: String::new(),
@@ -504,15 +542,36 @@ impl Workspace {
             palette_needs_focus: false,
             perf: PerfStats::new("workspace.render"),
         };
-        let id = ws.spawn_pane(cx);
-        ws.tabs.push(Tab {
-            root: Node::Leaf(id),
-            focused: id,
-        });
+        // First tab: the welcome launchpad on a normal launch. But the headless
+        // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
+        // (TerminalView::new spawns the self-test), so under those a pwsh pane is
+        // spawned instead — else there's no pane and the test never runs/quits.
+        if std::env::var("TN_AUTOQUIT").is_ok() || std::env::var("TN_DEMO").is_ok() {
+            let id = ws.spawn_pane(cx);
+            ws.tabs.push(Tab::panes(Node::Leaf(id), id));
+        } else {
+            ws.tabs.push(Tab::welcome());
+        }
         if std::env::var("TN_DEMO").is_ok() {
             Self::spawn_demo(cx);
         }
         ws
+    }
+
+    /// Launch the profile at `index` (welcome tile click) into the active tab,
+    /// turning a welcome tab into a pane tree.
+    fn launch_in_active_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let spec = self
+            .launch_profiles
+            .get(index)
+            .and_then(LaunchSpec::from_profile)
+            .unwrap_or_else(LaunchSpec::pwsh);
+        let id = self.spawn_pane_with(cx, spec);
+        if let Some(tab) = self.tabs.get_mut(self.active) {
+            tab.root = Node::Leaf(id);
+            tab.focused = id;
+            tab.welcome = false;
+        }
     }
 
     /// Scripted feature demo (`TN_DEMO=1`): steps through prompt → colored output
@@ -625,6 +684,9 @@ impl Workspace {
     /// Resize the focused pane by adjusting its weight along `axis`.
     fn resize_focused(&mut self, axis: Axis, delta: f32, cx: &mut Context<Self>) {
         let active = self.active;
+        if self.tabs[active].welcome {
+            return; // no panes to resize on the welcome launchpad
+        }
         let target = self.tabs[active].focused;
         if self.tabs[active].root.resize(target, axis, delta) {
             cx.notify();
@@ -779,10 +841,7 @@ impl Workspace {
         let Some(spec) = spec else { return };
         self.palette_open = false;
         let id = self.spawn_pane_with(cx, spec);
-        self.tabs.push(Tab {
-            root: Node::Leaf(id),
-            focused: id,
-        });
+        self.tabs.push(Tab::panes(Node::Leaf(id), id));
         self.active = self.tabs.len() - 1;
         self.focus_pane(id, window, cx);
     }
@@ -793,15 +852,13 @@ impl Workspace {
         self.launch_selected(window, cx);
     }
 
-    fn new_tab(&mut self, _: &NewTab, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_tab(&mut self, _: &NewTab, _window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!("ACTION new_tab");
-        let id = self.spawn_pane(cx);
-        self.tabs.push(Tab {
-            root: Node::Leaf(id),
-            focused: id,
-        });
+        // A new tab opens on the welcome launchpad (no pane yet) — a tile click
+        // there launches the chosen session into this tab.
+        self.tabs.push(Tab::welcome());
         self.active = self.tabs.len() - 1;
-        self.focus_pane(id, window, cx);
+        cx.notify();
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
@@ -829,20 +886,20 @@ impl Workspace {
         if i >= self.tabs.len() {
             return;
         }
-        let mut leaves = Vec::new();
-        collect_leaves(&self.tabs[i].root, &mut leaves);
-        for id in leaves {
-            self.panes.remove(&id); // drop the view → drop LocalPty → kill child
+        // A welcome tab has no real panes (dummy root) — don't collect/remove, or
+        // we'd drop a real pane sharing the dummy id.
+        if !self.tabs[i].welcome {
+            let mut leaves = Vec::new();
+            collect_leaves(&self.tabs[i].root, &mut leaves);
+            for id in leaves {
+                self.panes.remove(&id); // drop the view → drop LocalPty → kill child
+            }
         }
         self.tabs.remove(i);
         if self.tabs.is_empty() {
-            let id = self.spawn_pane(cx);
-            self.tabs.push(Tab {
-                root: Node::Leaf(id),
-                focused: id,
-            });
+            // Never zero tabs: closing the last one falls back to a welcome tab.
+            self.tabs.push(Tab::welcome());
             self.active = 0;
-            self.focus_pane(id, window, cx);
         } else {
             self.active = self.active.min(self.tabs.len() - 1);
             let fid = self.tabs[self.active].focused;
@@ -853,6 +910,9 @@ impl Workspace {
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!("ACTION split {}", if axis == Axis::Row { "right" } else { "down" });
+        if self.tabs[self.active].welcome {
+            return; // nothing to split on the welcome launchpad
+        }
         let new_id = self.spawn_pane(cx);
         let active = self.active;
         let target = self.tabs[active].focused;
@@ -1322,6 +1382,24 @@ impl Render for Workspace {
                 view.read(cx).focus_handle().focus(window);
             }
         }
+        // Reveal the window once, after this first frame is built (the window was
+        // opened hidden). Reading the HWND here is read-only (safe); the actual
+        // `ShowWindow` runs in a spawned task *outside* this update borrow — calling
+        // it synchronously inside a gpui callback re-enters the window proc (踩过的坑).
+        // A short timer lets the first DX frame present, so no transparent flash.
+        if !self.revealed {
+            self.revealed = true;
+            if std::env::var("TN_AUTOQUIT").is_err() {
+                if let Some(h) = crate::platform::hwnd_of(window) {
+                    let exec = cx.background_executor().clone();
+                    cx.spawn(async move |_this, _cx| {
+                        exec.timer(std::time::Duration::from_millis(40)).await;
+                        crate::platform::show(h, true);
+                    })
+                    .detach();
+                }
+            }
+        }
         // Focus the palette overlay here (its track_focus element exists this
         // frame), so ↑↓/Enter/Esc reach it instead of the terminal underneath.
         if self.palette_open && self.palette_needs_focus {
@@ -1346,6 +1424,9 @@ impl Render for Workspace {
             .iter()
             .enumerate()
             .map(|(_i, tab)| {
+                if tab.welcome {
+                    return ("欢迎".to_string(), 1, None, None); // launchpad tab
+                }
                 let pane = self.panes.get(&tab.focused);
                 let label = pane
                     .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
@@ -1633,11 +1714,16 @@ impl Render for Workspace {
             .child(
                 // No overflow_hidden: leaf panes clip their own content, so the
                 // center column lets their shadows bleed into the surrounding gaps.
+                // A welcome (new) tab shows the launchpad instead of a pane tree.
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .min_h(px(0.))
-                    .child(self.render_node(&self.tabs[active].root, focused, cx, Vec::new())),
+                    .child(if self.tabs[active].welcome {
+                        self.welcome.clone().into_any_element()
+                    } else {
+                        self.render_node(&self.tabs[active].root, focused, cx, Vec::new())
+                    }),
             )
             // File/diff viewer (right column): auto-opens on file click,
             // toggle with Ctrl+Shift+J.
