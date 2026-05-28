@@ -116,6 +116,12 @@ impl ExplorerView {
         me
     }
 
+    /// The tree's focus handle — the workspace returns focus here after Quick Look
+    /// closes (you opened the file from the list, so Esc goes back to the list).
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
     /// Re-root the tree at `root` (app menu「打开文件夹」): reset expansion +
     /// selection, then rebuild from the new folder (refreshing git status for it).
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {

@@ -925,7 +925,7 @@ impl Workspace {
     fn toggle_quick_look(&mut self, _: &ToggleQuickLook, window: &mut Window, cx: &mut Context<Self>) {
         self.quick_look_open = !self.quick_look_open;
         if !self.quick_look_open {
-            self.refocus_active(window, cx);
+            self.refocus_after_quick_look(window, cx);
         }
         cx.notify();
     }
@@ -934,6 +934,17 @@ impl Workspace {
     fn refocus_active(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let fid = self.tabs[self.active].focused;
         self.focus_pane(fid, window, cx);
+    }
+
+    /// Where focus goes after Quick Look closes: back to the **file list** (you
+    /// opened the file from there, so Esc returns to browsing it) when the explorer
+    /// is open, otherwise the active pane.
+    fn refocus_after_quick_look(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.explorer_open {
+            self.explorer.read(cx).focus_handle().focus(window);
+        } else {
+            self.refocus_active(window, cx);
+        }
     }
 
     fn palette_match_count(&self) -> usize {
@@ -2156,10 +2167,10 @@ impl Render for Workspace {
             self.layout_focus.focus(window);
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
-        // active pane now (the event callback had no `window`).
+        // file list (or active pane) now (the event callback had no `window`).
         if self.ql_refocus_pane {
             self.ql_refocus_pane = false;
-            self.refocus_active(window, cx);
+            self.refocus_after_quick_look(window, cx);
         }
 
         // Time the chrome build (待优化清单 §2.2) when TN_PERF is on. Panes are
@@ -2168,6 +2179,20 @@ impl Render for Workspace {
         let perf_t0 = self.perf.enabled().then(Instant::now);
 
         let active = self.active;
+        // Make `focused` authoritative from **actual gpui focus**: if any pane in the
+        // active tab currently holds keyboard focus, that's the selected pane. Fixes
+        // the focus border + `新会话` split target tracking the pane you clicked into
+        // (clicking a pane focuses its `track_focus` element; this reflects it back).
+        // No-op when an overlay / explorer holds focus (keep the last pane).
+        if !self.tabs[active].welcome {
+            let mut leaves = Vec::new();
+            collect_leaves(&self.tabs[active].root, &mut leaves);
+            if let Some(id) = leaves.into_iter().find(|id| {
+                self.panes.get(id).is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
+            }) {
+                self.tabs[active].focused = id;
+            }
+        }
         let focused = self.tabs[active].focused;
         let ui = &self.config.theme.ui;
 
