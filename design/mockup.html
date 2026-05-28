@@ -151,7 +151,7 @@
     background:var(--g3); box-shadow:0 1px 0 var(--sheen) inset; }
 
   /* ===================== file explorer ===================== */
-  .sidebar{ flex:0.6; }
+  .sidebar{ flex:0 0 224px; }  /* 定宽:proportional flex 在大窗会把侧栏撑胖,改固定 */
   .tree{ flex:1; padding:6px; font-size:12.5px; overflow:auto; }
   .tnode{ display:flex; align-items:center; gap:7px; height:26px; padding:0 10px; border-radius:8px;
     color:var(--fg-dim); white-space:nowrap; position:relative; }
@@ -213,6 +213,27 @@
   .exit{ display:flex; align-items:center; gap:3px; font-size:10px; color:var(--green); font-weight:680;
     background:rgba(158,206,106,0.15); border-radius:var(--r-pill); padding:1px 8px 1px 6px; }
   .exit .i{ width:11px; height:11px; }
+
+  /* ===================== agent 活动栏(右栏:状态 + 本次改动卡;数据 = git/JSONL,不解析终端正文)===================== */
+  .abody{ flex:1; display:flex; min-height:0; }
+  .abody .body{ min-width:0; }
+  .arail{ flex:0 0 212px; display:flex; flex-direction:column; gap:11px; padding:12px 12px 14px; min-height:0; overflow:auto;
+    border-left:1px solid rgba(255,255,255,0.05); }
+  .arail .astat{ display:flex; align-items:center; gap:7px; font-size:11px; color:var(--fg-dim); }
+  .arail .astat .dot{ width:7px; height:7px; border-radius:50%; background:var(--claude); flex:0 0 auto; }
+  .arail .astat .t{ margin-left:auto; font-family:var(--num); font-size:10.5px; color:var(--muted); }
+  .arail .alabel{ font-size:10px; font-weight:680; color:var(--muted); letter-spacing:.6px; padding:2px 2px 0; }
+  .arail .achip{ border-radius:var(--r-card); background:rgba(255,255,255,0.04); padding:8px 10px; display:flex; flex-direction:column; gap:6px; }
+  .arail .achip.cur{ background:rgba(122,162,247,0.06); box-shadow:inset 0 0 0 1px rgba(122,162,247,0.22); }
+  .arail .afile{ display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); }
+  .arail .afile .i{ width:13px; height:13px; color:var(--muted); flex:0 0 auto; }
+  .arail .afile .nm{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .arail .afile .pm{ margin-left:auto; display:flex; gap:5px; font-family:var(--num); font-size:10px; font-weight:680; flex:0 0 auto; }
+  .arail .afile .pm .ad{ color:var(--green); } .arail .afile .pm .dl{ color:var(--red); }
+  .arail .adiff{ font-family:var(--mono); font-size:10px; line-height:1.55; }
+  .arail .adiff div{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .arail .adiff .a{ color:var(--green); } .arail .adiff .d{ color:var(--red); }
+  .arail .ahint{ font-size:10px; color:var(--faint); padding:0 2px; }
 
   /* ===================== file header + code(速览浮层复用;不再有常驻查看器列)===================== */
   .vh{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto; font-size:11.5px; font-weight:560;
@@ -306,7 +327,7 @@
       </div>
 
       <div class="col" style="flex:2.8">
-        <div class="pane active col" style="flex:2.5">
+        <div class="pane active col" style="flex:2.3">
           <div class="agenthead">
             <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
             <div class="who">
@@ -329,20 +350,38 @@
               </div>
             </div>
           </div>
-          <div class="body">
-            <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
-            <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
-            <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
-            <div class="row">&nbsp;</div>
-            <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧 diff),</div>
-            <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
-            <div class="row">&nbsp;</div>
-            <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
-            <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
+          <div class="abody">
+            <div class="body">
+              <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
+              <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
+              <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
+              <div class="row">&nbsp;</div>
+              <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧改动),</div>
+              <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
+              <div class="row">&nbsp;</div>
+              <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
+              <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
+            </div>
+            <div class="arail">
+              <div class="astat"><span class="dot"></span> 运行中 · Update <span class="t">1m12s</span></div>
+              <div class="alabel">本次改动</div>
+              <div class="achip cur">
+                <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">element.rs</span><span class="pm"><span class="ad">+3</span><span class="dl">−1</span></span></div>
+                <div class="adiff">
+                  <div class="d">- win.paint_text(cell.ch)</div>
+                  <div class="a">+ let g = atlas.glyph(ch)</div>
+                  <div class="a">+ quads.push(Quad::…)</div>
+                </div>
+              </div>
+              <div class="achip">
+                <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">lib.rs</span><span class="pm"><span class="ad">+1</span></span></div>
+              </div>
+              <div class="ahint">点卡片 = Space 速览全 diff</div>
+            </div>
           </div>
         </div>
 
-        <div class="pane col" style="flex:0.85">
+        <div class="pane col" style="flex:1">
           <div class="phead"><svg class="i" style="color:var(--accent)"><use href="#i-term"/></svg><span class="cwd">~/proj/<b>tn</b></span><span class="sp"></span><span class="chip">pwsh 7.4</span></div>
           <div class="body">
             <div class="block">

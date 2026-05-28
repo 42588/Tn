@@ -159,7 +159,7 @@ body {
   background:var(--g3); }
 
 /* ===================== file explorer ===================== */
-.sidebar{ flex:0.6; }
+.sidebar{ flex:0 0 224px; }  /* 定宽:proportional flex 在大窗会把侧栏撑胖,改固定 */
 .tree{ flex:1; padding:6px; font-size:12.5px; overflow:auto; }
 .tnode{ display:flex; align-items:center; gap:7px; height:26px; padding:0 10px; border-radius:8px;
   color:var(--fg-dim); white-space:nowrap; position:relative; }
@@ -198,6 +198,28 @@ body {
 .ring svg{ transform:rotate(-90deg); }
 .ring .lbl{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   font-family:var(--num); font-size:9px; font-weight:760; color:var(--fg); }
+
+/* ===================== agent 活动栏(右栏:状态 + 本次改动卡;数据 = git/JSONL,不解析终端正文)===================== */
+/* 填 agent 大区的空白:agent body = 终端流(flex) | 活动栏(定宽)。改动卡数据来自 git diff + 已解析 JSONL,不碰终端 TUI(不复活脆弱解析) */
+.abody{ flex:1; display:flex; min-height:0; }
+.abody .body{ min-width:0; }
+.arail{ flex:0 0 212px; display:flex; flex-direction:column; gap:11px; padding:12px 12px 14px; min-height:0; overflow:auto;
+  border-left:1px solid rgba(255,255,255,0.05); }
+.arail .astat{ display:flex; align-items:center; gap:7px; font-size:11px; color:var(--fg-dim); }
+.arail .astat .dot{ width:7px; height:7px; border-radius:50%; background:var(--claude); flex:0 0 auto; }
+.arail .astat .t{ margin-left:auto; font-family:var(--num); font-size:10.5px; color:var(--muted); }
+.arail .alabel{ font-size:10px; font-weight:680; color:var(--muted); letter-spacing:.6px; padding:2px 2px 0; }
+.arail .achip{ border-radius:var(--r-card); background:rgba(255,255,255,0.04); padding:8px 10px; display:flex; flex-direction:column; gap:6px; }
+.arail .achip.cur{ background:rgba(122,162,247,0.06); box-shadow:inset 0 0 0 1px rgba(122,162,247,0.22); }
+.arail .afile{ display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11.5px; color:var(--fg-dim); }
+.arail .afile .i{ width:13px; height:13px; color:var(--muted); flex:0 0 auto; }
+.arail .afile .nm{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.arail .afile .pm{ margin-left:auto; display:flex; gap:5px; font-family:var(--num); font-size:10px; font-weight:680; flex:0 0 auto; }
+.arail .afile .pm .ad{ color:var(--green); } .arail .afile .pm .dl{ color:var(--red); }
+.arail .adiff{ font-family:var(--mono); font-size:10px; line-height:1.55; }
+.arail .adiff div{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.arail .adiff .a{ color:var(--green); } .arail .adiff .d{ color:var(--red); }
+.arail .ahint{ font-size:10px; color:var(--faint); padding:0 2px; }
 
 /* ===================== terminal / shell(agent 正文复用同一套终端样式)===================== */
 .body{ flex:1; padding:11px 15px; font-family:var(--mono); font-size:12.5px; line-height:1.55; overflow:auto;

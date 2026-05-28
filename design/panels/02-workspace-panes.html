@@ -12,6 +12,7 @@
   <symbol id="i-diamond" viewBox="0 0 24 24"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></symbol>
   <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
   <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/><path d="M13 3v5.5h5.5"/></symbol>
 </defs></svg>
 
 <div class="stage">
@@ -19,7 +20,7 @@
   <p class="lead">面板 = g1 磨砂玻璃 + specular 柔光 + 浮起投影(焦点暖描边)。Agent 面板挂头部 + 用量环;Shell 面板挂 cwd 头 + 终端正文 + block 卡。gpui:<code>terminal_view/</code>(<code>header.rs</code> / <code>block_view.rs</code>)。</p>
 
   <div class="demo">
-    <div class="label">Agent 面板(Claude · 焦点态:可靠头部 + 用量环 + 终端正文 CLI 原样) <span class="id">.pane.active / .agenthead / .body</span><span class="impl">terminal_view::header render_agent_header + 终端</span></div>
+    <div class="label">Agent 面板(可靠头部 + 用量环 + 终端正文 CLI 原样 + 右侧活动栏/改动卡) <span class="id">.pane.active / .agenthead / .abody / .arail</span><span class="impl">render_agent_header + 终端 + activity_rail(git/JSONL,不解析终端)</span></div>
     <div class="canvas tall">
       <div class="pane active col">
         <div class="agenthead">
@@ -37,16 +38,34 @@
             </div>
           </div>
         </div>
-        <div class="body">
-          <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
-          <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
-          <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
-          <div class="row">&nbsp;</div>
-          <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧 diff),</div>
-          <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
-          <div class="row">&nbsp;</div>
-          <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
-          <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
+        <div class="abody">
+          <div class="body">
+            <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
+            <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
+            <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
+            <div class="row">&nbsp;</div>
+            <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧改动),</div>
+            <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
+            <div class="row">&nbsp;</div>
+            <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
+            <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
+          </div>
+          <div class="arail">
+            <div class="astat"><span class="dot"></span> 运行中 · Update <span class="t">1m12s</span></div>
+            <div class="alabel">本次改动</div>
+            <div class="achip cur">
+              <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">element.rs</span><span class="pm"><span class="ad">+3</span><span class="dl">−1</span></span></div>
+              <div class="adiff">
+                <div class="d">- win.paint_text(cell.ch)</div>
+                <div class="a">+ let g = atlas.glyph(ch)</div>
+                <div class="a">+ quads.push(Quad::…)</div>
+              </div>
+            </div>
+            <div class="achip">
+              <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">lib.rs</span><span class="pm"><span class="ad">+1</span></span></div>
+            </div>
+            <div class="ahint">点卡片 = Space 速览全 diff</div>
+          </div>
         </div>
       </div>
     </div>
