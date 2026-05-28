@@ -324,6 +324,12 @@ impl QuickLook {
         self.find_open = false;
     }
 
+    /// Open `path` straight into the editor (app menu「设置」opens config.toml here).
+    pub fn open_for_edit(&mut self, path: PathBuf) {
+        self.open(path);
+        self.enter_edit();
+    }
+
     /// Recompute `diff` if stale — called only when the Diff tab is shown (keeps the
     /// blocking `git diff` off the open/navigation hot path). Bounded + non-flashing
     /// inside `compute_diff`.

@@ -495,6 +495,9 @@ pub struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
     panes: HashMap<PaneId, Entity<TerminalView>>,
+    /// Each live pane's launch spec — lets `打开文件夹` know which panes are plain
+    /// local shells (safe to `cd`) and (later) lets layouts re-spawn panes.
+    pane_specs: HashMap<PaneId, LaunchSpec>,
     next_id: PaneId,
     focused_init: bool,
     /// The main window opens hidden; revealed after the first frame paints (avoids
@@ -604,6 +607,7 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             panes: HashMap::new(),
+            pane_specs: HashMap::new(),
             next_id: 0,
             focused_init: false,
             revealed: false,
@@ -836,7 +840,7 @@ impl Workspace {
 
     fn spawn_pane_with(&mut self, cx: &mut Context<Self>, launch: LaunchSpec) -> PaneId {
         let config = self.config.clone();
-        let view = cx.new(|cx| TerminalView::new(cx, config, launch));
+        let view = cx.new(|cx| TerminalView::new(cx, config, launch.clone()));
         // Repaint the status bar when this pane's usage changes (only on change,
         // not on every terminal frame — that's why TerminalView emits an event
         // rather than relying on plain `notify`).
@@ -845,7 +849,32 @@ impl Workspace {
         let id = self.next_id;
         self.next_id += 1;
         self.panes.insert(id, view);
+        self.pane_specs.insert(id, launch);
         id
+    }
+
+    /// Send `cd <dir>` to every **plain local shell** pane (`打开文件夹`). Agents
+    /// (Claude/Codex), WSL and SSH panes are skipped — they don't take a host `cd`.
+    fn cd_shells_to(&self, dir: &std::path::Path, cx: &Context<Self>) {
+        let path = dir.to_string_lossy().to_string();
+        for (id, view) in &self.panes {
+            let Some(spec) = self.pane_specs.get(id) else { continue };
+            let prog = spec.program.to_ascii_lowercase();
+            let is_plain_shell = spec.agent.is_none()
+                && spec.ssh.is_none()
+                && (prog.contains("powershell") || prog.contains("pwsh") || prog.contains("cmd"));
+            if !is_plain_shell {
+                continue;
+            }
+            // cmd needs `/d` to switch drives; pwsh's `cd`(Set-Location) changes
+            // drive on its own. Quote the path for spaces.
+            let line = if prog.contains("cmd") {
+                format!("cd /d \"{path}\"\r")
+            } else {
+                format!("cd \"{path}\"\r")
+            };
+            view.read(cx).send_bytes(line.as_bytes());
+        }
     }
 
     fn focus_pane(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
@@ -1483,13 +1512,23 @@ impl Workspace {
                 })))
                 .child(mi("sidebar", "文件浏览器", Some("⌃⇧B"), false, Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx))))
                 .child(sep())
-                .child(mi("sliders", "设置", None, false, Box::new(|_t, _w, cx| {
-                    if let Some(p) = tn_config::config_path() { cx.open_with_system(&p); }
+                // 设置 → open config.toml in our own Quick Look editor (Ctrl+S to save).
+                .child(mi("sliders", "设置", None, false, Box::new(|this, _w, cx| {
+                    if let Some(p) = tn_config::config_path() {
+                        this.quick_look.update(cx, |v, cx| {
+                            v.open_for_edit(p);
+                            cx.notify();
+                        });
+                        this.quick_look_open = true;
+                    }
                 })))
-                .child(mi("moon", "主题…", None, false, Box::new(|_t, _w, cx| {
-                    if let Some(p) = tn_config::themes_dir() { cx.reveal_path(&p); }
-                })))
-                .child(mi("refresh", "重载配置", Some("⌃⇧R"), false, Box::new(|this, w, cx| this.reload_config(&ReloadConfig, w, cx))))
+                // 主题 — only one theme for now (the default). A real picker comes
+                // when there is more than one theme.
+                .child(mi("moon", "主题 · Tn Dark", None, false, Box::new(|_t, _w, _cx| {})))
+                // 重载配置 = panic button: reset config files to defaults + reload
+                // (destructive). No ⌃⇧R keycap — that shortcut is the non-destructive
+                // hot-reload (reads your edited config); this menu item RESETS.
+                .child(mi("refresh", "重载配置", None, false, Box::new(|this, w, cx| this.reset_config(w, cx))))
                 .child(sep())
                 .child(mi("info", "关于 Tn", None, false, Box::new(|_t, _w, cx| {
                     if let Ok(p) = std::env::current_dir() {
@@ -1519,7 +1558,8 @@ impl Workspace {
         )
     }
 
-    /// App menu「打开文件夹」: native folder picker → re-root the explorer tree.
+    /// App menu「打开文件夹」: native folder picker → re-root the explorer tree
+    /// **and** `cd` every plain shell pane into the chosen folder.
     fn menu_open_folder(&mut self, cx: &mut Context<Self>) {
         let recv = cx.prompt_for_paths(PathPromptOptions {
             files: false,
@@ -1531,15 +1571,36 @@ impl Workspace {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             if let Ok(Ok(Some(paths))) = recv.await {
                 if let Some(p) = paths.into_iter().next() {
-                    let _ = explorer.update(cx, |e, cx| e.set_root(p, cx));
+                    let _ = explorer.update(cx, |e, cx| e.set_root(p.clone(), cx));
                     let _ = this.update(cx, |ws, cx| {
                         ws.explorer_open = true;
+                        ws.cd_shells_to(&p, cx);
                         cx.notify();
                     });
                 }
             }
         })
         .detach();
+    }
+
+    /// `重载配置`(app menu, panic button): overwrite the on-disk `config.toml` +
+    /// `themes/tn-dark.toml` with the built-in defaults, then reload — recovering
+    /// from a broken hand-edited config. **Destructive**: discards user edits.
+    fn reset_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(p) = tn_config::config_path() {
+            if let Err(e) = std::fs::write(&p, tn_config::DEFAULT_CONFIG_TOML) {
+                tracing::error!(path = %p.display(), error = %e, "reset_config: write config.toml failed");
+            }
+        }
+        if let Some(dir) = tn_config::themes_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let tp = dir.join("tn-dark.toml");
+            if let Err(e) = std::fs::write(&tp, tn_config::TN_DARK_TOML) {
+                tracing::error!(path = %tp.display(), error = %e, "reset_config: write theme failed");
+            }
+        }
+        tracing::info!("reset config to defaults");
+        self.reload_config(&ReloadConfig, window, cx);
     }
 
     /// The command-palette overlay (M4), or `None` when closed: a dim scrim +

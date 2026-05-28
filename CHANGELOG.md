@@ -13,6 +13,27 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — app 菜单各项接真实行为(2026-05-29)
+
+> 按 owner 重新定义 app 菜单各项的行为(原先多为"打开/显示"类占位,现接成真实功能)。
+
+### 变更 (Changed)
+- **打开文件夹…**:文件夹选择器 → 文件树重定根(`explorer::set_root`)**+ 把所有「纯本地 shell」窗格 `cd` 进该目录**
+  (`cd_shells_to`:遍历窗格,按 `pane_specs` 跳过 Claude/Codex/WSL/SSH——它们改不了宿主 cwd;cmd 用 `cd /d`、pwsh 用 `cd`)。
+- **设置**:改为在**我们自己的 Quick Look 编辑器**里打开 `config.toml`(`QuickLook::open_for_edit`,`Ctrl+S` 存盘),
+  不再丢给系统默认程序。
+- **重载配置**:改为**还原默认(panic button)**——把磁盘上的 `config.toml` + `themes/tn-dark.toml` **覆盖为内置默认**
+  再重载,用于从手改坏的配置里恢复(`reset_config`,**破坏性**:丢弃用户改动)。**菜单项不再标 `⌃⇧R`**——那个快捷键
+  仍是**非破坏性**的热重载(读取你当前的 config),与这个"重置"区分。
+- **主题**:暂时只有一个选项 = 当前默认主题(显示「主题 · Tn Dark」,点击 no-op);多主题时再做真正的选择器。
+- **文件浏览器**:维持原样(只开/关文件列表窗格)。
+- 新增 `Workspace::pane_specs`(每个活动窗格的 `LaunchSpec`),供「打开文件夹」判断哪些是可 `cd` 的纯 shell(后续布局复用)。
+
+### 待接 (Deferred)
+- **「布局」**(替换「在资源管理器中显示」):保存 / 加载 / 删除布局 + 7 个槽位。owner 已定:布局 = **当前标签的分屏结构 +
+  各窗格启动器**,加载时**替换本标签**(运行中会话无法序列化,只能按结构重新拉起启动器)。需给 tn-ui 加序列化(serde)+
+  槽位持久化 + 7 槽 UI —— 单独成块下一步做。
+
 ## [Unreleased] — 新会话=分屏启动器 + Quick Look 焦点修复(2026-05-29)
 
 ### 修复 (Fixed)
