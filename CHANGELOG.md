@@ -38,6 +38,22 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **浮层太大**:四边留白加大(top 70 / bottom 60 / right 64 / left 锚 explorer 右缘)+ `max_w 880` 宽屏封顶 →
   从近铺满改成**浮起的卡片**(原型那种比例),贴树左缘锚定不被拉过宽。
 
+### 交互 (Added)
+- **Quick Look 全套键盘交互**(原型 03 的速览编辑模型):
+  - **文件树键盘 nav**([explorer.rs](crates/tn-ui/src/explorer.rs)):focus-on-click + `↑↓` 移选中 +
+    `Space`/`Enter` 开 Quick Look(目录则展开);`select_adjacent_file` 供浮层换文件。
+  - **预览态**(焦点在浮层):`↑↓` 换文件实时跟随(发 `QuickLookEvent::Nav` → workspace 调
+    `select_adjacent_file` 移树选中 + `open`)· `⇥` 切 Diff/File · `Esc`/`Space` 收起(发 `Close` →
+    workspace 焦点还终端)· 开浮层自动抢焦点(`needs_focus` 在 render 里聚焦)。
+  - **编辑态 = 自绘小编辑器**:`Enter` 进编辑;打字插入(读 `key_char`,多字节安全)/ Backspace / Delete /
+    Enter 拆行 / Tab→空格 / 方向键·Home·End·PgUp·Dn 移光标 / **`Ctrl+S` 写盘**(写后刷新 File+Diff)/
+    `Esc` 回预览。光标在虚拟化行内按 col 切 `[前][caret][后]` 渲染;`ROW_H` 固定行高保证 `uniform_list`
+    一致 + caret 对齐。缓冲逻辑抽成纯 `op_*` 自由函数,**headless 单测 6 条**(多字节/拆并行/列钳)。
+- 单测 33 → **39**。
+
+### 待接 (Deferred)
+- **编辑器增量**(非阻塞):选区 + 复制粘贴、撤销/重做、鼠标点位、查找替换;编辑态语法高亮(当前纯文本 + caret)。
+
 ### 待接 (Deferred)
 - **键盘两态 + 编辑**:prototype 的 `Space` 开 / `↑↓` 换文件实时跟随 / `Enter` 进编辑态 / 方向键归编辑器 /
   `Ctrl+S` 保存 —— 需 explorer 键盘焦点 + 可编辑文本缓冲,**编辑写盘有风险**,按视觉先行轨道延后(同活动栏先例)。

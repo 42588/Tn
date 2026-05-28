@@ -20,7 +20,8 @@ use std::sync::Arc;
 
 use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, Context,
-    FocusHandle, MouseButton, Rgba, SharedString, UniformListScrollHandle,
+    FocusHandle, KeyDownEvent, MouseButton, Rgba, ScrollStrategy, SharedString,
+    UniformListScrollHandle, Window,
 };
 use tn_config::Loaded;
 
@@ -155,6 +156,15 @@ struct DiffLine {
     text: String,
 }
 
+/// Emitted to the workspace for the few cross-entity needs (keyboard focus lives
+/// on the overlay while it's open; these are the things it can't do alone).
+pub enum QuickLookEvent {
+    /// `↑↓` preview nav: move to the prev(-1)/next(+1) **file** in the tree.
+    Nav(i32),
+    /// `Esc`/`Space` in preview: close the overlay (give space back to the terminal).
+    Close,
+}
+
 pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
@@ -164,8 +174,20 @@ pub struct QuickLook {
     file_lines: Rc<Vec<String>>,
     file_truncated: bool,
     diff: Rc<Vec<DiffLine>>,
+    /// Edit state (our own small modeless editor — see §16 / 架构蓝图 §8 ①).
+    editing: bool,
+    /// Editable buffer (copied from `file_lines` on entering edit; `Rc` so the
+    /// `'static` render closure captures it cheaply, `make_mut` on each edit).
+    buf: Rc<Vec<String>>,
+    /// Cursor as (row, char-col).
+    cursor: (usize, usize),
+    /// Unsaved edits since the last write (drives the "编辑中 ●" badge).
+    dirty: bool,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
+    /// Grab focus in the next render (focusing in an event/open callback doesn't
+    /// land — the overlay isn't rendered yet; see 踩过的坑).
+    needs_focus: bool,
     focus_handle: FocusHandle,
 }
 
@@ -180,7 +202,12 @@ impl QuickLook {
             file_lines: Rc::new(Vec::new()),
             file_truncated: false,
             diff: Rc::new(Vec::new()),
+            editing: false,
+            buf: Rc::new(Vec::new()),
+            cursor: (0, 0),
+            dirty: false,
             scroll: UniformListScrollHandle::default(),
+            needs_focus: false,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -216,16 +243,152 @@ impl QuickLook {
         Some((name, lang))
     }
 
-    /// Open `path`: read its text + compute its git diff, default to the File tab.
+    /// Open `path`: read its text + compute its git diff, default to the File tab
+    /// (preview). Always (re)grabs focus so keys route to the overlay.
     pub fn open(&mut self, path: PathBuf) {
         self.path = Some(path.clone());
         self.tab = Tab::File;
+        self.editing = false;
+        self.dirty = false;
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let all: Vec<String> = text.lines().map(str::to_string).collect();
         self.file_truncated = all.len() > MAX_LINES;
         self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
         self.diff = Rc::new(self.compute_diff(&path));
         self.scroll = UniformListScrollHandle::default(); // new file → scroll to top
+        self.needs_focus = true;
+    }
+
+    /// Enter edit mode: copy the file into the editable buffer, cursor at (0,0).
+    fn enter_edit(&mut self) {
+        self.buf = self.file_lines.clone();
+        if self.buf.is_empty() {
+            Rc::make_mut(&mut self.buf).push(String::new());
+        }
+        self.cursor = (0, 0);
+        self.editing = true;
+        self.dirty = false;
+    }
+
+    /// Write the edit buffer back to disk, then refresh the preview + diff.
+    fn save(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.path.clone() else { return };
+        let joined = self.buf.join("\n");
+        let content = if joined.is_empty() { joined } else { format!("{joined}\n") };
+        match std::fs::write(&path, content) {
+            Ok(()) => {
+                self.dirty = false;
+                self.file_lines = self.buf.clone();
+                self.diff = Rc::new(self.compute_diff(&path));
+                tracing::info!(path = %path.display(), "quick look saved");
+            }
+            Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
+        }
+        cx.notify();
+    }
+
+    // ── editor ops (single cursor; selection / undo / paste are 后续增量) ──
+    // The buffer math lives in the pure `op_*` free fns below (unit-tested); these
+    // wrappers just `make_mut` the Rc, run the op, and flag `dirty` when it changed.
+
+    fn insert_str(&mut self, s: &str) {
+        op_insert(Rc::make_mut(&mut self.buf), &mut self.cursor, s);
+        self.dirty = true;
+    }
+
+    fn newline(&mut self) {
+        op_newline(Rc::make_mut(&mut self.buf), &mut self.cursor);
+        self.dirty = true;
+    }
+
+    fn backspace(&mut self) {
+        self.dirty |= op_backspace(Rc::make_mut(&mut self.buf), &mut self.cursor);
+    }
+
+    fn delete_forward(&mut self) {
+        self.dirty |= op_delete(Rc::make_mut(&mut self.buf), &mut self.cursor);
+    }
+
+    fn move_cursor(&mut self, key: &str) {
+        op_move(&self.buf, &mut self.cursor, key);
+    }
+
+    fn page(&mut self, dir: i32) {
+        op_page(&self.buf, &mut self.cursor, dir);
+    }
+
+    /// Keyboard while the overlay is focused. Edit mode → our editor; preview mode
+    /// → nav (`↑↓` file / `⇥` tab / `Enter` edit / `Esc`·`Space` close).
+    fn on_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let ks = &ev.keystroke;
+        let m = &ks.modifiers;
+        let key = ks.key.as_str();
+        if self.editing {
+            // Ctrl/Cmd combos: only handle Ctrl+S(ave); let the rest bubble (e.g.
+            // Ctrl+Shift+J to close from the workspace).
+            if m.control || m.platform {
+                if key == "s" && !m.alt {
+                    self.save(cx);
+                    cx.stop_propagation();
+                }
+                return;
+            }
+            if m.alt {
+                return;
+            }
+            let mut handled = true;
+            match key {
+                "escape" => self.editing = false, // exit edit → preview (stay focused)
+                "backspace" => self.backspace(),
+                "delete" => self.delete_forward(),
+                "enter" => self.newline(),
+                "tab" => self.insert_str("    "),
+                "left" | "right" | "up" | "down" | "home" | "end" => self.move_cursor(key),
+                "pageup" => self.page(-1),
+                "pagedown" => self.page(1),
+                _ => match ks.key_char.as_ref().filter(|s| !s.is_empty()) {
+                    Some(ch) => self.insert_str(ch),
+                    None => handled = false,
+                },
+            }
+            if handled {
+                if self.editing {
+                    self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                }
+                cx.stop_propagation();
+                cx.notify();
+            }
+        } else {
+            if m.control || m.alt || m.platform {
+                return;
+            }
+            match key {
+                "up" => {
+                    cx.emit(QuickLookEvent::Nav(-1));
+                    cx.stop_propagation();
+                }
+                "down" => {
+                    cx.emit(QuickLookEvent::Nav(1));
+                    cx.stop_propagation();
+                }
+                "tab" => {
+                    self.tab = if self.tab == Tab::File { Tab::Diff } else { Tab::File };
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "enter" => {
+                    self.enter_edit();
+                    self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "escape" | "space" => {
+                    cx.emit(QuickLookEvent::Close);
+                    cx.stop_propagation();
+                }
+                _ => {}
+            }
+        }
     }
 
     /// `git diff` for `path`, parsed into renderable lines (tracking new-file
@@ -300,6 +463,11 @@ fn tint_color(config: &Loaded, t: Tint) -> Rgba {
     }
 }
 
+/// Fixed code-row height (≈ 12.5px × 1.62 line-height). Explicit so every row is
+/// **uniform** — required by `uniform_list` (it measures row 0 and assumes the
+/// rest match) and keeps the edit caret aligned regardless of which row it's on.
+const ROW_H: f32 = 20.0;
+
 /// One code row (`.cl`): a faint line-number gutter (`.ln`, width 38, mr 14)
 /// + a marker column (`.mk`, width 14) + the tinted source. Free fn so the
 /// `'static` uniform_list closure can build rows without borrowing the view.
@@ -307,6 +475,8 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
     div()
         .flex()
         .flex_row()
+        .items_center()
+        .h(px(ROW_H)) // uniform height (see ROW_H)
         .pr(px(12.)) // mockup .cl padding-right 12
         // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
         .child(
@@ -322,6 +492,153 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
         // mockup .cl .mk:width 14 居中
         .child(div().w(px(14.)).flex_none().text_center().text_color(mark_col).child(mark))
         .child(div().flex().flex_row().children(spans))
+}
+
+/// Char index → byte offset within `line` (cursor cols are char-based).
+fn char_to_byte(line: &str, col: usize) -> usize {
+    line.char_indices().nth(col).map(|(b, _)| b).unwrap_or(line.len())
+}
+
+/// Char length of buffer line `i` (0 if out of range).
+fn line_chars(buf: &[String], i: usize) -> usize {
+    buf.get(i).map(|l| l.chars().count()).unwrap_or(0)
+}
+
+// ── pure editor ops over (buffer, cursor) — unit-tested headless (no gpui) ──
+
+/// Insert `s` at the cursor (no newlines), advancing the cursor past it.
+fn op_insert(buf: &mut Vec<String>, cur: &mut (usize, usize), s: &str) {
+    if buf.is_empty() {
+        buf.push(String::new());
+    }
+    let (r, c) = *cur;
+    let byte = char_to_byte(&buf[r], c);
+    buf[r].insert_str(byte, s);
+    cur.1 = c + s.chars().count();
+}
+
+/// Split the line at the cursor → new line; cursor to its start.
+fn op_newline(buf: &mut Vec<String>, cur: &mut (usize, usize)) {
+    if buf.is_empty() {
+        buf.push(String::new());
+    }
+    let (r, c) = *cur;
+    let byte = char_to_byte(&buf[r], c);
+    let tail = buf[r].split_off(byte);
+    buf.insert(r + 1, tail);
+    *cur = (r + 1, 0);
+}
+
+/// Delete the char before the cursor (or merge with the previous line). Returns
+/// whether the buffer changed.
+fn op_backspace(buf: &mut Vec<String>, cur: &mut (usize, usize)) -> bool {
+    let (r, c) = *cur;
+    if c > 0 {
+        let b0 = char_to_byte(&buf[r], c - 1);
+        let b1 = char_to_byte(&buf[r], c);
+        buf[r].replace_range(b0..b1, "");
+        cur.1 = c - 1;
+        true
+    } else if r > 0 {
+        let line = buf.remove(r);
+        let prev_len = buf[r - 1].chars().count();
+        buf[r - 1].push_str(&line);
+        *cur = (r - 1, prev_len);
+        true
+    } else {
+        false
+    }
+}
+
+/// Delete the char at the cursor (or join the next line). Returns whether changed.
+fn op_delete(buf: &mut Vec<String>, cur: &mut (usize, usize)) -> bool {
+    let (r, c) = *cur;
+    let len = buf.get(r).map(|l| l.chars().count()).unwrap_or(0);
+    if c < len {
+        let b0 = char_to_byte(&buf[r], c);
+        let b1 = char_to_byte(&buf[r], c + 1);
+        buf[r].replace_range(b0..b1, "");
+        true
+    } else if r + 1 < buf.len() {
+        let next = buf.remove(r + 1);
+        buf[r].push_str(&next);
+        true
+    } else {
+        false
+    }
+}
+
+/// Move the cursor for an arrow / home / end key (clamps to line/buffer bounds).
+fn op_move(buf: &[String], cur: &mut (usize, usize), key: &str) {
+    let (r, c) = *cur;
+    match key {
+        "left" => {
+            if c > 0 {
+                cur.1 = c - 1;
+            } else if r > 0 {
+                *cur = (r - 1, line_chars(buf, r - 1));
+            }
+        }
+        "right" => {
+            if c < line_chars(buf, r) {
+                cur.1 = c + 1;
+            } else if r + 1 < buf.len() {
+                *cur = (r + 1, 0);
+            }
+        }
+        "up" => {
+            if r > 0 {
+                *cur = (r - 1, c.min(line_chars(buf, r - 1)));
+            }
+        }
+        "down" => {
+            if r + 1 < buf.len() {
+                *cur = (r + 1, c.min(line_chars(buf, r + 1)));
+            }
+        }
+        "home" => cur.1 = 0,
+        "end" => cur.1 = line_chars(buf, r),
+        _ => {}
+    }
+}
+
+/// Move the cursor a page (≈12 rows) up(-1)/down(+1), clamping the column.
+fn op_page(buf: &[String], cur: &mut (usize, usize), dir: i32) {
+    const PAGE: usize = 12;
+    let (r, c) = *cur;
+    let nr = if dir < 0 {
+        r.saturating_sub(PAGE)
+    } else {
+        (r + PAGE).min(buf.len().saturating_sub(1))
+    };
+    *cur = (nr, c.min(line_chars(buf, nr)));
+}
+
+/// The edit caret: a thin insertion bar (style pass can switch to the prototype's
+/// 7px block). Sits inline between the before/after halves of the cursor line.
+fn cursor_block(config: &Loaded) -> gpui::Div {
+    div().w(px(2.)).h(px(15.)).flex_none().bg(col(config.theme.ui.foreground))
+}
+
+/// Build one edit-mode row `i` (plain text; the cursor row carries the caret).
+fn edit_row(config: &Loaded, buf: &[String], i: usize, cursor: (usize, usize)) -> gpui::Div {
+    let fg = col(config.theme.ui.foreground);
+    let line = &buf[i];
+    let content = if i == cursor.0 {
+        let cc = cursor.1.min(line.chars().count());
+        let before: String = line.chars().take(cc).collect();
+        let after: String = line.chars().skip(cc).collect();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .child(div().text_color(fg).child(SharedString::from(before)))
+            .child(cursor_block(config))
+            .child(div().text_color(fg).child(SharedString::from(after)))
+    } else {
+        div().text_color(fg).child(SharedString::from(line.clone()))
+    };
+    code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![content])
 }
 
 /// Build one File-tab row `i` (1-based line number + syntax-tinted source).
@@ -349,8 +666,16 @@ fn diff_row(config: &Loaded, diff: &[DiffLine], i: usize) -> gpui::Div {
     code_row(no, mark, mark_col, spans).bg(bg)
 }
 
+impl gpui::EventEmitter<QuickLookEvent> for QuickLook {}
+
 impl Render for QuickLook {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Grab focus on first render after open (focusing in open() doesn't land —
+        // the overlay isn't rendered yet; see 踩过的坑).
+        if self.needs_focus {
+            self.focus_handle.focus(window);
+            self.needs_focus = false;
+        }
         let ui = &self.config.theme.ui;
         let th = &self.config.theme;
 
@@ -428,8 +753,13 @@ impl Render for QuickLook {
                     .child(SharedString::from(name)),
             )
             .child(div().flex_1())
-            // mockup .vh .by:已改动 badge(claude)—— 仅文件有未提交改动时显
-            .when(!self.diff.is_empty(), |d| {
+            // mockup .vh .by:编辑态 = 「编辑中(●)」,预览态有未提交改动 = 「已改动」(claude)
+            .when(self.editing || !self.diff.is_empty(), |d| {
+                let label = if self.editing {
+                    if self.dirty { "编辑中 ●" } else { "编辑中" }
+                } else {
+                    "已改动"
+                };
                 d.child(
                     div()
                         .flex()
@@ -439,21 +769,28 @@ impl Render for QuickLook {
                         .text_size(px(11.))
                         .text_color(col(th.agents.claude))
                         .child(icon("pen", 13., th.agents.claude))
-                        .child("已改动"),
+                        .child(label),
                 )
             })
             .child(tabset);
 
-        // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不再卡死整窗)──
+        // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不卡)。
+        //    编辑态从 buf 渲染(带光标);预览态从 file_lines / diff 渲染。──
         let config = self.config.clone(); // Arc clone for the 'static closure
         let lines = self.file_lines.clone(); // Rc clone (cheap)
         let diff = self.diff.clone();
+        let buf = self.buf.clone();
+        let editing = self.editing;
+        let cursor = self.cursor;
         let tab = self.tab;
-        let count = match tab {
-            Tab::File => lines.len(),
-            Tab::Diff => diff.len(),
+        let count = if editing {
+            buf.len()
+        } else if tab == Tab::Diff {
+            diff.len()
+        } else {
+            lines.len()
         };
-        let body = if tab == Tab::Diff && diff.is_empty() {
+        let body = if !editing && tab == Tab::Diff && diff.is_empty() {
             div()
                 .flex_1()
                 .min_h(px(0.))
@@ -472,9 +809,14 @@ impl Render for QuickLook {
                 .child(
                     uniform_list("ql-code", count, move |range, _window, _cx| {
                         range
-                            .map(|i| match tab {
-                                Tab::File => file_row(&config, &lines, i),
-                                Tab::Diff => diff_row(&config, &diff, i),
+                            .map(|i| {
+                                if editing {
+                                    edit_row(&config, &buf, i, cursor)
+                                } else if tab == Tab::File {
+                                    file_row(&config, &lines, i)
+                                } else {
+                                    diff_row(&config, &diff, i)
+                                }
                             })
                             .collect::<Vec<_>>()
                     })
@@ -482,7 +824,7 @@ impl Render for QuickLook {
                     .min_h(px(0.))
                     .track_scroll(self.scroll.clone()),
                 )
-                .when(self.file_truncated && tab == Tab::File, |d| {
+                .when(!editing && self.file_truncated && tab == Tab::File, |d| {
                     d.child(
                         div()
                             .flex_none()
@@ -506,7 +848,7 @@ impl Render for QuickLook {
                 .bg(rgba(INSET)) // .k bg = g2
                 .child(label)
         };
-        let footer = div()
+        let footer_base = div()
             .flex()
             .flex_row()
             .items_center()
@@ -518,17 +860,32 @@ impl Render for QuickLook {
             .text_size(px(10.5))
             .text_color(col(ui.muted))
             .border_t_1()
-            .border_color(rgba(0xffffff0d)) // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
-            .child(kcap("↑↓"))
-            .child("换文件 ·")
-            .child(kcap("⇥"))
-            .child("切 File ·")
-            .child(kcap("Enter"))
-            .child("编辑")
-            .child(div().flex_1())
-            .child("Diff 只读审阅 ·")
-            .child(kcap("Esc"))
-            .child("关闭");
+            .border_color(rgba(0xffffff0d)); // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
+        let footer = if self.editing {
+            // 编辑态:Ctrl+S 保存 · Esc 退出编辑 [sp] 方向键移动 · ⇥ 缩进
+            footer_base
+                .child(kcap("Ctrl+S"))
+                .child("保存 ·")
+                .child(kcap("Esc"))
+                .child("退出编辑")
+                .child(div().flex_1())
+                .child("方向键移动 ·")
+                .child(kcap("⇥"))
+                .child("缩进")
+        } else {
+            // 预览态:↑↓ 换文件 · ⇥ 切 File · Enter 编辑 [sp] Diff 只读审阅 · Esc 关闭
+            footer_base
+                .child(kcap("↑↓"))
+                .child("换文件 ·")
+                .child(kcap("⇥"))
+                .child("切 File ·")
+                .child(kcap("Enter"))
+                .child("编辑")
+                .child(div().flex_1())
+                .child("Diff 只读审阅 ·")
+                .child(kcap("Esc"))
+                .child("关闭")
+        };
 
         // ── 左缘 accent 竖线(.seam):指向树中选中文件的「连接感」;末位子 = 画在最上层 ──
         let seam = div()
@@ -542,6 +899,7 @@ impl Render for QuickLook {
 
         let inner = div()
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
             .size_full()
             .relative() // anchor specular / seam absolute layers
             .flex()
@@ -561,5 +919,98 @@ impl Render for QuickLook {
 
         // mockup .quicklook::before 冷能量描边 + 更深的浮起投影
         quicklook_frame(inner, ui.accent)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buf(lines: &[&str]) -> Vec<String> {
+        lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn char_byte_handles_multibyte() {
+        // "a中b": chars at byte 0 / 1 / 4; col past the end clamps to len.
+        assert_eq!(char_to_byte("a中b", 0), 0);
+        assert_eq!(char_to_byte("a中b", 1), 1);
+        assert_eq!(char_to_byte("a中b", 2), 4);
+        assert_eq!(char_to_byte("a中b", 3), 5);
+        assert_eq!(char_to_byte("a中b", 99), 5, "past end → byte len");
+    }
+
+    #[test]
+    fn insert_is_multibyte_safe() {
+        let mut b = buf(&["a中b"]);
+        let mut cur = (0, 2); // between 中 and b
+        op_insert(&mut b, &mut cur, "X");
+        assert_eq!(b[0], "a中Xb");
+        assert_eq!(cur, (0, 3));
+        // inserting a multibyte char advances the col by its char count (1), not bytes
+        op_insert(&mut b, &mut cur, "你");
+        assert_eq!(b[0], "a中X你b");
+        assert_eq!(cur, (0, 4));
+    }
+
+    #[test]
+    fn newline_splits_and_backspace_merges() {
+        let mut b = buf(&["hello"]);
+        let mut cur = (0, 2);
+        op_newline(&mut b, &mut cur);
+        assert_eq!(b, buf(&["he", "llo"]));
+        assert_eq!(cur, (1, 0));
+        // backspace at col 0 merges into the previous line, cursor at the seam
+        assert!(op_backspace(&mut b, &mut cur));
+        assert_eq!(b, buf(&["hello"]));
+        assert_eq!(cur, (0, 2));
+        // backspace at (0,0) is a no-op
+        cur = (0, 0);
+        assert!(!op_backspace(&mut b, &mut cur));
+        assert_eq!(b, buf(&["hello"]));
+    }
+
+    #[test]
+    fn delete_forward_joins_next_line() {
+        let mut b = buf(&["ab", "cd"]);
+        let mut cur = (0, 2); // end of line 0
+        assert!(op_delete(&mut b, &mut cur));
+        assert_eq!(b, buf(&["abcd"]));
+        assert_eq!(cur, (0, 2));
+        // delete at the very end is a no-op
+        cur = (0, 4);
+        assert!(!op_delete(&mut b, &mut cur));
+    }
+
+    #[test]
+    fn move_wraps_lines_and_clamps_columns() {
+        let b = buf(&["abc", "de"]);
+        let mut cur = (0, 3); // end of "abc"
+        op_move(&b, &mut cur, "right"); // → start of next line
+        assert_eq!(cur, (1, 0));
+        op_move(&b, &mut cur, "left"); // → end of prev line
+        assert_eq!(cur, (0, 3));
+        cur = (0, 3);
+        op_move(&b, &mut cur, "down"); // col clamped to shorter line len (2)
+        assert_eq!(cur, (1, 2));
+        cur = (0, 1);
+        op_move(&b, &mut cur, "end");
+        assert_eq!(cur, (0, 3));
+        op_move(&b, &mut cur, "home");
+        assert_eq!(cur, (0, 0));
+    }
+
+    #[test]
+    fn page_clamps_to_buffer() {
+        let b: Vec<String> = (0..30).map(|i| i.to_string()).collect();
+        let mut cur = (0, 0);
+        op_page(&b, &mut cur, 1);
+        assert_eq!(cur.0, 12);
+        op_page(&b, &mut cur, 1);
+        assert_eq!(cur.0, 24);
+        op_page(&b, &mut cur, 1);
+        assert_eq!(cur.0, 29, "clamp to last row");
+        op_page(&b, &mut cur, -1);
+        assert_eq!(cur.0, 17);
     }
 }

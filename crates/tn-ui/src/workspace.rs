@@ -22,7 +22,7 @@ use tn_config::Loaded;
 
 use crate::explorer::{ExplorerView, OpenFile};
 use crate::perf::PerfStats;
-use crate::quick_look::QuickLook;
+use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
 use crate::welcome::{LaunchRequested, WelcomeView};
 
@@ -469,6 +469,9 @@ pub struct Workspace {
     /// actually has a file loaded).
     quick_look: Entity<QuickLook>,
     quick_look_open: bool,
+    /// Return focus to the active pane next render (set when Quick Look closes via
+    /// its own keyboard — the event callback has no `window` to focus with).
+    ql_refocus_pane: bool,
     /// Welcome launchpad shown as a new tab's content (until a tile is clicked).
     /// One shared entity (stateless chrome); its `LaunchRequested` launches into
     /// the active tab.
@@ -503,12 +506,37 @@ impl Workspace {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let explorer = cx.new(|cx| ExplorerView::new(cx, config.clone()));
         let quick_look = cx.new(|cx| QuickLook::new(cx, config.clone()));
-        // Clicking a file in the explorer pops the Quick Look overlay for it.
+        // Clicking / Space-ing a file in the explorer pops the Quick Look overlay
+        // for it (open() also flags the overlay to grab focus on its next render).
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
             let path = ev.0.clone();
-            ws.quick_look.update(cx, |v, _| v.open(path));
+            ws.quick_look.update(cx, |v, cx| {
+                v.open(path);
+                cx.notify();
+            });
             ws.quick_look_open = true;
             cx.notify();
+        })
+        .detach();
+        // Quick Look keyboard that needs the workspace: `↑↓` change file (drive the
+        // tree's selection), `Esc`/`Space` close (give focus back to the terminal).
+        cx.subscribe(&quick_look, |ws, _ql, ev: &QuickLookEvent, cx| {
+            match ev {
+                QuickLookEvent::Nav(delta) => {
+                    let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
+                    if let Some(path) = next {
+                        ws.quick_look.update(cx, |v, cx| {
+                            v.open(path);
+                            cx.notify();
+                        });
+                    }
+                }
+                QuickLookEvent::Close => {
+                    ws.quick_look_open = false;
+                    ws.ql_refocus_pane = true; // refocus the pane in next render
+                    cx.notify();
+                }
+            }
         })
         .detach();
         // Resolve launchable profiles once (config + installed WSL distros).
@@ -533,6 +561,7 @@ impl Workspace {
             explorer_open: true,
             quick_look,
             quick_look_open: false,
+            ql_refocus_pane: false,
             welcome,
             branch: git_branch(),
             palette_open: false,
@@ -777,9 +806,13 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show/hide the Quick Look overlay (Ctrl+Shift+J).
-    fn toggle_quick_look(&mut self, _: &ToggleQuickLook, _window: &mut Window, cx: &mut Context<Self>) {
+    /// Show/hide the Quick Look overlay (Ctrl+Shift+J). On close, return focus to
+    /// the active pane (we have a `window` here, so focus directly).
+    fn toggle_quick_look(&mut self, _: &ToggleQuickLook, window: &mut Window, cx: &mut Context<Self>) {
         self.quick_look_open = !self.quick_look_open;
+        if !self.quick_look_open {
+            self.refocus_active(window, cx);
+        }
         cx.notify();
     }
 
@@ -1408,6 +1441,12 @@ impl Render for Workspace {
         if self.palette_open && self.palette_needs_focus {
             self.palette_needs_focus = false;
             self.palette_focus.focus(window);
+        }
+        // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
+        // active pane now (the event callback had no `window`).
+        if self.ql_refocus_pane {
+            self.ql_refocus_pane = false;
+            self.refocus_active(window, cx);
         }
 
         // Time the chrome build (待优化清单 §2.2) when TN_PERF is on. Panes are

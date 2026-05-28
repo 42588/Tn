@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, FocusHandle,
-    MouseButton, SharedString,
+    KeyDownEvent, MouseButton, SharedString, Window,
 };
 use tn_config::Loaded;
 
@@ -188,7 +188,11 @@ impl ExplorerView {
         self.git_status = Self::compute_git_status(&self.root);
     }
 
-    fn on_row_click(&mut self, path: PathBuf, is_dir: bool, cx: &mut Context<Self>) {
+    fn on_row_click(&mut self, path: PathBuf, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // Focus the tree so keyboard nav (↑↓ / Space / Enter) works after a click.
+        // The explorer is already on screen, so focusing here lands (the focus-in-
+        // render caveat only bites not-yet-rendered overlays).
+        self.focus_handle.focus(window);
         if is_dir {
             if !self.expanded.remove(&path) {
                 self.expanded.insert(path);
@@ -199,6 +203,85 @@ impl ExplorerView {
             cx.emit(OpenFile(path));
         }
         cx.notify();
+    }
+
+    /// Keyboard nav while the tree is focused (preview-state entry point): ↑↓ move
+    /// the selection, Space/Enter open the file in Quick Look (or toggle a dir).
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let m = &ev.keystroke.modifiers;
+        if m.control || m.alt || m.platform {
+            return; // leave Ctrl+Shift+B etc. to the workspace
+        }
+        match ev.keystroke.key.as_str() {
+            "up" => {
+                self.move_selection(-1);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "down" => {
+                self.move_selection(1);
+                cx.stop_propagation();
+                cx.notify();
+            }
+            "space" | "enter" => {
+                if let Some(path) = self.selected.clone() {
+                    cx.stop_propagation();
+                    let is_dir = self.rows.iter().any(|r| r.path == path && r.is_dir);
+                    if is_dir {
+                        self.on_row_click(path, true, window, cx); // toggle expand
+                    } else {
+                        cx.emit(OpenFile(path)); // → workspace opens Quick Look
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Move the highlight by `delta` rows (clamped). Tree-local nav; does not open
+    /// anything (opening is Space/Enter).
+    fn move_selection(&mut self, delta: i32) {
+        if self.rows.is_empty() {
+            return;
+        }
+        let cur = self
+            .selected
+            .as_ref()
+            .and_then(|p| self.rows.iter().position(|r| &r.path == p));
+        let next = match cur {
+            Some(i) => (i as i32 + delta).clamp(0, self.rows.len() as i32 - 1) as usize,
+            None => if delta >= 0 { 0 } else { self.rows.len() - 1 },
+        };
+        self.selected = Some(self.rows[next].path.clone());
+    }
+
+    /// Select the next/prev **file** row (skipping directories) and return its path
+    /// — Quick Look's `↑↓ 换文件` live-follow (driven from the focused overlay).
+    /// `None` when there is no further file in that direction (selection unchanged).
+    pub fn select_adjacent_file(&mut self, delta: i32, cx: &mut Context<Self>) -> Option<PathBuf> {
+        if self.rows.is_empty() {
+            return None;
+        }
+        let start = self
+            .selected
+            .as_ref()
+            .and_then(|p| self.rows.iter().position(|r| &r.path == p))
+            .map(|i| i as i32)
+            .unwrap_or(-1);
+        let step = if delta >= 0 { 1 } else { -1 };
+        let mut i = start;
+        loop {
+            i += step;
+            if i < 0 || i as usize >= self.rows.len() {
+                return None;
+            }
+            if !self.rows[i as usize].is_dir {
+                let p = self.rows[i as usize].path.clone();
+                self.selected = Some(p.clone());
+                cx.notify();
+                return Some(p);
+            }
+        }
     }
 
     fn render_row(&self, row: &Row, cx: &mut Context<Self>) -> gpui::Div {
@@ -231,7 +314,7 @@ impl ExplorerView {
             .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _e, _w, cx| this.on_row_click(path.clone(), is_dir, cx)),
+                cx.listener(move |this, _e, w, cx| this.on_row_click(path.clone(), is_dir, w, cx)),
             );
 
         // Indent guide (mockup .tnode[class*="ind"]::before): a 1px vertical line
@@ -335,6 +418,7 @@ impl Render for ExplorerView {
         // (see style::glass_pane); g1 glass + specular + header + tree.
         let inner = div()
             .track_focus(&self.focus_handle)
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
             .size_full()
             .relative() // anchor the absolute specular layer
             .flex()
