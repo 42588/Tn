@@ -231,6 +231,50 @@ mod token_drift {
         assert_eq!(px_val(css_var(root, "--r-pane")), R_PANEL, "--r-pane → R_PANEL");
         assert_eq!(px_val(css_var(root, "--r-card")), R_CARD, "--r-card → R_CARD");
     }
+
+    /// `design/calm-glass.css`(面板共享样式表)的 `:root` 必须与 `mockup.html`
+    /// 镜像一致——两份是手动同步的副本,且 spec_gen §16.2 现从 calm-glass.css 生成。
+    /// 这第四道守卫防它们漂移(改色 / 改令牌须同步两边)。
+    #[test]
+    fn mockup_and_calm_glass_roots_mirror() {
+        /// Strip `/* … */` comments so a trailing `--g1:…; /* note */` doesn't
+        /// swallow the next var.
+        fn strip(s: &str) -> String {
+            let (mut o, mut r) = (String::new(), s);
+            while let Some(i) = r.find("/*") {
+                o.push_str(&r[..i]);
+                match r[i..].find("*/") {
+                    Some(j) => r = &r[i + j + 2..],
+                    None => return o,
+                }
+            }
+            o.push_str(r);
+            o
+        }
+        /// `:root` vars as a name→value map (value whitespace normalized).
+        fn vars(text: &str) -> std::collections::BTreeMap<String, String> {
+            let from = &text[text.find(":root").expect(":root")..];
+            let open = from.find('{').unwrap();
+            let close = from.find('}').unwrap();
+            strip(&from[open + 1..close])
+                .split(';')
+                .filter_map(|d| {
+                    let (n, v) = d.trim().strip_prefix("--")?.split_once(':')?;
+                    Some((
+                        format!("--{}", n.trim()),
+                        v.split_whitespace().collect::<Vec<_>>().join(" "),
+                    ))
+                })
+                .collect()
+        }
+        let cg_path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/calm-glass.css");
+        let cg = std::fs::read_to_string(cg_path).unwrap_or_else(|e| panic!("read {cg_path}: {e}"));
+        assert_eq!(
+            vars(&mockup_html()),
+            vars(&cg),
+            "mockup.html 与 calm-glass.css 的 :root 漂了(两份是镜像副本,改色 / 令牌须同步两边)"
+        );
+    }
 }
 
 /// Spec generator: mechanically extract `design/mockup.html` into the
@@ -250,6 +294,15 @@ mod spec_gen {
 
     fn mockup() -> String {
         let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/mockup.html");
+        std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p}: {e}"))
+    }
+
+    /// `design/calm-glass.css` — the shared stylesheet every panel `<link>`s, and
+    /// the authoritative source for §16.2 component specs: it carries *all*
+    /// components, including panel-only ones absent from the hero mockup
+    /// (quicklook / appmenu / welcome / activity rail).
+    fn calm_glass() -> String {
+        let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/calm-glass.css");
         std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p}: {e}"))
     }
 
@@ -303,11 +356,28 @@ mod spec_gen {
         s
     }
 
-    /// Body of the base rule `.<class>{ … }` (first match; `None` if absent).
+    /// Body of the rule whose selector subject is `.<class>`. Prefers a *standalone*
+    /// `.class{ … }` over a descendant / compound / grouped match (`.abody .body{`,
+    /// `.tree, …, .code{`) — so `.body`/`.code` resolve to their own rule, not a
+    /// shared scrollbar/min-width rule. Falls back to the first non-standalone match
+    /// when there is no standalone (e.g. `.tag` only exists as `.tnode .tag`).
     fn rule_body<'a>(style: &'a str, class: &str) -> Option<&'a str> {
-        let at = style.find(&format!(".{class}{{"))?;
-        let after = &style[at + class.len() + 2..];
-        Some(&after[..after.find('}')?])
+        let needle = format!(".{class}{{");
+        let mut fallback = None;
+        let mut from = 0;
+        while let Some(rel) = style[from..].find(&needle) {
+            let at = from + rel;
+            from = at + needle.len();
+            let body_start = at + needle.len();
+            let body = &style[body_start..body_start + style[body_start..].find('}')?];
+            // selector = text from the previous rule boundary up to ".class"
+            let sel_start = style[..at].rfind('}').map_or(0, |i| i + 1);
+            if style[sel_start..at + class.len() + 1].trim() == format!(".{class}") {
+                return Some(body); // true standalone rule
+            }
+            fallback.get_or_insert(body); // descendant / compound / grouped
+        }
+        fallback
     }
 
     /// Layout/type properties worth copying verbatim.
@@ -323,14 +393,9 @@ mod spec_gen {
         format!("0x{token:08x}（白 @ {:.0}%）", (token & 0xff) as f32 / 255.0 * 100.0)
     }
 
-    fn build(html: &str) -> String {
-        let style = {
-            let i = html.find("<style").expect("<style");
-            let open = i + html[i..].find('>').unwrap() + 1;
-            let end = html[open..].find("</style>").map_or(html.len(), |j| open + j);
-            strip_comments(&html[open..end])
-        };
-        let root = root_vars(html);
+    fn build(css: &str) -> String {
+        let style = strip_comments(css);
+        let root = root_vars(css);
         let t = Theme::tn_dark();
         let mut o = String::new();
 
@@ -369,13 +434,27 @@ mod spec_gen {
             let _ = writeln!(o, "| `{var}` | `{r}px` | `{gp}` | style.rs |");
         }
 
-        // 16.2 — 逐组件精确值(④)
-        o.push_str("\n### 16.2 组件规格（mockup 逐类精确值,`var()` 已解析）\n\n");
+        // 16.2 — 逐组件精确值(从 calm-glass.css 全集生成,按面板分组)
+        o.push_str("\n### 16.2 组件规格（calm-glass.css 逐类精确值,`var()` 已解析）\n\n");
         let classes = [
-            "work", "pane", "phead", "cwd", "chip", "sidebar", "tnode", "tag",
-            "agenthead", "who", "nm", "model", "usage", "tok", "cost", "ring",
-            "lbl", "agentbody", "tool", "say", "body", "status", "seg2", "tab",
-            "newtab", "wctl",
+            // ① 窗口外壳
+            "win", "titlebar", "brand", "caret", "tab", "newtab", "wctl",
+            "appmenu", "mi", "sep", "status", "seg2",
+            // ② 工作区 + 窗格
+            "work", "pane", "phead", "cwd", "chip",
+            // ③ 资源管理器
+            "tree", "tnode", "tag",
+            // agent 头 + 用量环 + 活动栏
+            "agenthead", "who", "nm", "model", "usage", "tok", "cost", "ring", "lbl",
+            "arail", "astat", "alabel", "achip", "afile", "adiff", "ahint",
+            // 终端 / shell / block
+            "body", "block",
+            // 速览 Quick Look
+            "quicklook", "vh", "code", "qlfoot",
+            // 欢迎 launchpad
+            "welcome", "recent", "rrow", "whints",
+            // 浮层:命令面板 / Quick Terminal
+            "scrim", "palette", "prow", "quick", "launcher", "tiles", "tile",
         ];
         for cls in classes {
             let Some(body) = rule_body(&style, cls) else { continue };
@@ -384,7 +463,12 @@ mod spec_gen {
                 .filter_map(|d| {
                     let (p, v) = d.split_once(':')?;
                     let (p, v) = (p.trim(), v.trim());
-                    PROPS.contains(&p).then(|| (p.to_string(), resolve(v, &root)))
+                    PROPS.contains(&p).then(|| {
+                        // collapse multi-line / repeated whitespace so a wrapped CSS
+                        // value (e.g. a two-line gradient) renders on one tidy row.
+                        let v = resolve(v, &root);
+                        (p.to_string(), v.split_whitespace().collect::<Vec<_>>().join(" "))
+                    })
                 })
                 .collect();
             if rows.is_empty() {
@@ -405,7 +489,7 @@ mod spec_gen {
 
     #[test]
     fn spec_section_generates() {
-        let body = build(&mockup());
+        let body = build(&calm_glass());
         // exercise: the generated body must carry the token registry + component specs.
         assert!(body.contains("--fg"), "token registry missing");
         assert!(body.contains("**`.pane`**"), "component specs missing");
