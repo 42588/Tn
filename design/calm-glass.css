@@ -223,8 +223,7 @@ body {
 .exit.fail{ color:var(--red); } .exit.run{ color:var(--accent); }
 .exit .i{ width:11px; height:11px; }
 
-/* ===================== diff viewer ===================== */
-.viewer{ flex:1.18; }
+/* ===================== file header + code(速览浮层复用;不再有常驻查看器列)===================== */
 .vh{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto; font-size:11.5px; font-weight:560;
   background:linear-gradient(180deg, rgba(122,162,247,0.06), transparent 72%); }
 .vh .i{ width:14px; height:14px; color:var(--accent); }
@@ -242,6 +241,35 @@ body {
 .cl.add{ background:rgba(158,206,106,0.09); } .cl.add .ln{ color:var(--green); } .cl.add .mk{ color:var(--green); }
 .cl.del{ background:rgba(247,118,142,0.09); } .cl.del .ln{ color:var(--red); }   .cl.del .mk{ color:var(--red); }
 .kw{ color:var(--violet); } .ty{ color:var(--cyan); } .fn{ color:var(--accent); } .str{ color:var(--green); } .cm{ color:var(--muted); font-style:italic; }
+
+/* ===================== quick look 速览(文件树 Space 触发的贴树浮层)===================== */
+/* 砍掉常驻查看器:选中文件按 Space → 贴树右缘滑出玻璃浮层、浮在终端之上;↑↓ 换文件实时跟随、直接可编辑,Esc/Space 收起把空间还给终端 */
+.quicklook{ position:absolute; z-index:20; display:flex; flex-direction:column; overflow:hidden;
+  border-radius:var(--r-pane);
+  /* 比常驻面板更实(~0.9 alpha),压住后面的终端正文、保证代码可读 */
+  background:linear-gradient(180deg, rgba(255,255,255,0.045), transparent 30%),
+    linear-gradient(180deg, rgba(28,34,58,0.88), rgba(15,19,34,0.94));
+  backdrop-filter:blur(34px) saturate(122%); -webkit-backdrop-filter:blur(34px) saturate(122%);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,0.36),
+    0 2px 6px -2px rgba(0,0,0,0.6),
+    0 30px 72px -24px rgba(0,0,0,0.86),
+    0 72px 132px -50px rgba(0,0,0,0.96); }
+/* 同款玻璃渐变描边(冷能量边,跟随圆角) */
+.quicklook::before{ content:""; position:absolute; inset:0; border-radius:inherit; padding:1px; z-index:3; pointer-events:none;
+  background:linear-gradient(180deg, rgba(190,214,255,0.24), rgba(255,255,255,0.06) 30%, rgba(122,162,247,0.05) 72%, rgba(122,162,247,0.15));
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor; mask-composite:exclude; }
+.quicklook > *{ position:relative; z-index:2; }
+/* 左缘 accent 竖线 = 指向选中文件的「连接感」 */
+.quicklook .seam{ position:absolute; left:0; top:16px; bottom:16px; width:2px; border-radius:0 2px 2px 0; z-index:4;
+  background:linear-gradient(180deg, transparent, var(--accent) 20%, var(--accent) 80%, transparent); opacity:.55; }
+/* 底部提示条(键帽 + 操作) */
+.qlfoot{ flex:0 0 auto; display:flex; align-items:center; gap:7px; padding:7px 14px; font-size:10.5px; color:var(--muted);
+  border-top:1px solid rgba(255,255,255,0.05); }
+.qlfoot .k{ font-family:var(--mono); font-size:10px; color:var(--fg-dim); background:var(--g2); padding:1px 6px; border-radius:5px; }
+.qlfoot .sp{ flex:1; }
 
 /* ===================== status bar ===================== */
 .status{ height:30px; display:flex; align-items:center; padding:0 6px; font-size:11px; font-weight:510;

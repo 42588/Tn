@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 面板原型 · ③ 侧栏(资源管理器 / 查看器)</title>
+<title>Tn 面板原型 · ③ 侧栏(资源管理器 / 速览编辑)</title>
 <link rel="stylesheet" href="../calm-glass.css" />
 </head>
 <body>
@@ -16,8 +16,8 @@
 </defs></svg>
 
 <div class="stage">
-  <h1>③ 侧栏 <span class="dim">— 文件资源管理器 · 文件/Diff 查看器</span></h1>
-  <p class="lead">两侧玻璃面板:左 = 文件树(git M/U 标记 + 缩进连接线 + 活动行),右 = 查看器(Diff/File 切换 + 行号槽 + 语法/增删着色)。gpui:<code>explorer.rs</code> / <code>viewer.rs</code>。</p>
+  <h1>③ 侧栏 <span class="dim">— 文件资源管理器 · 速览编辑(Space)</span></h1>
+  <p class="lead">左 = 文件树(git M/U 标记 + 缩进连接线 + 活动行)。<b>不设常驻查看器</b>:选中文件按 <code>Space</code> 从树右缘滑出<b>速览浮层</b>(Diff/File 切换 + 行号槽 + 语法/增删着色),浮在终端之上、<code>↑↓</code> 换文件实时跟随、直接可编辑,Esc/Space 收起把空间还给终端。gpui:<code>explorer.rs</code> / <code>quick_look</code>(viewer.rs 改浮层)。</p>
 
   <div class="demo">
     <div class="label">资源管理器(文件树) <span class="id">.pane.sidebar / .tree / .tnode</span><span class="impl">explorer::render / render_row</span></div>
@@ -44,9 +44,36 @@
   </div>
 
   <div class="demo">
-    <div class="label">查看器(Diff 模式:头部路径 + 编辑中 + Diff/File 切换 + 行号 + 增删着色) <span class="id">.pane.viewer / .vh / .code / .cl.add/.del</span><span class="impl">viewer::render / render_diff</span></div>
+    <div class="label">速览编辑(选中文件按 Space → 贴树右缘滑出浮层 · ↑↓ 换文件实时跟随 · 直接可编辑) <span class="id">.quicklook / .seam / .vh / .code</span><span class="impl">quick_look::render(贴 explorer 右缘 · 浮于终端)</span></div>
     <div class="canvas tall">
-      <div class="pane viewer col">
+      <!-- 背后的终端(变暗示意:速览浮于其上) -->
+      <div class="pane col" style="position:absolute; left:282px; right:40px; top:40px; bottom:40px;">
+        <div class="phead"><svg class="i" style="color:var(--accent)"><use href="#i-term"/></svg><span class="cwd">~/proj/<b>tn</b></span><span class="sp"></span><span class="chip">pwsh 7.4</span></div>
+        <div class="body" style="opacity:.4">
+          <div class="row"><span class="grn">●</span> <span class="blu">cargo</span> test -p tn-ui</div>
+          <div class="row"><span class="grn">   test result: ok.</span> <span class="mut">32 passed; 0 failed</span></div>
+          <div class="row" style="margin-top:5px"><span class="seg p1">~/proj/tn</span> <span class="seg p2">main</span> ❯ <span class="cursor"></span></div>
+        </div>
+      </div>
+      <!-- 左:文件树(常驻侧栏) -->
+      <div class="pane sidebar col" style="position:absolute; left:40px; top:40px; bottom:40px; width:228px;">
+        <div class="phead"><svg class="i"><use href="#i-explorer"/></svg><span class="cwd">Explorer · <b>tn</b></span></div>
+        <div class="tree">
+          <div class="tnode dir"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>crates</div>
+          <div class="tnode dir ind1"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>tn-ui</div>
+          <div class="tnode dir ind2"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>src</div>
+          <div class="tnode file ind3 active"><svg class="i"><use href="#i-file"/></svg>element.rs<span class="tag m">M</span></div>
+          <div class="tnode file ind3"><svg class="i"><use href="#i-file"/></svg>terminal_view.rs</div>
+          <div class="tnode file ind3"><svg class="i"><use href="#i-file"/></svg>lib.rs</div>
+          <div class="tnode dir ind1"><svg class="i"><use href="#i-chev-r"/></svg><svg class="i"><use href="#i-folder"/></svg>tn-core</div>
+          <div class="tnode dir"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>docs</div>
+          <div class="tnode file ind1"><svg class="i"><use href="#i-file"/></svg>产品设计.md<span class="tag u">U</span></div>
+          <div class="tnode file"><svg class="i"><use href="#i-file"/></svg>Cargo.toml</div>
+        </div>
+      </div>
+      <!-- 速览浮层:贴树右缘滑出、浮在终端上 -->
+      <div class="quicklook" style="left:276px; right:64px; top:56px; bottom:64px;">
+        <span class="seam"></span>
         <div class="vh">
           <svg class="i"><use href="#i-file"/></svg>
           <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
@@ -66,6 +93,11 @@
           <div class="cl add"><span class="ln">19</span><span class="mk">+</span>        win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
           <div class="cl"><span class="ln">20</span><span class="mk"></span>    }</div>
           <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
+        </div>
+        <div class="qlfoot">
+          <span class="k">Space</span><span class="k">Esc</span> 关闭 · <span class="k">Ctrl+S</span> 保存
+          <span class="sp"></span>
+          <span class="k">↑</span><span class="k">↓</span> 换文件 · 速览跟随
         </div>
       </div>
     </div>

@@ -214,8 +214,7 @@
     background:rgba(158,206,106,0.15); border-radius:var(--r-pill); padding:1px 8px 1px 6px; }
   .exit .i{ width:11px; height:11px; }
 
-  /* ===================== diff viewer ===================== */
-  .viewer{ flex:1.18; }
+  /* ===================== file header + code(速览浮层复用;不再有常驻查看器列)===================== */
   .vh{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto; font-size:11.5px; font-weight:560;
     background:linear-gradient(180deg, rgba(122,162,247,0.06), transparent 72%); }
   .vh .i{ width:14px; height:14px; color:var(--accent); }
@@ -306,7 +305,7 @@
         </div>
       </div>
 
-      <div class="col" style="flex:1.55">
+      <div class="col" style="flex:2.8">
         <div class="pane active col" style="flex:2.5">
           <div class="agenthead">
             <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
@@ -355,28 +354,6 @@
         </div>
       </div>
 
-      <div class="pane viewer col">
-        <div class="vh">
-          <svg class="i"><use href="#i-file"/></svg>
-          <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
-          <span class="sp"></span>
-          <span class="by"><svg class="i"><use href="#i-pen"/></svg> 编辑中</span>
-          <span class="tabset"><span class="tg on">Diff</span><span class="tg">File</span></span>
-        </div>
-        <div class="code">
-          <div class="cl"><span class="ln">12</span><span class="mk"></span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
-          <div class="cl"><span class="ln">13</span><span class="mk"></span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
-          <div class="cl"><span class="ln">14</span><span class="mk"></span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
-          <div class="cl"><span class="ln">15</span><span class="mk"></span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
-          <div class="cl del"><span class="ln">16</span><span class="mk">-</span>            win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
-          <div class="cl add"><span class="ln">16</span><span class="mk">+</span>            <span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
-          <div class="cl add"><span class="ln">17</span><span class="mk">+</span>            quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
-          <div class="cl"><span class="ln">18</span><span class="mk"></span>        }</div>
-          <div class="cl add"><span class="ln">19</span><span class="mk">+</span>        win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
-          <div class="cl"><span class="ln">20</span><span class="mk"></span>    }</div>
-          <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
-        </div>
-      </div>
     </div>
 
     <div class="status">
