@@ -10,6 +10,17 @@
 
 ---
 
+## 0. 工作流（图形界面**必走此路**）
+
+1. **设计真源** = [`design/mockup.html`](../design/mockup.html)(浏览器打开即标准);**每个组件的确切数值**见文末 §16(自动生成、最精准)。
+2. **写 gpui**:颜色一律 `col()` / `cola()`(§3,**禁止硬编码主题色**)· 尺寸/圆角照 §16 或 `style.rs` 令牌 · 字重 `FontWeight(N.)`(精确)。
+3. **三道 headless 守卫**(`cargo test -p tn-ui`):`token_drift`(网页↔代码令牌一致)· `no_hardcoded_theme_colors`(命中主题色的裸 hex 即红、点名)· `spec_gen`(生成/校验 §16)。
+4. **真机比对** = `cargo run -p tn-ui --example mockup_replica`(见 [`docs/test/`](test/)),与真实 app / mockup 并排看。
+
+> 操作总纲见 [CLAUDE.md「图形界面 / 样式开发(必走此路)」](../CLAUDE.md)。
+
+---
+
 ## 速查：最常用的 20 个翻译
 
 | # | HTML / CSS | gpui Rust | 备注 |
