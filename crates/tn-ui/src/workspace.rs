@@ -1018,11 +1018,9 @@ impl Workspace {
                 } else {
                     container.flex_col()
                 };
+                let last = kids.len().saturating_sub(1);
                 for (i, (kid, w)) in kids.iter().zip(weights.iter()).enumerate() {
                     let frac = w / sum;
-                    // min_w/min_h 0 + overflow_hidden: without these a flex child's
-                    // default `min-size: auto` lets a too-tall pane inflate past its
-                    // `relative` share and spill out of the window.
                     // min_w/min_h 0 bounds the flex child (prevents the taffy
                     // min-size:auto overflow); the pane clips its own content, so
                     // we DON'T clip here — that would eat the pane's drop shadow.
@@ -1031,6 +1029,17 @@ impl Workspace {
                         wrap.h_full().w(relative(frac))
                     } else {
                         wrap.w_full().h(relative(frac))
+                    };
+                    // 11px gap between split panes (mockup .col gap): pad the inner
+                    // side(s) of each wrap so panes pull back ~5.5px from the seam
+                    // (the divider handle then sits centered in the gap). Padding is
+                    // INSIDE relative(frac) → no overflow, and the wraps still tile
+                    // exactly, so the divider seams (relative(cum)) stay accurate.
+                    let g = px(5.5);
+                    wrap = if row {
+                        wrap.when(i > 0, |w| w.pl(g)).when(i < last, |w| w.pr(g))
+                    } else {
+                        wrap.when(i > 0, |w| w.pt(g)).when(i < last, |w| w.pb(g))
                     };
                     let mut child_path = path.clone();
                     child_path.push(i);
@@ -1615,7 +1624,10 @@ impl Render for Workspace {
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
-            .overflow_hidden()
+            // No overflow_hidden (mockup .work doesn't clip): panes clip their own
+            // content + min_h 0 bounds them, so dropping it lets each pane's drop
+            // shadow bleed into the gaps and through the translucent status bar —
+            // the "float". The OS window is the only hard clip.
             // mockup .work:padding 5px 12px 11px · gap 11(原 p_1/gap_2 偏挤)
             .pt(px(5.))
             .px(px(12.))
