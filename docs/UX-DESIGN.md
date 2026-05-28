@@ -269,6 +269,7 @@ pub trait UsageProvider: Send {
 - **普通 shell 极简**:不冒充 agent、**无头部**(cwd 由 shell 提示符显示一次,不重复);只有 launch-intent 起的 agent 才有头部 + 用量环。**agent 退出即回落 shell**:主窗口 agent 托管在 `pwsh -NoExit` 里(退出 claude/codex 后 pwsh 还在),退出后经哨兵标题检测**自动清掉头部 + 用量、标签回 `pwsh`**——否则会一直挂着已退出 agent 的头部(还常显示别的会话的陈旧用量)。
 - **resize 取舍(ConPTY 精确跟随 + 顶锚定长高)**:ConPTY 行/列始终与 alacritty 一致(见 [BLUEPRINT §5](BLUEPRINT.md))。**曾试"行锁定"**(ConPTY 锁高)避免拖大 pane 吃滚动历史,但 ConPTY≠alacritty 导致**普通命令也大片空白**(光标坐标错位),已撤销。**现行修法**:保持 ConPTY 精确跟随,改在**引擎侧**用 `resize_conpty` 让长高**顶锚定**(resize 后 `scroll_up` 把被提升的历史推回滚动区)——这样 ConPTY 顶锚定的 repaint 不再覆盖丢历史,**拖大窗格零丢失**(`TN_RESIZE_EXP=topgrow` 验证 40/40)。可见效果:拖大窗格时内容留原位、**下方开空白**(与原生 Windows 控制台一致),旧历史完整保留在滚动区可滚回;退 agent 回落 shell 不空白。**已真机肉眼确认(2026-05-28)**:拖大不再吃历史,交互式 shell(PSReadLine/oh-my-posh)重绘观感正常。
 - **光标**:在光标格画圆角块(主题 `cursor` 色),**聚焦实心半透 / 失焦空心 / app 隐藏或滚离时不画**;**聚焦时 ~530ms 闪烁(键入即点亮),失焦稳定不闪**——blink 任务仅在聚焦时 toggle+notify,空闲零唤醒。
+- **响铃(bell)**:终端 BEL(`\x07`)默认触发**安静的视觉闪光**——网格上叠一层半透前景色覆盖、~180ms 渐隐(`[appearance].visual_bell`,默认开),不发声不刺眼,贴合 Calm Glass「不光污染」。**音频蜂鸣**默认关(`audio_bell`),开启走系统 `MessageBeep` 遵从用户声音方案。真机待调:频繁响铃(bash 补全等)是否需节流。
 - **agent body / Thinking 不伪造**:工具调用列表与气泡是**真实终端内容**(Tn 托管真 agent 进程),非原生解析卡片;思考态 PTY 不可观测,故不做假动画。
 - **tabular 数字(`tnum`)开不了**:§6.1 想用 `tnum` 对齐 token/花费/时长,但 gpui 0.2.2 **无 `font-feature-settings` API**(已对源码确认),无法开启该 OpenType 特性。退路:选本身即等宽数字的字体,或接受比例数字。详见 [CSS_TO_GPUI.md](CSS_TO_GPUI.md) §4。
 

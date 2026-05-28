@@ -175,6 +175,18 @@ mod imp {
             }
         }
     }
+
+    /// Play the system default sound for a terminal bell (BEL / `\x07`), when the
+    /// user opts into `[appearance].audio_bell`. `MessageBeep(MB_OK)` is async,
+    /// non-blocking, and respects the user's sound scheme (silent if they muted
+    /// the "Default Beep" event). 待优化清单 §3.8.
+    pub fn system_beep() {
+        use windows::Win32::System::Diagnostics::Debug::MessageBeep;
+        use windows::Win32::UI::WindowsAndMessaging::MB_OK;
+        unsafe {
+            let _ = MessageBeep(MB_OK);
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -194,6 +206,7 @@ mod stub {
     pub fn work_area(_h: isize) -> Option<Rect> {
         None
     }
+    pub fn system_beep() {}
 }
 
 #[cfg(not(target_os = "windows"))]

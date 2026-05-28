@@ -94,6 +94,12 @@ pub struct Appearance {
     pub theme: String,
     pub opacity: Option<f32>,
     pub backdrop: Option<Backdrop>,
+    /// Flash the pane briefly when the terminal rings the bell (BEL / `\x07`).
+    /// On by default — a quiet visual cue, no sound. (待优化清单 §3.8)
+    pub visual_bell: bool,
+    /// Also play the system beep on bell. Off by default (audible bells are
+    /// widely disliked); opt in for parity with classic terminals.
+    pub audio_bell: bool,
 }
 
 impl Default for Appearance {
@@ -102,6 +108,8 @@ impl Default for Appearance {
             theme: "Tn Dark".to_string(),
             opacity: None,
             backdrop: None,
+            visual_bell: true,
+            audio_bell: false,
         }
     }
 }
@@ -201,6 +209,20 @@ mod tests {
         assert_eq!(c.font.size, 16.0); // overridden
         assert_eq!(c.font.family, "CaskaydiaCove Nerd Font"); // inherited
         assert_eq!(c.appearance.theme, "Tn Dark"); // whole section inherited
+    }
+
+    #[test]
+    fn bell_defaults_visual_on_audio_off_and_override() {
+        // Default: quiet visual flash on, system beep off (待优化清单 §3.8).
+        let c = Config::default();
+        assert!(c.appearance.visual_bell);
+        assert!(!c.appearance.audio_bell);
+        // Both are overridable from [appearance]; other fields inherit.
+        let c = Config::from_toml_str("[appearance]\nvisual_bell = false\naudio_bell = true\n")
+            .expect("appearance bell keys parse");
+        assert!(!c.appearance.visual_bell);
+        assert!(c.appearance.audio_bell);
+        assert_eq!(c.appearance.theme, "Tn Dark"); // inherited
     }
 
     #[test]

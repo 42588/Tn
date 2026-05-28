@@ -19,6 +19,13 @@ anyhow.workspace = true
 tracing.workspace = true
 raw-window-handle.workspace = true
 
+# Runnable replica of design/mockup.html for visual CSS→gpui validation.
+# Source lives at docs/test/mockup_replica.rs (owner requirement); examples of
+# tn-ui may link gpui (project rule: gpui only in tn-ui / tn-app).
+[[example]]
+name = "mockup_replica"
+path = "../../docs/test/mockup_replica.rs"
+
 # Quick Terminal (M5) global hotkey + topmost window glue — Windows only.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [
@@ -26,4 +33,5 @@ windows = { workspace = true, features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Graphics_Gdi",
+    "Win32_System_Diagnostics_Debug", # MessageBeep (audio bell, 待优化清单 §3.8)
 ] }

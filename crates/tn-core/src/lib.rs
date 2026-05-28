@@ -726,6 +726,19 @@ mod tests {
     }
 
     #[test]
+    fn bel_byte_emits_bell_event() {
+        // The BEL control byte (0x07) must surface as a `TermEvent::Bell` so the
+        // UI can flash/beep (待优化清单 §3.8). alacritty raises it via the event
+        // proxy; we just confirm it reaches `drain_events`.
+        let mut t = Terminal::new(GridSize::new(2, 10));
+        t.advance(b"a\x07b");
+        let bells = t.drain_events().into_iter().filter(|e| matches!(e, Event::Bell)).count();
+        assert_eq!(bells, 1, "one BEL byte yields exactly one Bell event");
+        // The visible text is unaffected by the bell.
+        assert!(t.snapshot().to_text().contains("ab"));
+    }
+
+    #[test]
     fn handles_newline_and_cr() {
         let mut t = Terminal::new(GridSize::new(5, 20));
         t.advance(b"line1\r\nline2");

@@ -23,7 +23,9 @@ use tn_core::{TermEvent, Terminal};
 use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
-use super::{ProcessExited, SharedWriter, TerminalView, UsageUpdated, CURSOR_BLINK_MS};
+use super::{
+    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
+};
 
 impl TerminalView {
     /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
@@ -37,6 +39,7 @@ impl TerminalView {
         title: Arc<Mutex<Option<String>>>,
         blocks: Arc<Mutex<BlockModel>>,
         agent_exited: Arc<AtomicBool>,
+        bell: Arc<AtomicBool>,
     ) {
         thread::spawn(move || {
             // Shell-integration bypass parser + a session clock. The parser is
@@ -83,6 +86,10 @@ impl TerminalView {
                                         }
                                         TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
                                         TermEvent::ResetTitle => *title.lock().unwrap() = None,
+                                        // BEL (\x07): flag it; the foreground turns
+                                        // this into a brief flash / optional beep on
+                                        // the next wake (待优化清单 §3.8).
+                                        TermEvent::Bell => bell.store(true, Ordering::Relaxed),
                                         _ => {}
                                     }
                                 }
@@ -157,6 +164,8 @@ impl TerminalView {
                         if view.clear_agent_if_exited() {
                             cx.emit(UsageUpdated);
                         }
+                        // BEL on this batch → start the flash / beep (待优化清单 §3.8).
+                        view.handle_bell_if_rung(cx);
                         cx.notify();
                     })
                     .is_ok();
@@ -189,6 +198,55 @@ impl TerminalView {
                     .is_ok();
                 if !alive {
                     break; // view dropped
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// React to a bell flagged by the reader since the last repaint (待优化清单
+    /// §3.8): optionally beep, and (if `visual_bell`) start a brief flash. Called
+    /// from the foreground repaint, so it's safe to touch view state + spawn.
+    pub(super) fn handle_bell_if_rung(&mut self, cx: &mut Context<Self>) {
+        if !self.bell.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        if self.audio_bell {
+            crate::platform::system_beep();
+        }
+        if self.visual_bell {
+            self.bell_flash_at = Some(Instant::now());
+            self.spawn_bell_fade(cx);
+        }
+    }
+
+    /// Drive the visual-bell fade: notify every frame until `BELL_FLASH_MS` after
+    /// the last bell, then clear the flash. `bell_fading` ensures only one such
+    /// task runs — repeated bells just push `bell_flash_at` forward, extending
+    /// (not stacking) the fade.
+    fn spawn_bell_fade(&mut self, cx: &mut Context<Self>) {
+        if self.bell_fading {
+            return;
+        }
+        self.bell_fading = true;
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                exec.timer(Duration::from_millis(16)).await;
+                let again = this.update(cx, |v, cx| {
+                    let done = v
+                        .bell_flash_at
+                        .map(|t| t.elapsed() >= Duration::from_millis(BELL_FLASH_MS))
+                        .unwrap_or(true);
+                    if done {
+                        v.bell_flash_at = None;
+                        v.bell_fading = false;
+                    }
+                    cx.notify();
+                    !done
+                });
+                if !matches!(again, Ok(true)) {
+                    break; // done, or view dropped
                 }
             }
         })

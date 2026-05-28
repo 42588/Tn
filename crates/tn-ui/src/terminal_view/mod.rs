@@ -97,6 +97,9 @@ const ROWS: usize = 34;
 const COLS: usize = 110;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
+/// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
+/// without being a distraction. ~180ms ≈ a quick blink.
+const BELL_FLASH_MS: u64 = 180;
 /// Sentinel window title a hosted **agent** pane emits *after* the agent exits
 /// (the `-NoExit` pwsh runs it on return). The reader sees this OSC, flags the
 /// pane, and we clear the agent identity — so the header/tab stop pretending the
@@ -151,6 +154,19 @@ pub struct TerminalView {
     // so the pane reverts to a plain shell (no stale header). Only agent panes
     // emit the sentinel, so a plain shell never trips this.
     agent_exited: Arc<AtomicBool>,
+    // Set by the reader on a BEL byte (待优化清单 §3.8); the foreground turns the
+    // false->true edge into a flash/beep, then clears it. An atomic (not a wake
+    // event) so a bell during a quiet moment still rides the next repaint.
+    bell: Arc<AtomicBool>,
+    // When a visual bell is mid-fade: the instant it rang (drives the overlay
+    // opacity). `None` when no flash is showing. `bell_fading` guards against
+    // spawning more than one fade task at a time (a bell storm just refreshes
+    // `bell_flash_at`).
+    bell_flash_at: Option<Instant>,
+    bell_fading: bool,
+    // `[appearance]` bell prefs, resolved once at construction.
+    visual_bell: bool,
+    audio_bell: bool,
     // Theme accents for the per-pane header (Claude coral / Codex teal / UI blue).
     claude_accent: Rgb,
     codex_accent: Rgb,
@@ -233,6 +249,8 @@ impl TerminalView {
         let claude_accent = to_rgb(config.theme.agents.claude);
         let codex_accent = to_rgb(config.theme.agents.codex);
         let ui_accent = to_rgb(config.theme.ui.accent);
+        let visual_bell = config.config.appearance.visual_bell;
+        let audio_bell = config.config.appearance.audio_bell;
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
         term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
@@ -245,6 +263,7 @@ impl TerminalView {
         let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
         let title = Arc::new(Mutex::new(None));
         let agent_exited = Arc::new(AtomicBool::new(false));
+        let bell = Arc::new(AtomicBool::new(false));
 
         Self::spawn_reader(
             reader,
@@ -255,6 +274,7 @@ impl TerminalView {
             title.clone(),
             blocks.clone(),
             agent_exited.clone(),
+            bell.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
         Self::spawn_blink_loop(cx);
@@ -316,6 +336,11 @@ impl TerminalView {
             agent,
             usage: None,
             agent_exited,
+            bell,
+            bell_flash_at: None,
+            bell_fading: false,
+            visual_bell,
+            audio_bell,
             claude_accent,
             codex_accent,
             ui_accent,
@@ -800,6 +825,19 @@ impl Render for TerminalView {
                 )
         });
 
+        // Visual bell (待优化清单 §3.8): a brief translucent flash over the grid
+        // that fades out, so a BEL registers without sound. `spawn_bell_fade`
+        // drives the per-frame notifies and clears `bell_flash_at` when done.
+        let bell_overlay = self.bell_flash_at.and_then(|t| {
+            let frac = t.elapsed().as_millis() as f32 / BELL_FLASH_MS as f32;
+            (frac < 1.0).then(|| {
+                div()
+                    .absolute()
+                    .size_full()
+                    .bg(cola(self.palette.fg, 0.18 * (1.0 - frac)))
+            })
+        });
+
         // Terminal area: the canvas captures THIS region's bounds (so the grid
         // fits the space above the block bar) and hosts the row runs. Mouse +
         // scroll handlers live here so clicks on the bar don't start selections.
@@ -850,7 +888,8 @@ impl Render for TerminalView {
                     })),
             )
             .when_some(cursor_el, |this, c| this.child(c))
-            .when_some(scrollbar, |this, s| this.child(s));
+            .when_some(scrollbar, |this, s| this.child(s))
+            .when_some(bell_overlay, |this, o| this.child(o));
 
         div()
             .track_focus(&self.focus_handle)
