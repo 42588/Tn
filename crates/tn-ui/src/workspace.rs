@@ -30,8 +30,8 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, icon, shadowed, sheen_line, soft_shadow, specular_top, DIVIDER, HOVER, INSET, RIM,
-    R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
+    col, cola, icon, shadowed, soft_shadow, specular_top, DIVIDER, HOVER, INSET, RIM, R_CARD,
+    R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -978,10 +978,10 @@ impl Workspace {
                             this.focus_pane(id, window, cx);
                         }),
                     )
-                    // mockup .pane::before specular + 顶 sheen 高光线(折射,无 glow);
-                    // 先于 view 添加 → 画在内容之下,经半透明 header 透出。
+                    // mockup .pane::before specular 柔光洗(折射,无 glow);先于 view
+                    // 添加 → 画在内容之下,经半透明 header 透出。不加 1px sheen 硬线
+                    // (gpui overflow_hidden 不跟圆角、会在圆角戳出白线;owner 取向同 tab)。
                     .child(specular_top())
-                    .child(sheen_line())
                     .child(view);
                 // Every pane floats on a soft shadow (mockup .pane); the focused
                 // one lifts higher (mockup .pane.active). The warm rim is already

@@ -81,6 +81,10 @@ pub(crate) fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
 /// Refracted light, NOT glow. Add as a glass pane's FIRST child so it paints
 /// under the content (a translucent header lets it show through at the top).
 /// The parent must be `.relative()` for this to anchor to the pane.
+///
+/// Top corners are rounded to the pane radius: gpui's `overflow_hidden` clips
+/// rectangularly (not by `corner_radii`), so a child with its own bg would
+/// otherwise poke a right-angle past the pane's rounded corners (踩过的坑).
 pub(crate) fn specular_top() -> Div {
     div()
         .absolute()
@@ -88,19 +92,13 @@ pub(crate) fn specular_top() -> Div {
         .right(px(0.))
         .top(px(0.))
         .h(relative(0.36))
+        .rounded_t(px(R_PANEL))
         .bg(linear_gradient(
             180.,
             // white @ .04 = round(.04×255)=10=0x0a (= INSET)
             linear_color_stop(rgba(0xffffff0a), 0.),
             linear_color_stop(rgba(0x00000000), 1.),
         ))
-}
-
-/// The 1px specular sheen along a glass surface's top edge — the mockup's
-/// `box-shadow: 0 1px 0 var(--sheen) inset`, which gpui has no inset form of, so
-/// it's a 1px absolute div in white @ 10% ([`SHEEN`]). Parent must be `.relative()`.
-pub(crate) fn sheen_line() -> Div {
-    div().absolute().left(px(0.)).right(px(0.)).top(px(0.)).h(px(1.)).bg(rgba(SHEEN))
 }
 
 /// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG

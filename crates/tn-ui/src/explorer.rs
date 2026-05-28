@@ -17,7 +17,7 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::style::{col, cola, icon, shadowed, sheen_line, soft_shadow, specular_top, INSET, RIM, R_PANEL};
+use crate::style::{col, cola, icon, shadowed, soft_shadow, specular_top, INSET, RIM, R_PANEL};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -329,9 +329,8 @@ impl Render for ExplorerView {
                 linear_color_stop(rgba(0x2a2e446b), 0.),
                 linear_color_stop(rgba(0x1a1c2c85), 1.),
             ))
-            // mockup .pane::before specular + 顶 sheen 高光线 + 浮起投影(无 glow)
+            // mockup .pane::before specular 柔光洗 + 浮起投影(无 glow;不加 sheen 硬线)
             .child(specular_top())
-            .child(sheen_line())
             .child(header)
             .child(
                 div()

@@ -17,7 +17,7 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::style::{
-    col, cola, shadowed, sheen_line, soft_shadow, specular_top, HOVER, RIM, R_PANEL, UI_SANS,
+    col, cola, shadowed, soft_shadow, specular_top, HOVER, RIM, R_PANEL, UI_SANS,
 };
 
 /// Max lines rendered (a viewer is a glance, not a pager).
@@ -439,9 +439,8 @@ impl Render for ViewerView {
             ))
             .font_family(SharedString::from(self.config.font().family.clone()))
             .text_size(px(12.5)) // mockup .code font-size:12.5px
-            // mockup .pane::before specular + 顶 sheen 高光线(无 glow)
+            // mockup .pane::before specular 柔光洗(无 glow;不加 sheen 硬线)
             .child(specular_top())
-            .child(sheen_line())
             .child(
                 // header + invisible click targets aligned to the right tab chips
                 div()
