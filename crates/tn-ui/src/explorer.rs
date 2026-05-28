@@ -116,6 +116,16 @@ impl ExplorerView {
         me
     }
 
+    /// Re-root the tree at `root` (app menu「打开文件夹」): reset expansion +
+    /// selection, then rebuild from the new folder (refreshing git status for it).
+    pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        self.root = root;
+        self.expanded.clear();
+        self.selected = None;
+        self.rebuild();
+        cx.notify();
+    }
+
     /// Run `git status --porcelain` in the root and map each changed path
     /// (forward-slash, relative) to a one-letter tag: M(odified) / U(ntracked)
     /// / A(dded) / D(eleted) / R(enamed).

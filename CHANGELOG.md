@@ -13,6 +13,25 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 原型同步轨道:app 菜单 popup(2026-05-29)
+
+> [`design/panels/01`](design/panels/01-window-chrome.html) 的「点 Tn logo 弹下拉」端口进 gpui。
+> **至此原型同步轨道 ①–⑤ 全部端口完成**,余下仅「真实数据接入」类后续(活动栏 git/JSONL、欢迎最近目录)。
+
+### 新增 (Added)
+- **app 菜单 popup**([workspace.rs](crates/tn-ui/src/workspace.rs) `render_app_menu`):点 Tn 品牌弹 `.appmenu` 下拉
+  (248px、`pane_fill` 暗玻璃 + rim + 深投影 + specular,1:1 复刻 mockup `.appmenu`/`.mi`/`.sep`)。品牌**去掉
+  `WindowControlArea::Drag` 改可点**(拖窗改靠标签条 spacer)、caret 开态变亮、**全窗 scrim 点外即关**。
+  **11 项全接真实动作**(不留空壳):新会话→命令面板 · 新标签 · 打开文件夹→`prompt_for_paths` 选目录后
+  `explorer::set_root` 重定文件树根 · 在资源管理器中显示→`cx.reveal_path(cwd)` · 文件浏览器→toggle ·
+  设置→`cx.open_with_system(config_path)` · 主题→`cx.reveal_path(themes_dir)` · 重载配置 · 关于→`open_with_system(README)` ·
+  退出→`cx.quit()`。加 `Quit` 动作 + `Ctrl+Shift+Q` 绑定。
+- **7 个菜单图标**([assets.rs](crates/tn-ui/src/assets.rs)):external / sidebar / sliders / moon / refresh / info / power
+  (照搬 mockup `<symbol>` 路径)。
+- **`ExplorerView::set_root`**([explorer.rs](crates/tn-ui/src/explorer.rs)):重置展开/选中并以新目录重建树(「打开文件夹」用)。
+
+---
+
 ## [Unreleased] — 原型同步轨道:Quick Look 速览浮层(2026-05-29)
 
 > [`design/panels/03`](design/panels/03-side-panels.html) 的速览编辑端口进 gpui:**砍掉常驻右侧查看器列**,

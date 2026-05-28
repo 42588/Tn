@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
     AnyElement, App, AppContext, AsyncApp, Context, Entity, FocusHandle, KeyBinding, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Rgba, SharedString, WeakEntity,
-    Window, WindowControlArea,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Rgba, SharedString,
+    WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -376,7 +376,8 @@ actions!(
         ShrinkHeight,
         TogglePalette,
         ToggleExplorer,
-        ToggleQuickLook
+        ToggleQuickLook,
+        Quit
     ]
 );
 
@@ -402,6 +403,7 @@ fn default_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-p", TogglePalette, ctx),
         KeyBinding::new("ctrl-shift-b", ToggleExplorer, ctx),
         KeyBinding::new("ctrl-shift-j", ToggleQuickLook, ctx),
+        KeyBinding::new("ctrl-shift-q", Quit, ctx),
     ]
 }
 
@@ -426,6 +428,7 @@ fn binding_for(keys: &str, command: &str) -> Option<KeyBinding> {
         "toggle_quick_look" | "quick_look" | "toggle_viewer" | "viewer" => {
             KeyBinding::new(keys, ToggleQuickLook, ctx)
         }
+        "quit" => KeyBinding::new(keys, Quit, ctx),
         _ => return None,
     })
 }
@@ -472,6 +475,8 @@ pub struct Workspace {
     /// Return focus to the active pane next render (set when Quick Look closes via
     /// its own keyboard — the event callback has no `window` to focus with).
     ql_refocus_pane: bool,
+    /// App menu (click the Tn brand) dropdown open state.
+    app_menu_open: bool,
     /// Welcome launchpad shown as a new tab's content (until a tile is clicked).
     /// One shared entity (stateless chrome); its `LaunchRequested` launches into
     /// the active tab.
@@ -562,6 +567,7 @@ impl Workspace {
             quick_look,
             quick_look_open: false,
             ql_refocus_pane: false,
+            app_menu_open: false,
             welcome,
             branch: git_branch(),
             palette_open: false,
@@ -1335,6 +1341,141 @@ impl Workspace {
         bar
     }
 
+    /// App menu dropdown (click the Tn brand), or `None` when closed. A click-away
+    /// scrim + the `.appmenu` popup hugging the brand (mockup 01-window-chrome.html
+    /// `.appmenu`): 会话 / 文件·工作区 / 设置 groups, each item wired to a real
+    /// action (in-app actions or gpui OS helpers — see per-item closures).
+    fn render_app_menu(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.app_menu_open {
+            return None;
+        }
+        let ui = &self.config.theme.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+        let danger_hover = cola(self.config.theme.ansi.red, 0.16);
+
+        // One `.mi` row: icon + label + optional keycap, with a click handler that
+        // closes the menu then runs `act`. `danger` = red hover (退出).
+        let mi = |icon_name: &'static str,
+                  label: &'static str,
+                  key: Option<&'static str>,
+                  danger: bool,
+                  act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
+            let hover_bg = if danger { danger_hover } else { rgba(HOVER) };
+            let fg = if danger { col(self.config.theme.ansi.red) } else { gpui::rgb(0xA6AFD4) }; // .mi = fg-dim
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.)) // §16 .mi gap 10
+                .h(px(32.)) // §16 .mi height 32
+                .px(px(10.)) // §16 .mi padding 0 10
+                .rounded(px(8.)) // §16 .mi radius 8
+                .text_size(px(12.5))
+                .text_color(fg)
+                .hover(move |s| s.bg(hover_bg))
+                .child(icon(icon_name, 15., ui.muted)) // §16 .mi .i 15 · muted
+                .child(div().child(label))
+                .when_some(key, |d, k| {
+                    d.child(div().flex_1()).child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_size(px(10.))
+                            .text_color(gpui::rgb(0x474E72)) // .mi .k = faint
+                            .child(k),
+                    )
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, window, cx| {
+                        this.app_menu_open = false;
+                        act(this, window, cx);
+                        cx.notify();
+                    }),
+                )
+        };
+        let sep = || div().h(px(1.)).mx(px(8.)).my(px(5.)).bg(rgba(0xffffff0f)); // §16 .sep 白 .06
+
+        // mockup .appmenu: 248px, r-card, g1-ish opaque glass, rim border, deep shadow.
+        let popup = shadowed(
+            div()
+                .absolute()
+                .left(px(12.)) // mockup .appmenu left 12
+                .top(px(46.)) // just below the 46px titlebar (mockup top 44)
+                .w(px(248.)) // §16 .appmenu width 248
+                .p(px(6.)) // §16 .appmenu padding 6
+                .rounded(px(R_CARD))
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
+                .child(specular_top())
+                .child(mi("spark", "新会话…", Some("⌃⇧P"), false, Box::new(|this, w, cx| this.toggle_palette(&TogglePalette, w, cx))))
+                .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
+                .child(sep())
+                .child(mi("folder", "打开文件夹…", None, false, Box::new(|this, _w, cx| this.menu_open_folder(cx))))
+                .child(mi("external", "在资源管理器中显示", None, false, Box::new(|_t, _w, cx| {
+                    if let Ok(root) = std::env::current_dir() { cx.reveal_path(&root); }
+                })))
+                .child(mi("sidebar", "文件浏览器", Some("⌃⇧B"), false, Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx))))
+                .child(sep())
+                .child(mi("sliders", "设置", None, false, Box::new(|_t, _w, cx| {
+                    if let Some(p) = tn_config::config_path() { cx.open_with_system(&p); }
+                })))
+                .child(mi("moon", "主题…", None, false, Box::new(|_t, _w, cx| {
+                    if let Some(p) = tn_config::themes_dir() { cx.reveal_path(&p); }
+                })))
+                .child(mi("refresh", "重载配置", Some("⌃⇧R"), false, Box::new(|this, w, cx| this.reload_config(&ReloadConfig, w, cx))))
+                .child(sep())
+                .child(mi("info", "关于 Tn", None, false, Box::new(|_t, _w, cx| {
+                    if let Ok(p) = std::env::current_dir() {
+                        let readme = p.join("README.md");
+                        if readme.exists() { cx.open_with_system(&readme); }
+                    }
+                })))
+                .child(mi("power", "退出", Some("⌃⇧Q"), true, Box::new(|_t, _w, cx| cx.quit()))),
+            vec![soft_shadow(30.0, 80.0, -24.0, 0.9)], // mockup .appmenu shadow
+        );
+
+        // Full-window click-away scrim (transparent): a click outside closes it.
+        Some(
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .size_full()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        this.app_menu_open = false;
+                        cx.notify();
+                    }),
+                )
+                .child(popup),
+        )
+    }
+
+    /// App menu「打开文件夹」: native folder picker → re-root the explorer tree.
+    fn menu_open_folder(&mut self, cx: &mut Context<Self>) {
+        let recv = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        let explorer = self.explorer.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            if let Ok(Ok(Some(paths))) = recv.await {
+                if let Some(p) = paths.into_iter().next() {
+                    let _ = explorer.update(cx, |e, cx| e.set_root(p, cx));
+                    let _ = this.update(cx, |ws, cx| {
+                        ws.explorer_open = true;
+                        cx.notify();
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     /// The command-palette overlay (M4), or `None` when closed: a dim scrim +
     /// a centered Calm Glass panel (query line + launchable profile rows).
     fn render_palette(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
@@ -1620,13 +1761,27 @@ impl Render for Workspace {
 
         // Brand: a gradient-ish rounded mark + the product name. Marked as a
         // drag region (the OS moves the window from here via HTCAPTION).
+        // Clicking the brand toggles the app menu (it's no longer a drag region —
+        // the flexible spacer + tab strip empty space carry window dragging). The
+        // caret brightens when open (mockup `.brand.open .caret { opacity: 1 }`).
+        let menu_open = self.app_menu_open;
         let brand = div()
+            .id("brand")
             .flex()
             .items_center()
             .gap(px(9.)) // mockup .brand gap 9
             .pl_1()
             .pr_2()
-            .window_control_area(WindowControlArea::Drag)
+            .rounded(px(8.))
+            .when(menu_open, |d| d.bg(rgba(INSET)))
+            .hover(|s| s.bg(rgba(INSET)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    this.app_menu_open = !this.app_menu_open;
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .w(px(21.)) // mockup .brand .mark 21×21
@@ -1650,8 +1805,8 @@ impl Render for Workspace {
                     .child("Tn"),
             )
             .child(
-                // mockup .brand .caret 13×13 · muted · opacity .55(视觉先行;点击展开 app 菜单 = 后续 ④)
-                crate::assets::icon("chev-d", 13.).text_color(cola(ui.muted, 0.55)),
+                // mockup .brand .caret 13×13 · muted · opacity .55 → 1 when open
+                crate::assets::icon("chev-d", 13.).text_color(cola(ui.muted, if menu_open { 1.0 } else { 0.55 })),
             );
 
         // Window controls: the OS performs the action from the marked region
@@ -1767,6 +1922,7 @@ impl Render for Workspace {
         });
 
         let palette = self.render_palette(cx);
+        let app_menu = self.render_app_menu(cx);
 
         let root = div()
             .key_context("Workspace")
@@ -1784,6 +1940,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_explorer))
             .on_action(cx.listener(Self::toggle_quick_look))
+            .on_action(cx.listener(|_this, _: &Quit, _w, cx| cx.quit()))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
             // thin handle) recomputes weights; mouse-up anywhere ends it.
@@ -1808,7 +1965,8 @@ impl Render for Workspace {
             .child(body)
             .child(self.render_status_bar(cx))
             .when_some(quick_look, |d, q| d.child(q))
-            .when_some(palette, |d, p| d.child(p));
+            .when_some(palette, |d, p| d.child(p))
+            .when_some(app_menu, |d, m| d.child(m));
 
         // No render-data cache here (tab labels/cwd live in the child panes and
         // change without signalling the workspace, so a cache would risk stale

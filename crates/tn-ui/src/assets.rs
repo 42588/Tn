@@ -36,6 +36,14 @@ const ICON_BODIES: &[(&str, &str)] = &[
     ("plus", r#"<path d="M12 6v12M6 12h12"/>"#),
     ("pen", r#"<path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19z"/>"#),
     ("explorer", r#"<path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H10l1.5 1.5h7A1.5 1.5 0 0 1 20 8v9.5A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/>"#),
+    // app-menu icons (mockup 01-window-chrome.html <symbol> sprite)
+    ("external", r#"<path d="M13 5h6v6"/><path d="M19 5l-8 8"/><path d="M17 13.5V18a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8a1.5 1.5 0 0 1 1.5-1.5H11"/>"#),
+    ("sidebar", r#"<rect x="4" y="5.5" width="16" height="13" rx="2"/><path d="M9.5 5.5v13"/>"#),
+    ("sliders", r#"<path d="M4 8h10"/><path d="M4 16h7"/><circle cx="17.5" cy="8" r="2.3"/><circle cx="14.5" cy="16" r="2.3"/>"#),
+    ("moon", r#"<path d="M17 13.5A6.5 6.5 0 1 1 10.5 7 5 5 0 0 0 17 13.5z"/>"#),
+    ("refresh", r#"<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19.5 4.5V9H15"/>"#),
+    ("info", r#"<circle cx="12" cy="12" r="8"/><path d="M12 11.5v4.5"/><path d="M12 8.2h.01"/>"#),
+    ("power", r#"<path d="M12 4.5v6.5"/><path d="M7.8 7.8a6.5 6.5 0 1 0 8.4 0"/>"#),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so
