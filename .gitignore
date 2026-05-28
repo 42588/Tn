@@ -10,3 +10,6 @@ Thumbs.db
 
 # MCP tool caches (local, not shared)
 .web-rooter/
+
+# Reference repos cloned locally for design study (not part of this project)
+/_refs/
