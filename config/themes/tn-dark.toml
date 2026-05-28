@@ -53,7 +53,7 @@ palette_selected = "#283457"
 # 半透明 / 窗口质感(Windows 11)
 [ui.window]
 backdrop = "acrylic"           # mica | acrylic | solid;acrylic = 桌面真模糊透背(磨砂玻璃景深)
-opacity  = 0.78                # 仅 acrylic 生效:窗口底色不透明度,越低 = 透出越多 blurred 桌面
+opacity  = 0.60                # 仅 acrylic 生效:窗口底色不透明度,越低 = 透出越多 blurred 桌面(面板/边距趋于一致的磨砂)
 corner   = "round"            # 圆角
 
 # AI agent 强调色(标签条 / 焦点描边 / 上下文环 / 用量读数)

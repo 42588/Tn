@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(t.terminal.foreground, Color::new(0xC0, 0xCA, 0xF5));
         assert_eq!(t.ui.accent, Color::new(0x7A, 0xA2, 0xF7));
         assert_eq!(t.ui.window.backdrop, Backdrop::Acrylic);
-        assert!((t.ui.window.opacity - 0.78).abs() < 1e-6);
+        assert!((t.ui.window.opacity - 0.60).abs() < 1e-6);
         assert_eq!(t.agents.claude, Color::new(0xF0, 0x91, 0x6D));
     }
 
