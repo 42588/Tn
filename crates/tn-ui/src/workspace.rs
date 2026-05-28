@@ -928,11 +928,9 @@ impl Workspace {
     fn window_glass(&self) -> Rgba {
         let ui = &self.config.theme.ui;
         match ui.window.backdrop {
-            // Acrylic = see-through: the root fill must be alpha<1 so the OS blur
-            // shows through (CLAUDE.md 坑). The window `opacity` is the knob —
-            // lower = more blurred desktop bleeds through the frosted chrome. (mica
-            // / solid stay fully opaque; opacity is ignored there.)
-            tn_config::Backdrop::Acrylic => cola(ui.chrome_bg, ui.window.opacity),
+            // Only explicit acrylic is see-through; mica/solid are opaque so the
+            // desktop never bleeds through the chrome (see lib.rs window_background).
+            tn_config::Backdrop::Acrylic => cola(ui.chrome_bg, 0.92),
             _ => col(ui.chrome_bg),
         }
     }
