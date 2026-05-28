@@ -525,18 +525,10 @@ impl Workspace {
                 QuickLookEvent::Nav(delta) => {
                     let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
                     if let Some(path) = next {
-                        // DEBUG(freeze hunt): time the cross-entity open (file read;
-                        // git diff is now lazy). A stall here points at the file read.
-                        let t = std::time::Instant::now();
                         ws.quick_look.update(cx, |v, cx| {
-                            v.open(path.clone());
+                            v.open(path);
                             cx.notify();
                         });
-                        let ms = t.elapsed().as_secs_f64() * 1000.0;
-                        tracing::debug!(target: "tn::quicklook", delta, path = %path.display(), ms, "nav open");
-                        if ms >= 6.0 {
-                            tracing::warn!(target: "tn::quicklook", path = %path.display(), ms, "nav open SLOW");
-                        }
                     }
                 }
                 QuickLookEvent::Close => {
@@ -594,6 +586,23 @@ impl Workspace {
         }
         if std::env::var("TN_DEMO").is_ok() {
             Self::spawn_demo(cx);
+        }
+        // DEBUG(freeze bench): TN_QL_BENCH=<path> opens that file in Quick Look on a
+        // real window, then quits after 2.5s. If gpui paint of the overlay hangs,
+        // the process hangs (the quit timer can't run on the frozen main thread) —
+        // so a `cargo run` with this env reproduces the freeze headlessly-ish here.
+        if let Ok(p) = std::env::var("TN_QL_BENCH") {
+            let path = std::path::PathBuf::from(&p);
+            ws.quick_look.update(cx, |v, _| v.open(path));
+            ws.quick_look_open = true;
+            tracing::info!(target: "tn::quicklook", path = %p, "bench: opened, will quit in 2.5s");
+            let exec = cx.background_executor().clone();
+            cx.spawn(async move |_this, cx: &mut AsyncApp| {
+                exec.timer(Duration::from_millis(2500)).await;
+                tracing::info!(target: "tn::quicklook", "bench: 2.5s elapsed, quitting (paint did NOT hang)");
+                let _ = cx.update(|cx| cx.quit());
+            })
+            .detach();
         }
         ws
     }

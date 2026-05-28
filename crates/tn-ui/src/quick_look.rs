@@ -143,6 +143,15 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
             }
             j += 1;
         }
+        // CRITICAL: never stall. A char that `is_alphanumeric()` but is neither
+        // `is_alphabetic()` (word branch) nor `is_ascii_digit()` (number branch) —
+        // e.g. `①`/`②`/`½` (Unicode "No"/numeric) — enters none of those branches,
+        // falls here, and breaks the loop at `j == i` → `i` never advances →
+        // INFINITE LOOP pushing empty tokens → OOM (froze on a `①` in the HTML; see
+        // 踩过的坑). Consume the offending char so the scanner always progresses.
+        if j == i {
+            j = i + 1;
+        }
         out.push((chars[i..j].iter().collect(), Tint::Plain));
         i = j;
     }
@@ -297,13 +306,11 @@ impl QuickLook {
     /// Open `path`: read its text + compute its git diff, default to the File tab
     /// (preview). Always (re)grabs focus so keys route to the overlay.
     pub fn open(&mut self, path: PathBuf) {
-        let t0 = std::time::Instant::now();
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
         self.dirty = false;
         let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let read_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let all: Vec<String> = text.lines().map(str::to_string).collect();
         self.file_truncated = all.len() > MAX_LINES;
         self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
@@ -315,11 +322,6 @@ impl QuickLook {
         self.scroll = UniformListScrollHandle::default(); // new file → scroll to top
         self.needs_focus = true;
         self.find_open = false;
-        let ms = t0.elapsed().as_secs_f64() * 1000.0;
-        tracing::debug!(target: "tn::quicklook", path = %path.display(), lines = self.file_lines.len(), read_ms, ms, "open");
-        if ms >= 6.0 {
-            tracing::warn!(target: "tn::quicklook", path = %path.display(), read_ms, ms, "open SLOW (file read)");
-        }
     }
 
     /// Recompute `diff` if stale — called only when the Diff tab is shown (keeps the
@@ -704,21 +706,6 @@ impl QuickLook {
         let m = &ks.modifiers;
         let key = ks.key.as_str();
         if self.editing {
-            // DEBUG(quick_look freeze hunt): log every edit key BEFORE doing work,
-            // so a true hang leaves the culprit key as the last line. `rc` > 1 means
-            // the next buffer mutation will deep-clone the whole file (undo/prev
-            // frame still share the Rc) — i.e. O(lines) per keystroke.
-            let _dbg_t0 = std::time::Instant::now();
-            tracing::debug!(
-                target: "tn::quicklook",
-                key = %key,
-                lines = self.buf.len(),
-                buf_rc = Rc::strong_count(&self.buf),
-                cursor = ?self.cursor,
-                sel = self.has_sel(),
-                find = self.find_open,
-                "edit key IN"
-            );
             // Ctrl/Cmd combos (editing): save / undo / redo / clipboard / find.
             if m.control || m.platform {
                 let handled = match key {
@@ -770,12 +757,6 @@ impl QuickLook {
                 };
                 if handled {
                     self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
-                    let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
-                    if ms >= 3.0 {
-                        // Ctrl+S runs `git diff` synchronously → this catches a slow/
-                        // hanging git (large repo) freezing the UI on save.
-                        tracing::warn!(target: "tn::quicklook", combo = %key, lines = self.buf.len(), ms, "edit ctrl-combo SLOW");
-                    }
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -788,10 +769,6 @@ impl QuickLook {
             if self.find_open {
                 self.find_key(key, ks.key_char.as_deref(), m.shift);
                 self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
-                let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
-                if ms >= 3.0 {
-                    tracing::warn!(target: "tn::quicklook", key = %key, lines = self.buf.len(), q = %self.find_query, ms, "find key SLOW");
-                }
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -823,10 +800,6 @@ impl QuickLook {
                 if self.editing {
                     self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
                 }
-                let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
-                if ms >= 3.0 {
-                    tracing::warn!(target: "tn::quicklook", key = %key, lines = self.buf.len(), buf_rc = Rc::strong_count(&self.buf), ms, "edit key SLOW");
-                }
                 cx.stop_propagation();
                 cx.notify();
             }
@@ -834,11 +807,6 @@ impl QuickLook {
             if m.control || m.alt || m.platform {
                 return;
             }
-            // DEBUG(freeze hunt): preview keys were uninstrumented — `↑↓` emits Nav
-            // which (in workspace) opens the next file. Log entry + a SLOW warn so a
-            // stall here (e.g. file read / lazy git on Diff tab) is visible.
-            let _pv_t0 = std::time::Instant::now();
-            tracing::debug!(target: "tn::quicklook", key = %key, tab = ?self.tab, "preview key IN");
             match key {
                 "up" => {
                     cx.emit(QuickLookEvent::Nav(-1));
@@ -865,10 +833,6 @@ impl QuickLook {
                 }
                 _ => {}
             }
-            let ms = _pv_t0.elapsed().as_secs_f64() * 1000.0;
-            if ms >= 3.0 {
-                tracing::warn!(target: "tn::quicklook", key = %key, ms, "preview key SLOW");
-            }
         }
     }
 
@@ -882,18 +846,13 @@ impl QuickLook {
             "--".to_string(),
             rel.to_string_lossy().into_owned(),
         ];
-        let t = std::time::Instant::now();
         // Bounded so a slow / .git-locked / AV-scanned git can never hang the UI
-        // (the worst case is a ~1.5s stall on an explicit Diff-tab view).
+        // (worst case ~1.5s on an explicit Diff-tab view); `None` = timed out → no diff.
         let text = git_capture_bounded(&self.root, args, std::time::Duration::from_millis(1500));
-        let ms = t.elapsed().as_secs_f64() * 1000.0;
-        let timed_out = text.is_none();
-        let lines = parse_diff(text.as_deref().unwrap_or(""));
-        tracing::info!(target: "tn::quicklook", path = %path.display(), ms, timed_out, hunks = lines.len(), "compute_diff");
-        if ms >= 30.0 {
-            tracing::warn!(target: "tn::quicklook", ms, timed_out, "compute_diff SLOW (git diff blocked)");
+        if text.is_none() {
+            tracing::warn!(target: "tn::quicklook", path = %path.display(), "git diff timed out (>1.5s); showing no diff");
         }
-        lines
+        parse_diff(text.as_deref().unwrap_or(""))
     }
 
 }
@@ -1392,12 +1351,6 @@ impl gpui::EventEmitter<QuickLookEvent> for QuickLook {}
 
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let _render_t0 = std::time::Instant::now();
-        // DEBUG(freeze hunt): logged at the START of render. `uniform_list` row
-        // closures + text shaping run in gpui's PAINT (after this returns), so a
-        // freeze there leaves THIS as the last line (the appender thread flushes it
-        // during the multi-second UI hang) — proving the cost is paint, not build.
-        tracing::debug!(target: "tn::quicklook", editing = self.editing, lines = self.buf.len(), file_lines = self.file_lines.len(), tab = ?self.tab, "render START");
         // Grab focus on first render after open (focusing in open() doesn't land —
         // the overlay isn't rendered yet; see 踩过的坑).
         if self.needs_focus {
@@ -1752,14 +1705,7 @@ impl Render for QuickLook {
             .child(seam);
 
         // mockup .quicklook::before 冷能量描边 + 更深的浮起投影
-        let out = quicklook_frame(inner, ui.accent);
-        // DEBUG: time the whole render. Body is virtualized (~30 rows), so a slow
-        // render points at find's all_matches (big doc + tiny query) or churn.
-        let ms = _render_t0.elapsed().as_secs_f64() * 1000.0;
-        if ms >= 6.0 {
-            tracing::warn!(target: "tn::quicklook", editing = self.editing, lines = self.buf.len(), find = self.find_open, q = %self.find_query, ms, "render SLOW");
-        }
-        out
+        quicklook_frame(inner, ui.accent)
     }
 }
 
@@ -1894,6 +1840,26 @@ mod tests {
         // empty query → no matches, no replacements
         assert!(all_matches(&b, "").is_empty());
         assert_eq!(replace_all_in(&mut b.clone(), "", "X"), 0);
+    }
+
+    #[test]
+    fn highlight_terminates_on_alphanumeric_nonword_chars() {
+        // Regression (踩过的坑): `①` (U+2460) is is_alphanumeric() but NOT
+        // is_alphabetic()/is_ascii_digit(), so it fell through to the punct branch
+        // which broke at j==i → infinite loop → OOM (froze opening an HTML with `①`).
+        // These must all return promptly with token count bounded by char count.
+        for s in ["①", "① 窗口外壳", "②③ x", "½ cup", "a①b", "<h1>① 标题</h1>", "Ⅷ ⑩ ㊀"] {
+            let toks = highlight(s);
+            assert!(
+                toks.len() <= s.chars().count() + 1,
+                "highlight({s:?}) produced {} tokens for {} chars — runaway?",
+                toks.len(),
+                s.chars().count()
+            );
+            // reconstruct → original (no chars dropped/duplicated)
+            let joined: String = toks.iter().map(|(t, _)| t.as_str()).collect();
+            assert_eq!(joined, s, "highlight must preserve text for {s:?}");
+        }
     }
 
     #[test]

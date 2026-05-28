@@ -71,18 +71,17 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
   `mpsc::recv_timeout(1.5s)` 超时即放弃 + `#[cfg(windows)] CREATE_NO_WINDOW` 防控制台闪;**别用 `try_wait` 轮询读
   piped stdout**——大 diff 撑爆管道缓冲会死锁)。`explorer::compute_git_status`(`git status`)同加 `CREATE_NO_WINDOW`。
   `compute_diff` 的解析拆成纯 `parse_diff` + headless 单测(单测 44 → 45)。
-- **Quick Look 第二个冻结(渲染 HTML 等密集 token / CJK 文件)**:真机日志(带上条修复的埋点)显示 git diff 已离开
-  打开路径,但**切到 HTML 文件仍冻**——`open()` 已返回(日志有 `ms=9.78`),冻在其后。病根:`uniform_list` 的行
-  闭包 + 文字整形(shaping)发生在 gpui 的 **paint 阶段**(我的 `render()` 计时之后),`file_row` 把一行**逐 token 拆成
-  一个 `div`**,HTML 标记 + **CJK 文本**(代码字体无 CJK → DirectWrite 逐 run 字体回退)× 每行几十 span × 可见 ~30 行
-  → paint 整形爆量、整窗冻死(`render()` 很快返回故无 `render SLOW`;`escape`/Ctrl+C 又吃掉缓冲日志,故"暗")。
-  **修**:`coalesce_spans`——**按 tint 合并相邻 token**(标记行从 ~30 span 降到个位数)+ 超 `MAX_SPANS(48)` 折叠尾部 +
-  **长行(>2000 字节)整行单 span**(跳过 tokenize);`file_row`/`edit_row` 共用。**span 数 / 整形 run 数大降 → paint 廉价**。
-  新增 `coalesce_spans` headless 单测(合并/不丢内容/封顶;单测 45 → 46)。
-- **(临时)冻结诊断埋点**:`on_key`(编辑+预览)/ `open` / `compute_diff` / workspace `nav open` / `render START` 加
-  `tracing`(target `tn::quicklook`)——入口/START `debug`、慢操作 `warn`、git 耗时 + `timed_out` `info`。`render START` 在
-  paint 前打,**paint 冻死时它是最后一行**(appender 线程趁 UI 冻的几秒能刷出)→ 坐实冻在 paint。**真机确认不再冻后清**。
-  复现看 `%APPDATA%\Tn\logs\tn.log`(入口日志需 `$env:RUST_LOG="info,tn::quicklook=debug"`)。
+- **Quick Look 真·冻结根因:`highlight()` 在 `①` 类字符上死循环 → OOM**(切到含 `①` 的 HTML 必冻;CLAUDE.md 无 `①`
+  故正常)。`①`(U+2460)`is_alphanumeric()==true` 但 `is_alphabetic()==false`、`is_ascii_digit()==false`,故词分支(查
+  `is_alphabetic`)和数字分支(查 `is_ascii_digit`)都不收它,落到标点分支;标点分支的 `while` 在 `is_alphanumeric()` 处
+  `break`,于是 `j==i` 不前进 → `i` 永不推进 → 无限 push 空 token → `out` 撑爆内存 OOM(`rust_oom`,Windows 报 `0xc0000409`;
+  交互式下表现为 CPU 打满、整窗冻、用户 Ctrl+C)。**修**:标点分支末尾保证前进——`if j == i { j = i + 1 }`(把这个字符当 1
+  字符 Plain token 吃掉)。加回归单测 `highlight_terminates_on_alphanumeric_nonword_chars`(`①②③½Ⅷ⑩㊀` 等;单测 46 → 47)。
+  **定位法**:加 `TN_QL_BENCH=<file>` 探针(开机即在真窗口里把该文件弹进 Quick Look、2.5s 后自退;paint 挂则进程挂)→
+  `cargo run` 复现出 `0xc0000409`,`RUST_BACKTRACE` 顶帧 `rust_oom ← grow_one ← highlight:146` 直指死循环。探针保留(env 门控)。
+- **paint 成本加固(顺带,非根因)**:`coalesce_spans` 按 tint 合并相邻 token(标记行 ~30 span → 个位数)+ 封顶 `MAX_SPANS(48)` +
+  长行(>2000B)整行单 span;`file_row`/`edit_row` 共用。减少 `div`/整形 run 数,降低密集行 paint 负担(单测含合并/不丢内容/封顶)。
+- 临时埋点(`render START`/逐键 `IN`/`open`·`nav` 计时/`TN_QL_PLAIN`·`NOBODY`)在定位后已清;保留 `compute_diff` 超时 `warn` + `TN_QL_BENCH`。
 
 ### 待接 (Deferred)
 - **键盘两态 + 编辑**:prototype 的 `Space` 开 / `↑↓` 换文件实时跟随 / `Enter` 进编辑态 / 方向键归编辑器 /
