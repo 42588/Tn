@@ -55,8 +55,8 @@ body {
 /* 工程网格(蓝图)+ 冷深底:34px 网格 + 冷光晕 + 深冷渐变 */
 .canvas{ position:relative; border-radius:var(--r-pane); padding:40px; overflow:hidden;
   background:
-    linear-gradient(rgba(122,162,247,0.05) 1px, transparent 1px) 0 0 / 34px 34px,
-    linear-gradient(90deg, rgba(122,162,247,0.05) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(rgba(122,162,247,0.10) 1px, transparent 1px) 0 0 / 34px 34px,
+    linear-gradient(90deg, rgba(122,162,247,0.10) 1px, transparent 1px) 0 0 / 34px 34px,
     radial-gradient(900px 600px at 30% -18%, rgba(90,140,255,0.07), transparent 60%),
     linear-gradient(160deg,#0a0c15,#070810 60%,#050609); }
 .canvas.tall{ height:460px; } .canvas.mid{ height:330px; } .canvas.short{ height:160px; }
@@ -129,8 +129,8 @@ body {
 .pane::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none; border-radius:inherit;
   background:var(--noise); background-size:170px 170px; opacity:.05; mix-blend-mode:soft-light; }
 .pane > *{ position:relative; z-index:2; }
-/* 焦点:描边转暖(珊瑚承光)+ 更深浮起 */
-.pane.active::before{ background:linear-gradient(180deg, rgba(240,145,109,0.42), rgba(240,145,109,0.13) 32%, rgba(240,145,109,0.05) 72%, rgba(240,145,109,0.15)); }
+/* 焦点:描边更亮的冷能量边(去橙;通电感更强)+ 更深浮起 */
+.pane.active::before{ background:linear-gradient(180deg, rgba(210,225,255,0.30), rgba(255,255,255,0.07) 32%, rgba(122,162,247,0.06) 72%, rgba(122,162,247,0.18)); }
 .pane.active{
   box-shadow:
     0 0 0 1px rgba(0,0,0,0.28),
@@ -138,14 +138,6 @@ body {
     0 4px 9px -2px rgba(0,0,0,0.58),
     0 30px 64px -28px rgba(0,0,0,0.8),
     0 64px 120px -48px rgba(0,0,0,0.94); }
-
-/* HUD 角标:四角 L 形取景框(accent 冷光,极淡)— 给重点面板「仪表/取景」科技感 */
-.hud{ position:absolute; inset:7px; z-index:4; pointer-events:none; }
-.hud i{ position:absolute; width:13px; height:13px; border:1.5px solid rgba(122,162,247,0.45); }
-.hud i:nth-child(1){ top:0; left:0; border-right:0; border-bottom:0; border-radius:5px 0 0 0; }
-.hud i:nth-child(2){ top:0; right:0; border-left:0; border-bottom:0; border-radius:0 5px 0 0; }
-.hud i:nth-child(3){ bottom:0; left:0; border-right:0; border-top:0; border-radius:0 0 0 5px; }
-.hud i:nth-child(4){ bottom:0; right:0; border-left:0; border-top:0; border-radius:0 0 5px 0; }
 
 .phead{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto;
   font-size:11.5px; font-weight:560; color:var(--muted); letter-spacing:.2px; }
@@ -175,7 +167,7 @@ body {
 
 /* ===================== agent header + ring ===================== */
 .agenthead{ display:flex; align-items:center; gap:11px; padding:10px 14px; flex:0 0 auto;
-  background:linear-gradient(180deg, rgba(240,145,109,0.07), transparent 72%); }
+  background:linear-gradient(180deg, rgba(240,145,109,0.04), transparent 66%); }
 .agenthead .av{ width:28px; height:28px; border-radius:9px; display:flex; align-items:center; justify-content:center;
   color:var(--claude); background:rgba(240,145,109,0.14); }
 .agenthead .av .i{ width:16px; height:16px; }
