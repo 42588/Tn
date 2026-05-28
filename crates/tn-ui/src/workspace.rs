@@ -1351,32 +1351,35 @@ impl Render for Workspace {
                     .relative()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .rounded(px(R_CARD))
-                    .text_size(px(12.0))
+                    .gap(px(7.)) // §16 .tab gap:7px(原 gap_2=8)
+                    .h(px(34.)) // §16 .tab height:34px(原 py_1 无固定高)
+                    .px(px(14.)) // §16 .tab padding:0 14px(原 px_3=12)
+                    .rounded_t(px(R_CARD)) // §16 .tab radius:11 11 0 0(仅上,原四角)
+                    .text_size(px(12.5)) // §16 .tab font-size:12.5px(原 12.0)
+                    .font_weight(gpui::FontWeight(520.)) // §16 .tab font-weight:520(原未设)
                     // Active tab = a glass pill (inset + rim + sheen) with a thin
                     // agent-color accent bar at the top. Inactive sits flat and
                     // lifts a touch on hover. No glow.
                     .when(is_active, |d| {
-                        shadowed(
-                            d.bg(cola(ui.tab_active_bg, 0.85))
-                                .border_1()
-                                .border_color(rgba(RIM))
-                                .text_color(col(ui.foreground)),
-                            vec![soft_shadow(2.0, 10.0, -4.0, 0.35)],
-                        )
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(1.))
-                                .left(px(11.))
-                                .right(px(11.))
-                                .h(px(2.))
-                                .rounded_full()
-                                .bg(col(accent_c)),
-                        )
+                        // mockup .tab.active:白色微渐变 .055→.01 + agent 强调条。无 rim 边、无投影。
+                        // (mockup 还有 0 1px 0 sheen inset 顶高光,按 owner 要求去掉。)
+                        d.text_color(col(ui.foreground))
+                            .bg(linear_gradient(
+                                180.,
+                                linear_color_stop(rgba(0xffffff0e), 0.), // .055 → round(.055×255)=14=0x0e
+                                linear_color_stop(rgba(0xffffff03), 1.), // .01  → round(.01×255)=3=0x03
+                            ))
+                            // ::after 强调色条(agent 色),left/right 13,top 0,2px
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(0.))
+                                    .left(px(13.))
+                                    .right(px(13.))
+                                    .h(px(2.))
+                                    .rounded_full()
+                                    .bg(col(accent_c)),
+                            )
                     })
                     .when(!is_active, |d| {
                         d.border_1()
@@ -1396,9 +1399,12 @@ impl Render for Workspace {
                     // cwd path badge on the active tab (mockup's "~/proj/tn").
                     .when(is_active && cwd.is_some(), |d| {
                         d.child(
+                            // mockup .tab .badge: 11px · faint #474E72 · mono · weight 400
                             div()
-                                .text_size(px(10.5))
-                                .text_color(col(ui.muted))
+                                .text_size(px(11.))
+                                .font_family("Cascadia Code")
+                                .font_weight(gpui::FontWeight(400.))
+                                .text_color(gpui::rgb(0x474E72)) // --faint(无主题 token)
                                 .child(SharedString::from(short_cwd(cwd.as_deref().unwrap_or("")))),
                         )
                     })
