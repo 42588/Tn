@@ -118,17 +118,20 @@ pub(crate) fn pane_fill(bg: impl Rgb8) -> gpui::Background {
 /// box-shadow, so the mockup's inset bottom shadow is omitted.) Shared by panes +
 /// explorer so the lift stays identical.
 pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
-    let hairline = soft_shadow(0.0, 0.0, 1.0, 0.28); // 0 0 0 1px rgba(0,0,0,.28)
+    // 软暗晕,代替 mockup 的硬 1px 暗线:硬线紧贴亮渐变描边 → 暗-亮并置显「接缝」(mockup
+    // 靠 backdrop-blur 抹平,我们没有)。改 3px 模糊、0 spread 的暗晕 → 仍「切出背景」,
+    // 但边过渡丝滑、无硬缝。
+    let edge_cut = soft_shadow(0.0, 3.0, 0.0, 0.34);
     if focused {
         vec![
-            hairline,
+            edge_cut,
             soft_shadow(4.0, 9.0, -2.0, 0.58),
             soft_shadow(30.0, 64.0, -28.0, 0.8),
             soft_shadow(64.0, 120.0, -48.0, 0.94),
         ]
     } else {
         vec![
-            hairline,
+            edge_cut,
             soft_shadow(2.0, 5.0, -2.0, 0.55),
             soft_shadow(22.0, 48.0, -26.0, 0.72),
             soft_shadow(52.0, 104.0, -46.0, 0.92),

@@ -33,7 +33,9 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
   - **g1 玻璃渐变**修正——原型 `--g1` 早先改冷加深(`rgba(34,42,70,.46)→rgba(16,20,38,.58)`)但 gpui 侧漏跟、
     各抄旧值致面板偏灰偏透;抽成单一真源 `G1_TOP/G1_BOT`(render_node + explorer 共用)+ **新增第 5 道
     `--g1` 守卫**(`token_drift` 解析 mockup 渐变两停)。
-  - **面板浮起**:单层软投影 → mockup `.pane` **投影栈**(外圈 1px 暗发丝线"切"出背景 + 分层柔投影;`pane_shadows`)。
+  - **面板浮起**:单层软投影 → mockup `.pane` **投影栈**(分层柔投影 + "切出背景"的边缘暗晕;`pane_shadows`)。
+    边缘暗用 **3px 软暗晕**(非 mockup 的硬 1px 暗线)——硬线紧贴亮渐变描边会显「接缝」(原型靠
+    backdrop-blur 抹平、我们没有),软晕过渡丝滑、无硬缝。
   - **冷能量渐变描边**(mockup `.pane::before`):gpui 边框单色无法渐变 → 用 **1px padding reveal**(`glass_pane`):
     外层冷白→accent 竖渐变底 + 1px 内边距,内容圆角内缩 1px、**fill 烤成不透明**(`pane_fill`,防渐变透底洗白)→
     1px 环即"顶冷白承光 / 底 accent 回光 / 侧渐变"的连续描边,聚焦更亮(**去掉旧暖橙焦点边**)。
