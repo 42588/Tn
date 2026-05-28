@@ -1,10 +1,17 @@
-//! File / diff viewer (M4 chrome) — the mockup's right column.
+//! Quick Look 速览浮层(prototype ③ 侧栏 · 速览编辑)— the redesigned file viewer.
 //!
-//! Shows a file the user clicked in the explorer: the **File** tab renders it
-//! with line numbers and a light, best-effort syntax tint; the **Diff** tab
-//! runs `git diff` for that path and renders the unified hunks with `+`/`-`
-//! styling. It's a Calm Glass panel (chrome, not a split-tree node). Content is
-//! read once on open / tab-switch and cached, so it does no work per frame.
+//! Selecting a file in the explorer pops a **floating glass overlay** hugging the
+//! tree's right edge and floating *over* the terminal (it no longer docks as a
+//! permanent right column — that ate split space). The **File** tab renders the
+//! file with line numbers + a light syntax tint; the **Diff** tab runs `git diff`
+//! and renders the unified hunks with `+`/`-` styling. A left **seam** (accent
+//! vertical line) points back at the selected file in the tree. Content is read
+//! once on open / tab-switch and cached, so it does no work per frame.
+//!
+//! Keyboard nav (Space toggle · ↑↓ change file · Enter edit) + real in-place
+//! editing (Ctrl+S) are the prototype's full model but are ⏳ deferred (need
+//! explorer keyboard focus + an editable text buffer); this is the visual overlay
+//! + click-to-open + Diff/File toggle. See docs/架构蓝图 §8 ①.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,10 +24,10 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::style::{
-    col, cola, shadowed, soft_shadow, specular_top, HOVER, RIM, R_PANEL, UI_SANS,
+    col, cola, icon, quicklook_fill, quicklook_frame, specular_top, HOVER, INSET, R_PANEL, UI_SANS,
 };
 
-/// Max lines rendered (a viewer is a glance, not a pager).
+/// Max lines rendered (a quick look is a glance, not a pager).
 const MAX_LINES: usize = 500;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -146,7 +153,7 @@ struct DiffLine {
     text: String,
 }
 
-pub struct ViewerView {
+pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
     path: Option<PathBuf>,
@@ -157,7 +164,7 @@ pub struct ViewerView {
     focus_handle: FocusHandle,
 }
 
-impl ViewerView {
+impl QuickLook {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
@@ -170,6 +177,12 @@ impl ViewerView {
             diff: Vec::new(),
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Whether a file is currently loaded (the workspace shows the overlay only
+    /// when there is one — an empty overlay would float over nothing).
+    pub fn has_file(&self) -> bool {
+        self.path.is_some()
     }
 
     /// `(filename, language)` for the open file — drives the status bar's
@@ -278,24 +291,36 @@ impl ViewerView {
         }
     }
 
+    /// One code row (`.cl`): a faint line-number gutter (`.ln`, width 38, mr 14)
+    /// + a marker column (`.mk`, width 14) + the tinted source.
+    fn code_row(&self, no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div>) -> gpui::Div {
+        div()
+            .flex()
+            .flex_row()
+            .pr(px(12.)) // mockup .cl padding-right 12
+            // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
+            .child(
+                div()
+                    .w(px(38.))
+                    .flex_none()
+                    .mr(px(14.))
+                    .text_right()
+                    .text_size(px(11.))
+                    .text_color(gpui::rgb(0x474E72)) // faint(无主题 token,字面量)
+                    .child(SharedString::from(no)),
+            )
+            // mockup .cl .mk:width 14 居中
+            .child(div().w(px(14.)).flex_none().text_center().text_color(mark_col).child(mark))
+            .child(div().flex().flex_row().children(spans))
+    }
+
     fn render_file(&self) -> gpui::Div {
-        let th = &self.config.theme;
         let rows = self.file_lines.iter().enumerate().map(|(i, line)| {
-            let spans = highlight(line).into_iter().map(|(text, tint)| {
-                div().text_color(self.tint_color(tint)).child(SharedString::from(text))
-            });
-            div()
-                .flex()
-                .flex_row()
-                .child(
-                    div()
-                        .w(px(40.))
-                        .flex_none()
-                        .pr_2()
-                        .text_color(col(th.ui.muted))
-                        .child(SharedString::from(format!("{}", i + 1))),
-                )
-                .child(div().flex().flex_row().children(spans))
+            let spans: Vec<gpui::Div> = highlight(line)
+                .into_iter()
+                .map(|(text, tint)| div().text_color(self.tint_color(tint)).child(SharedString::from(text)))
+                .collect();
+            self.code_row(format!("{}", i + 1), "", col(self.config.theme.ui.muted), spans)
         });
         div().flex().flex_col().children(rows)
     }
@@ -317,20 +342,19 @@ impl ViewerView {
                 DiffKind::Ctx => (rgba(0x00000000), " ", col(th.ui.muted), col(th.ui.foreground)),
             };
             let no = d.new_no.map(|n| format!("{n}")).unwrap_or_default();
-            div()
-                .flex()
-                .flex_row()
-                .bg(bg)
-                // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
-                .child(div().w(px(38.)).flex_none().mr(px(14.)).text_right().text_size(px(11.)).text_color(gpui::rgb(0x474E72)).child(SharedString::from(no)))
-                .child(div().w(px(14.)).flex_none().text_color(mark_col).child(mark))
-                .child(div().text_color(txt_col).child(SharedString::from(d.text.clone())))
+            let spans = vec![div().text_color(txt_col).child(SharedString::from(d.text.clone()))];
+            self.code_row(no, mark, mark_col, spans).bg(bg)
         });
         div().flex().flex_col().children(rows)
     }
+}
 
-    fn render_header(&self) -> gpui::Div {
+impl Render for QuickLook {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let ui = &self.config.theme.ui;
         let th = &self.config.theme;
+
+        // ── .vh header:file icon + path(dir muted / name accent) + 已改动 badge + Diff/File tabset ──
         let rel = self
             .path
             .as_ref()
@@ -341,128 +365,173 @@ impl ViewerView {
             Some(i) => (rel[..=i].to_string(), rel[i + 1..].to_string()),
             None => (String::new(), rel.clone()),
         };
-        let tab_chip = |label: &'static str, on: bool| {
+
+        // Diff/File pill (`.tg` / `.tg.on`), clickable to switch tabs.
+        let pill = |label: &'static str, on: bool, to: Tab| {
             div()
-                .px_2()
+                .px(px(10.))
                 .py(px(2.))
-                .rounded(px(7.))
+                .rounded(px(7.)) // §16 .vh .tg radius 7
                 .text_size(px(10.5))
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(col(if on { th.ui.foreground } else { th.ui.muted }))
-                .when(on, |d| d.bg(rgba(HOVER)))
+                .font_weight(gpui::FontWeight(640.)) // §16 .vh .tg weight 640
+                .text_color(col(if on { ui.foreground } else { ui.muted }))
+                .when(on, |d| d.bg(rgba(HOVER))) // .tg.on bg = g3
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, _w, cx| {
+                        this.tab = to;
+                        cx.notify();
+                    }),
+                )
                 .child(label)
         };
-        div()
+        let tabset = div()
+            .flex()
+            .flex_row()
+            .gap(px(2.)) // §16 .vh .tabset gap 2
+            .p(px(2.))
+            .rounded(px(9.)) // §16 .vh .tabset radius 9
+            .bg(rgba(INSET)) // .tabset bg = g2
+            .child(pill("Diff", self.tab == Tab::Diff, Tab::Diff))
+            .child(pill("File", self.tab == Tab::File, Tab::File));
+
+        let header = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .h(px(32.))
-            .px_3()
+            .gap(px(9.)) // §16 .vh gap 9
+            .h(px(36.)) // §16 .vh height 36
+            .px(px(13.)) // §16 .vh padding 0 13
             .flex_none()
             .font_family(UI_SANS) // header chrome = sans (code stays mono)
             .text_size(px(11.5))
-            .child(crate::assets::icon("file", 14.).text_color(col(th.ui.accent)))
-            .child(div().text_color(col(th.ui.muted)).child(SharedString::from(dir)))
+            .font_weight(gpui::FontWeight(560.)) // §16 .vh weight 560
+            // mockup .vh bg:accent @ .06 → transparent 72%
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(cola(ui.accent, 0.06), 0.),
+                linear_color_stop(rgba(0x00000000), 0.72),
+            ))
+            .child(icon("file", 14., ui.accent))
+            // mockup .vh .path:dir = fg-dim(#A6AFD4 字面量),name = accent bold;mono
             .child(
                 div()
-                    .text_color(col(th.ui.accent))
+                    .font_family(SharedString::from(self.config.font().family.clone()))
+                    .text_color(gpui::rgb(0xA6AFD4))
+                    .child(SharedString::from(dir)),
+            )
+            .child(
+                div()
+                    .font_family(SharedString::from(self.config.font().family.clone()))
+                    .text_color(col(ui.accent))
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(SharedString::from(name)),
             )
             .child(div().flex_1())
+            // mockup .vh .by:已改动 badge(claude)—— 仅文件有未提交改动时显
             .when(!self.diff.is_empty(), |d| {
-                d.child(crate::assets::icon("pen", 13.).text_color(col(th.agents.claude)))
-                    .child(div().text_size(px(11.)).text_color(col(th.agents.claude)).child("已改动"))
+                d.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.)) // §16 .vh .by gap 5
+                        .text_size(px(11.))
+                        .text_color(col(th.agents.claude))
+                        .child(icon("pen", 13., th.agents.claude))
+                        .child("已改动"),
+                )
             })
-            .child(tab_chip("Diff", self.tab == Tab::Diff))
-            .child(tab_chip("File", self.tab == Tab::File))
-    }
-}
+            .child(tabset);
 
-impl Render for ViewerView {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let th = &self.config.theme;
-        // Tab chips are clickable: wire them via overlay listeners on the header
-        // children would be awkward, so the header builds plain chips and we add
-        // click targets here by wrapping. Simpler: rebuild header with listeners.
-        let body = if self.path.is_none() {
-            div()
+        // ── .code body:File 渲染 / Diff 渲染(各自滚动、裁自己)──
+        let body = if self.tab == Tab::File {
+            let mut v = div()
                 .flex_1()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(col(th.ui.muted))
-                .child("在左侧选择文件查看")
-        } else if self.tab == Tab::File {
-            let mut v = div().flex_1().min_h(px(0.)).overflow_hidden().p_2().child(self.render_file());
+                .min_h(px(0.))
+                .overflow_hidden()
+                .py(px(8.)) // mockup .code padding 8px 0
+                .child(self.render_file());
             if self.file_truncated {
                 v = v.child(
                     div()
-                        .px_2()
+                        .px(px(14.))
                         .py_1()
-                        .text_color(col(th.ui.muted))
+                        .text_color(col(ui.muted))
                         .child(SharedString::from(format!("… 仅显示前 {MAX_LINES} 行"))),
                 );
             }
             v
         } else {
-            div().flex_1().min_h(px(0.)).overflow_hidden().p_2().child(self.render_diff())
+            div().flex_1().min_h(px(0.)).overflow_hidden().py(px(8.)).child(self.render_diff())
         };
 
-        // Clickable Diff/File toggles (cover the header chips).
-        let to_file = cx.listener(|this, _e, _w, cx| {
-            this.tab = Tab::File;
-            cx.notify();
-        });
-        let to_diff = cx.listener(|this, _e, _w, cx| {
-            this.tab = Tab::Diff;
-            cx.notify();
-        });
+        // ── .qlfoot footer:键帽 + 操作提示(预览态)──
+        let kcap = |label: &'static str| {
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .rounded(px(5.)) // §16 .qlfoot .k radius 5
+                .font_family(SharedString::from(self.config.font().family.clone()))
+                .text_size(px(10.))
+                .text_color(gpui::rgb(0xA6AFD4)) // fg-dim
+                .bg(rgba(INSET)) // .k bg = g2
+                .child(label)
+        };
+        let footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(7.)) // §16 .qlfoot gap 7
+            .px(px(14.)) // mockup .qlfoot padding 7px 14px
+            .py(px(7.))
+            .flex_none()
+            .font_family(UI_SANS)
+            .text_size(px(10.5))
+            .text_color(col(ui.muted))
+            .border_t_1()
+            .border_color(rgba(0xffffff0d)) // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
+            .child(kcap("↑↓"))
+            .child("换文件 ·")
+            .child(kcap("⇥"))
+            .child("切 File ·")
+            .child(kcap("Enter"))
+            .child("编辑")
+            .child(div().flex_1())
+            .child("Diff 只读审阅 ·")
+            .child(kcap("Esc"))
+            .child("关闭");
 
-        let root = div()
+        // ── 左缘 accent 竖线(.seam):指向树中选中文件的「连接感」;末位子 = 画在最上层 ──
+        let seam = div()
+            .absolute()
+            .left(px(0.))
+            .top(px(16.)) // mockup .seam top 16 bottom 16
+            .bottom(px(16.))
+            .w(px(2.))
+            .rounded_r(px(2.))
+            .bg(cola(ui.accent, 0.55)); // mockup .seam accent @ .55
+
+        let inner = div()
             .track_focus(&self.focus_handle)
             .size_full()
-            .relative() // anchor the absolute specular / sheen layers
+            .relative() // anchor specular / seam absolute layers
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(px(R_PANEL))
-            .border_1()
-            .border_color(rgba(RIM))
-            // mockup .viewer 是 .pane:用 g1 玻璃渐变(与其它面板一致)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0x2a2e446b), 0.), // rgba(42,46,68,.42)
-                linear_color_stop(rgba(0x1a1c2c85), 1.), // rgba(26,28,44,.52)
-            ))
+            .rounded(px(R_PANEL - 1.)) // 1px tighter so the gradient-edge ring shows (quicklook_frame)
+            // mockup .quicklook 底层暗玻璃,baked opaque(浮终端上须压住后字)
+            .bg(quicklook_fill(ui.chrome_bg))
             .font_family(SharedString::from(self.config.font().family.clone()))
-            .text_size(px(12.5)) // mockup .code font-size:12.5px
-            // mockup .pane::before specular 柔光洗(无 glow;不加 sheen 硬线)
-            .child(specular_top())
-            .child(
-                // header + invisible click targets aligned to the right tab chips
-                div()
-                    .relative()
-                    .child(self.render_header())
-                    .child(
-                        div()
-                            .absolute()
-                            .top(px(0.))
-                            .right(px(0.))
-                            .flex()
-                            .flex_row()
-                            .h(px(32.))
-                            .items_center()
-                            .gap_2()
-                            .pr_3()
-                            .child(div().w(px(34.)).h(px(20.)).on_mouse_down(MouseButton::Left, to_diff))
-                            .child(div().w(px(34.)).h(px(20.)).on_mouse_down(MouseButton::Left, to_file)),
-                    ),
-            )
-            .child(body);
-        // mockup .pane 浮起投影(与终端/explorer 面板统一)
-        shadowed(root, vec![soft_shadow(24.0, 58.0, -36.0, 0.88)])
+            .text_size(px(12.5)) // mockup .code font-size 12.5
+            .child(specular_top()) // 顶部柔光洗(白 .03~.04)
+            .child(header)
+            .child(body)
+            .child(footer)
+            .child(seam);
+
+        // mockup .quicklook::before 冷能量描边 + 更深的浮起投影
+        quicklook_frame(inner, ui.accent)
     }
 }

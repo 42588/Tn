@@ -22,8 +22,8 @@ use tn_config::Loaded;
 
 use crate::explorer::{ExplorerView, OpenFile};
 use crate::perf::PerfStats;
+use crate::quick_look::QuickLook;
 use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
-use crate::viewer::ViewerView;
 use crate::welcome::{LaunchRequested, WelcomeView};
 
 type PaneId = u64;
@@ -376,7 +376,7 @@ actions!(
         ShrinkHeight,
         TogglePalette,
         ToggleExplorer,
-        ToggleViewer
+        ToggleQuickLook
     ]
 );
 
@@ -401,7 +401,7 @@ fn default_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-shift-up", ShrinkHeight, ctx),
         KeyBinding::new("ctrl-shift-p", TogglePalette, ctx),
         KeyBinding::new("ctrl-shift-b", ToggleExplorer, ctx),
-        KeyBinding::new("ctrl-shift-j", ToggleViewer, ctx),
+        KeyBinding::new("ctrl-shift-j", ToggleQuickLook, ctx),
     ]
 }
 
@@ -423,7 +423,9 @@ fn binding_for(keys: &str, command: &str) -> Option<KeyBinding> {
         "shrink_height" => KeyBinding::new(keys, ShrinkHeight, ctx),
         "command_palette" | "toggle_palette" => KeyBinding::new(keys, TogglePalette, ctx),
         "toggle_explorer" | "explorer" => KeyBinding::new(keys, ToggleExplorer, ctx),
-        "toggle_viewer" | "viewer" => KeyBinding::new(keys, ToggleViewer, ctx),
+        "toggle_quick_look" | "quick_look" | "toggle_viewer" | "viewer" => {
+            KeyBinding::new(keys, ToggleQuickLook, ctx)
+        }
         _ => return None,
     })
 }
@@ -462,10 +464,11 @@ pub struct Workspace {
     /// File explorer sidebar (left column) + whether it's shown.
     explorer: Entity<ExplorerView>,
     explorer_open: bool,
-    /// File/diff viewer (right column) + whether it's shown (auto-opens on
-    /// clicking a file in the explorer).
-    viewer: Entity<ViewerView>,
-    viewer_open: bool,
+    /// Quick Look 速览浮层(贴树右缘、浮于终端之上)+ whether it's shown
+    /// (auto-opens on clicking a file in the explorer; only rendered when it
+    /// actually has a file loaded).
+    quick_look: Entity<QuickLook>,
+    quick_look_open: bool,
     /// Welcome launchpad shown as a new tab's content (until a tile is clicked).
     /// One shared entity (stateless chrome); its `LaunchRequested` launches into
     /// the active tab.
@@ -499,12 +502,12 @@ pub struct Workspace {
 impl Workspace {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let explorer = cx.new(|cx| ExplorerView::new(cx, config.clone()));
-        let viewer = cx.new(|cx| ViewerView::new(cx, config.clone()));
-        // Clicking a file in the explorer opens it in the viewer (auto-showing it).
+        let quick_look = cx.new(|cx| QuickLook::new(cx, config.clone()));
+        // Clicking a file in the explorer pops the Quick Look overlay for it.
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
             let path = ev.0.clone();
-            ws.viewer.update(cx, |v, _| v.open(path));
-            ws.viewer_open = true;
+            ws.quick_look.update(cx, |v, _| v.open(path));
+            ws.quick_look_open = true;
             cx.notify();
         })
         .detach();
@@ -528,8 +531,8 @@ impl Workspace {
             config,
             explorer,
             explorer_open: true,
-            viewer,
-            viewer_open: false,
+            quick_look,
+            quick_look_open: false,
             welcome,
             branch: git_branch(),
             palette_open: false,
@@ -774,9 +777,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Show/hide the file/diff viewer (Ctrl+Shift+J).
-    fn toggle_viewer(&mut self, _: &ToggleViewer, _window: &mut Window, cx: &mut Context<Self>) {
-        self.viewer_open = !self.viewer_open;
+    /// Show/hide the Quick Look overlay (Ctrl+Shift+J).
+    fn toggle_quick_look(&mut self, _: &ToggleQuickLook, _window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_look_open = !self.quick_look_open;
         cx.notify();
     }
 
@@ -1265,8 +1268,8 @@ impl Workspace {
 
         bar = bar.child(div().flex_1());
 
-        // right cluster: viewer file·lang, encoding, theme
-        if let Some((name, lang)) = self.viewer.read(cx).status() {
+        // right cluster: quick look file·lang, encoding, theme
+        if let Some((name, lang)) = self.quick_look.read(cx).status() {
             bar = bar.child(seg(vec![div()
                 .text_color(col(ui.foreground))
                 .child(SharedString::from(format!("{name} · {lang}")))
@@ -1636,46 +1639,10 @@ impl Render for Workspace {
             .child(div().flex_1().h_full().window_control_area(WindowControlArea::Drag))
             .child(controls);
 
-        // The explorer is a clean pane (mockup .sidebar): no wrapper bar — it
-        // toggles via Ctrl+Shift+B only. The viewer (legacy; → Quick Look 待端口)
-        // keeps a slim close bar above it: its own header hosts Diff/File tabs we
-        // can't overlay, and the Ctrl+Shift+J toggle can be swallowed by the
-        // IME/layout-switch hotkey on Chinese Windows, so it stays click-closeable.
-        let bar_label = |label: &'static str| {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .h(px(22.))
-                .flex_none()
-                .px_1()
-                .font_family(UI_SANS)
-                .text_size(px(10.5))
-                .text_color(col(ui.muted))
-                .child(div().pl_1().child(SharedString::from(label)))
-                .child(div().flex_1())
-        };
-        let close_x = |ui: &tn_config::UiColors| {
-            div()
-                .w(px(18.))
-                .h(px(18.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.))
-                .hover(|s| s.bg(rgba(HOVER)))
-                .child(icon("close", 10., ui.muted))
-        };
-        let viewer_bar = bar_label("查看器").child(
-            close_x(ui).on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _e, _w, cx| {
-                    this.viewer_open = false;
-                    cx.notify();
-                }),
-            ),
-        );
-
+        // Both side panels are clean panes (mockup .sidebar): no wrapper bars.
+        // The explorer toggles via Ctrl+Shift+B; the file view is no longer a
+        // docked column but a floating Quick Look overlay (built below) that pops
+        // over the terminal hugging the tree's right edge.
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
@@ -1724,28 +1691,21 @@ impl Render for Workspace {
                     } else {
                         self.render_node(&self.tabs[active].root, focused, cx, Vec::new())
                     }),
-            )
-            // File/diff viewer (right column): auto-opens on file click,
-            // toggle with Ctrl+Shift+J.
-            .when(self.viewer_open, |d| {
-                d.child(
-                    // No overflow_hidden (see explorer column): the viewer pane
-                    // clips its own content; the column passes its shadow through.
-                    div()
-                        .w(px(420.))
-                        .flex_none()
-                        .min_h(px(0.))
-                        .flex()
-                        .flex_col()
-                        .child(viewer_bar)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h(px(0.))
-                                .child(self.viewer.clone()),
-                        ),
-                )
-            });
+            );
+
+        // Quick Look 速览浮层:绝对定位浮在工作区之上,贴文件树右缘(explorer 开 → 锚到
+        // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
+        // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
+        let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
+            let left = if self.explorer_open { 242. } else { 16. };
+            div()
+                .absolute()
+                .top(px(58.)) // 标题栏 46 之下
+                .bottom(px(46.)) // 状态栏 30 之上
+                .left(px(left)) // explorer 右缘(12 + 224 + 6)/ 工作区左缘
+                .right(px(16.))
+                .child(self.quick_look.clone())
+        });
 
         let palette = self.render_palette(cx);
 
@@ -1764,7 +1724,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::shrink_height))
             .on_action(cx.listener(Self::toggle_palette))
             .on_action(cx.listener(Self::toggle_explorer))
-            .on_action(cx.listener(Self::toggle_viewer))
+            .on_action(cx.listener(Self::toggle_quick_look))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
             // thin handle) recomputes weights; mouse-up anywhere ends it.
@@ -1788,6 +1748,7 @@ impl Render for Workspace {
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))
+            .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p));
 
         // No render-data cache here (tab labels/cwd live in the child panes and

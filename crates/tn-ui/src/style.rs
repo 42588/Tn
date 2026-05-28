@@ -187,6 +187,48 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     )
 }
 
+/// Quick Look 速览浮层的玻璃填充(mockup `.quicklook` 底层暗玻璃,baked **opaque**)。
+/// 比常驻面板更实:浮层飘在终端正文之上、要**压住**后面的字保证代码可读。mockup 用
+/// `rgba(28,34,58,.88)→rgba(15,19,34,.94)` + backdrop-blur;我们没有 blur,半透会把后面
+/// 终端的尖锐文字漏出来 → 直接 `over()` 烤实在窗口 `bg` 上(两停渐变、非主题色)。
+pub(crate) fn quicklook_fill(bg: impl Rgb8) -> gpui::Background {
+    let base = bg.channels();
+    linear_gradient(
+        180.,
+        linear_color_stop(over(0x1c223ae0, base), 0.), // rgba(28,34,58,.88) → a=round(.88×255)=224=0xe0
+        linear_color_stop(over(0x0f1322f0, base), 1.), // rgba(15,19,34,.94) → a=round(.94×255)=240=0xf0
+    )
+    .into()
+}
+
+/// mockup `.quicklook` 浮起投影栈:比常驻面板(`pane_shadows`)更深更高——浮层飘在最上层。
+/// 同样把硬 1px 暗线换成 3px 软暗晕(避接缝,见 `pane_shadows`),再叠多层柔投影。
+pub(crate) fn quicklook_shadows() -> Vec<BoxShadow> {
+    vec![
+        soft_shadow(0.0, 3.0, 0.0, 0.36),    // 软暗晕切出背景(代 mockup 0 0 0 1px rgba(0,0,0,.36))
+        soft_shadow(2.0, 6.0, -2.0, 0.6),    // mockup 0 2px 6px -2px rgba(0,0,0,.6)
+        soft_shadow(30.0, 72.0, -24.0, 0.86), // mockup 0 30px 72px -24px rgba(0,0,0,.86)
+        soft_shadow(72.0, 132.0, -50.0, 0.96), // mockup 0 72px 132px -50px rgba(0,0,0,.96)
+    ]
+}
+
+/// Wrap the Quick Look overlay's inner content with mockup `.quicklook::before`'s
+/// **cool energy edge** (1px-padding gradient reveal, like [`glass_pane`]) + the
+/// deeper floating shadow ([`quicklook_shadows`]). `inner` must be built with
+/// `rounded(R_PANEL - 1.)` + `overflow_hidden`. Cool-white top → accent bottom
+/// (accent via `cola`, never a bare theme hex).
+pub(crate) fn quicklook_frame(inner: Div, accent: impl Rgb8) -> Div {
+    let edge = linear_gradient(
+        180.,
+        linear_color_stop(rgba(0xbed6ff3d), 0.), // 冷白承光 .24 = round(.24×255)=61=0x3d
+        linear_color_stop(cola(accent, 0.15), 1.), // accent 回光 .15
+    );
+    shadowed(
+        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(inner),
+        quicklook_shadows(),
+    )
+}
+
 /// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG
 /// only when a text color is set, so the tint is always explicit — see
 /// `assets.rs`.)

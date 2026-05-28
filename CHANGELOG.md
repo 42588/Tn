@@ -13,6 +13,27 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 原型同步轨道:Quick Look 速览浮层(2026-05-29)
+
+> [`design/panels/03`](design/panels/03-side-panels.html) 的速览编辑端口进 gpui:**砍掉常驻右侧查看器列**,
+> 改成点文件树弹**贴树右缘、浮于终端、不占分屏**的玻璃浮层(`viewer.rs` → `quick_look.rs`)。
+
+### 新增 (Added)
+- **Quick Look 速览浮层**([quick_look.rs](crates/tn-ui/src/quick_look.rs) `QuickLook`,原 `viewer.rs` `ViewerView`):
+  绝对定位浮层,锚到 explorer 右缘(关则锚工作区左缘),浮在终端之上、**不占分屏树**。结构 1:1 复刻
+  mockup `.quicklook`:`.vh` 头(file 图标 + dir/name 路径 + 已改动 badge + Diff/File 点切 pill)· `.code` 正文
+  (行号槽 38px + 标记列 14px + 语法/增删着色)· `.qlfoot` 键帽提示条 · 左缘 accent `.seam` 指向选中文件。
+- **浮层玻璃助手**([style.rs](crates/tn-ui/src/style.rs)):`quicklook_fill`(mockup `.quicklook` 暗玻璃 baked
+  **opaque** —— 浮终端正文上须压住后字,无 backdrop-blur 半透会漏出尖锐文字)· `quicklook_frame`(冷能量渐变
+  描边,1px-padding reveal,同 `glass_pane`)· `quicklook_shadows`(比常驻面板更深的浮起投影,硬 1px 暗线换 3px 软晕避接缝)。
+- **接线**([workspace.rs](crates/tn-ui/src/workspace.rs)):`viewer`/`viewer_open` → `quick_look`/`quick_look_open`;
+  动作 `ToggleViewer` → `ToggleQuickLook`(键位 `Ctrl+Shift+J` 不变);点文件树打开、再按收起(浮层不抢焦点 →
+  动作在 Workspace 层稳派发);仅在装了文件时渲染。砍掉旧「查看器」常驻列 + 其 `✕` 关闭条。
+
+### 待接 (Deferred)
+- **键盘两态 + 编辑**:prototype 的 `Space` 开 / `↑↓` 换文件实时跟随 / `Enter` 进编辑态 / 方向键归编辑器 /
+  `Ctrl+S` 保存 —— 需 explorer 键盘焦点 + 可编辑文本缓冲,**编辑写盘有风险**,按视觉先行轨道延后(同活动栏先例)。
+
 ## [Unreleased] — 原型同步轨道:欢迎 launchpad(2026-05-29)
 
 > [`design/panels/05`](design/panels/05-states.html) 的欢迎页端口进 gpui:默认新标签/首标签 = 启动磁贴 + 快捷键提示。

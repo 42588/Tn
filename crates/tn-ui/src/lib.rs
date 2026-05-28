@@ -11,10 +11,10 @@ mod explorer;
 mod input;
 mod perf;
 mod platform;
+mod quick_look;
 mod quick_terminal;
 mod style;
 mod terminal_view;
-mod viewer;
 mod welcome;
 mod workspace;
 
