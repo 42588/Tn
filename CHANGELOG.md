@@ -1,7 +1,7 @@
 # Changelog — Tn 终端
 
 本文件记录 Tn 各里程碑的变更,遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。
-版本对应开发蓝图([docs/BLUEPRINT.md](docs/BLUEPRINT.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
+版本对应开发蓝图([docs/架构蓝图.md](docs/架构蓝图.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
 
 > Tn 是 **Windows 优先、Rust、GPU 加速**的终端,为 vibe coding 设计:托管 Claude Code /
 > Codex 等 AI CLI,灵活平铺,原生 WSL + SSH。技术栈:GPUI(DX11 + DirectWrite)·
@@ -15,7 +15,7 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ## [Unreleased] — M4 颜值打磨(面板逐组件对齐 mockup · 2026-05-28)
 
-> 把面板从"数值对齐但发平"打磨到"磨砂玻璃 + 悬浮"。详见 [docs/UX-DESIGN.md](docs/UX-DESIGN.md) §6.1/§6.3、
+> 把面板从"数值对齐但发平"打磨到"磨砂玻璃 + 悬浮"。详见 [docs/产品设计.md](docs/产品设计.md) §6.1/§6.3、
 > 经验坑见 [CLAUDE.md](CLAUDE.md)「踩过的坑」。设计真源仍是 [design/mockup.html](design/mockup.html),三道守卫把关。
 
 ### 变更 (Changed)
@@ -363,4 +363,4 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **M4** — 托管 Claude Code / Codex + AI 用量 + 命令面板 + 颜值打磨。
 - **M5** — Quick Terminal(全局热键悬浮终端)。
 
-详见 [docs/BLUEPRINT.md](docs/BLUEPRINT.md) §8。
+详见 [docs/架构蓝图.md](docs/架构蓝图.md) §8。

@@ -4,7 +4,7 @@
    单处维护的样式表:design/panels/*.html 全部 <link> 本文件。
    令牌镜像 design/mockup.html 的 :root(后者是 token_drift 守卫的真源,
    勿改其内联 CSS)。两边的 token 值必须一致——改色先改 mockup.html。
-   还原到 gpui 的译法见 docs/CSS_TO_GPUI.md;数值见其 §16。
+   还原到 gpui 的译法见 docs/样式还原手册.md;数值见其 §16。
    ====================================================================== */
 :root {
   --fg:#C6D0F5; --fg-dim:#A6AFD4; --muted:#6E76A0; --faint:#474E72;

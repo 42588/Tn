@@ -6,7 +6,7 @@
 //! assistant lines carry `message.usage`), Codex writes
 //! `$CODEX_HOME/sessions/**/rollout-*.jsonl`. No GPUI, no UI — the parsing is
 //! fully unit-testable from string fixtures; the tn-ui layer renders the
-//! [`AiUsage`] as a context ring / status bar (see docs/UX-DESIGN.md §5).
+//! [`AiUsage`] as a context ring / status bar (see docs/产品设计.md §5).
 
 mod claude;
 mod codex;

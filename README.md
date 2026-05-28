@@ -104,14 +104,17 @@ tn-cli     headless ConPTY 烟雾测试工具
 | **M5** | Quick Terminal 幽灵下拉终端 | ✅ |
 | **M2** | WSL + 远程 Linux(SSH) | 🚧 WSL ✅ · SSH 编译+单测✅(端到端待真机) |
 
-> 执行顺序经 owner 调整为 **M3 → M4 → M5 → M2**(M3/M4/M5 作用于本地终端、不依赖 M2)。完整里程碑退出标准见 [BLUEPRINT §8](docs/BLUEPRINT.md)。
+> 执行顺序经 owner 调整为 **M3 → M4 → M5 → M2**(M3/M4/M5 作用于本地终端、不依赖 M2)。完整里程碑退出标准见 [架构蓝图 §8](docs/架构蓝图.md)。
 
 ## 文档
 
-- [docs/BLUEPRINT.md](docs/BLUEPRINT.md) — 工程参考手册 + 蓝图:架构、数据流、各 crate 设计、依赖、路线图、开发指南。
-- [docs/UX-DESIGN.md](docs/UX-DESIGN.md) — UX:灵活平铺、多会话、一键 Claude/Codex、AI 上下文与用量、视觉设计语言。
-- [docs/REFERENCES.md](docs/REFERENCES.md) — 从 Windows Terminal 与 Ghostty 源码提炼、映射到 Tn 的设计要点。
+职责三分(**架构 · 设计 · 实现**)+ 参考:
+- [docs/架构蓝图.md](docs/架构蓝图.md) — **架构**:系统怎么搭(crate 划分、数据流、技术决策、路线图、开发指南)。
+- [docs/产品设计.md](docs/产品设计.md) — **设计**:用户看到/用到的(分屏、多会话、一键 Claude/Codex、AI 用量、视觉语言、面板清单 §6.4)。
+- [docs/样式还原手册.md](docs/样式还原手册.md) — **实现**:HTML 原型 → gpui 的译法 + 权威数值表 §16(图形界面必走此路)。
+- [docs/参考资料.md](docs/参考资料.md) — 从 Windows Terminal 与 Ghostty 源码提炼、映射到 Tn 的设计要点。
 - [CHANGELOG.md](CHANGELOG.md) — 各里程碑变更。
+- 设计原型:[design/mockup.html](design/mockup.html)(全窗)· [design/panels/](design/panels/)(逐面板,共享 calm-glass.css)。
 
 ## 许可证
 

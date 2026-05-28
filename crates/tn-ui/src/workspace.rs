@@ -3,7 +3,7 @@
 //! Splitting uses an n-ary container tree (not a binary tree): splitting along
 //! the same axis as the focused pane's parent inserts an aligned sibling;
 //! splitting along the other axis nests a new container. This matches the
-//! flexible-tiling model in docs/UX-DESIGN.md. Divider-drag and drag-dock are
+//! flexible-tiling model in docs/产品设计.md. Divider-drag and drag-dock are
 //! later refinements; this cut gives tabs + keyboard splits + click-to-focus.
 
 use std::cell::RefCell;
@@ -950,7 +950,7 @@ impl Workspace {
                 let theme = &self.config.theme;
                 // Focused pane: a faint warm rim + a lift (deeper shadow) so the
                 // eye finds it instantly — no glow. Others: a plain glass rim,
-                // sitting flat. (docs/UX-DESIGN §6.2 active-split focus.)
+                // sitting flat. (docs/产品设计 §6.2 active-split focus.)
                 let rim = if is_focused {
                     cola(theme.agents.claude, 0.45)
                 } else {
@@ -1429,7 +1429,7 @@ impl Render for Workspace {
                     })
                     // Type icon in agent identity color: spark for agents
                     // (Claude coral / Codex teal), terminal glyph (accent) for
-                    // a plain shell. See docs/UX-DESIGN §6.2 tab agent accent.
+                    // a plain shell. See docs/产品设计 §6.2 tab agent accent.
                     .child(if agent.is_some() {
                         icon("spark", 13., dot)
                     } else {

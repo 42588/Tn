@@ -1,5 +1,5 @@
 //! User config schema. Mirrors the Windows Terminal model (see
-//! docs/REFERENCES.md §7): nested `[font]`/`[appearance]`, profiles as data, and
+//! docs/参考资料.md §7): nested `[font]`/`[appearance]`, profiles as data, and
 //! key bindings split into an action table + a binding table.
 //!
 //! Every field is `#[serde(default)]` so a partial `config.toml` inherits the

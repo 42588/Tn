@@ -1,5 +1,5 @@
 # Tn Dark — Tn 的默认主题(Tokyo Night 调校)。
-# 这是 design/mockup.html 原型所用配色的权威定义。主题 schema 见 docs/BLUEPRINT.md §3.3。
+# 这是 design/mockup.html 原型所用配色的权威定义。主题 schema 见 docs/架构蓝图.md §3.3。
 name = "Tn Dark"
 appearance = "dark"          # dark | light(用于跟随系统切换)
 
