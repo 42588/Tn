@@ -398,3 +398,103 @@ mod spec_gen {
         }
     }
 }
+
+/// Guard (CSS_TO_GPUI.md §3 约定): UI code must use `col()`/`cola()` for theme
+/// colors, never a raw `rgb(0x..)`/`rgba(0x..)` whose RGB equals a theme token —
+/// otherwise theme switching silently breaks. Scans `tn-ui/src/**.rs` and fails,
+/// naming the offender, if any literal's RGB matches a token. White overlays,
+/// fg-dim/faint, the g1 gradient base, black/scrim/transparent are NOT tokens, so
+/// their literals are allowed (§3 sanctioned exceptions). `style.rs` is exempt
+/// (token defs + helpers + these tests live here).
+#[cfg(test)]
+mod no_hardcoded_theme_colors {
+    use tn_config::{Color, Theme};
+
+    /// Theme token RGBs (6-digit) that must go through `col()`/`cola()`.
+    fn token_rgbs() -> Vec<(u32, &'static str)> {
+        let t = Theme::tn_dark();
+        let h = |c: Color| ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+        vec![
+            (h(t.ui.foreground), "ui.foreground"),
+            (h(t.ui.muted), "ui.muted"),
+            (h(t.ui.accent), "ui.accent"),
+            (h(t.ui.accent_alt), "ui.accent_alt"),
+            (h(t.ui.surface_1), "ui.surface_1"),
+            (h(t.ui.surface_2), "ui.surface_2"),
+            (h(t.ui.chrome_bg), "ui.chrome_bg"),
+            (h(t.ui.border), "ui.border"),
+            (h(t.ansi.red), "ansi.red"),
+            (h(t.ansi.green), "ansi.green"),
+            (h(t.ansi.yellow), "ansi.yellow"),
+            (h(t.ansi.blue), "ansi.blue"),
+            (h(t.ansi.magenta), "ansi.magenta"),
+            (h(t.ansi.cyan), "ansi.cyan"),
+            (h(t.agents.claude), "agents.claude"),
+            (h(t.agents.codex), "agents.codex"),
+        ]
+    }
+
+    fn rs_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                rs_files(&p, out);
+            } else if p.extension().map_or(false, |x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// 6-digit RGBs of every `rgb(0x..)` / `rgba(0x..)` literal in `code`
+    /// (comments already stripped by the caller).
+    fn literal_rgbs(code: &str) -> Vec<u32> {
+        let mut out = Vec::new();
+        for (pat, is_rgba) in [("rgba(0x", true), ("rgb(0x", false)] {
+            let mut from = 0;
+            while let Some(i) = code[from..].find(pat) {
+                let start = from + i + pat.len();
+                let hex: String =
+                    code[start..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                from = start;
+                if let Ok(v) = u32::from_str_radix(&hex, 16) {
+                    out.push(if is_rgba { v >> 8 } else { v }); // rgba → drop alpha byte
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn ui_code_uses_tokens_not_hardcoded_theme_colors() {
+        let tokens = token_rgbs();
+        let mut files = Vec::new();
+        rs_files(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut files,
+        );
+        let mut bad = Vec::new();
+        for f in &files {
+            if f.file_name().map_or(false, |n| n == "style.rs") {
+                continue;
+            }
+            let src = std::fs::read_to_string(f).unwrap();
+            for (n, line) in src.lines().enumerate() {
+                let code = line.split("//").next().unwrap_or(line); // ignore comments
+                for rgb in literal_rgbs(code) {
+                    if let Some((_, name)) = tokens.iter().find(|(t, _)| *t == rgb) {
+                        bad.push(format!(
+                            "{}:{}: 硬编码 {name}(#{rgb:06X}) → 改用 col({name})/cola({name}, a)",
+                            f.display(),
+                            n + 1
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "UI 代码出现硬编码主题色(必须走 col()/cola(),见 CSS_TO_GPUI.md §3 约定):\n{}",
+            bad.join("\n")
+        );
+    }
+}
