@@ -131,6 +131,26 @@ CSS:  flex: 0 0 auto;
 gpui: div().flex_none()
 ```
 
+### ✗ 分数 flex 权重（无 fluent 助手，需直写 style）
+
+gpui 0.2.2 的 `flex_1()` **写死** `grow=1, shrink=1, basis=0%`(`styled.rs:165`),而 `flex_grow()` 这个 fluent 方法**也只是设 grow=1**——**没有任何接受自定义数值的 fluent 方法**。
+所以 mockup 里的**分数权重**(如 `flex:0.6` / `1.55` / `2.5`,决定多个分屏的占比)只能直写 `StyleRefinement` 字段(同 `shadowed()` 直写 `box_shadow` 的套路):
+
+```rust
+CSS:  flex: 0.6;        /* 或任意分数权重 */
+gpui:  // 没有 .flex(0.6);自己写个助手:
+fn flex_weight(mut d: Div, w: f32) -> Div {
+    d.style().flex_grow   = Some(w);
+    d.style().flex_shrink = Some(1.);
+    d.style().flex_basis  = Some(relative(0.).into()); // basis 0 → 纯按权重分配
+    d
+}
+// 用:flex_weight(div(), 0.6)  等价 CSS `flex: 0.6 1 0%`
+```
+
+`StyleRefinement` 暴露 `flex_grow/flex_shrink/flex_basis`(`style.rs`),`style()` 返回 `&mut StyleRefinement`。
+**只在需要非 1 的分数占比时才用**;`flex:1` 仍用 `flex_1()`、不伸缩用 `flex_none()`。
+
 ### 间距（gap / padding）
 
 gpui 的 `gap_N` / `p_N` 等是宏生成的 **rem 倍数**（`gpui-macros/styles.rs`）：宏 doc-string 明确标注 `_1`="4px (0.25rem)"、`_2`="8px (0.5rem)"、
