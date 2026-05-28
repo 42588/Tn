@@ -6841,6 +6841,8 @@ dependencies = [
  "futures",
  "gpui",
  "raw-window-handle",
+ "serde",
+ "serde_json",
  "tn-ai",
  "tn-blocks",
  "tn-config",

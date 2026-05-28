@@ -21,6 +21,7 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::explorer::{ExplorerView, OpenFile};
+use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
@@ -537,6 +538,12 @@ pub struct Workspace {
     split_sel: usize,
     split_focus: FocusHandle,
     split_needs_focus: bool,
+    /// `布局` manager (app menu): 7 slots that save/load the active tab's pane
+    /// structure + launchers (loading re-spawns; a live session isn't serialized).
+    layouts: Layouts,
+    layout_manager_open: bool,
+    layout_focus: FocusHandle,
+    layout_needs_focus: bool,
     /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
     /// resolved once at startup (see [`discover_profiles`]).
     launch_profiles: Vec<tn_config::Profile>,
@@ -629,6 +636,10 @@ impl Workspace {
             split_sel: 0,
             split_focus: cx.focus_handle(),
             split_needs_focus: false,
+            layouts: Layouts::load(),
+            layout_manager_open: false,
+            layout_focus: cx.focus_handle(),
+            layout_needs_focus: false,
             launch_profiles,
             divider_drag: None,
             split_extents: Rc::new(RefCell::new(HashMap::new())),
@@ -1507,9 +1518,7 @@ impl Workspace {
                 .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
                 .child(sep())
                 .child(mi("folder", "打开文件夹…", None, false, Box::new(|this, _w, cx| this.menu_open_folder(cx))))
-                .child(mi("external", "在资源管理器中显示", None, false, Box::new(|_t, _w, cx| {
-                    if let Ok(root) = std::env::current_dir() { cx.reveal_path(&root); }
-                })))
+                .child(mi("max", "布局…", None, false, Box::new(|this, _w, cx| this.open_layout_manager(cx))))
                 .child(mi("sidebar", "文件浏览器", Some("⌃⇧B"), false, Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx))))
                 .child(sep())
                 // 设置 → open config.toml in our own Quick Look editor (Ctrl+S to save).
@@ -1912,6 +1921,195 @@ impl Workspace {
                 .child(panel),
         )
     }
+
+    // ───────────────────────────── 布局 (layout slots) ─────────────────────────
+
+    /// Serialize the active tab's pane tree into a layout (`None` if it has no real
+    /// panes — e.g. a welcome tab).
+    fn tab_to_layout(&self) -> Option<LayoutNode> {
+        fn walk(node: &Node, specs: &HashMap<PaneId, LaunchSpec>) -> Option<LayoutNode> {
+            match node {
+                Node::Leaf(id) => specs.get(id).map(|s| LayoutNode::Pane(LayoutPane::from_spec(s))),
+                Node::Split { axis, kids, weights } => {
+                    let kids: Vec<_> = kids.iter().filter_map(|k| walk(k, specs)).collect();
+                    if kids.is_empty() {
+                        return None;
+                    }
+                    Some(LayoutNode::Split {
+                        row: *axis == Axis::Row,
+                        kids,
+                        weights: weights.clone(),
+                    })
+                }
+            }
+        }
+        if self.tabs[self.active].welcome {
+            return None;
+        }
+        walk(&self.tabs[self.active].root, &self.pane_specs)
+    }
+
+    /// Spawn panes for `ln` and build the matching `Node` tree.
+    fn spawn_layout(&mut self, ln: &LayoutNode, cx: &mut Context<Self>) -> Node {
+        match ln {
+            LayoutNode::Pane(p) => Node::Leaf(self.spawn_pane_with(cx, p.to_spec())),
+            LayoutNode::Split { row, kids, weights } => {
+                let kids: Vec<Node> = kids.iter().map(|k| self.spawn_layout(k, cx)).collect();
+                let weights = if weights.len() == kids.len() {
+                    weights.clone()
+                } else {
+                    vec![1.0; kids.len()]
+                };
+                Node::Split { axis: if *row { Axis::Row } else { Axis::Col }, kids, weights }
+            }
+        }
+    }
+
+    fn save_layout(&mut self, slot: usize, cx: &mut Context<Self>) {
+        if let Some(layout) = self.tab_to_layout() {
+            if let Some(s) = self.layouts.slots.get_mut(slot) {
+                *s = Some(layout);
+            }
+            self.layouts.save();
+            cx.notify();
+        }
+    }
+
+    fn delete_layout(&mut self, slot: usize, cx: &mut Context<Self>) {
+        if let Some(s) = self.layouts.slots.get_mut(slot) {
+            *s = None;
+            self.layouts.save();
+            cx.notify();
+        }
+    }
+
+    /// Load a slot into the **active tab** (owner's choice: replace this tab). Kills
+    /// the tab's current panes and re-spawns the saved structure.
+    fn load_layout(&mut self, slot: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(layout) = self.layouts.slots.get(slot).cloned().flatten() else { return };
+        let active = self.active;
+        let mut old = Vec::new();
+        if !self.tabs[active].welcome {
+            collect_leaves(&self.tabs[active].root, &mut old);
+        }
+        let new_root = self.spawn_layout(&layout, cx);
+        let first = first_leaf(&new_root);
+        for id in old {
+            self.panes.remove(&id); // drop view → kill child
+            self.pane_specs.remove(&id);
+        }
+        self.tabs[active] = Tab::panes(new_root, first);
+        self.layout_manager_open = false;
+        self.focus_pane(first, window, cx);
+        cx.notify();
+    }
+
+    /// `布局`(app menu): open the slot manager overlay.
+    fn open_layout_manager(&mut self, cx: &mut Context<Self>) {
+        self.layout_manager_open = true;
+        self.layout_needs_focus = true;
+        cx.notify();
+    }
+
+    /// The 7-slot layout manager overlay (save / load / delete), or `None` when closed.
+    fn render_layout_manager(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.layout_manager_open {
+            return None;
+        }
+        let ui = &self.config.theme.ui;
+        let can_save = self.tab_to_layout().is_some(); // active tab has real panes
+
+        // A small pill button (label + click action). `accent` = filled/primary look.
+        let pill = |label: &'static str, accent: bool, act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
+            let (fg, bg) = if accent { (col(ui.accent), cola(ui.accent, 0.14)) } else { (gpui::rgb(0xA6AFD4), rgba(INSET)) };
+            div()
+                .px(px(9.))
+                .py(px(3.))
+                .rounded(px(7.))
+                .text_size(px(11.))
+                .text_color(fg)
+                .bg(bg)
+                .hover(|s| s.bg(rgba(HOVER)))
+                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| act(this, w, cx)))
+                .child(label)
+        };
+
+        let rows = (0..SLOTS).map(|i| {
+            let filled = self.layouts.slots.get(i).and_then(|s| s.as_ref());
+            let status = match filled {
+                Some(l) => format!("{} 窗格", l.pane_count()),
+                None => "空".to_string(),
+            };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .h(px(34.))
+                .px(px(10.))
+                .rounded(px(8.))
+                .hover(|s| s.bg(rgba(INSET)))
+                .child(div().w(px(40.)).text_size(px(12.5)).text_color(col(ui.foreground)).child(SharedString::from(format!("槽 {}", i + 1))))
+                .child(div().w(px(56.)).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(status)))
+                .child(div().flex_1())
+                .when(can_save, |d| d.child(pill("保存", true, Box::new(move |this, _w, cx| this.save_layout(i, cx)))))
+                .when(filled.is_some(), |d| {
+                    d.child(pill("加载", false, Box::new(move |this, w, cx| this.load_layout(i, w, cx))))
+                        .child(pill("删除", false, Box::new(move |this, _w, cx| this.delete_layout(i, cx))))
+                })
+        });
+
+        let hint = if can_save {
+            "保存=把当前标签的分屏存入此槽 · 加载=按该布局替换当前标签 · Esc 关闭"
+        } else {
+            "当前标签无窗格可保存(欢迎页)· 加载=按布局替换当前标签 · Esc 关闭"
+        };
+        let panel = shadowed(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(380.))
+                .rounded(px(R_WINDOW))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(cola(ui.palette_bg, 0.86))
+                .child(div().h(px(1.)).bg(rgba(SHEEN)))
+                .child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child("布局"))
+                        .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(hint)),
+                )
+                .child(div().h(px(1.)).bg(rgba(RIM)))
+                .child(div().p_1().flex().flex_col().gap(px(1.)).children(rows)),
+            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)],
+        );
+
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(rgba(0x0a0b11cc))
+                .track_focus(&self.layout_focus)
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.layout_manager_open = false;
+                        this.refocus_active(w, cx);
+                        cx.notify();
+                    }
+                }))
+                .child(div().h(px(120.)))
+                .child(panel),
+        )
+    }
 }
 
 impl Render for Workspace {
@@ -1952,6 +2150,10 @@ impl Render for Workspace {
         if self.split_launcher_open && self.split_needs_focus {
             self.split_needs_focus = false;
             self.split_focus.focus(window);
+        }
+        if self.layout_manager_open && self.layout_needs_focus {
+            self.layout_needs_focus = false;
+            self.layout_focus.focus(window);
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // active pane now (the event callback had no `window`).
@@ -2276,6 +2478,7 @@ impl Render for Workspace {
 
         let palette = self.render_palette(cx);
         let split_launcher = self.render_split_launcher(cx);
+        let layout_manager = self.render_layout_manager(cx);
         let app_menu = self.render_app_menu(cx);
 
         let root = div()
@@ -2322,6 +2525,7 @@ impl Render for Workspace {
             .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p))
             .when_some(split_launcher, |d, s| d.child(s))
+            .when_some(layout_manager, |d, l| d.child(l))
             .when_some(app_menu, |d, m| d.child(m));
 
         // No render-data cache here (tab labels/cwd live in the child panes and

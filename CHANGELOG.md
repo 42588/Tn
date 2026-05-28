@@ -13,6 +13,21 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 布局保存/加载/删除(7 槽)(2026-05-29)
+
+> app 菜单的「在资源管理器中显示」改成「布局…」:把**当前标签的分屏结构 + 各窗格启动器**存进槽位,日后召回。
+> 运行中的会话无法序列化,加载是按结构**重新拉起启动器**(Claude/Codex/pwsh/WSL),不恢复会话内容。
+
+### 新增 (Added)
+- **布局模块**([layout.rs](crates/tn-ui/src/layout.rs)):`LayoutNode`(镜像 `Node` 的可序列化树,叶 = `LayoutPane`
+  启动器)+ `Layouts`(7 槽,JSON 持久化到 `%APPDATA%\Tn\layouts.json`)+ `LayoutPane ↔ LaunchSpec` 转换
+  (SSH 不持久化,M2 parked)。纯逻辑 headless 单测(spec 往返 / JSON 往返 / 窗格计数)。
+- **布局管理器**([workspace.rs](crates/tn-ui/src/workspace.rs) `render_layout_manager`):app 菜单「布局…」弹 7 槽
+  浮层,每槽:**保存**(把当前标签分屏存入/覆盖)· **加载**(按该布局**替换当前标签**——杀掉旧窗格、重新拉起)·
+  **删除**(清空)。`Esc` 关闭。`tab_to_layout` / `spawn_layout` 在 `Node` ↔ `LayoutNode` 间转换;`pane_specs`
+  提供每窗格启动器。owner 定:布局 = 当前标签结构,加载替换本标签。
+- `serde` / `serde_json` 加入 `tn-ui`(布局持久化)。单测 48 → 50。
+
 ## [Unreleased] — app 菜单各项接真实行为(2026-05-29)
 
 > 按 owner 重新定义 app 菜单各项的行为(原先多为"打开/显示"类占位,现接成真实功能)。
@@ -29,10 +44,8 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **文件浏览器**:维持原样(只开/关文件列表窗格)。
 - 新增 `Workspace::pane_specs`(每个活动窗格的 `LaunchSpec`),供「打开文件夹」判断哪些是可 `cd` 的纯 shell(后续布局复用)。
 
-### 待接 (Deferred)
-- **「布局」**(替换「在资源管理器中显示」):保存 / 加载 / 删除布局 + 7 个槽位。owner 已定:布局 = **当前标签的分屏结构 +
-  各窗格启动器**,加载时**替换本标签**(运行中会话无法序列化,只能按结构重新拉起启动器)。需给 tn-ui 加序列化(serde)+
-  槽位持久化 + 7 槽 UI —— 单独成块下一步做。
+### 后续 (Next)
+- **「布局」**(替换「在资源管理器中显示」)—— ✅ 已实现,见上「布局保存/加载/删除」条。
 
 ## [Unreleased] — 新会话=分屏启动器 + Quick Look 焦点修复(2026-05-29)
 

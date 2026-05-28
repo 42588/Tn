@@ -9,6 +9,7 @@ mod assets;
 mod block_view;
 mod explorer;
 mod input;
+mod layout;
 mod perf;
 mod platform;
 mod quick_look;
