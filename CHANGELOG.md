@@ -61,6 +61,10 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
   - **查找/替换**:`Ctrl+F` 查找 / `Ctrl+H` 替换条;`Enter`/`Shift+Enter` 下/上个匹配(选中 + 滚入视区,环绕)· `Tab` 切查找/替换框 · `Ctrl+Enter` 全部替换 · `Esc` 关;输入由 `on_key` 的 `find_key` 捕获。
 - 纯逻辑(`op_delete_range`/`op_insert_multiline`/`selected_text`/`all_matches`/`replace_all_in`/`find_in_chars`)抽成自由函数,**新增 5 条 headless 单测**(单测 39 → 44)。
 
+### 修复 (Fixed)
+- **编辑态空格键无反应**:`Space` 原走 `key_char` 分支插入,但 gpui on Windows 对空格键常**不填 `key_char`**(终端输入也是按 `key=="space"` 名处理),导致空格被静默丢弃。改为编辑态显式 `"space" => type_char(" ")`。
+- **(临时)Quick Look 冻结诊断埋点**:`on_key`/`save`/`render` 加 `tracing` 计时(target `tn::quicklook`)——每次按键入口 `debug`(含 `buf_rc`,>1 即下次改动会深拷整 buffer)、慢操作 `warn`、`git diff` 保存耗时 `info`。定位后移除。复现后看 `%APPDATA%\Tn\logs\tn.log`(入口日志需 `$env:RUST_LOG="info,tn::quicklook=debug"`)。
+
 ### 待接 (Deferred)
 - **键盘两态 + 编辑**:prototype 的 `Space` 开 / `↑↓` 换文件实时跟随 / `Enter` 进编辑态 / 方向键归编辑器 /
   `Ctrl+S` 保存 —— 需 explorer 键盘焦点 + 可编辑文本缓冲,**编辑写盘有风险**,按视觉先行轨道延后(同活动栏先例)。

@@ -329,8 +329,15 @@ impl QuickLook {
             Ok(()) => {
                 self.dirty = false;
                 self.file_lines = self.buf.clone();
+                // DEBUG: `git diff` is synchronous — time it (a slow/hanging git on a
+                // big repo would freeze the UI on every Ctrl+S).
+                let t = std::time::Instant::now();
                 self.diff = Rc::new(self.compute_diff(&path));
-                tracing::info!(path = %path.display(), "quick look saved");
+                let diff_ms = t.elapsed().as_secs_f64() * 1000.0;
+                tracing::info!(target: "tn::quicklook", path = %path.display(), lines = self.buf.len(), diff_ms, "quick look saved");
+                if diff_ms >= 30.0 {
+                    tracing::warn!(target: "tn::quicklook", diff_ms, "save: git diff slow (UI blocks on save)");
+                }
             }
             Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
         }
@@ -660,6 +667,21 @@ impl QuickLook {
         let m = &ks.modifiers;
         let key = ks.key.as_str();
         if self.editing {
+            // DEBUG(quick_look freeze hunt): log every edit key BEFORE doing work,
+            // so a true hang leaves the culprit key as the last line. `rc` > 1 means
+            // the next buffer mutation will deep-clone the whole file (undo/prev
+            // frame still share the Rc) — i.e. O(lines) per keystroke.
+            let _dbg_t0 = std::time::Instant::now();
+            tracing::debug!(
+                target: "tn::quicklook",
+                key = %key,
+                lines = self.buf.len(),
+                buf_rc = Rc::strong_count(&self.buf),
+                cursor = ?self.cursor,
+                sel = self.has_sel(),
+                find = self.find_open,
+                "edit key IN"
+            );
             // Ctrl/Cmd combos (editing): save / undo / redo / clipboard / find.
             if m.control || m.platform {
                 let handled = match key {
@@ -711,6 +733,12 @@ impl QuickLook {
                 };
                 if handled {
                     self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                    let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
+                    if ms >= 3.0 {
+                        // Ctrl+S runs `git diff` synchronously → this catches a slow/
+                        // hanging git (large repo) freezing the UI on save.
+                        tracing::warn!(target: "tn::quicklook", combo = %key, lines = self.buf.len(), ms, "edit ctrl-combo SLOW");
+                    }
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -722,10 +750,11 @@ impl QuickLook {
             // The find bar captures plain input while it's open.
             if self.find_open {
                 self.find_key(key, ks.key_char.as_deref(), m.shift);
-                if !self.find_open {
-                    // Esc closed it; nothing else.
-                }
                 self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
+                if ms >= 3.0 {
+                    tracing::warn!(target: "tn::quicklook", key = %key, lines = self.buf.len(), q = %self.find_query, ms, "find key SLOW");
+                }
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -741,6 +770,10 @@ impl QuickLook {
                 "delete" => self.delete_forward(),
                 "enter" => self.newline(),
                 "tab" => self.indent(),
+                // Space by name: gpui on Windows often leaves `key_char` empty for
+                // the space key (terminal input handles "space" the same way), so
+                // the key_char branch below would silently drop it (踩过的坑).
+                "space" => self.type_char(" "),
                 "left" | "right" | "up" | "down" | "home" | "end" => self.move_cursor(key, shift),
                 "pageup" => self.page(-1, shift),
                 "pagedown" => self.page(1, shift),
@@ -752,6 +785,10 @@ impl QuickLook {
             if handled {
                 if self.editing {
                     self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                }
+                let ms = _dbg_t0.elapsed().as_secs_f64() * 1000.0;
+                if ms >= 3.0 {
+                    tracing::warn!(target: "tn::quicklook", key = %key, lines = self.buf.len(), buf_rc = Rc::strong_count(&self.buf), ms, "edit key SLOW");
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -1221,6 +1258,7 @@ impl gpui::EventEmitter<QuickLookEvent> for QuickLook {}
 
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_t0 = std::time::Instant::now();
         // Grab focus on first render after open (focusing in open() doesn't land —
         // the overlay isn't rendered yet; see 踩过的坑).
         if self.needs_focus {
@@ -1575,7 +1613,14 @@ impl Render for QuickLook {
             .child(seam);
 
         // mockup .quicklook::before 冷能量描边 + 更深的浮起投影
-        quicklook_frame(inner, ui.accent)
+        let out = quicklook_frame(inner, ui.accent);
+        // DEBUG: time the whole render. Body is virtualized (~30 rows), so a slow
+        // render points at find's all_matches (big doc + tiny query) or churn.
+        let ms = _render_t0.elapsed().as_secs_f64() * 1000.0;
+        if ms >= 6.0 {
+            tracing::warn!(target: "tn::quicklook", editing = self.editing, lines = self.buf.len(), find = self.find_open, q = %self.find_query, ms, "render SLOW");
+        }
+        out
     }
 }
 
