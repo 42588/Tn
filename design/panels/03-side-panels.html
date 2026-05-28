@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 面板原型 · ③ 侧栏(资源管理器 / 查看器)</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/><path d="M13 3v5.5h5.5"/></symbol>
+  <symbol id="i-chev-r" viewBox="0 0 24 24"><path d="M9.5 7l5 5-5 5"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M7 9.5l5 5 5-5"/></symbol>
+  <symbol id="i-pen" viewBox="0 0 24 24"><path d="M14.5 5.5l4 4M4 20l1-4L16 5a2 2 0 0 1 3 3L8 19z"/></symbol>
+  <symbol id="i-explorer" viewBox="0 0 24 24"><path d="M4 6.5A1.5 1.5 0 0 1 5.5 5H10l1.5 1.5h7A1.5 1.5 0 0 1 20 8v9.5A1.5 1.5 0 0 1 18.5 19h-13A1.5 1.5 0 0 1 4 17.5z"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <h1>③ 侧栏 <span class="dim">— 文件资源管理器 · 文件/Diff 查看器</span></h1>
+  <p class="lead">两侧玻璃面板:左 = 文件树(git M/U 标记 + 缩进连接线 + 活动行),右 = 查看器(Diff/File 切换 + 行号槽 + 语法/增删着色)。gpui:<code>explorer.rs</code> / <code>viewer.rs</code>。</p>
+
+  <div class="demo">
+    <div class="label">资源管理器(文件树) <span class="id">.pane.sidebar / .tree / .tnode</span><span class="impl">explorer::render / render_row</span></div>
+    <div class="canvas tall" style="display:flex;justify-content:flex-start;">
+      <div class="pane col" style="width:260px;height:100%;">
+        <div class="phead"><svg class="i"><use href="#i-explorer"/></svg><span class="cwd">Explorer · <b>tn</b></span></div>
+        <div class="tree">
+          <div class="tnode dir"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>crates</div>
+          <div class="tnode dir ind1"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>tn-ui</div>
+          <div class="tnode dir ind2"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>src</div>
+          <div class="tnode file ind3 active"><svg class="i"><use href="#i-file"/></svg>element.rs<span class="tag m">M</span></div>
+          <div class="tnode file ind3"><svg class="i"><use href="#i-file"/></svg>terminal_view.rs</div>
+          <div class="tnode file ind3"><svg class="i"><use href="#i-file"/></svg>lib.rs</div>
+          <div class="tnode dir ind1"><svg class="i"><use href="#i-chev-r"/></svg><svg class="i"><use href="#i-folder"/></svg>tn-core</div>
+          <div class="tnode dir ind1"><svg class="i"><use href="#i-chev-r"/></svg><svg class="i"><use href="#i-folder"/></svg>tn-pty</div>
+          <div class="tnode dir"><svg class="i"><use href="#i-chev-d"/></svg><svg class="i"><use href="#i-folder"/></svg>docs</div>
+          <div class="tnode file ind1"><svg class="i"><use href="#i-file"/></svg>UX-DESIGN.md<span class="tag u">U</span></div>
+          <div class="tnode file ind1"><svg class="i"><use href="#i-file"/></svg>BLUEPRINT.md</div>
+          <div class="tnode file"><svg class="i"><use href="#i-file"/></svg>Cargo.toml</div>
+          <div class="tnode file"><svg class="i"><use href="#i-file"/></svg>README.md</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">查看器(Diff 模式:头部路径 + 编辑中 + Diff/File 切换 + 行号 + 增删着色) <span class="id">.pane.viewer / .vh / .code / .cl.add/.del</span><span class="impl">viewer::render / render_diff</span></div>
+    <div class="canvas tall">
+      <div class="pane viewer col">
+        <div class="vh">
+          <svg class="i"><use href="#i-file"/></svg>
+          <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
+          <span class="sp"></span>
+          <span class="by"><svg class="i"><use href="#i-pen"/></svg> 编辑中</span>
+          <span class="tabset"><span class="tg on">Diff</span><span class="tg">File</span></span>
+        </div>
+        <div class="code">
+          <div class="cl"><span class="ln">12</span><span class="mk"></span><span class="kw">impl</span> <span class="ty">Element</span> <span class="kw">for</span> <span class="ty">TerminalElement</span> {</div>
+          <div class="cl"><span class="ln">13</span><span class="mk"></span>    <span class="kw">fn</span> <span class="fn">paint</span>(&<span class="kw">mut</span> self, win: &<span class="kw">mut</span> <span class="ty">Window</span>) {</div>
+          <div class="cl"><span class="ln">14</span><span class="mk"></span>        <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::new();</div>
+          <div class="cl"><span class="ln">15</span><span class="mk"></span>        <span class="kw">for</span> cell <span class="kw">in</span> self.row.cells() {</div>
+          <div class="cl del"><span class="ln">16</span><span class="mk">-</span>            win.<span class="fn">paint_text</span>(cell.ch, cell.point);</div>
+          <div class="cl add"><span class="ln">16</span><span class="mk">+</span>            <span class="kw">let</span> g = self.atlas.<span class="fn">glyph</span>(self.font, cell.ch);</div>
+          <div class="cl add"><span class="ln">17</span><span class="mk">+</span>            quads.<span class="fn">push</span>(<span class="ty">Quad</span>::<span class="fn">glyph</span>(g, cell.fg, cell.bg));</div>
+          <div class="cl"><span class="ln">18</span><span class="mk"></span>        }</div>
+          <div class="cl add"><span class="ln">19</span><span class="mk">+</span>        win.<span class="fn">paint_quads</span>(&quads); <span class="cm">// 一次提交</span></div>
+          <div class="cl"><span class="ln">20</span><span class="mk"></span>    }</div>
+          <div class="cl"><span class="ln">21</span><span class="mk"></span>}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

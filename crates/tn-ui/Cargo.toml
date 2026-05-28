@@ -26,6 +26,13 @@ raw-window-handle.workspace = true
 name = "mockup_replica"
 path = "../../docs/test/mockup_replica.rs"
 
+# Replica of the overlay/state panels (command palette / Quick launcher / welcome
+# / block card / status bar) — the panels the full-window mockup_replica doesn't
+# isolate. Together they cover docs/UI-CATALOG.md.
+[[example]]
+name = "panels_replica"
+path = "../../docs/test/panels_replica.rs"
+
 # Quick Terminal (M5) global hotkey + topmost window glue — Windows only.
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { workspace = true, features = [

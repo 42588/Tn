@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 面板原型 · ② 工作区窗格(Agent / Shell)</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-diamond" viewBox="0 0 24 24"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <h1>② 工作区窗格 <span class="dim">— Agent 面板 · Shell 面板</span></h1>
+  <p class="lead">面板 = g1 磨砂玻璃 + specular 柔光 + 浮起投影(焦点暖描边)。Agent 面板挂头部 + 用量环;Shell 面板挂 cwd 头 + 终端正文 + block 卡。gpui:<code>terminal_view/</code>(<code>header.rs</code> / <code>block_view.rs</code>)。</p>
+
+  <div class="demo">
+    <div class="label">Agent 面板(Claude · 焦点态:头部用量环 + 工具流 + 气泡) <span class="id">.pane.active / .agenthead / .agentbody</span><span class="impl">terminal_view::header render_agent_header</span></div>
+    <div class="canvas tall">
+      <div class="pane active col">
+        <div class="agenthead">
+          <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
+          <div class="who"><div class="nm">Claude Code</div><div class="model">Sonnet 4.6</div></div>
+          <span class="sp"></span>
+          <div class="usage">
+            <div class="ring" title="上下文 42%">
+              <svg width="32" height="32">
+                <circle cx="16" cy="16" r="13" stroke="rgba(255,255,255,0.10)" stroke-width="2.6" fill="none"/>
+                <circle cx="16" cy="16" r="13" stroke="var(--claude)" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-dasharray="81.7" stroke-dashoffset="47.4"/>
+              </svg>
+              <div class="lbl">42%</div>
+            </div>
+            <div class="meta"><span class="tok">84K / 200K</span><span class="cost">$0.31</span></div>
+          </div>
+          <div class="think"><span class="dotpulse"></span> Thinking…</div>
+        </div>
+        <div class="agentbody">
+          <div class="tool"><span class="gl done"><svg class="i"><use href="#i-check"/></svg></span><div><span class="tdim">Read</span> <span class="tcode">crates/tn-ui/src/terminal_view.rs</span> <span class="tdim">(218 lines)</span></div></div>
+          <div class="tool"><span class="gl done"><svg class="i"><use href="#i-check"/></svg></span><div><span class="tdim">Grep</span> <span class="tcode">"paint_text"</span> <span class="tdim">→ 2 files</span></div></div>
+          <div class="tool"><span class="gl run"><svg class="i"><use href="#i-diamond"/></svg></span><div>Editing <span class="tcode">crates/tn-ui/src/element.rs</span> <span class="tdim">— 用字形图集批量提交 quad</span></div></div>
+          <div class="tool"><span class="gl pend"><svg class="i"><use href="#i-circle"/></svg></span><div class="tdim">为每格上色,合并背景 / 光标 / 选区为 typed-quad…</div></div>
+          <div class="say">我会把逐行 <span class="k">paint_text</span> 改成 <span class="k">paint_quads</span> 批处理(见右侧 diff),这样每格颜色与连字都能正确渲染。继续吗?</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">Agent 头(Codex 变体:青绿强调) <span class="id">.agenthead.codex</span></div>
+    <div class="canvas short" style="height:auto;padding:18px;">
+      <div class="pane" style="height:auto">
+        <div class="agenthead codex">
+          <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
+          <div class="who"><div class="nm">Codex</div><div class="model">gpt-5-codex</div></div>
+          <span class="sp"></span>
+          <div class="usage">
+            <div class="ring"><svg width="32" height="32">
+              <circle cx="16" cy="16" r="13" stroke="rgba(255,255,255,0.10)" stroke-width="2.6" fill="none"/>
+              <circle cx="16" cy="16" r="13" stroke="var(--codex)" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-dasharray="81.7" stroke-dashoffset="67"/>
+            </svg><div class="lbl">18%</div></div>
+            <div class="meta"><span class="tok">49K / 272K</span></div>
+          </div>
+          <div class="think"><span class="dotpulse"></span> Thinking…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">Shell 面板(cwd 头 + 终端正文 + block 卡 + 提示符段) <span class="id">.pane / .phead / .body / .block</span><span class="impl">terminal_view::header render_shell_header + block_view</span></div>
+    <div class="canvas tall">
+      <div class="pane col">
+        <div class="phead"><svg class="i" style="color:var(--accent)"><use href="#i-term"/></svg><span class="cwd">~/proj/<b>tn</b></span><span class="sp"></span><span class="chip">pwsh 7.4</span></div>
+        <div class="body">
+          <div class="block">
+            <div class="bh"><span>❯ <span class="blu">cargo</span> test -p tn-core</span><span class="sp"></span><span class="dur">0.8s</span><span class="exit"><svg class="i"><use href="#i-check"/></svg></span></div>
+          </div>
+          <div class="row"><span class="grn">   test result: ok.</span> <span class="mut">3 passed; 0 failed</span></div>
+          <div class="row" style="margin-top:5px"><span class="seg p1">~/proj/tn</span> <span class="seg p2">main</span> ❯ <span class="cursor"></span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

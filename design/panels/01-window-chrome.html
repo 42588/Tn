@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 面板原型 · ① 窗口外壳(标题栏 / Tab / 窗控 / 状态栏)</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="6.5" r="2.3"/><circle cx="7" cy="17.5" r="2.3"/><circle cx="17" cy="8.5" r="2.3"/><path d="M7 8.8v6.4"/><path d="M17 10.8c0 4.2-4.2 3.2-7 4.6"/></symbol>
+  <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
+  <symbol id="i-max" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <h1>① 窗口外壳 <span class="dim">— 标题栏 · Tab · 窗口控制 · 状态栏</span></h1>
+  <p class="lead">自绘集成标题栏(品牌 mark + n 个标签 + 窗控)与多段状态栏。gpui 实现 <code>workspace.rs</code>;还原数值见 <a href="../../docs/CSS_TO_GPUI.md">CSS_TO_GPUI</a> §16。</p>
+
+  <div class="demo">
+    <div class="label">标题栏(品牌 + Tab 行 + 窗控) <span class="id">.titlebar</span><span class="impl">workspace::render → titlebar</span></div>
+    <div class="canvas short" style="height:auto;padding:0;">
+      <div class="win" style="height:auto;width:100%;">
+        <div class="titlebar">
+          <div class="brand">
+            <div class="mark"><svg class="i sm" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
+            <div class="name">Tn</div>
+          </div>
+          <div class="tabs">
+            <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
+            <div class="tab pwsh"><svg class="i"><use href="#i-term"/></svg> pwsh</div>
+            <div class="tab codex"><svg class="i"><use href="#i-spark"/></svg> Codex</div>
+            <div class="newtab"><svg class="i"><use href="#i-plus"/></svg></div>
+          </div>
+          <div class="wctl">
+            <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
+            <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
+            <div class="b close"><svg class="i sm"><use href="#i-close"/></svg></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">Tab 状态(活动 = 白微渐变 + agent 强调顶条;非活动 = 扁平 hover) <span class="id">.tab / .tab.active</span></div>
+    <div class="canvas short" style="height:auto;padding:14px 18px;">
+      <div class="tabs" style="padding-top:0;height:34px;">
+        <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
+        <div class="tab codex active"><svg class="i"><use href="#i-spark"/></svg> Codex <span class="badge">~/work</span></div>
+        <div class="tab pwsh active"><svg class="i"><use href="#i-term"/></svg> pwsh <span class="badge">~/</span></div>
+        <div class="tab"><svg class="i"><use href="#i-term"/></svg> shell ⌗3</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">窗口控制(min / max / close;close hover = 红 .22) <span class="id">.wctl .b</span></div>
+    <div class="canvas short" style="height:auto;padding:14px 18px;">
+      <div class="wctl">
+        <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
+        <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
+        <div class="b close" style="background:rgba(247,118,142,0.22);color:#ffd9e0"><svg class="i sm"><use href="#i-close"/></svg></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">状态栏(分支 · 会话数 · 各 agent 上下文 · 文件/编码/主题) <span class="id">.status</span><span class="impl">workspace::render_status_bar</span></div>
+    <div class="canvas short" style="height:auto;padding:0;">
+      <div class="win" style="height:auto;width:100%;">
+        <div class="status">
+          <span class="seg2"><svg class="i acc"><use href="#i-branch"/></svg> main</span>
+          <span class="seg2"><span class="num">3</span> sessions</span>
+          <span class="seg2"><svg class="i c"><use href="#i-spark"/></svg> ctx <span class="num">42%</span></span>
+          <span class="seg2"><svg class="i x"><use href="#i-spark"/></svg> ctx <span class="num">18%</span></span>
+          <span class="sp"></span>
+          <span class="seg2">element.rs · Rust</span>
+          <span class="seg2">UTF-8</span>
+          <span class="seg2 acc">Tn Dark</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

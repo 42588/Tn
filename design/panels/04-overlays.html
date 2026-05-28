@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 面板原型 · ④ 浮层(命令面板 / Quick Terminal 启动器)</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
+  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <h1>④ 浮层 / 启动器 <span class="dim">— 命令面板 · Quick Terminal</span></h1>
+  <p class="lead">命令面板(<code>Ctrl+Shift+P</code>)= 居中浮层 + 模糊 scrim + 模糊搜索 + agent 身份点;Quick Terminal(<code>Ctrl+Alt+Space</code>)= 屏幕顶部滑入的无边框置顶窗,唤出弹启动器(Claude/Codex/pwsh/WSL 磁贴)。gpui:<code>workspace::render_palette</code> / <code>quick_terminal</code>。</p>
+
+  <div class="demo">
+    <div class="label">命令面板 + 会话启动器(scrim + 输入 + 结果行,带 agent 点) <span class="id">.scrim / .palette / .prow</span><span class="impl">workspace::render_palette</span></div>
+    <div class="canvas tall" style="padding:0;">
+      <div class="scrim" style="position:absolute;padding-top:48px;">
+        <div class="palette">
+          <div class="pinput"><svg class="i"><use href="#i-term"/></svg><span>cla</span><span class="ph" style="color:var(--muted)">|</span></div>
+          <div class="plist">
+            <div class="prow sel"><span class="dot claude"></span> Start Claude Code here <span class="meta">~/proj/tn</span></div>
+            <div class="prow"><span class="dot codex"></span> Start Codex here <span class="meta">~/proj/tn</span></div>
+            <div class="prow"><span class="dot sh"></span> New pwsh <span class="meta">profile</span></div>
+            <div class="prow"><span class="dot" style="background:var(--violet)"></span> WSL · Ubuntu <span class="meta">wsl -d Ubuntu</span></div>
+            <div class="prow"><span class="dot" style="background:var(--violet)"></span> WSL · Debian <span class="meta">wsl -d Debian</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">Quick Terminal 启动器(顶部下拉 · 选 Claude/Codex/pwsh/WSL) <span class="id">.quick / .launcher / .tile</span><span class="impl">quick_terminal::launcher</span></div>
+    <div class="canvas tall" style="padding:0;align-items:flex-start;display:flex;justify-content:center;">
+      <div class="quick">
+        <div class="launcher">
+          <div class="lhead">起一个会话 — Quick Terminal</div>
+          <div class="tiles">
+            <div class="tile claude sel"><div class="ic"><svg class="i"><use href="#i-spark"/></svg></div><div class="tn">Claude</div><div class="td">~/proj/tn</div></div>
+            <div class="tile codex"><div class="ic"><svg class="i"><use href="#i-spark"/></svg></div><div class="tn">Codex</div><div class="td">最近目录</div></div>
+            <div class="tile sh"><div class="ic"><svg class="i"><use href="#i-term"/></svg></div><div class="tn">pwsh</div><div class="td">PowerShell 7.4</div></div>
+            <div class="tile wsl"><div class="ic"><svg class="i"><use href="#i-term"/></svg></div><div class="tn">WSL</div><div class="td">Ubuntu</div></div>
+          </div>
+        </div>
+        <div class="body" style="padding:14px 18px;border-top:1px solid rgba(255,255,255,0.05);">
+          <div class="row"><span class="mut">退出当前会话即回到此启动器(ephemeral)。</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

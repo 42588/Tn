@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 界面原型 · 总览</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+<style>
+  .grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
+  a.card{ display:block; text-decoration:none; color:var(--fg); padding:18px 20px; border-radius:var(--r-pane);
+    background:var(--g1); border:1px solid var(--rim); position:relative; overflow:hidden;
+    box-shadow:0 24px 58px -36px rgba(0,0,0,0.88); }
+  a.card::before{ content:""; position:absolute; left:0; right:0; top:0; height:36%;
+    border-radius:var(--r-pane) var(--r-pane) 0 0; background:linear-gradient(180deg, rgba(255,255,255,0.04), transparent); }
+  a.card .ct{ font-size:15px; font-weight:680; }
+  a.card .cd{ font-size:12px; color:var(--fg-dim); margin-top:4px; }
+  a.card .cf{ font-size:11px; color:var(--faint); font-family:var(--mono); margin-top:8px; }
+  a.card.full{ grid-column:1 / -1; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <h1>Tn 界面原型 <span class="dim">— Calm Glass · 分类总览</span></h1>
+  <p class="lead">每页是该类面板的高保真 HTML 原型(共享 <code>../calm-glass.css</code>);对应 gpui 还原见 <code>../../docs/test/panels_replica.rs</code>,映射清单见 <code>../../docs/UI-CATALOG.md</code>。设计真源 = <code>../mockup.html</code>(全窗合成 + token_drift 守卫)。</p>
+  <div class="grid">
+    <a class="card full" href="../mockup.html"><div class="ct">◆ 全窗合成(设计真源)</div><div class="cd">完整窗口:标题栏 + 三栏(资源管理器 | Agent+Shell | 查看器)+ 状态栏</div><div class="cf">design/mockup.html · 守卫真源</div></a>
+    <a class="card" href="01-window-chrome.html"><div class="ct">① 窗口外壳</div><div class="cd">标题栏 · Tab · 窗口控制 · 状态栏</div><div class="cf">workspace.rs</div></a>
+    <a class="card" href="02-workspace-panes.html"><div class="ct">② 工作区窗格</div><div class="cd">Agent 面板(头+用量环+工具流)· Shell 面板</div><div class="cf">terminal_view/</div></a>
+    <a class="card" href="03-side-panels.html"><div class="ct">③ 侧栏</div><div class="cd">资源管理器(文件树)· 文件/Diff 查看器</div><div class="cf">explorer.rs · viewer.rs</div></a>
+    <a class="card" href="04-overlays.html"><div class="ct">④ 浮层 / 启动器</div><div class="cd">命令面板 · Quick Terminal 启动器</div><div class="cf">workspace::render_palette · quick_terminal</div></a>
+    <a class="card" href="05-states.html"><div class="ct">⑤ 状态屏</div><div class="cd">欢迎/空状态 · Block 卡(运行/成功/失败)</div><div class="cf">block_view.rs · 欢迎屏(后置)</div></a>
+  </div>
+</div>
+</body>
+</html>

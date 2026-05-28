@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 面板原型 · ⑤ 状态屏(欢迎 / Block 卡)</title>
+<link rel="stylesheet" href="../calm-glass.css" />
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
+  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-diamond" viewBox="0 0 24 24"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
+</defs></svg>
+
+<div class="stage">
+  <h1>⑤ 状态屏 <span class="dim">— 欢迎 / 空状态 · Block 卡(运行/成功/失败)</span></h1>
+  <p class="lead">新会话欢迎屏(大启动磁贴);Warp 式命令 block 三态(运行=蓝 / 成功=绿 / 失败=红 左条 + 时长 + 退出状态)。gpui:欢迎屏(后置)/ <code>block_view.rs</code>。</p>
+
+  <div class="demo">
+    <div class="label">欢迎 / 空状态(新标签:直达 pwsh / WSL / Claude / Codex) <span class="id">.welcome</span><span class="impl">后置(未实现)</span></div>
+    <div class="canvas tall">
+      <div class="pane col">
+        <div class="welcome">
+          <div class="wmark"><svg class="i" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
+          <div class="wt">开一个新会话</div>
+          <div class="ws">托管 AI 编码 CLI,或起一个本地/WSL shell</div>
+          <div class="tiles">
+            <div class="tile claude"><div class="ic"><svg class="i"><use href="#i-spark"/></svg></div><div class="tn">Claude</div><div class="td">Claude Code</div></div>
+            <div class="tile codex"><div class="ic"><svg class="i"><use href="#i-spark"/></svg></div><div class="tn">Codex</div><div class="td">OpenAI Codex</div></div>
+            <div class="tile sh"><div class="ic"><svg class="i"><use href="#i-term"/></svg></div><div class="tn">pwsh</div><div class="td">PowerShell</div></div>
+            <div class="tile wsl"><div class="ic"><svg class="i"><use href="#i-term"/></svg></div><div class="tn">WSL</div><div class="td">Ubuntu</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="demo">
+    <div class="label">Block 卡三态(成功 / 运行中 / 失败) <span class="id">.block / .block.run / .block.fail</span><span class="impl">block_view::bar_base + exit_chip</span></div>
+    <div class="canvas mid" style="display:flex;flex-direction:column;justify-content:center;gap:0;">
+      <div style="font-family:var(--mono);font-size:12.5px;">
+        <div class="block">
+          <div class="bh"><span>❯ <span class="blu">cargo</span> test -p tn-core</span><span class="sp"></span><span class="dur">0.8s</span><span class="exit"><svg class="i"><use href="#i-check"/></svg></span></div>
+        </div>
+        <div class="block run">
+          <div class="bh"><span>❯ <span class="blu">cargo</span> build --workspace</span><span class="sp"></span><span class="dur">12.4s</span><span class="exit run"><svg class="i"><use href="#i-diamond"/></svg> 运行中</span></div>
+        </div>
+        <div class="block fail">
+          <div class="bh"><span>❯ <span class="blu">cargo</span> clippy</span><span class="sp"></span><span class="dur">3.1s</span><span class="exit fail"><svg class="i"><use href="#i-close"/></svg> exit 101</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

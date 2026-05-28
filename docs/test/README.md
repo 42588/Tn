@@ -1,31 +1,42 @@
-# mockup_replica — runnable gpui replica of `design/mockup.html`
+# gpui replicas of the Calm Glass design prototypes
 
-`mockup_replica.rs` is a **self-contained gpui window** that reproduces the
-`design/mockup.html` prototype (Tn Dark · Calm Glass) so the owner can run it on
-a real machine and **visually compare it, side-by-side, against the mockup** —
-validating that our CSS→gpui mapping (`docs/CSS_TO_GPUI.md`) produces the
-intended look. It deliberately uses **no** `tn-ui` internals: every token
+Two **self-contained gpui windows** reproduce the design prototypes so the owner
+can run them on a real machine and **visually compare, side-by-side, against the
+HTML** — validating that our CSS→gpui mapping (`docs/CSS_TO_GPUI.md`) produces
+the intended look. Both deliberately use **no** `tn-ui` internals: every token
 (colors, white-overlay alphas, radii), component value (`FontWeight(N.)`,
-paddings/gaps/heights), gradient, rim, sheen, and shadow is **inlined from
-`docs/CSS_TO_GPUI.md` §16** (the authoritative auto-generated spec), so the
-replica tests the *documented values*, not the production widgets.
+paddings/gaps/heights), gradient, rim, specular and shadow is **inlined from the
+prototypes / `docs/CSS_TO_GPUI.md` §16**, so they test the *documented values*.
+
+| Example | Reproduces | Prototype |
+|---|---|---|
+| `mockup_replica` | the **composed window** (titlebar / explorer / agent / shell / viewer / status) | [`design/mockup.html`](../../design/mockup.html) |
+| `panels_replica` | the **overlay / state panels** (command palette / Quick launcher / welcome / block card / status bar) | [`design/panels/04`](../../design/panels/04-overlays.html) · [`05`](../../design/panels/05-states.html) |
+
+Which panel maps to which replica function and which production crate is the
+**[`docs/UI-CATALOG.md`](../UI-CATALOG.md)** classification table.
 
 ## Run
 
 ```powershell
 cargo run -p tn-ui --example mockup_replica
+cargo run -p tn-ui --example panels_replica
 ```
 
 (cargo isn't on PATH in this repo's shell — use the full path if needed:
 `& "$env:USERPROFILE\.cargo\bin\cargo.exe" run -p tn-ui --example mockup_replica`)
 
-The replica is wired as a **tn-ui example** (project rule: `gpui` may only be
-linked in `tn-ui` / `tn-app`) via `crates/tn-ui/Cargo.toml`:
+Both are wired as **tn-ui examples** (project rule: `gpui` may only be linked in
+`tn-ui` / `tn-app`) via `crates/tn-ui/Cargo.toml`:
 
 ```toml
 [[example]]
 name = "mockup_replica"
 path = "../../docs/test/mockup_replica.rs"
+
+[[example]]
+name = "panels_replica"
+path = "../../docs/test/panels_replica.rs"
 ```
 
 ## Side-by-side comparison checklist
