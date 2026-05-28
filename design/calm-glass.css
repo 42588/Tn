@@ -105,27 +105,27 @@ body {
 .col{ display:flex; flex-direction:column; gap:11px; min-width:0; min-height:0; }
 .pane{ position:relative; background:var(--g1); border-radius:var(--r-pane); display:flex; flex-direction:column;
   min-height:0; min-width:0; overflow:hidden; border:1px solid var(--rim);
-  /* 厚材质:更浓磨砂 + 多层投影(接触 / 主 / 环境)+ 底部内阴影给"玻璃厚度",无发光 */
-  backdrop-filter:blur(22px) saturate(140%); -webkit-backdrop-filter:blur(22px) saturate(140%);
+  /* 厚 = 多层投影(接触/主/环境)+ 底部内阴影给"玻璃厚度";景深靠阴影不靠泛光 */
+  backdrop-filter:blur(22px) saturate(116%); -webkit-backdrop-filter:blur(22px) saturate(116%);
   box-shadow:
-    0 1px 0 rgba(255,255,255,0.10) inset,
+    0 1px 0 rgba(255,255,255,0.05) inset,
     0 -22px 46px -30px rgba(0,0,0,0.55) inset,
     0 2px 5px -2px rgba(0,0,0,0.55),
     0 22px 48px -26px rgba(0,0,0,0.72),
     0 52px 104px -46px rgba(0,0,0,0.92); }
-/* specular top wash(折射,不发光)— gpui 用 style::specular_top 还原 */
-.pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:42%; z-index:1; pointer-events:none;
+/* specular 顶洗光(克制折射,绝不泛光)— gpui 用 style::specular_top 还原 */
+.pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:32%; z-index:1; pointer-events:none;
   border-radius:var(--r-pane) var(--r-pane) 0 0;
-  background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02) 38%, transparent); }
-/* 细噪点颗粒(磨砂材质质感 + 抹平大面积渐变色带)*/
+  background:linear-gradient(180deg, rgba(255,255,255,0.035), transparent); }
+/* 细噪点颗粒(磨砂哑光质感 + 抹平大面积渐变色带;soft-light 比 overlay 更哑、不增亮)*/
 .pane::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none; border-radius:inherit;
-  background:var(--noise); background-size:170px 170px; opacity:.035; mix-blend-mode:overlay; }
+  background:var(--noise); background-size:170px 170px; opacity:.05; mix-blend-mode:soft-light; }
 .pane > *{ position:relative; z-index:2; }
-.pane.active{ border-color:rgba(240,145,109,0.30);
+.pane.active{ border-color:rgba(240,145,109,0.26);
   box-shadow:
-    0 1px 0 rgba(255,255,255,0.13) inset,
+    0 1px 0 rgba(255,255,255,0.07) inset,
     0 -22px 48px -30px rgba(0,0,0,0.55) inset,
-    0 0 0 1px rgba(240,145,109,0.12),
+    0 0 0 1px rgba(240,145,109,0.10),
     0 4px 9px -2px rgba(0,0,0,0.58),
     0 30px 64px -28px rgba(0,0,0,0.8),
     0 64px 120px -48px rgba(0,0,0,0.94); }
