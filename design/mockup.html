@@ -102,17 +102,29 @@
 
   .pane{ position:relative; background:var(--g1); border-radius:var(--r-pane); display:flex; flex-direction:column;
     min-height:0; min-width:0; overflow:hidden; border:1px solid var(--rim);
-    backdrop-filter:blur(9px) saturate(116%); -webkit-backdrop-filter:blur(9px) saturate(116%);
-    box-shadow:0 1px 0 var(--sheen) inset, 0 24px 58px -36px rgba(0,0,0,0.88); }
-  /* specular top edge (refraction) */
-  .pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:36%; z-index:1; pointer-events:none;
-    background:linear-gradient(180deg, rgba(255,255,255,0.04), transparent); }
+    /* 厚材质:更浓磨砂 + 多层投影(接触/主/环境)+ 底部内阴影给"玻璃厚度",无发光 */
+    backdrop-filter:blur(22px) saturate(140%); -webkit-backdrop-filter:blur(22px) saturate(140%);
+    box-shadow:0 1px 0 var(--sheen) inset,
+               0 -22px 46px -30px rgba(0,0,0,0.55) inset,
+               0 2px 5px -2px rgba(0,0,0,0.55),
+               0 22px 48px -26px rgba(0,0,0,0.72),
+               0 52px 104px -46px rgba(0,0,0,0.92); }
+  /* specular top wash (refraction, not glow) */
+  .pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:42%; z-index:1; pointer-events:none;
+    border-radius:var(--r-pane) var(--r-pane) 0 0;
+    background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02) 38%, transparent); }
+  /* fine grain (frosted material + dithers banding) */
+  .pane::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none; border-radius:inherit;
+    background:var(--noise); background-size:170px 170px; opacity:.035; mix-blend-mode:overlay; }
   .pane > *{ position:relative; z-index:2; }
-  /* focused pane: floats a touch higher + a faint warm rim — NO halo */
-  .pane.active{ border-color:rgba(240,145,109,0.24);
+  /* focused pane: floats higher + a faint warm rim — NO halo */
+  .pane.active{ border-color:rgba(240,145,109,0.30);
     box-shadow:0 1px 0 rgba(255,255,255,0.13) inset,
-               0 0 0 1px rgba(240,145,109,0.10),
-               0 30px 64px -36px rgba(0,0,0,0.9); }
+               0 -22px 48px -30px rgba(0,0,0,0.55) inset,
+               0 0 0 1px rgba(240,145,109,0.12),
+               0 4px 9px -2px rgba(0,0,0,0.58),
+               0 30px 64px -28px rgba(0,0,0,0.8),
+               0 64px 120px -48px rgba(0,0,0,0.94); }
 
   .phead{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto;
     font-size:11.5px; font-weight:560; color:var(--muted); letter-spacing:.2px; }

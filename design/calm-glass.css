@@ -51,10 +51,11 @@ body {
   color:var(--muted); margin-bottom:10px; }
 .demo > .label .id{ color:var(--faint); font-family:var(--mono); font-size:11px; }
 .demo > .label .impl{ margin-left:auto; color:var(--faint); font-family:var(--mono); font-size:10.5px; }
-/* a sized canvas a single pane/panel can float on */
-.canvas{ position:relative; border-radius:var(--r-pane); padding:18px;
-  background:linear-gradient(180deg,#0c0d15,#0a0a12); overflow:hidden; }
-.canvas.tall{ height:420px; } .canvas.mid{ height:300px; } .canvas.short{ height:150px; }
+/* a sized canvas a single pane/panel can float on (厚投影需要更大留白才不被裁) */
+.canvas{ position:relative; border-radius:var(--r-pane); padding:40px;
+  background:radial-gradient(900px 600px at 30% -20%, rgba(122,162,247,0.05), transparent 60%),
+    linear-gradient(160deg,#0c0d15,#0a0a12 60%,#08080e); overflow:hidden; }
+.canvas.tall{ height:460px; } .canvas.mid{ height:330px; } .canvas.short{ height:160px; }
 .canvas .col,.canvas .pane{ height:100%; }
 
 /* ===================== window ===================== */
@@ -71,6 +72,9 @@ body {
 .win::before{ content:""; position:absolute; left:-10%; right:-10%; top:0; height:150px; z-index:8;
   pointer-events:none; border-radius:50%;
   background:radial-gradient(120% 100% at 50% -42%, rgba(255,255,255,0.06), transparent 60%); }
+/* 窗口材质细噪点(磨砂质感 + 抹平大渐变色带)*/
+.win::after{ content:""; position:absolute; inset:0; z-index:8; pointer-events:none; border-radius:var(--r-win);
+  background:var(--noise); background-size:200px 200px; opacity:.02; mix-blend-mode:overlay; }
 
 /* ===================== titlebar + tabs ===================== */
 .titlebar{ height:46px; display:flex; align-items:center; gap:14px; padding:0 10px 0 16px; position:relative; z-index:9; }
@@ -101,15 +105,30 @@ body {
 .col{ display:flex; flex-direction:column; gap:11px; min-width:0; min-height:0; }
 .pane{ position:relative; background:var(--g1); border-radius:var(--r-pane); display:flex; flex-direction:column;
   min-height:0; min-width:0; overflow:hidden; border:1px solid var(--rim);
-  backdrop-filter:blur(9px) saturate(116%); -webkit-backdrop-filter:blur(9px) saturate(116%);
-  box-shadow:0 24px 58px -36px rgba(0,0,0,0.88); }
-/* specular top edge (refraction) — gpui 用 style::specular_top 还原 */
-.pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:36%; z-index:1; pointer-events:none;
+  /* 厚材质:更浓磨砂 + 多层投影(接触 / 主 / 环境)+ 底部内阴影给"玻璃厚度",无发光 */
+  backdrop-filter:blur(22px) saturate(140%); -webkit-backdrop-filter:blur(22px) saturate(140%);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.10) inset,
+    0 -22px 46px -30px rgba(0,0,0,0.55) inset,
+    0 2px 5px -2px rgba(0,0,0,0.55),
+    0 22px 48px -26px rgba(0,0,0,0.72),
+    0 52px 104px -46px rgba(0,0,0,0.92); }
+/* specular top wash(折射,不发光)— gpui 用 style::specular_top 还原 */
+.pane::before{ content:""; position:absolute; left:0; right:0; top:0; height:42%; z-index:1; pointer-events:none;
   border-radius:var(--r-pane) var(--r-pane) 0 0;
-  background:linear-gradient(180deg, rgba(255,255,255,0.04), transparent); }
+  background:linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02) 38%, transparent); }
+/* 细噪点颗粒(磨砂材质质感 + 抹平大面积渐变色带)*/
+.pane::after{ content:""; position:absolute; inset:0; z-index:1; pointer-events:none; border-radius:inherit;
+  background:var(--noise); background-size:170px 170px; opacity:.035; mix-blend-mode:overlay; }
 .pane > *{ position:relative; z-index:2; }
-.pane.active{ border-color:rgba(240,145,109,0.24);
-  box-shadow:0 0 0 1px rgba(240,145,109,0.10), 0 30px 64px -36px rgba(0,0,0,0.9); }
+.pane.active{ border-color:rgba(240,145,109,0.30);
+  box-shadow:
+    0 1px 0 rgba(255,255,255,0.13) inset,
+    0 -22px 48px -30px rgba(0,0,0,0.55) inset,
+    0 0 0 1px rgba(240,145,109,0.12),
+    0 4px 9px -2px rgba(0,0,0,0.58),
+    0 30px 64px -28px rgba(0,0,0,0.8),
+    0 64px 120px -48px rgba(0,0,0,0.94); }
 
 .phead{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto;
   font-size:11.5px; font-weight:560; color:var(--muted); letter-spacing:.2px; }
