@@ -1493,6 +1493,8 @@ impl Render for Workspace {
 
         // Window controls: the OS performs the action from the marked region
         // (HTMINBUTTON / HTMAXBUTTON / HTCLOSE) — no click handler needed.
+        // mockup .wctl .b.close:hover bg = 红 @ 0.22(原硬编码 0x33=0.2)
+        let danger_bg = cola(self.config.theme.ansi.red, 0.22);
         let ctl_btn = |name: &'static str, area: WindowControlArea, danger: bool| {
             div()
                 .w(px(34.))
@@ -1501,7 +1503,7 @@ impl Render for Workspace {
                 .items_center()
                 .justify_center()
                 .rounded(px(8.))
-                .hover(move |s| s.bg(if danger { rgba(0xF7768E33) } else { rgba(HOVER) }))
+                .hover(move |s| s.bg(if danger { danger_bg } else { rgba(HOVER) }))
                 .window_control_area(area)
                 .child(icon(name, 13., ui.muted))
         };

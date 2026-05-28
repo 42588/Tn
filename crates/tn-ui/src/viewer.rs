@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, Rgba, SharedString};
+use gpui::{
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, FocusHandle,
+    MouseButton, Rgba, SharedString,
+};
 use tn_config::Loaded;
 
 use crate::style::{col, cola, HOVER, RIM, UI_SANS};
@@ -425,7 +428,12 @@ impl Render for ViewerView {
             .rounded(px(14.))
             .border_1()
             .border_color(rgba(RIM))
-            .bg(cola(self.config.theme.terminal.background, 0.5)) // 磨砂代码面板:#1A1B26 @ .5
+            // mockup .viewer 是 .pane:用 g1 玻璃渐变(与其它面板一致)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba(0x2a2e446b), 0.), // rgba(42,46,68,.42)
+                linear_color_stop(rgba(0x1a1c2c85), 1.), // rgba(26,28,44,.52)
+            ))
             .font_family(SharedString::from(self.config.font().family.clone()))
             .text_size(px(12.5)) // mockup .code font-size:12.5px
             .child(
