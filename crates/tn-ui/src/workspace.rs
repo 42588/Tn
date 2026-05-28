@@ -525,10 +525,18 @@ impl Workspace {
                 QuickLookEvent::Nav(delta) => {
                     let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
                     if let Some(path) = next {
+                        // DEBUG(freeze hunt): time the cross-entity open (file read;
+                        // git diff is now lazy). A stall here points at the file read.
+                        let t = std::time::Instant::now();
                         ws.quick_look.update(cx, |v, cx| {
-                            v.open(path);
+                            v.open(path.clone());
                             cx.notify();
                         });
+                        let ms = t.elapsed().as_secs_f64() * 1000.0;
+                        tracing::debug!(target: "tn::quicklook", delta, path = %path.display(), ms, "nav open");
+                        if ms >= 6.0 {
+                            tracing::warn!(target: "tn::quicklook", path = %path.display(), ms, "nav open SLOW");
+                        }
                     }
                 }
                 QuickLookEvent::Close => {

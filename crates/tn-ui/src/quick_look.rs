@@ -40,7 +40,7 @@ const MAX_LINES: usize = 4000;
 /// Code font size (px) — mockup `.code` font-size (also the mouse char-width probe).
 const CODE_FS: f32 = 12.5;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
     File,
     Diff,
@@ -149,7 +149,7 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
     out
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DiffKind {
     Ctx,
     Add,
@@ -181,6 +181,11 @@ pub struct QuickLook {
     file_lines: Rc<Vec<String>>,
     file_truncated: bool,
     diff: Rc<Vec<DiffLine>>,
+    /// `git diff` is computed **lazily** (only when the Diff tab is shown) — it's a
+    /// blocking subprocess and was freezing the UI when run eagerly on every file
+    /// open / navigation. `true` = the cached `diff` is stale and must be recomputed
+    /// the next time the Diff tab is viewed. (See 踩过的坑 + 架构蓝图 §8 ①.)
+    diff_dirty: bool,
     /// Edit state (our own small modeless editor — see §16 / 架构蓝图 §8 ①).
     editing: bool,
     /// Editable buffer (copied from `file_lines` on entering edit; `Rc` so the
@@ -236,6 +241,7 @@ impl QuickLook {
             file_lines: Rc::new(Vec::new()),
             file_truncated: false,
             diff: Rc::new(Vec::new()),
+            diff_dirty: true,
             editing: false,
             buf: Rc::new(Vec::new()),
             cursor: (0, 0),
@@ -291,18 +297,50 @@ impl QuickLook {
     /// Open `path`: read its text + compute its git diff, default to the File tab
     /// (preview). Always (re)grabs focus so keys route to the overlay.
     pub fn open(&mut self, path: PathBuf) {
+        let t0 = std::time::Instant::now();
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
         self.dirty = false;
         let text = std::fs::read_to_string(&path).unwrap_or_default();
+        let read_ms = t0.elapsed().as_secs_f64() * 1000.0;
         let all: Vec<String> = text.lines().map(str::to_string).collect();
         self.file_truncated = all.len() > MAX_LINES;
         self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
-        self.diff = Rc::new(self.compute_diff(&path));
+        // Defer the diff: `git diff` is a blocking subprocess and running it on
+        // every open/navigation froze the UI (踩过的坑). Mark stale; compute only
+        // when the Diff tab is actually shown (`ensure_diff`).
+        self.diff = Rc::new(Vec::new());
+        self.diff_dirty = true;
         self.scroll = UniformListScrollHandle::default(); // new file → scroll to top
         self.needs_focus = true;
         self.find_open = false;
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        tracing::debug!(target: "tn::quicklook", path = %path.display(), lines = self.file_lines.len(), read_ms, ms, "open");
+        if ms >= 6.0 {
+            tracing::warn!(target: "tn::quicklook", path = %path.display(), read_ms, ms, "open SLOW (file read)");
+        }
+    }
+
+    /// Recompute `diff` if stale — called only when the Diff tab is shown (keeps the
+    /// blocking `git diff` off the open/navigation hot path). Bounded + non-flashing
+    /// inside `compute_diff`.
+    fn ensure_diff(&mut self) {
+        if !self.diff_dirty {
+            return;
+        }
+        if let Some(path) = self.path.clone() {
+            self.diff = Rc::new(self.compute_diff(&path));
+        }
+        self.diff_dirty = false;
+    }
+
+    /// Switch tabs; computing the diff lazily when entering the Diff tab.
+    fn select_tab(&mut self, tab: Tab) {
+        self.tab = tab;
+        if tab == Tab::Diff {
+            self.ensure_diff();
+        }
     }
 
     /// Enter edit mode: copy the file into the editable buffer, cursor at (0,0).
@@ -329,15 +367,14 @@ impl QuickLook {
             Ok(()) => {
                 self.dirty = false;
                 self.file_lines = self.buf.clone();
-                // DEBUG: `git diff` is synchronous — time it (a slow/hanging git on a
-                // big repo would freeze the UI on every Ctrl+S).
-                let t = std::time::Instant::now();
-                self.diff = Rc::new(self.compute_diff(&path));
-                let diff_ms = t.elapsed().as_secs_f64() * 1000.0;
-                tracing::info!(target: "tn::quicklook", path = %path.display(), lines = self.buf.len(), diff_ms, "quick look saved");
-                if diff_ms >= 30.0 {
-                    tracing::warn!(target: "tn::quicklook", diff_ms, "save: git diff slow (UI blocks on save)");
+                // The diff is now stale; recompute lazily (only if the Diff tab is
+                // currently showing — otherwise just mark it dirty so Ctrl+S stays
+                // fast and never blocks on `git diff`).
+                self.diff_dirty = true;
+                if self.tab == Tab::Diff {
+                    self.ensure_diff();
                 }
+                tracing::info!(target: "tn::quicklook", path = %path.display(), lines = self.buf.len(), "quick look saved");
             }
             Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
         }
@@ -797,6 +834,11 @@ impl QuickLook {
             if m.control || m.alt || m.platform {
                 return;
             }
+            // DEBUG(freeze hunt): preview keys were uninstrumented — `↑↓` emits Nav
+            // which (in workspace) opens the next file. Log entry + a SLOW warn so a
+            // stall here (e.g. file read / lazy git on Diff tab) is visible.
+            let _pv_t0 = std::time::Instant::now();
+            tracing::debug!(target: "tn::quicklook", key = %key, tab = ?self.tab, "preview key IN");
             match key {
                 "up" => {
                     cx.emit(QuickLookEvent::Nav(-1));
@@ -807,7 +849,7 @@ impl QuickLook {
                     cx.stop_propagation();
                 }
                 "tab" => {
-                    self.tab = if self.tab == Tab::File { Tab::Diff } else { Tab::File };
+                    self.select_tab(if self.tab == Tab::File { Tab::Diff } else { Tab::File });
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -823,6 +865,10 @@ impl QuickLook {
                 }
                 _ => {}
             }
+            let ms = _pv_t0.elapsed().as_secs_f64() * 1000.0;
+            if ms >= 3.0 {
+                tracing::warn!(target: "tn::quicklook", key = %key, ms, "preview key SLOW");
+            }
         }
     }
 
@@ -830,59 +876,99 @@ impl QuickLook {
     /// line numbers from each hunk header). Empty when not a repo / no changes.
     fn compute_diff(&self, path: &PathBuf) -> Vec<DiffLine> {
         let rel = path.strip_prefix(&self.root).unwrap_or(path);
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .arg("diff")
-            .arg("--no-color")
-            .arg("--")
-            .arg(rel)
-            .output();
-        let Ok(out) = output else { return Vec::new() };
-        let text = String::from_utf8_lossy(&out.stdout);
-        let mut lines = Vec::new();
-        let mut new_no = 0u32;
-        for line in text.lines() {
-            if line.starts_with("diff ")
-                || line.starts_with("index ")
-                || line.starts_with("--- ")
-                || line.starts_with("+++ ")
-                || line.starts_with("old mode")
-                || line.starts_with("new mode")
-                || line.starts_with("similarity")
-                || line.starts_with("rename ")
-            {
-                continue;
-            }
-            if let Some(rest) = line.strip_prefix("@@") {
-                // @@ -a,b +c,d @@  → start tracking at c
-                if let Some(plus) = rest.split('+').nth(1) {
-                    let num: String = plus.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    new_no = num.parse().unwrap_or(new_no);
-                }
-                lines.push(DiffLine { kind: DiffKind::Hunk, new_no: None, text: line.to_string() });
-                continue;
-            }
-            let (kind, text) = match line.chars().next() {
-                Some('+') => (DiffKind::Add, line[1..].to_string()),
-                Some('-') => (DiffKind::Del, line[1..].to_string()),
-                _ => (DiffKind::Ctx, line.strip_prefix(' ').unwrap_or(line).to_string()),
-            };
-            let no = if kind == DiffKind::Del {
-                None
-            } else {
-                let n = new_no;
-                new_no += 1;
-                Some(n)
-            };
-            lines.push(DiffLine { kind, new_no: no, text });
-            if lines.len() >= MAX_LINES {
-                break;
-            }
+        let args = vec![
+            "diff".to_string(),
+            "--no-color".to_string(),
+            "--".to_string(),
+            rel.to_string_lossy().into_owned(),
+        ];
+        let t = std::time::Instant::now();
+        // Bounded so a slow / .git-locked / AV-scanned git can never hang the UI
+        // (the worst case is a ~1.5s stall on an explicit Diff-tab view).
+        let text = git_capture_bounded(&self.root, args, std::time::Duration::from_millis(1500));
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        let timed_out = text.is_none();
+        let lines = parse_diff(text.as_deref().unwrap_or(""));
+        tracing::info!(target: "tn::quicklook", path = %path.display(), ms, timed_out, hunks = lines.len(), "compute_diff");
+        if ms >= 30.0 {
+            tracing::warn!(target: "tn::quicklook", ms, timed_out, "compute_diff SLOW (git diff blocked)");
         }
         lines
     }
 
+}
+
+/// Run `git <args>` in `root`, stdout captured, **bounded** to `timeout` and with
+/// **no console flash**. Returns `None` on timeout / spawn failure (caller treats
+/// that as "no diff"). The blocking `.output()` runs on a throwaway thread so a
+/// slow or `.git/index.lock`-stuck git can never block the UI thread — on timeout
+/// the orphaned thread + git exit on their own. (`.output()` drains stdout, so this
+/// also avoids the pipe-buffer deadlock a `try_wait` loop would hit on big diffs.)
+fn git_capture_bounded(root: &std::path::Path, args: Vec<String>, timeout: std::time::Duration) -> Option<String> {
+    let root = root.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(&root).args(&args);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let _ = tx.send(out);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(s)) => Some(s),
+        _ => None, // timeout or spawn error
+    }
+}
+
+/// Parse `git diff --no-color` output into renderable lines (tracking new-file line
+/// numbers from each hunk header). Pure → unit-testable headless.
+fn parse_diff(text: &str) -> Vec<DiffLine> {
+    let mut lines = Vec::new();
+    let mut new_no = 0u32;
+    for line in text.lines() {
+        if line.starts_with("diff ")
+            || line.starts_with("index ")
+            || line.starts_with("--- ")
+            || line.starts_with("+++ ")
+            || line.starts_with("old mode")
+            || line.starts_with("new mode")
+            || line.starts_with("similarity")
+            || line.starts_with("rename ")
+        {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("@@") {
+            // @@ -a,b +c,d @@  → start tracking at c
+            if let Some(plus) = rest.split('+').nth(1) {
+                let num: String = plus.chars().take_while(|c| c.is_ascii_digit()).collect();
+                new_no = num.parse().unwrap_or(new_no);
+            }
+            lines.push(DiffLine { kind: DiffKind::Hunk, new_no: None, text: line.to_string() });
+            continue;
+        }
+        let (kind, text) = match line.chars().next() {
+            Some('+') => (DiffKind::Add, line[1..].to_string()),
+            Some('-') => (DiffKind::Del, line[1..].to_string()),
+            _ => (DiffKind::Ctx, line.strip_prefix(' ').unwrap_or(line).to_string()),
+        };
+        let no = if kind == DiffKind::Del {
+            None
+        } else {
+            let n = new_no;
+            new_no += 1;
+            Some(n)
+        };
+        lines.push(DiffLine { kind, new_no: no, text });
+        if lines.len() >= MAX_LINES {
+            break;
+        }
+    }
+    lines
 }
 
 fn tint_color(config: &Loaded, t: Tint) -> Rgba {
@@ -1186,6 +1272,21 @@ fn edit_row(
     let line = &buf[i];
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
+    // Long line: skip per-char tinting (bounds paint cost); render before/[caret]/
+    // after as plain spans so editing still works.
+    if line.len() > LONG_LINE_BYTES {
+        let fg = col(config.theme.ui.foreground);
+        let cc = if i == cursor.0 { cursor.1.min(n) } else { n + 1 };
+        let before: String = chars.iter().take(cc.min(n)).collect();
+        let after: String = chars.iter().skip(cc.min(n)).collect();
+        let mut row = div().flex().flex_row().items_center()
+            .child(div().text_color(fg).child(SharedString::from(before)));
+        if i == cursor.0 {
+            row = row.child(cursor_block(config));
+        }
+        row = row.child(div().text_color(fg).child(SharedString::from(after)));
+        return code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![row]);
+    }
     let tints = tints_per_char(line);
     let tint_at = |k: usize| *tints.get(k).unwrap_or(&Tint::Plain);
 
@@ -1229,9 +1330,42 @@ fn edit_row(
     code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![content])
 }
 
+/// A line past this byte length is rendered as a single plain span (skip
+/// tokenization) — bounds per-row work for minified / long-attribute lines.
+const LONG_LINE_BYTES: usize = 2000;
+/// Hard cap on token spans per row. Each span is a `div` that gpui lays out AND
+/// shapes separately during paint; with font fallback (e.g. CJK in a code font),
+/// many small spans per row × visible rows is what froze the HTML preview. The
+/// remainder past the cap is collapsed into one plain span (no content lost).
+const MAX_SPANS: usize = 48;
+
+/// `(text, tint)` runs for one line, **bounded** (pure → unit-testable): long
+/// lines → one plain span; otherwise `highlight()` tokens are **coalesced by tint**
+/// (consecutive same-tint tokens merge — a markup line drops from ~30 tokens to a
+/// handful) and capped at [`MAX_SPANS`] (tail collapsed, nothing dropped). Fewer
+/// runs → fewer `div`s/shaped text runs per row → paint stays cheap (the HTML-
+/// preview freeze was paint-time shaping of many small spans, see 踩过的坑).
+fn coalesce_spans(line: &str) -> Vec<(String, Tint)> {
+    if line.len() > LONG_LINE_BYTES {
+        return vec![(line.to_string(), Tint::Plain)];
+    }
+    let mut merged: Vec<(String, Tint)> = Vec::new();
+    for (text, tint) in highlight(line) {
+        match merged.last_mut() {
+            Some((s, lt)) if *lt == tint => s.push_str(&text),
+            _ => merged.push((text, tint)),
+        }
+    }
+    if merged.len() > MAX_SPANS {
+        let tail: String = merged.drain(MAX_SPANS - 1..).map(|(s, _)| s).collect();
+        merged.push((tail, Tint::Plain));
+    }
+    merged
+}
+
 /// Build one File-tab row `i` (1-based line number + syntax-tinted source).
 fn file_row(config: &Loaded, lines: &[String], i: usize) -> gpui::Div {
-    let spans: Vec<gpui::Div> = highlight(&lines[i])
+    let spans: Vec<gpui::Div> = coalesce_spans(&lines[i])
         .into_iter()
         .map(|(text, tint)| div().text_color(tint_color(config, tint)).child(SharedString::from(text)))
         .collect();
@@ -1259,6 +1393,11 @@ impl gpui::EventEmitter<QuickLookEvent> for QuickLook {}
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_t0 = std::time::Instant::now();
+        // DEBUG(freeze hunt): logged at the START of render. `uniform_list` row
+        // closures + text shaping run in gpui's PAINT (after this returns), so a
+        // freeze there leaves THIS as the last line (the appender thread flushes it
+        // during the multi-second UI hang) — proving the cost is paint, not build.
+        tracing::debug!(target: "tn::quicklook", editing = self.editing, lines = self.buf.len(), file_lines = self.file_lines.len(), tab = ?self.tab, "render START");
         // Grab focus on first render after open (focusing in open() doesn't land —
         // the overlay isn't rendered yet; see 踩过的坑).
         if self.needs_focus {
@@ -1293,7 +1432,7 @@ impl Render for QuickLook {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, _w, cx| {
-                        this.tab = to;
+                        this.select_tab(to);
                         cx.notify();
                     }),
                 )
@@ -1755,6 +1894,64 @@ mod tests {
         // empty query → no matches, no replacements
         assert!(all_matches(&b, "").is_empty());
         assert_eq!(replace_all_in(&mut b.clone(), "", "X"), 0);
+    }
+
+    #[test]
+    fn coalesce_merges_and_bounds_spans() {
+        // A markup-ish line: many tokens, but most are Plain → coalesced to few runs.
+        let line = r#"<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4z"/></symbol>"#;
+        let raw = highlight(line).len();
+        let merged = coalesce_spans(line);
+        assert!(merged.len() < raw, "coalesced ({}) must be fewer than raw tokens ({raw})", merged.len());
+        // reconstructing the merged runs yields the original text (nothing dropped)
+        let joined: String = merged.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(joined, line);
+        // no two consecutive runs share a tint
+        for w in merged.windows(2) {
+            assert!(w[0].1 != w[1].1, "adjacent runs must differ in tint");
+        }
+
+        // A very long line → a single plain span (skips tokenization).
+        let long = "x".repeat(LONG_LINE_BYTES + 10);
+        let s = coalesce_spans(&long);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].0.len(), long.len(), "long line kept whole, just untinted");
+
+        // Span count is hard-capped, with the tail preserved.
+        let many = "a.".repeat(200); // ~400 alternating tokens
+        let capped = coalesce_spans(&many);
+        assert!(capped.len() <= MAX_SPANS, "got {}", capped.len());
+        let joined: String = capped.iter().map(|(s, _)| s.as_str()).collect();
+        assert_eq!(joined, many, "cap collapses the tail, never drops content");
+    }
+
+    #[test]
+    fn parse_diff_tracks_hunk_line_numbers() {
+        let raw = concat!(
+            "diff --git a/x.rs b/x.rs\n",
+            "index 111..222 100644\n",
+            "--- a/x.rs\n",
+            "+++ b/x.rs\n",
+            "@@ -10,3 +10,4 @@ fn main() {\n",
+            " ctx line\n",
+            "-removed\n",
+            "+added one\n",
+            "+added two\n",
+        );
+        let d = parse_diff(raw);
+        // header lines (diff/index/---/+++) are dropped; hunk + 4 body lines kept
+        assert_eq!(d.len(), 5);
+        assert_eq!(d[0].kind, DiffKind::Hunk);
+        // context line gets new-file number 10, then deletions carry None, adds count up
+        assert_eq!(d[1].kind, DiffKind::Ctx);
+        assert_eq!(d[1].new_no, Some(10));
+        assert_eq!(d[2].kind, DiffKind::Del);
+        assert_eq!(d[2].new_no, None, "deletions have no new-file line number");
+        assert_eq!(d[3].kind, DiffKind::Add);
+        assert_eq!(d[3].new_no, Some(11));
+        assert_eq!(d[4].new_no, Some(12));
+        // empty input → no lines
+        assert!(parse_diff("").is_empty());
     }
 
     #[test]

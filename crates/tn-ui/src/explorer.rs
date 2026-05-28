@@ -121,13 +121,16 @@ impl ExplorerView {
     /// / A(dded) / D(eleted) / R(enamed).
     fn compute_git_status(root: &Path) -> HashMap<String, char> {
         let mut map = HashMap::new();
-        let out = match Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .arg("status")
-            .arg("--porcelain")
-            .output()
+        let mut cmd = Command::new("git");
+        cmd.arg("-C").arg(root).arg("status").arg("--porcelain");
+        // No console flash when spawned from the GUI process (see tn-pty::wsl).
+        #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        let out = match cmd.output() {
             Ok(o) => o,
             Err(e) => {
                 // git missing / not spawnable: log once, then stay silent
