@@ -964,7 +964,12 @@ impl Workspace {
                     // No padding: the TerminalView fills the card and rounds its
                     // own corners (header top + root) to match. gpui clips
                     // rectangularly, so inner surfaces must round themselves.
-                    .bg(cola(theme.terminal.background, 0.96)) // readable, faintly glassy
+                    // mockup .pane = g1 玻璃(与 explorer/viewer/agent 面板统一)
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(rgba(0x2a2e446b), 0.),
+                        linear_color_stop(rgba(0x1a1c2c85), 1.),
+                    ))
                     .border_color(rim)
                     .on_mouse_down(
                         MouseButton::Left,

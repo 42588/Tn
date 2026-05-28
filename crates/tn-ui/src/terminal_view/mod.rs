@@ -880,7 +880,9 @@ impl Render for TerminalView {
                             .h(px(self.line_height))
                             .children(runs.iter().map(|r| {
                                 div()
-                                    .bg(col(r.bg))
+                                    // 默认底色留空 → 透出面板 g1 玻璃(mockup:正文落在玻璃上);
+                                    // 仅非默认底(选区/上色/反显)才实绘。
+                                    .when(r.bg != bg, |d| d.bg(col(r.bg)))
                                     .text_color(col(r.fg))
                                     .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
                                     .child(SharedString::from(r.text.clone()))
@@ -899,7 +901,7 @@ impl Render for TerminalView {
             .flex_col()
             .overflow_hidden()
             .rounded(px(13.)) // match the pane card's inner radius (R_PANEL - border)
-            .bg(col(bg))
+            .bg(rgba(0x00000000)) // 透明:终端默认底透出 render_node 的 g1 玻璃(mockup .body on glass)
             .text_color(col(fg))
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))
