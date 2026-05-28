@@ -17,7 +17,7 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::style::{col, cola, icon, INSET, RIM};
+use crate::style::{col, cola, icon, shadowed, sheen_line, soft_shadow, specular_top, INSET, RIM, R_PANEL};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -312,14 +312,15 @@ impl Render for ExplorerView {
         let rows: Vec<gpui::Div> =
             (0..self.rows.len()).map(|i| self.render_row(&self.rows[i], cx)).collect();
 
-        div()
+        let root = div()
             .track_focus(&self.focus_handle)
             .size_full()
+            .relative() // anchor the absolute specular / sheen layers
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(px(14.))
+            .rounded(px(R_PANEL))
             .border_1()
             .border_color(rgba(RIM))
             // mockup .sidebar 是 .pane:g1 玻璃渐变(与 viewer/agent 面板一致)
@@ -328,6 +329,9 @@ impl Render for ExplorerView {
                 linear_color_stop(rgba(0x2a2e446b), 0.),
                 linear_color_stop(rgba(0x1a1c2c85), 1.),
             ))
+            // mockup .pane::before specular + 顶 sheen 高光线 + 浮起投影(无 glow)
+            .child(specular_top())
+            .child(sheen_line())
             .child(header)
             .child(
                 div()
@@ -339,7 +343,8 @@ impl Render for ExplorerView {
                     .flex()
                     .flex_col()
                     .children(rows),
-            )
+            );
+        shadowed(root, vec![soft_shadow(24.0, 58.0, -36.0, 0.88)])
     }
 }
 

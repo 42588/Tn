@@ -8,7 +8,10 @@
 //! `col`/`cola` accept either chrome colors (`tn_config::Color`) or terminal-cell
 //! colors (`tn_core::Rgb`) via the [`Rgb8`] trait — both are just 8-bit RGB.
 
-use gpui::{hsla, point, prelude::*, px, rgb, BoxShadow, Div, Rgba, Svg};
+use gpui::{
+    div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative, rgb, rgba,
+    BoxShadow, Div, Rgba, Svg,
+};
 
 // Calm Glass white-on-glass overlay tokens (alpha-only — depth from layered
 // translucency + a top mirror highlight, never from glow). docs/UX-DESIGN §6.1.
@@ -71,6 +74,33 @@ pub(crate) fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShad
 pub(crate) fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
     d.style().box_shadow = Some(shadows);
     d
+}
+
+/// The frosted "specular" top wash on a glass pane (mockup `.pane::before`): an
+/// absolute, non-interactive top-36% gradient from white @ 4% → transparent.
+/// Refracted light, NOT glow. Add as a glass pane's FIRST child so it paints
+/// under the content (a translucent header lets it show through at the top).
+/// The parent must be `.relative()` for this to anchor to the pane.
+pub(crate) fn specular_top() -> Div {
+    div()
+        .absolute()
+        .left(px(0.))
+        .right(px(0.))
+        .top(px(0.))
+        .h(relative(0.36))
+        .bg(linear_gradient(
+            180.,
+            // white @ .04 = round(.04×255)=10=0x0a (= INSET)
+            linear_color_stop(rgba(0xffffff0a), 0.),
+            linear_color_stop(rgba(0x00000000), 1.),
+        ))
+}
+
+/// The 1px specular sheen along a glass surface's top edge — the mockup's
+/// `box-shadow: 0 1px 0 var(--sheen) inset`, which gpui has no inset form of, so
+/// it's a 1px absolute div in white @ 10% ([`SHEEN`]). Parent must be `.relative()`.
+pub(crate) fn sheen_line() -> Div {
+    div().absolute().left(px(0.)).right(px(0.)).top(px(0.)).h(px(1.)).bg(rgba(SHEEN))
 }
 
 /// A Calm Glass line icon, sized square and tinted `color`. (gpui paints an SVG

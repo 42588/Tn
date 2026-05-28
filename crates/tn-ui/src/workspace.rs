@@ -30,8 +30,8 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, icon, shadowed, soft_shadow, DIVIDER, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW,
-    SHEEN, UI_SANS,
+    col, cola, icon, shadowed, sheen_line, soft_shadow, specular_top, DIVIDER, HOVER, INSET, RIM,
+    R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -958,6 +958,7 @@ impl Workspace {
                 };
                 let pane = div()
                     .size_full()
+                    .relative() // anchor the absolute specular / sheen layers
                     .border_1()
                     .rounded(px(R_PANEL))
                     .overflow_hidden()
@@ -977,12 +978,20 @@ impl Workspace {
                             this.focus_pane(id, window, cx);
                         }),
                     )
+                    // mockup .pane::before specular + 顶 sheen 高光线(折射,无 glow);
+                    // 先于 view 添加 → 画在内容之下,经半透明 header 透出。
+                    .child(specular_top())
+                    .child(sheen_line())
                     .child(view);
-                if is_focused {
-                    shadowed(pane, vec![soft_shadow(16.0, 48.0, -28.0, 0.55)]).into_any_element()
+                // Every pane floats on a soft shadow (mockup .pane); the focused
+                // one lifts higher (mockup .pane.active). The warm rim is already
+                // applied above via `rim`.
+                let shadows = if is_focused {
+                    vec![soft_shadow(30.0, 64.0, -36.0, 0.9)]
                 } else {
-                    pane.into_any_element()
-                }
+                    vec![soft_shadow(24.0, 58.0, -36.0, 0.88)]
+                };
+                shadowed(pane, shadows).into_any_element()
             }
             Node::Split {
                 axis,
@@ -1601,10 +1610,13 @@ impl Render for Workspace {
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
             .overflow_hidden()
-            .p_1()
+            // mockup .work:padding 5px 12px 11px · gap 11(原 p_1/gap_2 偏挤)
+            .pt(px(5.))
+            .px(px(12.))
+            .pb(px(11.))
             .flex()
             .flex_row()
-            .gap_2()
+            .gap(px(11.))
             // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
             .when(self.explorer_open, |d| {
                 d.child(
@@ -1688,6 +1700,18 @@ impl Render for Workspace {
             .bg(self.window_glass()) // mostly-opaque dark glass over the acrylic backdrop
             .text_color(col(ui.foreground))
             .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
+            // mockup .win 玻璃竖渐变:半透白光叠在不透明 window_glass 之上,给窗口
+            // 一层细微的上亮下沉折射(无 glow)。绝对铺满 → 画在最底、内容之上覆盖。
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(rgba(0x1516229e), 0.), // rgba(21,22,34,.62) round(.62×255)=158=0x9e
+                        linear_color_stop(rgba(0x0f1019b8), 1.), // rgba(15,16,25,.72) round(.72×255)=184=0xb8
+                    )),
+            )
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))

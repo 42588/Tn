@@ -16,7 +16,9 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::style::{col, cola, HOVER, RIM, UI_SANS};
+use crate::style::{
+    col, cola, shadowed, sheen_line, soft_shadow, specular_top, HOVER, RIM, R_PANEL, UI_SANS,
+};
 
 /// Max lines rendered (a viewer is a glance, not a pager).
 const MAX_LINES: usize = 500;
@@ -418,14 +420,15 @@ impl Render for ViewerView {
             cx.notify();
         });
 
-        div()
+        let root = div()
             .track_focus(&self.focus_handle)
             .size_full()
+            .relative() // anchor the absolute specular / sheen layers
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(px(14.))
+            .rounded(px(R_PANEL))
             .border_1()
             .border_color(rgba(RIM))
             // mockup .viewer 是 .pane:用 g1 玻璃渐变(与其它面板一致)
@@ -436,6 +439,9 @@ impl Render for ViewerView {
             ))
             .font_family(SharedString::from(self.config.font().family.clone()))
             .text_size(px(12.5)) // mockup .code font-size:12.5px
+            // mockup .pane::before specular + 顶 sheen 高光线(无 glow)
+            .child(specular_top())
+            .child(sheen_line())
             .child(
                 // header + invisible click targets aligned to the right tab chips
                 div()
@@ -456,6 +462,8 @@ impl Render for ViewerView {
                             .child(div().w(px(34.)).h(px(20.)).on_mouse_down(MouseButton::Left, to_file)),
                     ),
             )
-            .child(body)
+            .child(body);
+        // mockup .pane 浮起投影(与终端/explorer 面板统一)
+        shadowed(root, vec![soft_shadow(24.0, 58.0, -36.0, 0.88)])
     }
 }
