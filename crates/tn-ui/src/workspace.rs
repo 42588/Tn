@@ -1697,13 +1697,16 @@ impl Render for Workspace {
         // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
-            let left = if self.explorer_open { 242. } else { 16. };
+            let left = if self.explorer_open { 244. } else { 40. };
             div()
                 .absolute()
-                .top(px(58.)) // 标题栏 46 之下
-                .bottom(px(46.)) // 状态栏 30 之上
-                .left(px(left)) // explorer 右缘(12 + 224 + 6)/ 工作区左缘
-                .right(px(16.))
+                // 留足四边边距 = 浮起的「卡片」而非铺满浮层;`max_w` 在宽屏下封顶,
+                // 贴树左缘锚定不被拉得过宽(原型那种比例)。
+                .top(px(70.)) // 标题栏 46 之下,留白
+                .bottom(px(60.)) // 状态栏 30 之上,留白
+                .left(px(left)) // explorer 右缘(12 + 224 + 8)/ 工作区左缘
+                .right(px(64.))
+                .max_w(px(880.))
                 .child(self.quick_look.clone())
         });
 

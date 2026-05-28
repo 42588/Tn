@@ -15,11 +15,12 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, FocusHandle,
-    MouseButton, Rgba, SharedString,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, Context,
+    FocusHandle, MouseButton, Rgba, SharedString, UniformListScrollHandle,
 };
 use tn_config::Loaded;
 
@@ -27,8 +28,9 @@ use crate::style::{
     col, cola, icon, quicklook_fill, quicklook_frame, specular_top, HOVER, INSET, R_PANEL, UI_SANS,
 };
 
-/// Max lines rendered (a quick look is a glance, not a pager).
-const MAX_LINES: usize = 500;
+/// Cap the lines read/stored on open (bounds one-time work; the list itself is
+/// virtualized via `uniform_list`, so only visible rows ever lay out / highlight).
+const MAX_LINES: usize = 4000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -158,9 +160,12 @@ pub struct QuickLook {
     root: PathBuf,
     path: Option<PathBuf>,
     tab: Tab,
-    file_lines: Vec<String>,
+    // Rc so the `'static` uniform_list closure can capture them cheaply each frame.
+    file_lines: Rc<Vec<String>>,
     file_truncated: bool,
-    diff: Vec<DiffLine>,
+    diff: Rc<Vec<DiffLine>>,
+    /// Virtualized code list scroll position (kept across frames per gpui).
+    scroll: UniformListScrollHandle,
     focus_handle: FocusHandle,
 }
 
@@ -172,9 +177,10 @@ impl QuickLook {
             root,
             path: None,
             tab: Tab::File,
-            file_lines: Vec::new(),
+            file_lines: Rc::new(Vec::new()),
             file_truncated: false,
-            diff: Vec::new(),
+            diff: Rc::new(Vec::new()),
+            scroll: UniformListScrollHandle::default(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -217,8 +223,9 @@ impl QuickLook {
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let all: Vec<String> = text.lines().map(str::to_string).collect();
         self.file_truncated = all.len() > MAX_LINES;
-        self.file_lines = all.into_iter().take(MAX_LINES).collect();
-        self.diff = self.compute_diff(&path);
+        self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
+        self.diff = Rc::new(self.compute_diff(&path));
+        self.scroll = UniformListScrollHandle::default(); // new file → scroll to top
     }
 
     /// `git diff` for `path`, parsed into renderable lines (tracking new-file
@@ -278,75 +285,68 @@ impl QuickLook {
         lines
     }
 
-    fn tint_color(&self, t: Tint) -> Rgba {
-        let th = &self.config.theme;
-        match t {
-            Tint::Plain => col(th.ui.foreground),
-            Tint::Keyword => col(th.ui.accent_alt),
-            Tint::Type => col(th.ansi.cyan),
-            Tint::Str => col(th.ansi.green),
-            Tint::Comment => col(th.ui.muted),
-            Tint::Call => col(th.ui.accent),
-            Tint::Num => col(th.ansi.yellow),
-        }
-    }
+}
 
-    /// One code row (`.cl`): a faint line-number gutter (`.ln`, width 38, mr 14)
-    /// + a marker column (`.mk`, width 14) + the tinted source.
-    fn code_row(&self, no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div>) -> gpui::Div {
-        div()
-            .flex()
-            .flex_row()
-            .pr(px(12.)) // mockup .cl padding-right 12
-            // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
-            .child(
-                div()
-                    .w(px(38.))
-                    .flex_none()
-                    .mr(px(14.))
-                    .text_right()
-                    .text_size(px(11.))
-                    .text_color(gpui::rgb(0x474E72)) // faint(无主题 token,字面量)
-                    .child(SharedString::from(no)),
-            )
-            // mockup .cl .mk:width 14 居中
-            .child(div().w(px(14.)).flex_none().text_center().text_color(mark_col).child(mark))
-            .child(div().flex().flex_row().children(spans))
+fn tint_color(config: &Loaded, t: Tint) -> Rgba {
+    let th = &config.theme;
+    match t {
+        Tint::Plain => col(th.ui.foreground),
+        Tint::Keyword => col(th.ui.accent_alt),
+        Tint::Type => col(th.ansi.cyan),
+        Tint::Str => col(th.ansi.green),
+        Tint::Comment => col(th.ui.muted),
+        Tint::Call => col(th.ui.accent),
+        Tint::Num => col(th.ansi.yellow),
     }
+}
 
-    fn render_file(&self) -> gpui::Div {
-        let rows = self.file_lines.iter().enumerate().map(|(i, line)| {
-            let spans: Vec<gpui::Div> = highlight(line)
-                .into_iter()
-                .map(|(text, tint)| div().text_color(self.tint_color(tint)).child(SharedString::from(text)))
-                .collect();
-            self.code_row(format!("{}", i + 1), "", col(self.config.theme.ui.muted), spans)
-        });
-        div().flex().flex_col().children(rows)
-    }
+/// One code row (`.cl`): a faint line-number gutter (`.ln`, width 38, mr 14)
+/// + a marker column (`.mk`, width 14) + the tinted source. Free fn so the
+/// `'static` uniform_list closure can build rows without borrowing the view.
+fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div>) -> gpui::Div {
+    div()
+        .flex()
+        .flex_row()
+        .pr(px(12.)) // mockup .cl padding-right 12
+        // mockup .cl .ln:width 38 · faint #474E72 · 11px · 右对齐 · margin-right 14
+        .child(
+            div()
+                .w(px(38.))
+                .flex_none()
+                .mr(px(14.))
+                .text_right()
+                .text_size(px(11.))
+                .text_color(gpui::rgb(0x474E72)) // faint(无主题 token,字面量)
+                .child(SharedString::from(no)),
+        )
+        // mockup .cl .mk:width 14 居中
+        .child(div().w(px(14.)).flex_none().text_center().text_color(mark_col).child(mark))
+        .child(div().flex().flex_row().children(spans))
+}
 
-    fn render_diff(&self) -> gpui::Div {
-        let th = &self.config.theme;
-        if self.diff.is_empty() {
-            return div()
-                .p_3()
-                .text_color(col(th.ui.muted))
-                .child("无改动 · git working tree clean");
-        }
-        let rows = self.diff.iter().map(|d| {
-            let (bg, mark, mark_col, txt_col) = match d.kind {
-                // mockup .cl.add/.del:bg=绿/红 @ .09;.ln/.mk 同色;正文不暗化(del 不 muted)
-                DiffKind::Add => (cola(th.ansi.green, 0.09), "+", col(th.ansi.green), col(th.ui.foreground)),
-                DiffKind::Del => (cola(th.ansi.red, 0.09), "-", col(th.ansi.red), col(th.ui.foreground)),
-                DiffKind::Hunk => (rgba(0x00000000), " ", col(th.ui.accent_alt), col(th.ui.accent_alt)),
-                DiffKind::Ctx => (rgba(0x00000000), " ", col(th.ui.muted), col(th.ui.foreground)),
-            };
-            let no = d.new_no.map(|n| format!("{n}")).unwrap_or_default();
-            let spans = vec![div().text_color(txt_col).child(SharedString::from(d.text.clone()))];
-            self.code_row(no, mark, mark_col, spans).bg(bg)
-        });
-        div().flex().flex_col().children(rows)
-    }
+/// Build one File-tab row `i` (1-based line number + syntax-tinted source).
+fn file_row(config: &Loaded, lines: &[String], i: usize) -> gpui::Div {
+    let spans: Vec<gpui::Div> = highlight(&lines[i])
+        .into_iter()
+        .map(|(text, tint)| div().text_color(tint_color(config, tint)).child(SharedString::from(text)))
+        .collect();
+    code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), spans)
+}
+
+/// Build one Diff-tab row `i` (hunk/context/add/del with `+`/`-` styling).
+fn diff_row(config: &Loaded, diff: &[DiffLine], i: usize) -> gpui::Div {
+    let th = &config.theme;
+    let d = &diff[i];
+    let (bg, mark, mark_col, txt_col) = match d.kind {
+        // mockup .cl.add/.del:bg=绿/红 @ .09;.ln/.mk 同色;正文不暗化(del 不 muted)
+        DiffKind::Add => (cola(th.ansi.green, 0.09), "+", col(th.ansi.green), col(th.ui.foreground)),
+        DiffKind::Del => (cola(th.ansi.red, 0.09), "-", col(th.ansi.red), col(th.ui.foreground)),
+        DiffKind::Hunk => (rgba(0x00000000), " ", col(th.ui.accent_alt), col(th.ui.accent_alt)),
+        DiffKind::Ctx => (rgba(0x00000000), " ", col(th.ui.muted), col(th.ui.foreground)),
+    };
+    let no = d.new_no.map(|n| format!("{n}")).unwrap_or_default();
+    let spans = vec![div().text_color(txt_col).child(SharedString::from(d.text.clone()))];
+    code_row(no, mark, mark_col, spans).bg(bg)
 }
 
 impl Render for QuickLook {
@@ -444,26 +444,54 @@ impl Render for QuickLook {
             })
             .child(tabset);
 
-        // ── .code body:File 渲染 / Diff 渲染(各自滚动、裁自己)──
-        let body = if self.tab == Tab::File {
-            let mut v = div()
+        // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不再卡死整窗)──
+        let config = self.config.clone(); // Arc clone for the 'static closure
+        let lines = self.file_lines.clone(); // Rc clone (cheap)
+        let diff = self.diff.clone();
+        let tab = self.tab;
+        let count = match tab {
+            Tab::File => lines.len(),
+            Tab::Diff => diff.len(),
+        };
+        let body = if tab == Tab::Diff && diff.is_empty() {
+            div()
                 .flex_1()
                 .min_h(px(0.))
-                .overflow_hidden()
-                .py(px(8.)) // mockup .code padding 8px 0
-                .child(self.render_file());
-            if self.file_truncated {
-                v = v.child(
-                    div()
-                        .px(px(14.))
-                        .py_1()
-                        .text_color(col(ui.muted))
-                        .child(SharedString::from(format!("… 仅显示前 {MAX_LINES} 行"))),
-                );
-            }
-            v
+                .px(px(14.))
+                .py(px(8.))
+                .text_color(col(ui.muted))
+                .child("无改动 · git working tree clean")
         } else {
-            div().flex_1().min_h(px(0.)).overflow_hidden().py(px(8.)).child(self.render_diff())
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .pt(px(8.)) // mockup .code padding 8px 0(顶部留白;余下走列表内滚动)
+                .child(
+                    uniform_list("ql-code", count, move |range, _window, _cx| {
+                        range
+                            .map(|i| match tab {
+                                Tab::File => file_row(&config, &lines, i),
+                                Tab::Diff => diff_row(&config, &diff, i),
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .flex_1()
+                    .min_h(px(0.))
+                    .track_scroll(self.scroll.clone()),
+                )
+                .when(self.file_truncated && tab == Tab::File, |d| {
+                    d.child(
+                        div()
+                            .flex_none()
+                            .px(px(14.))
+                            .py_1()
+                            .text_color(col(ui.muted))
+                            .child(SharedString::from(format!("… 仅显示前 {MAX_LINES} 行"))),
+                    )
+                })
         };
 
         // ── .qlfoot footer:键帽 + 操作提示(预览态)──
