@@ -52,11 +52,9 @@ body {
 .demo > .label .id{ color:var(--faint); font-family:var(--mono); font-size:11px; }
 .demo > .label .impl{ margin-left:auto; color:var(--faint); font-family:var(--mono); font-size:10.5px; }
 /* a sized canvas a single pane/panel can float on (厚投影需要更大留白才不被裁) */
-/* 工程网格(蓝图)+ 冷深底:34px 网格 + 冷光晕 + 深冷渐变 */
+/* 冷深底:冷光晕 + 深冷渐变 */
 .canvas{ position:relative; border-radius:var(--r-pane); padding:40px; overflow:hidden;
   background:
-    linear-gradient(rgba(122,162,247,0.10) 1px, transparent 1px) 0 0 / 34px 34px,
-    linear-gradient(90deg, rgba(122,162,247,0.10) 1px, transparent 1px) 0 0 / 34px 34px,
     radial-gradient(900px 600px at 30% -18%, rgba(90,140,255,0.07), transparent 60%),
     linear-gradient(160deg,#0a0c15,#070810 60%,#050609); }
 .canvas.tall{ height:460px; } .canvas.mid{ height:330px; } .canvas.short{ height:160px; }
