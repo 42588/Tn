@@ -1003,12 +1003,15 @@ impl Workspace {
                 let sum: f32 = weights.iter().sum::<f32>().max(1.0);
                 // `.relative()` so the absolutely-positioned dividers + the
                 // extent-capture canvas position within this container.
+                // No overflow_hidden here: each leaf pane clips its OWN content
+                // (+ min_w/min_h 0 below bounds it), so dropping the clip lets the
+                // panes' drop shadows bleed past the split seam and "float" — only
+                // the window edge (body) clips. Re-adding it re-clips the shadows.
                 let mut container = div()
                     .relative()
                     .size_full()
                     .min_w(px(0.))
                     .min_h(px(0.))
-                    .overflow_hidden()
                     .flex();
                 container = if row {
                     container.flex_row()
@@ -1020,7 +1023,10 @@ impl Workspace {
                     // min_w/min_h 0 + overflow_hidden: without these a flex child's
                     // default `min-size: auto` lets a too-tall pane inflate past its
                     // `relative` share and spill out of the window.
-                    let mut wrap = div().flex_none().min_w(px(0.)).min_h(px(0.)).overflow_hidden();
+                    // min_w/min_h 0 bounds the flex child (prevents the taffy
+                    // min-size:auto overflow); the pane clips its own content, so
+                    // we DON'T clip here — that would eat the pane's drop shadow.
+                    let mut wrap = div().flex_none().min_w(px(0.)).min_h(px(0.));
                     wrap = if row {
                         wrap.h_full().w(relative(frac))
                     } else {
@@ -1620,48 +1626,50 @@ impl Render for Workspace {
             // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
             .when(self.explorer_open, |d| {
                 d.child(
+                    // No overflow_hidden: the explorer pane clips its own content
+                    // (+ min_h 0 bounds it), so the column passes the pane's drop
+                    // shadow through to float in the gap. (See render_node.)
                     div()
                         .w(px(214.))
                         .flex_none()
                         .min_h(px(0.))
                         .flex()
                         .flex_col()
-                        .overflow_hidden()
                         .child(explorer_bar)
                         .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.))
-                                .overflow_hidden()
                                 .child(self.explorer.clone()),
                         ),
                 )
             })
             .child(
+                // No overflow_hidden: leaf panes clip their own content, so the
+                // center column lets their shadows bleed into the surrounding gaps.
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .min_h(px(0.))
-                    .overflow_hidden()
                     .child(self.render_node(&self.tabs[active].root, focused, cx, Vec::new())),
             )
             // File/diff viewer (right column): auto-opens on file click,
             // toggle with Ctrl+Shift+J.
             .when(self.viewer_open, |d| {
                 d.child(
+                    // No overflow_hidden (see explorer column): the viewer pane
+                    // clips its own content; the column passes its shadow through.
                     div()
                         .w(px(420.))
                         .flex_none()
                         .min_h(px(0.))
                         .flex()
                         .flex_col()
-                        .overflow_hidden()
                         .child(viewer_bar)
                         .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.))
-                                .overflow_hidden()
                                 .child(self.viewer.clone()),
                         ),
                 )
