@@ -17,7 +17,7 @@
     --yellow:#E0AF68; --cyan:#7DCFFF; --claude:#F0916D; --codex:#73DACA;
 
     /* frosted-dark-glass surfaces */
-    --g1:linear-gradient(180deg, rgba(42,46,68,0.42), rgba(26,28,44,0.52));  /* pane */
+    --g1:linear-gradient(180deg, rgba(34,42,70,0.46), rgba(16,20,38,0.58));  /* pane(冷调加深,提对比) */
     --g2:rgba(255,255,255,0.04);   /* header / inset overlay */
     --g3:rgba(255,255,255,0.06);   /* chip / hover */
     --rim:rgba(255,255,255,0.07);  /* glass edge */
@@ -38,9 +38,11 @@
     font-feature-settings:"cv05","ss01","tnum"; letter-spacing:-0.006em;
     /* desktop: a whisper of cool color, mostly deep neutral (no light pollution) */
     background:
-      radial-gradient(1100px 820px at 14% -10%, rgba(122,162,247,0.07), transparent 58%),
-      radial-gradient(1000px 820px at 94% 106%, rgba(115,218,202,0.045), transparent 58%),
-      linear-gradient(160deg,#0c0d15,#0a0a12 55%,#08080e);
+      linear-gradient(rgba(122,162,247,0.05) 1px, transparent 1px) 0 0 / 34px 34px,
+      linear-gradient(90deg, rgba(122,162,247,0.05) 1px, transparent 1px) 0 0 / 34px 34px,
+      radial-gradient(1100px 820px at 14% -10%, rgba(90,140,255,0.08), transparent 58%),
+      radial-gradient(1000px 820px at 94% 106%, rgba(60,200,220,0.05), transparent 58%),
+      linear-gradient(165deg,#080a12,#06070e 55%,#040509);
     display:flex; align-items:center; justify-content:center;
   }
   body::before{ content:""; position:fixed; inset:0; pointer-events:none;
@@ -111,9 +113,9 @@
                0 2px 5px -2px rgba(0,0,0,0.55),
                0 22px 48px -26px rgba(0,0,0,0.72),
                0 52px 104px -46px rgba(0,0,0,0.92); }
-  /* 玻璃渐变描边:顶承光(亮)→ 侧渐隐 → 底微回光;1px、跟随圆角(mask 环)*/
+  /* 玻璃渐变描边(冷能量边):顶冷白承光 → 侧渐隐 → 底 accent 微回光(通电感,非泛光)*/
   .pane::before{ content:""; position:absolute; inset:0; border-radius:inherit; padding:1px; z-index:3; pointer-events:none;
-    background:linear-gradient(180deg, rgba(255,255,255,0.16), rgba(255,255,255,0.055) 30%, rgba(255,255,255,0.02) 72%, rgba(255,255,255,0.07));
+    background:linear-gradient(180deg, rgba(190,214,255,0.20), rgba(255,255,255,0.05) 30%, rgba(122,162,247,0.03) 72%, rgba(122,162,247,0.13));
     -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
     -webkit-mask-composite:xor; mask-composite:exclude; }
@@ -128,6 +130,14 @@
                0 4px 9px -2px rgba(0,0,0,0.58),
                0 30px 64px -28px rgba(0,0,0,0.8),
                0 64px 120px -48px rgba(0,0,0,0.94); }
+
+  /* HUD 角标:四角 L 形取景框(accent 冷光)— 重点面板「仪表/取景」科技感 */
+  .hud{ position:absolute; inset:7px; z-index:4; pointer-events:none; }
+  .hud i{ position:absolute; width:13px; height:13px; border:1.5px solid rgba(122,162,247,0.45); }
+  .hud i:nth-child(1){ top:0; left:0; border-right:0; border-bottom:0; border-radius:5px 0 0 0; }
+  .hud i:nth-child(2){ top:0; right:0; border-left:0; border-bottom:0; border-radius:0 5px 0 0; }
+  .hud i:nth-child(3){ bottom:0; left:0; border-right:0; border-top:0; border-radius:0 0 0 5px; }
+  .hud i:nth-child(4){ bottom:0; right:0; border-left:0; border-top:0; border-radius:0 0 5px 0; }
 
   .phead{ height:36px; display:flex; align-items:center; gap:9px; padding:0 13px; flex:0 0 auto;
     font-size:11.5px; font-weight:560; color:var(--muted); letter-spacing:.2px; }
@@ -312,6 +322,7 @@
 
       <div class="col" style="flex:1.55">
         <div class="pane active col" style="flex:2.5">
+          <div class="hud"><i></i><i></i><i></i><i></i></div>
           <div class="agenthead">
             <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
             <div class="who">
@@ -357,6 +368,7 @@
       </div>
 
       <div class="pane viewer col">
+        <div class="hud"><i></i><i></i><i></i><i></i></div>
         <div class="vh">
           <svg class="i"><use href="#i-file"/></svg>
           <span class="path">crates/tn-ui/src/<b>element.rs</b></span>
