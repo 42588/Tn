@@ -11,10 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use gpui::{div, prelude::*, px, rgba, Context, FocusHandle, MouseButton, SharedString};
+use gpui::{
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, FocusHandle,
+    MouseButton, SharedString,
+};
 use tn_config::Loaded;
 
-use crate::style::{col, cola, icon, HOVER, INSET, RIM};
+use crate::style::{col, cola, icon, INSET, RIM};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -27,9 +30,9 @@ fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
         .items_center()
         .justify_center()
         .text_size(px(9.))
-        .font_weight(gpui::FontWeight::BOLD)
+        .font_weight(gpui::FontWeight(800.)) // §16 .tag weight 800
         .text_color(col(c))
-        .bg(cola(c, 0.16))
+        .bg(cola(c, 0.15)) // mockup .tag bg = 色 @ .15
         .child(SharedString::from(letter.to_string()))
 }
 
@@ -210,13 +213,20 @@ impl ExplorerView {
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
-            .h(px(25.))
+            .gap(px(7.)) // §16 .tnode gap 7
+            .h(px(26.)) // §16 .tnode height 26
             .pr_2()
             .pl(px(indent))
-            .rounded(px(7.))
+            .rounded(px(8.)) // §16 .tnode radius 8
             .text_size(px(12.5))
-            .when(is_sel, |d| d.bg(rgba(HOVER)))
+            // mockup .tnode.active bg = 白渐变 .075→.025
+            .when(is_sel, |d| {
+                d.bg(linear_gradient(
+                    180.,
+                    linear_color_stop(rgba(0xffffff13), 0.), // .075 → 19 = 0x13
+                    linear_color_stop(rgba(0xffffff06), 1.), // .025 → 6 = 0x06
+                ))
+            })
             .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
             .on_mouse_down(
                 MouseButton::Left,
@@ -240,7 +250,8 @@ impl ExplorerView {
         };
         let mut r = r.child(icon(glyph, 14., glyph_color)).child(
             div()
-                .text_color(col(if row.is_dir || is_sel { ui.foreground } else { ui.muted }))
+                // mockup .tnode color = fg-dim;active → fg(#A6AFD4 无主题 token → 字面量)
+                .text_color(if is_sel { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
                 .when(row.is_dir, |d| d.font_weight(gpui::FontWeight::MEDIUM))
                 .child(SharedString::from(row.name.clone())),
         );
@@ -279,11 +290,12 @@ impl Render for ExplorerView {
             .flex()
             .flex_row()
             .items_center()
-            .gap_2()
-            .h(px(30.))
-            .px_3()
+            .gap(px(9.)) // §16 .phead gap 9
+            .h(px(36.)) // §16 .phead height 36
+            .px(px(13.)) // §16 .phead padding 0 13
             .flex_none()
             .text_size(px(11.5))
+            .font_weight(gpui::FontWeight(560.)) // §16 .phead weight 560
             .text_color(col(ui.muted))
             .child(icon("explorer", 14., ui.accent))
             .child(div().child("Explorer · "))
@@ -310,7 +322,12 @@ impl Render for ExplorerView {
             .rounded(px(14.))
             .border_1()
             .border_color(rgba(RIM))
-            .bg(rgba(0x1f233566)) // frosted panel (surface_1 @ ~0.4)
+            // mockup .sidebar 是 .pane:g1 玻璃渐变(与 viewer/agent 面板一致)
+            .bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba(0x2a2e446b), 0.),
+                linear_color_stop(rgba(0x1a1c2c85), 1.),
+            ))
             .child(header)
             .child(
                 div()
