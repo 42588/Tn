@@ -1064,15 +1064,28 @@ impl Render for TerminalView {
         let block_bar = self.render_block_bar(cx);
         let header = self.render_pane_header();
 
-        // Cursor: a rounded block at the cursor cell (positioned over the grid,
-        // which starts at the term-area origin). Solid + accent-tinted when the
-        // pane is focused; a hollow outline when not. Hidden when the app hides
-        // it (vim) or the viewport is scrolled off the cursor row.
+        // Cursor (positioned over the grid, which starts at the term-area origin).
+        // Hidden when the app hides it (vim) or the viewport is scrolled off the row.
         let focused = self.focus_handle.is_focused(window);
         self.focused = focused; // cache for the blink task (only blinks when focused)
         // Focused: solid block on the "on" half of the blink; nothing on the "off"
-        // half. Unfocused: a steady hollow outline (no blink).
+        // half. Unfocused: a steady slim outline (no blink).
         let draw_solid = focused && self.cursor_on;
+        // The glyph under the cursor (≈1 col/char; cursor-on-wide-char is rare) so the
+        // focused block can redraw it in the background color = a crisp **inverse**
+        // cursor instead of a muddy translucent overlay. Whitespace → just the block.
+        let cursor_char = rows.get(cur_row).and_then(|row| {
+            let mut c = 0usize;
+            for run in row {
+                for ch in run.text.chars() {
+                    if c == cur_col {
+                        return (!ch.is_whitespace()).then_some(ch);
+                    }
+                    c += 1;
+                }
+            }
+            None
+        });
         let cursor_el = (cursor_visible
             && (draw_solid || !focused)
             && cur_row < self.size.rows
@@ -1087,12 +1100,34 @@ impl Render for TerminalView {
                     .h(px(self.line_height))
                     .rounded(px(2.));
                 if draw_solid {
-                    // translucent block so a character under the cursor stays legible
-                    base.bg(cola(self.palette.cursor, 0.85))
+                    // Opaque block in the cursor color + the glyph redrawn in the bg
+                    // color on top = sharp inverse cursor (the char stays crisp, not
+                    // dimmed). The block sits over the grid glyph and hides it.
+                    base.bg(col(self.palette.cursor))
+                        .text_color(col(bg))
+                        .when_some(cursor_char, |d, ch| d.child(SharedString::from(ch.to_string())))
                 } else {
-                    base.border_1().border_color(col(self.palette.cursor))
+                    // Unfocused: a slim, calmer outline (thinner presence than a full block).
+                    base.border_1().border_color(cola(self.palette.cursor, 0.55))
                 }
             });
+
+        // IME composition preedit (拼音 in progress): show it inline at the cursor —
+        // an opaque box (covers the chars under it) + accent underline = the "正在合成"
+        // affordance, so typing Chinese feels like normal inline input rather than
+        // composing blind in the floating candidate window. Cleared on commit/cancel.
+        let ime_preedit = self.ime_marked.clone().filter(|s| !s.is_empty()).map(|s| {
+            div()
+                .absolute()
+                .left(px(BODY_PAD_X + cur_col as f32 * self.cell_width))
+                .top(px(BODY_PAD_Y + cur_row as f32 * self.line_height))
+                .h(px(self.line_height))
+                .bg(col(bg)) // cover the cells underneath so the preedit is legible
+                .text_color(col(fg))
+                .border_b_2()
+                .border_color(col(self.ui_accent))
+                .child(SharedString::from(s))
+        });
 
         // Scrollbar (待优化清单 §3.2): a thin right-edge indicator of the viewport's
         // position within scrollback. Shown only when there's history; brighter
@@ -1187,6 +1222,16 @@ impl Render for TerminalView {
                             .h(px(self.line_height))
                             .children(runs.iter().map(|r| {
                                 div()
+                                    // **Force the run box to its exact grid span**
+                                    // (`cols × cell_width`) so cells stay aligned even
+                                    // when a glyph's font advance ≠ cell_width — i.e.
+                                    // CJK in a fallback font (CaskaydiaCove has no CJK).
+                                    // Without this the row flex-flowed by natural glyph
+                                    // width and Chinese drifted / spaced wrong. `flex_none`
+                                    // + `overflow_hidden` keep the width authoritative.
+                                    .flex_none()
+                                    .w(px(r.cols as f32 * self.cell_width))
+                                    .overflow_hidden()
                                     // 默认底色留空 → 透出面板 g1 玻璃(mockup:正文落在玻璃上);
                                     // 仅非默认底(选区/上色/反显)才实绘。
                                     .when(r.bg != bg, |d| d.bg(col(r.bg)))
@@ -1197,6 +1242,7 @@ impl Render for TerminalView {
                     })),
             )
             .when_some(cursor_el, |this, c| this.child(c))
+            .when_some(ime_preedit, |this, p| this.child(p))
             .when_some(scrollbar, |this, s| this.child(s))
             .when_some(bell_overlay, |this, o| this.child(o));
 

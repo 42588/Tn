@@ -13,6 +13,25 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 中文渲染(宽字符对齐)+ IME preedit 内联 + 反相光标(2026-05-29)
+
+> IME 输入通了之后,中文**显示**仍不对:每个汉字后有半角空隙、字符错位。根因 = **宽字符(CJK,占 2 格)
+> 的 spacer 占位格被当普通空格渲染** + 网格按等宽 'm' 格宽 flex 排版、CJK 回退字体步进不符。
+
+### 修复 (Fixed)
+- **中文(宽字符)渲染对齐**:`tn-core::row_runs` 跳过 `WIDE_CHAR_SPACER`/`LEADING_WIDE_CHAR_SPACER` 占位格
+  (消除每个汉字后的半角空隙),并给 `CellRun` 加 `cols`(列跨度:宽字符=2、余=1);`terminal_view` 渲染时每个
+  run 框**显式定宽 `cols × cell_width` + `flex_none` + `overflow_hidden`**,强制贴齐单元格网格——即使 CJK 用
+  回退字体(CaskaydiaCove 无 CJK 字形)、字形步进 ≠ 格宽,行内/行间也不再漂移。headless 单测覆盖。
+- **IME 合成 preedit 内联显示**:合成中的拼音现在显示在**光标处**(实心底盖住后字 + accent 下划线 = 「正在输入」),
+  不必盯着浮动候选窗盲打,体验接近原生输入法。
+
+### 调整 (Changed)
+- **光标改为反相块**:聚焦时实心块(光标色)+ **把光标处字符以背景色重绘在块上** = 锐利清晰,替换原来 0.85
+  半透明叠层(字在底下发糊);失焦时细描边(更克制)。
+- (未做)CJK 回退**字体**仍走系统默认(DirectWrite 自动回退);`[font].fallback` 接入留作可选(gpui Windows 支持
+  自定义回退链,但无现成链式 API,需改 Style)。
+
 ## [Unreleased] — IME 真正修好 + 编辑器焦点穿透 + 保存即刷新(2026-05-29)
 
 > 上一轮接了 `EntityInputHandler` 但中文仍打不出——**真因**:`on_key` 对可打印键 `stop_propagation`,

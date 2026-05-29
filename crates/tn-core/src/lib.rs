@@ -210,6 +210,12 @@ pub struct CellRun {
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
+    /// Grid columns this run spans. A wide (CJK / double-width) char counts as 2,
+    /// every other char as 1 — so the renderer can force the run's box to exactly
+    /// `cols × cell_width` and keep the cell grid aligned even when a glyph's font
+    /// advance differs (CJK in a fallback font). Usually `== text.chars().count()`,
+    /// but larger when the run contains wide chars.
+    pub cols: usize,
 }
 
 /// An immutable view of the visible terminal grid, produced for rendering.
@@ -353,7 +359,18 @@ impl TerminalSnapshot {
             .map(|row| {
                 let mut runs: Vec<CellRun> = Vec::new();
                 for cell in row {
+                    // A wide char (CJK) occupies two grid columns: the char itself
+                    // (WIDE_CHAR) + a phantom spacer in the next column. **Skip the
+                    // spacer** — rendering it as a blank put a half-width gap after
+                    // every CJK char ("间距那么大" bug) — and count the wide char as
+                    // 2 columns so the renderer can size its box to the real grid.
+                    if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                        || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                    {
+                        continue;
+                    }
                     let ch = if cell.c == '\0' { ' ' } else { cell.c };
+                    let span = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
                     let bold = cell.flags.contains(Flags::BOLD);
                     let italic = cell.flags.contains(Flags::ITALIC);
                     let underline = cell.flags.contains(Flags::UNDERLINE);
@@ -366,6 +383,7 @@ impl TerminalSnapshot {
                                 && r.underline == underline =>
                         {
                             r.text.push(ch);
+                            r.cols += span;
                         }
                         _ => runs.push(CellRun {
                             text: ch.to_string(),
@@ -374,6 +392,7 @@ impl TerminalSnapshot {
                             bold,
                             italic,
                             underline,
+                            cols: span,
                         }),
                     }
                 }
@@ -723,6 +742,27 @@ mod tests {
         assert_eq!(snap.rows, 5);
         assert_eq!(snap.cols, 20);
         assert!(snap.to_text().contains("hello world"));
+    }
+
+    #[test]
+    fn wide_char_runs_skip_spacer_and_span_two_cols() {
+        // A CJK char is double-width: alacritty stores it (WIDE_CHAR) + a phantom
+        // spacer in the next column. row_runs must drop the spacer (no half-width gap
+        // after the char — the "间距那么大" bug) and report 2 columns for the char so
+        // the renderer can size its box to the real grid.
+        let mut t = Terminal::new(GridSize::new(2, 20));
+        t.advance("中a".as_bytes()); // 中 = wide (2 cols), a = narrow (1 col)
+        let rows = t.snapshot().row_runs();
+        // Flatten row 0's runs into the visible chars + a column total.
+        let text: String = rows[0].iter().flat_map(|r| r.text.chars()).collect();
+        let cols: usize = rows[0].iter().map(|r| r.cols).sum();
+        // No phantom space inserted between 中 and a.
+        assert!(text.starts_with("中a"), "got {text:?}");
+        // 中(2) + a(1) + 17 blank cols = 20 (the spacer did not add a column).
+        assert_eq!(cols, 20, "run columns must equal the grid width");
+        // The 中-bearing run reports 2 columns for that one char.
+        let wide = rows[0].iter().find(|r| r.text.starts_with('中')).unwrap();
+        assert!(wide.cols >= 2, "wide char spans >= 2 cols, got {}", wide.cols);
     }
 
     #[test]
