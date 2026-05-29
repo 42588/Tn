@@ -119,10 +119,12 @@ fn clip(s: &str, max: usize) -> String {
 
 /// Tracked changes vs `HEAD` in `root` (staged + unstaged), **bounded**. Blocking —
 /// call from a background task. Empty when not a repo / no HEAD / no changes.
+/// `--relative` makes the returned paths relative to `root` (not the repo toplevel),
+/// so a caller can resolve a path back to an absolute one via `root.join(path)`.
 pub(crate) fn changes_for(root: &Path) -> Vec<FileChange> {
     let out = capture_bounded(
         root,
-        &["diff", "--no-color", "HEAD", "--numstat"],
+        &["diff", "--no-color", "HEAD", "--numstat", "--relative"],
         Duration::from_millis(1200),
     );
     parse_numstat(out.as_deref().unwrap_or(""))

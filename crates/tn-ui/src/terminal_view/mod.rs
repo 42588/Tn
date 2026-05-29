@@ -46,6 +46,11 @@ pub struct UsageUpdated;
 /// this to fall back to its launcher when the hosted agent/shell exits.
 pub struct ProcessExited;
 
+/// Emitted when a changed-file card in the agent activity rail is clicked — the
+/// workspace opens that file in Quick Look on the Diff tab (mockup `.ahint`
+/// 「点卡片 = 速览全 diff」). Carries the absolute path.
+pub struct OpenInQuickLook(pub std::path::PathBuf);
+
 use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER};
 
@@ -95,6 +100,13 @@ pub(crate) fn palette_from(theme: &tn_config::Theme) -> Palette {
 
 const ROWS: usize = 34;
 const COLS: usize = 110;
+/// Terminal body inset (mockup `.body { padding:11px 15px }`): the grid is drawn
+/// `BODY_PAD_X`/`BODY_PAD_Y` in from the pane's content edge so text doesn't hug
+/// the glass rim and aligns with the header's text inset. Applied uniformly to the
+/// grid origin, the cursor, mouse hit-testing, AND the cols/rows fit (so the engine
+/// sizes to the *inset* area) — all relative to `content_bounds`.
+const BODY_PAD_X: f32 = 15.0;
+const BODY_PAD_Y: f32 = 11.0;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
 /// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
@@ -149,6 +161,16 @@ pub struct TerminalView {
     // snapshot, polled off-thread from the agent's session log.
     agent: Option<AgentKind>,
     usage: Option<AiUsage>,
+    // Activity-rail data (mockup `.arail` 本次改动): real `git diff HEAD` for this
+    // pane's cwd, refreshed by the usage poller off-thread (bounded). HONEST — it
+    // comes from git, never from parsing the agent's terminal TUI. Empty = clean
+    // working tree / not a git repo. `rail_preview` = the first file's mini diff.
+    rail_files: Vec<crate::gitutil::FileChange>,
+    rail_preview: Vec<(bool, String)>,
+    /// Base dir git ran in for the rail (with `--relative`, `rail_files` paths are
+    /// relative to this) — used to resolve a clicked card to an absolute path for
+    /// Quick Look. `None` until the first poll.
+    rail_root: Option<std::path::PathBuf>,
     // Set by the reader when a hosted agent emits [`AGENT_EXIT_SENTINEL`] on exit
     // (the `-NoExit` pwsh outlives it). The foreground then clears `agent`/`usage`
     // so the pane reverts to a plain shell (no stale header). Only agent panes
@@ -341,6 +363,9 @@ impl TerminalView {
             scrollbar_drag: None,
             agent,
             usage: None,
+            rail_files: Vec::new(),
+            rail_preview: Vec::new(),
+            rail_root: None,
             agent_exited,
             bell,
             bell_flash_at: None,
@@ -552,8 +577,10 @@ impl TerminalView {
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
     fn cell_at(&self, pos: Point<Pixels>) -> (usize, usize) {
         let b = self.content_bounds.borrow();
-        let x = (f32::from(pos.x) - f32::from(b.origin.x)).max(0.0);
-        let y = (f32::from(pos.y) - f32::from(b.origin.y)).max(0.0);
+        // Subtract the body inset (mockup .body padding) so a click maps to the cell
+        // under the cursor — the grid is drawn at +BODY_PAD from content_bounds.
+        let x = (f32::from(pos.x) - f32::from(b.origin.x) - BODY_PAD_X).max(0.0);
+        let y = (f32::from(pos.y) - f32::from(b.origin.y) - BODY_PAD_Y).max(0.0);
         let col = (x / self.cell_width) as usize;
         let row = (y / self.line_height) as usize;
         (
@@ -712,6 +739,7 @@ impl TerminalView {
 
 impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
+impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -728,8 +756,12 @@ impl Render for TerminalView {
             (f32::from(b.size.width), f32::from(b.size.height))
         };
         if bw > 1.0 && bh > 1.0 {
-            let cols = ((bw / self.cell_width).floor() as usize).max(1);
-            let rows_n = ((bh / self.line_height).floor() as usize).max(1);
+            // Fit to the *inset* body area (mockup .body padding) — leave BODY_PAD on
+            // each side so the grid matches where the cursor/grid are actually drawn.
+            let avail_w = (bw - 2.0 * BODY_PAD_X).max(self.cell_width);
+            let avail_h = (bh - 2.0 * BODY_PAD_Y).max(self.line_height);
+            let cols = ((avail_w / self.cell_width).floor() as usize).max(1);
+            let rows_n = ((avail_h / self.line_height).floor() as usize).max(1);
             let new_size = GridSize::new(rows_n, cols);
             // ConPTY tracks the visible grid EXACTLY (rows ≠ alacritty rows caused
             // worse, frequent blanking — once output scrolls alacritty but not
@@ -795,8 +827,9 @@ impl Render for TerminalView {
             .then(|| {
                 let base = div()
                     .absolute()
-                    .left(px(cur_col as f32 * self.cell_width))
-                    .top(px(cur_row as f32 * self.line_height))
+                    // +BODY_PAD: the grid is inset from the content edge (mockup .body)
+                    .left(px(BODY_PAD_X + cur_col as f32 * self.cell_width))
+                    .top(px(BODY_PAD_Y + cur_row as f32 * self.line_height))
                     .w(px(self.cell_width))
                     .h(px(self.line_height))
                     .rounded(px(2.));
@@ -878,8 +911,12 @@ impl Render for TerminalView {
                 .size_full(),
             )
             .child(
+                // Grid inset from the content edge by BODY_PAD (mockup .body padding);
+                // absolute so it shares the cursor's coordinate origin exactly.
                 div()
-                    .size_full()
+                    .absolute()
+                    .left(px(BODY_PAD_X))
+                    .top(px(BODY_PAD_Y))
                     .flex()
                     .flex_col()
                     .children(rows.iter().map(|runs| {
@@ -911,7 +948,7 @@ impl Render for TerminalView {
                 .flex()
                 .flex_row() // mockup .abody
                 .child(term_area)
-                .child(self.render_activity_rail())
+                .child(self.render_activity_rail(cx))
         } else {
             term_area
         };

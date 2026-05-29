@@ -27,6 +27,12 @@ use super::{
     ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
 };
 
+/// Activity rail (mockup `.arail` 本次改动): cap the changed-file cards (the narrow
+/// rail shows a short stack; more would overflow) and the first card's mini-diff
+/// preview lines.
+const RAIL_MAX_FILES: usize = 6;
+const RAIL_PREVIEW_LINES: usize = 3;
+
 impl TerminalView {
     /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
     /// capture title changes; push a (coalesced) wake to the foreground.
@@ -315,26 +321,42 @@ impl TerminalView {
                     break;
                 }
                 let cwd2 = cwd.clone();
+                let git_cwd = cwd.clone();
                 let prev = last.clone();
                 let res = exec
                     .spawn(async move {
                         let sref = tn_ai::resolve_session(&cwd2, hint)?;
                         let mtime = std::fs::metadata(&sref.path).ok()?.modified().ok()?;
                         if prev.as_ref() == Some(&(sref.path.clone(), mtime)) {
-                            return None; // unchanged — skip the re-parse
+                            return None; // unchanged — skip the re-parse + git
                         }
                         let text = std::fs::read_to_string(&sref.path).ok()?;
                         let usage = tn_ai::parse_session(sref.kind, &text)?;
-                        Some((sref.kind, sref.path, mtime, usage))
+                        // 活动栏「本次改动」: real, bounded `git diff HEAD` in the
+                        // pane's cwd. Runs on THIS background thread (never the UI
+                        // thread); gated on session-mtime change so an idle agent
+                        // costs nothing while a busy one that just edited files
+                        // refreshes the rail. HONEST — git, not terminal parsing.
+                        let root = std::path::Path::new(&git_cwd);
+                        let mut files = crate::gitutil::changes_for(root);
+                        files.truncate(RAIL_MAX_FILES);
+                        let preview = files
+                            .first()
+                            .map(|f| crate::gitutil::diff_preview(root, &f.path, RAIL_PREVIEW_LINES))
+                            .unwrap_or_default();
+                        Some((sref.kind, sref.path, mtime, usage, files, preview, root.to_path_buf()))
                     })
                     .await;
-                if let Some((_kind, path, mtime, usage)) = res {
+                if let Some((_kind, path, mtime, usage, files, preview, git_root)) = res {
                     last = Some((path, mtime));
                     // `agent` is fixed from launch intent; the poller only updates
-                    // the usage snapshot (never relabels the pane).
+                    // the usage snapshot + activity-rail data (never relabels the pane).
                     if this
                         .update(cx, |v, cx| {
                             v.usage = Some(usage);
+                            v.rail_files = files;
+                            v.rail_preview = preview;
+                            v.rail_root = Some(git_root);
                             cx.emit(UsageUpdated);
                             cx.notify();
                         })

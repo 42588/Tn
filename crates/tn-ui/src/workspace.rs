@@ -24,7 +24,7 @@ use crate::explorer::{ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
-use crate::terminal_view::{LaunchSpec, TerminalView, UsageUpdated};
+use crate::terminal_view::{LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
 use crate::welcome::{LaunchRequested, WelcomeView};
 
 type PaneId = u64;
@@ -862,6 +862,18 @@ impl Workspace {
         // rather than relying on plain `notify`).
         cx.subscribe(&view, |_ws, _view, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
+        // Agent activity-rail card click → open that file in Quick Look (Diff tab).
+        // The rail emits an absolute path; Quick Look reads it + shows its git diff.
+        cx.subscribe(&view, |ws, _view, ev: &OpenInQuickLook, cx| {
+            let path = ev.0.clone();
+            ws.quick_look.update(cx, |v, cx| {
+                v.open_diff(path);
+                cx.notify();
+            });
+            ws.quick_look_open = true;
+            cx.notify();
+        })
+        .detach();
         let id = self.next_id;
         self.next_id += 1;
         self.panes.insert(id, view);

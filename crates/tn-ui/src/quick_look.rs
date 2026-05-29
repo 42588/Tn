@@ -329,6 +329,13 @@ impl QuickLook {
         self.enter_edit();
     }
 
+    /// Open `path` straight on the Diff tab — the agent activity-rail card click
+    /// ("点卡片 = 速览全 diff") lands here.
+    pub fn open_diff(&mut self, path: PathBuf) {
+        self.open(path);
+        self.select_tab(Tab::Diff);
+    }
+
     /// Recompute `diff` if stale — called only when the Diff tab is shown (keeps the
     /// blocking `git diff` off the open/navigation hot path). Bounded + non-flashing
     /// inside `compute_diff`.

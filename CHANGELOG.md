@@ -13,6 +13,29 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 工作区窗格重建:活动栏接真实 git + 正文内边距(2026-05-29)
+
+> 原型 [②工作区窗格](design/panels/02-workspace-panes.html) 端口收尾:agent 面板右侧**活动栏**从占位示例
+> 改为**真实数据**,正文补上 mockup 的 `.body` 内边距。守住「**不伪造思考态**」原则——状态行只显诚实信息。
+
+### 新增 (Added)
+- **`crate::gitutil` 共享有界 git 模块**:把 quick_look 的 `git_capture_bounded` 提为 `capture_bounded`(单一真源,
+  线程 + `recv_timeout` 超时 + `CREATE_NO_WINDOW`,**绝不在 UI 线程跑**),新增 `parse_numstat` / `parse_preview` /
+  `changes_for`(`git diff HEAD --numstat --relative`)/ `diff_preview`,**6 个 headless 单测**。quick_look 改用之。
+- **活动栏「本次改动」接真实 git diff**:`io::spawn_usage_poller` 在**后台线程**(非 UI)按会话 mtime 变化(=agent 有
+  新活动)跑 `git diff HEAD` 拿真实改动文件 + 首文件迷你 diff,存 `TerminalView.rail_files/rail_preview/rail_root`,
+  发 `UsageUpdated` 重绘。**数据来自 git,不解析终端正文**;idle agent 零开销(沿用 mtime 守卫)。
+- **活动栏卡片可点 → Quick Look**:点改动卡发 `OpenInQuickLook(abs_path)`,workspace 订阅后用 `QuickLook::open_diff`
+  在 Diff tab 弹速览——`.ahint`「点卡片 = 速览全 diff」**现已诚实**(不再是空头提示)。
+
+### 修复 / 调整 (Changed)
+- **诚实状态行(不伪造「运行中」)**:原型 `.astat` 的「运行中 · Update · 1m12s」是**实时运行态**,但 agent 思考/运行态
+  PTY 不可观测(CLAUDE.md 硬原则,**不伪造**)→ 状态行改为诚实的 git 摘要:agent 色点 + 「N 个文件改动 / 工作区干净」+
+  右侧「+X −Y」(全来自 git)。空状态显「agent 改动会实时显示在这里」,不再写死示例卡。
+- **正文补 `.body` 内边距 `11px 15px`**(mockup):此前终端正文直贴面板内缘、与头部文字不对齐;现网格 / 光标 / 鼠标命中 /
+  cols-rows 适配**统一按 `BODY_PAD_X/Y` 偏移**(全相对 `content_bounds`,`bw>1` 守卫故 headless 不受影响)。
+  `TN_AUTOQUIT` 验证网格仍收敛、正文内容正常;像素内边距真机肉眼验。
+
 ## [Unreleased] — 焦点跟踪修复(分屏基准 + Quick Look 返回)(2026-05-29)
 
 ### 修复 (Fixed)
