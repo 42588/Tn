@@ -19,9 +19,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, Bounds,
-    ClipboardItem, Context, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Rgba,
-    ScrollStrategy, SharedString, UniformListScrollHandle, Window,
+    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
+    uniform_list, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
+    FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, Rgba, ScrollStrategy,
+    SharedString, UniformListScrollHandle, UTF16Selection, Window,
 };
 use tn_config::Loaded;
 
@@ -210,6 +211,11 @@ pub struct QuickLook {
     coalesce_insert: bool,
     /// Unsaved edits since the last write (drives the "编辑中 ●" badge).
     dirty: bool,
+    /// IME composition (preedit) text while editing, set by the platform input
+    /// handler. `Some` ⇒ composing (中文): gpui routes keys to the IME and we don't
+    /// touch the buffer until commit, when the result is inserted at the cursor.
+    /// Without an input handler the editor couldn't accept IME-composed text.
+    ime_marked: Option<String>,
     /// Monospace advance width (px) at the code font size — for mouse → column.
     char_w: f32,
     /// Code-area content bounds (window space), captured each paint by a canvas —
@@ -259,6 +265,7 @@ impl QuickLook {
             coalesce_insert: false,
             dirty: false,
             char_w,
+            ime_marked: None,
             code_bounds: Rc::new(RefCell::new(Bounds::default())),
             find_open: false,
             replacing: false,
@@ -935,6 +942,9 @@ fn tint_color(config: &Loaded, t: Tint) -> Rgba {
 /// **uniform** — required by `uniform_list` (it measures row 0 and assumes the
 /// rest match) and keeps the edit caret aligned regardless of which row it's on.
 const ROW_H: f32 = 20.0;
+/// Code-row left gutter width: line-number `.ln`(38) + margin(14) + marker `.mk`(14).
+/// Single-sourced so the mouse→column hit-test and the IME caret-bounds agree.
+const CODE_GUTTER: f32 = 66.0;
 
 /// One code row (`.cl`): a faint line-number gutter (`.ln`, width 38, mr 14)
 /// + a marker column (`.mk`, width 14) + the tinted source. Free fn so the
@@ -1337,6 +1347,107 @@ fn diff_row(config: &Loaded, diff: &[DiffLine], i: usize) -> gpui::Div {
 
 impl gpui::EventEmitter<QuickLookEvent> for QuickLook {}
 
+/// IME / text input for the in-house editor (fixes "文件编辑界面无法切换中文输入").
+/// Mirrors the terminal's approach: the only addressable "text" is the in-progress
+/// composition (`ime_marked`); a commit (中文 result) is inserted at the cursor via
+/// `type_char` (selection-aware + undo). Registered (in paint) **only while editing**.
+/// ASCII still flows through `on_key` (which stops propagation → no duplicate WM_CHAR).
+impl EntityInputHandler for QuickLook {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let units: Vec<u16> = self.ime_marked.as_deref().unwrap_or("").encode_utf16().collect();
+        let start = range.start.min(units.len());
+        let end = range.end.min(units.len());
+        *adjusted = Some(start..end);
+        Some(String::from_utf16_lossy(&units[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let end = self.ime_marked.as_deref().map(|s| s.encode_utf16().count()).unwrap_or(0);
+        Some(UTF16Selection { range: end..end, reversed: false })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.ime_marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // IME commit (中文) → insert at the cursor like typed text (op handles
+        // multi-char + selection + undo). Empty `text` = composition cancel.
+        if !text.is_empty() {
+            self.type_char(text);
+            self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+        }
+        self.ime_marked = None;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ime_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // Candidate window at the cursor: column is exact (gutter + col×char_w); the
+        // row is approximated to the code area's vertical center (edits scroll the
+        // cursor to center, and `uniform_list`'s scroll offset isn't readable in
+        // production — see坑), which is close enough for the IME popup.
+        let x = f32::from(element_bounds.origin.x) + CODE_GUTTER + self.cursor.1 as f32 * self.char_w;
+        let y = f32::from(element_bounds.origin.y) + f32::from(element_bounds.size.height) * 0.5;
+        Some(Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(self.char_w.max(1.0)), px(ROW_H)),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Grab focus on first render after open (focusing in open() doesn't land —
@@ -1460,7 +1571,12 @@ impl Render for QuickLook {
         let char_w = self.char_w;
         let canvas_bounds = self.code_bounds.clone(); // for the capturing canvas
         let row_bounds = self.code_bounds.clone(); // for the per-row click handler
-        const GUTTER: f32 = 66.0; // ln(38) + mr(14) + mk(14)
+        const GUTTER: f32 = CODE_GUTTER; // ln(38) + mr(14) + mk(14)
+        // IME/text input handler captures (registered in the canvas paint below) —
+        // only while editing, so composed text (中文) inserts at the cursor.
+        let ime_focus = self.focus_handle.clone();
+        let ime_entity = cx.entity();
+        let ime_editing = editing;
         let count = if editing {
             buf.len()
         } else if tab == Tab::Diff {
@@ -1490,7 +1606,17 @@ impl Render for QuickLook {
                     // → column mapping for clicks).
                     canvas(
                         move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
-                        |_b, _s, _w, _cx| {},
+                        // Register the IME/text input handler for this frame (edit mode
+                        // only) so composed text (中文) reaches `replace_text_in_range`.
+                        move |bounds, _s, window, cx| {
+                            if ime_editing {
+                                window.handle_input(
+                                    &ime_focus,
+                                    ElementInputHandler::new(bounds, ime_entity.clone()),
+                                    cx,
+                                );
+                            }
+                        },
                     )
                     .absolute()
                     .size_full(),

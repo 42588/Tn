@@ -22,10 +22,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc;
 use gpui::{
-    canvas, div, prelude::*, px, relative, rgba, AsyncApp, Bounds,
-    ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, WeakEntity, Window,
+    canvas, div, point, prelude::*, px, relative, rgba, size, AsyncApp, Bounds,
+    ClipboardItem, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, FontWeight,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollDelta, ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
@@ -216,6 +216,12 @@ pub struct TerminalView {
     ui_muted: Rgb,
     // Launch program (e.g. "powershell.exe") — for a clean shell label.
     program: String,
+    // IME composition (preedit) text, set by the platform input handler while the
+    // user is composing (e.g. pinyin → 中文). `Some` ⇒ gpui treats us as composing
+    // and routes keys to the IME; on commit the result is written to the PTY and
+    // this clears. Without an input handler, IME-composed text never arrives — the
+    // root cause of "终端无法输入中文" (only ASCII `key_char` reached `encode_key`).
+    ime_marked: Option<String>,
     // Cached render data + the engine generation it was built from (待优化清单
     // §2.1). Reused when a repaint changed nothing renderable (cursor blink).
     render_cache: Option<RenderCache>,
@@ -401,6 +407,7 @@ impl TerminalView {
             ui_fg,
             ui_muted,
             program: launch.program.clone(),
+            ime_marked: None,
             render_cache: None,
             perf: PerfStats::new("pane.render"),
         }
@@ -783,12 +790,14 @@ impl TerminalView {
         // Copy: Ctrl+Shift+C (reserved from the encoder).
         if m.control && m.shift && key == "c" {
             self.copy(cx);
+            cx.stop_propagation();
             return;
         }
         // Paste: Ctrl+Shift+V or Shift+Insert (both reserved from the encoder).
         if (m.control && m.shift && key == "v") || (m.shift && !m.control && !m.alt && key == "insert")
         {
             self.paste(cx);
+            cx.stop_propagation();
             return;
         }
 
@@ -802,12 +811,20 @@ impl TerminalView {
                     t.scroll_to_bottom();
                     b
                 }
+                // Not a terminal-input key (UI shortcut / unmapped): let it BUBBLE
+                // (no stop) so workspace keybindings still fire. Crucially we also
+                // DON'T consume it, so gpui's `translate_message` may turn a real
+                // text key into WM_CHAR → the IME input handler (中文 via composition).
                 None => return,
             }
         };
-        let mut w = self.writer.lock().unwrap();
-        let _ = w.write_all(&bytes);
-        let _ = w.flush();
+        self.send_bytes(&bytes);
+        // We handled this key → stop it. This makes gpui mark the WM_KEYDOWN as
+        // handled and skip `translate_message`, so no duplicate WM_CHAR reaches the
+        // input handler (which would double every ASCII key once IME is wired). IME
+        // composition (中文) arrives via WM_IME_COMPOSITION, not keydown, so it's
+        // unaffected. UI shortcuts took the `None` path above and still bubble.
+        cx.stop_propagation();
         cx.notify();
     }
 
@@ -848,6 +865,114 @@ impl TerminalView {
 impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
+
+/// IME / text input (fixes "终端无法输入中文"). gpui only delivers IME-composed text
+/// (pinyin → 中文) through an [`EntityInputHandler`]; without one, only ASCII
+/// `key_char` from WM_KEYDOWN reached `encode_key`. The terminal has no editable
+/// document, so the only "text" we model is the in-progress composition
+/// (`ime_marked`): committed text (any language) is written straight to the PTY.
+/// Plain ASCII keys still go through `on_key`/`encode_key` (which stops propagation
+/// so gpui skips `translate_message` → no duplicate WM_CHAR); only IME results land
+/// here. See `register_ime` (called in paint) + the events.rs dispatch notes.
+impl EntityInputHandler for TerminalView {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        // We only expose the in-progress composition as addressable text.
+        let units: Vec<u16> = self.ime_marked.as_deref().unwrap_or("").encode_utf16().collect();
+        let start = range.start.min(units.len());
+        let end = range.end.min(units.len());
+        *adjusted = Some(start..end);
+        Some(String::from_utf16_lossy(&units[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        // Caret at the end of the composition (0 when not composing) — anchors the
+        // IME candidate window via `bounds_for_range`.
+        let end = self.ime_marked.as_deref().map(|s| s.encode_utf16().count()).unwrap_or(0);
+        Some(UTF16Selection { range: end..end, reversed: false })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        // `Some` ⇒ gpui knows we're composing and feeds keys to the IME (events.rs).
+        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.ime_marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Committed text (IME result 中文, or any text the platform routes here) →
+        // straight to the PTY, like a paste of one grapheme cluster.
+        if !text.is_empty() {
+            self.terminal.lock().unwrap().scroll_to_bottom();
+            self.send_bytes(text.as_bytes());
+        }
+        self.ime_marked = None;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Composition preedit (pinyin in progress): don't touch the PTY until commit;
+        // just track it so we report composing state + position the candidate window.
+        self.ime_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // Place the IME candidate window at the cursor cell (grid is inset BODY_PAD).
+        let (row, col) = self.render_cache.as_ref().map(|c| c.cursor).unwrap_or((0, 0));
+        let x = f32::from(element_bounds.origin.x) + BODY_PAD_X + col as f32 * self.cell_width;
+        let y = f32::from(element_bounds.origin.y) + BODY_PAD_Y + row as f32 * self.line_height;
+        Some(Bounds {
+            origin: point(px(x), px(y)),
+            size: size(px(self.cell_width), px(self.line_height)),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
 
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -916,6 +1041,11 @@ impl Render for TerminalView {
             (c.rows.clone(), c.cursor, c.cursor_visible, c.scroll_offset, c.scroll_history, c.fg, c.bg)
         };
         let bounds_cell = self.content_bounds.clone();
+        // Captured into the canvas paint closure to register the IME input handler
+        // (text input / 中文 composition) for this frame — see the `EntityInputHandler`
+        // impl + `handle_input` below.
+        let ime_focus = self.focus_handle.clone();
+        let ime_entity = cx.entity();
         let block_bar = self.render_block_bar(cx);
         let header = self.render_pane_header();
 
@@ -1013,7 +1143,15 @@ impl Render for TerminalView {
             .child(
                 canvas(
                     move |bounds, _window, _cx| *bounds_cell.borrow_mut() = bounds,
-                    |_bounds, _state, _window, _cx| {},
+                    // Register the per-frame IME/text input handler so composed text
+                    // (中文) reaches `replace_text_in_range`. No-op unless focused.
+                    move |bounds, _state, window, cx| {
+                        window.handle_input(
+                            &ime_focus,
+                            ElementInputHandler::new(bounds, ime_entity.clone()),
+                            cx,
+                        );
+                    },
                 )
                 .absolute()
                 .size_full(),

@@ -1,6 +1,6 @@
 # Changelog — Tn 终端
 
-本文件记录 Tn 各里程碑的变更,遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。
+本文件记录 Tn  各里程碑的变更,遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。
 版本对应开发蓝图([docs/架构蓝图.md](docs/架构蓝图.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
 
 > Tn 是 **Windows 优先、Rust、GPU 加速**的终端,为 vibe coding 设计:托管 Claude Code /
@@ -12,6 +12,26 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 **唯一未完成:M2 的 SSH**——已编译 + headless 单测,owner 决定暂停(parked),等有远程登录需求再做端到端。
 
 ---
+
+## [Unreleased] — IME / 中文输入:终端 + 编辑器接 gpui 输入处理器(2026-05-29)
+
+> **重大修复**:此前**整个 app 无法输入中文**(终端所有窗格 + Quick Look 编辑器)——根因是从未接
+> gpui 的 `EntityInputHandler`。gpui 只经输入处理器投递 IME 合成文本(拼音→中文),没接它时只有
+> WM_KEYDOWN 的 ASCII `key_char` 能到 `encode_key`,中文永远丢失。
+
+### 修复 (Fixed)
+- **终端窗格可输入中文**:`TerminalView` 实现 `EntityInputHandler` + 在 canvas paint 阶段 `window.handle_input`
+  注册(仅聚焦时生效)。终端无可编辑文档,故 IME 文本模型 = **合成中的 preedit**(`ime_marked`);**提交的文本
+  (中文 / 任意)直接写入 PTY**。`on_key` 现在对**已处理的键 `stop_propagation`**——让 gpui 把 WM_KEYDOWN 标记为
+  handled、跳过 `translate_message`,**不再生成重复的 WM_CHAR**(否则接了处理器后每个 ASCII 键会双输入);
+  英文仍走 `on_key`/`encode_key`,中文经 WM_IME_COMPOSITION → `replace_text_in_range`,两条路天然隔离。
+  `bounds_for_range` 把候选窗定位到光标格。
+- **Quick Look 编辑器可输入中文**:`QuickLook` 同款 `EntityInputHandler`,**仅编辑态**注册;IME 提交经 `type_char`
+  在光标处插入(支持多字 / 选区替换 / 撤销)。候选窗列精确(gutter + 列×字宽)、行近似到代码区竖直中心
+  (编辑时光标滚动居中,`uniform_list` 滚动偏移生产态不可读,见坑)。
+
+### 内部 (Internal)
+- `CODE_GUTTER` 提为模块常量(鼠标命中 + IME 光标 bounds 共用,防漂移)。
 
 ## [Unreleased] — 活动栏:变化即刷新 + shell 内敲命令起 agent 自动切态(2026-05-29)
 
