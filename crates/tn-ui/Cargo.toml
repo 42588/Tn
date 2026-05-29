@@ -28,6 +28,7 @@ windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",                 # SetWindowSubclass/DefSubclassProc (IME key-routing fix)
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_Debug", # MessageBeep (audio bell, 待优化清单 §3.8)
 ] }

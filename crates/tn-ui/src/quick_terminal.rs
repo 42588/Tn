@@ -105,7 +105,11 @@ impl QuickTerminal {
         }
         self.initialized = true;
         self.hwnd = platform::hwnd_of(window);
-        if self.hwnd.is_none() {
+        if let Some(h) = self.hwnd {
+            // Same IME key-routing fix as the main window (中文 composition in the
+            // drop-down terminal). See platform.rs.
+            platform::install_ime_keyfix(h);
+        } else {
             tracing::warn!("quick terminal: no HWND; topmost/slide disabled");
         }
         if self.config.config.quick_terminal.autohide {

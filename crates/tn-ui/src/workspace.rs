@@ -2208,6 +2208,10 @@ impl Render for Workspace {
             self.revealed = true;
             if std::env::var("TN_AUTOQUIT").is_err() {
                 if let Some(h) = crate::platform::hwnd_of(window) {
+                    // Route IME-owned keys (VK_PROCESSKEY) to the IME so 中文 composition
+                    // edits/commits work (退格删拼音 / 回车提交 / 方向键翻候选). Safe to
+                    // call inline — it doesn't re-enter the window proc (see platform.rs).
+                    crate::platform::install_ime_keyfix(h);
                     let exec = cx.background_executor().clone();
                     cx.spawn(async move |_this, _cx| {
                         exec.timer(std::time::Duration::from_millis(40)).await;

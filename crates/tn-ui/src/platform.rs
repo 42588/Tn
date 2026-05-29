@@ -15,17 +15,19 @@ mod imp {
 
     use futures::channel::mpsc::{self, UnboundedReceiver};
     use tn_config::{HotkeySpec, Rect};
-    use windows::Win32::Foundation::HWND;
+    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
+        VK_PROCESSKEY,
     };
+    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
     use windows::Win32::UI::WindowsAndMessaging::{
         GetMessageW, GetWindowLongPtrW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
-        SW_SHOW, WM_HOTKEY, WS_EX_TOPMOST,
+        ShowWindow, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_HOTKEY, WM_KEYDOWN, WS_EX_TOPMOST,
     };
 
     fn as_hwnd(h: isize) -> HWND {
@@ -187,6 +189,89 @@ mod imp {
             let _ = MessageBeep(MB_OK);
         }
     }
+
+    // ── IME key-routing fix (中文输入「输入法被限制」根治) ──────────────────────
+    //
+    // 病根在 gpui 0.2.2 的 Windows 文本输入走**旧的 IMM32** 而非 WT 用的 **TSF**:
+    //   • gpui 判定「是否在合成」只看 `marked_text_range()`(= 应用的 marked text),
+    //     而它仅在 IME 发 `GCS_COMPSTR` 时才被置位;**微软拼音等 TSF 原生输入法在
+    //     IMM32 兼容层下从不发 `GCS_COMPSTR`**(自画候选窗、只在提交发 `GCS_RESULTSTR`)
+    //     → gpui 的 `is_composing` **恒 false** → 它**从不把按键短路给 IME**,每个键都先
+    //     派发到我们的 `on_key`(实证见 tn.log:`marked_text_range -> None`)。
+    //   • gpui 只在**应用不消费该 keydown 时**才调 `translate_message` 把键交给 IME;且
+    //     它的 `parse_char_message` 会**过滤掉控制字符**(退格 0x08/回车 0x0D/Esc 0x1B/Tab
+    //     0x09 的 WM_CHAR 全被丢)→ 这些命名键既不能「放行」(WM_CHAR 被吞、键彻底丢失)、
+    //     又必须在 `on_key` 里**编码送 PTY**(否则终端删不掉字)。结果:**合成期按退格/回车/
+    //     方向键会被终端抢走**,无法删拼音、无法回车提交、无法翻候选页 = 用户感到的「受限」。
+    //
+    // 关键事实:**当 IME 正在处理某键(用户在合成)时,系统投递的 `WM_KEYDOWN` 其虚拟键
+    // 是 `VK_PROCESSKEY`(0xE5)**。这是 OS 明确告诉我们「这个键属于 IME」。但 gpui 在
+    // `handle_key_event` 里**悄悄用 `ImmGetVirtualKey` 还原出真实键**再派发给应用,所以到
+    // `on_key` 这层已分不清「合成中的退格」和「终端用的退格」。
+    //
+    // 修法(无需 fork gpui,IME 无关):在 gpui 的 wndproc **之前**子类化窗口,凡 `WM_KEYDOWN`
+    // 且 `wParam == VK_PROCESSKEY` 的键就是 IME 的——我们替它 `TranslateMessage`(驱动
+    // `WM_IME_COMPOSITION` → gpui 的 `GCS_RESULTSTR` 提交链 → 我们的 `replace_text` 写 PTY)
+    // 并**消费掉**(返回 0,不再下传 gpui),于是 gpui 永不会误编码它。IME **不**要的键以其
+    // 真实虚拟键到达(非 VK_PROCESSKEY)→ 原样透传给 gpui → `on_key` 照常编码送终端。
+    // 这样合成期的退格/回车/方向键/数字/空格全部回到 IME(删拼音、翻页、提交都正常)。
+    //
+    // 重入安全:子类回调在 gpui wndproc **之前**于消息派发链最前端运行,`TranslateMessage`
+    // 只**投递** WM_IME_*/WM_CHAR 到队列(不同步回调 wndproc),且我们对 VK_PROCESSKEY
+    // 直接 `return 0`(不调 `DefSubclassProc` → 不进 gpui wndproc)→ 不触碰 gpui 的 RefCell
+    // 窗口状态,无 M5「外部调用重入借用」之忧。
+
+    const TN_IME_SUBCLASS_ID: usize = 0x746E_0001; // "tn" + tag
+
+    unsafe extern "system" fn ime_subclass_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+        _uid_subclass: usize,
+        _dwref_data: usize,
+    ) -> LRESULT {
+        if msg == WM_KEYDOWN {
+            let vk = wparam.0 as u16; // virtual-key in the loword of wParam
+            tracing::debug!(target: "tn::ime", "subclass keydown vk={vk:#06x} processkey={}", vk == VK_PROCESSKEY.0);
+            if vk == VK_PROCESSKEY.0 {
+                // The IME owns this key (active composition). Route it to the IME and
+                // CONSUME it so gpui's keydown handler never sees it (and so can't
+                // mis-encode named keys like backspace/enter/arrows to the PTY).
+                let m = MSG {
+                    hwnd,
+                    message: WM_KEYDOWN,
+                    wParam: wparam,
+                    lParam: lparam,
+                    time: 0,
+                    pt: POINT::default(),
+                };
+                let _ = TranslateMessage(&m);
+                tracing::info!(target: "tn::ime", "ime subclass: routed VK_PROCESSKEY → IME (composing)");
+                return LRESULT(0);
+            }
+        }
+        DefSubclassProc(hwnd, msg, wparam, lparam)
+    }
+
+    /// Install the IME key-routing fix on a gpui window (see the note above). Must be
+    /// called on the UI thread with a live HWND (e.g. the first `render` / window
+    /// init). `SetWindowSubclass` is idempotent per (proc, id) — calling twice with
+    /// the same id just refreshes it — and the OS removes the subclass on destroy,
+    /// so no teardown is needed. Unlike `SetWindowPos`/`ShowWindow` it does NOT
+    /// re-enter the window proc, so it is safe to call synchronously inside a gpui
+    /// callback.
+    pub fn install_ime_keyfix(h: isize) {
+        unsafe {
+            if SetWindowSubclass(as_hwnd(h), Some(ime_subclass_proc), TN_IME_SUBCLASS_ID, 0)
+                .as_bool()
+            {
+                tracing::info!("IME key-routing subclass installed (VK_PROCESSKEY → IME)");
+            } else {
+                tracing::warn!("SetWindowSubclass for IME keyfix failed");
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -207,6 +292,7 @@ mod stub {
         None
     }
     pub fn system_beep() {}
+    pub fn install_ime_keyfix(_h: isize) {}
 }
 
 #[cfg(not(target_os = "windows"))]

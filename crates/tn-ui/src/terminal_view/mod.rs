@@ -116,9 +116,40 @@ pub(super) const RAIL_PREVIEW_LINES: usize = 3;
 const RAIL_WATCH_DEBOUNCE_MS: u64 = 450;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
+/// Smooth cursor glide (待优化清单 §3.1): the cursor eases toward its new cell over
+/// this window instead of teleporting, so typing/deleting reads as fluid. Short
+/// enough to feel responsive (the glyph is already there; only the block catches up).
+const CURSOR_GLIDE_MS: u64 = 90;
+/// Only glide *small* same-row moves (typing / deleting / local nav). Bigger jumps
+/// (line wrap, prompt redraw, screen clear, vertical nav) snap — a long swoosh
+/// across the grid looks worse than an honest jump.
+const CURSOR_GLIDE_MAX_COLS: i64 = 12;
+/// Character fade (待优化清单 §3.1): a freshly-shown glyph fades in and a removed
+/// glyph fades out over this window, so 增删 feels soft instead of snapping.
+const CHAR_FADE_MS: u64 = 75;
+/// Per-frame cap on fading cells. A change touching more cells than this is a bulk
+/// update (paste / clear / scroll / program output), which **snaps** (no fade) — this
+/// is the perf guard that keeps the fade overlay count tiny (CLAUDE.md: no per-cell
+/// div explosion). Normal typing changes 1–few cells, well under the cap.
+const CHAR_FADE_MAX_CELLS: usize = 24;
 /// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
 /// without being a distraction. ~180ms ≈ a quick blink.
 const BELL_FLASH_MS: u64 = 180;
+
+/// One in-flight character fade (待优化清单 §3.1). `fade_in` = a glyph just appeared
+/// (we draw a bg-colored cover over its cell that ramps to transparent, revealing
+/// the glyph underneath); `!fade_in` = a glyph was removed (we draw a ghost of the
+/// old glyph that ramps away over the now-blank cell). `cols` = 1, or 2 for a CJK
+/// wide char. Expired (`start.elapsed() >= CHAR_FADE_MS`) entries are dropped.
+#[derive(Clone, Copy)]
+struct CellFade {
+    row: usize,
+    col: usize,
+    ch: char,
+    cols: usize,
+    fade_in: bool,
+    start: Instant,
+}
 /// Sentinel window title a hosted **agent** pane emits *after* the agent exits
 /// (the `-NoExit` pwsh runs it on return). The reader sees this OSC, flags the
 /// pane, and we clear the agent identity — so the header/tab stop pretending the
@@ -161,6 +192,24 @@ pub struct TerminalView {
     // pane stays idle — zero wakes). Typing forces `cursor_on = true`.
     cursor_on: bool,
     focused: bool,
+    // Smooth cursor glide (待优化清单 §3.1): `cursor_px` is the cursor block's
+    // currently-drawn top-left (term-area coords, incl. BODY_PAD); it eases toward
+    // the target cell instead of teleporting. `cursor_cell` caches the last target
+    // (so a move is detected), `cursor_glide_from`/`cursor_glide_start` define the
+    // in-flight ease, and `cursor_gliding` guards the per-frame driver task. Init
+    // `cursor_cell` to a sentinel so the first frame snaps (no glide-from-origin).
+    cursor_px: (f32, f32),
+    cursor_cell: (usize, usize),
+    cursor_glide_from: (f32, f32),
+    cursor_glide_start: Option<Instant>,
+    cursor_gliding: bool,
+    // Character fade (待优化清单 §3.1): `prev_cells` is last frame's visible glyph grid
+    // (per-column chars), diffed each frame to spot appeared/removed cells → `cell_fades`
+    // (capped at CHAR_FADE_MAX_CELLS; a bulk change snaps). `cell_fading` guards the
+    // per-frame driver task. See `CellFade`.
+    prev_cells: Vec<Vec<char>>,
+    cell_fades: Vec<CellFade>,
+    cell_fading: bool,
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
@@ -387,6 +436,14 @@ impl TerminalView {
             focused_once: false,
             cursor_on: true,
             focused: false,
+            cursor_px: (0.0, 0.0),
+            cursor_cell: (usize::MAX, usize::MAX), // sentinel → first frame snaps
+            cursor_glide_from: (0.0, 0.0),
+            cursor_glide_start: None,
+            cursor_gliding: false,
+            prev_cells: Vec::new(),
+            cell_fades: Vec::new(),
+            cell_fading: false,
             scrollbar_drag: None,
             agent,
             usage: None,
@@ -801,6 +858,13 @@ impl TerminalView {
             return;
         }
 
+        // NOTE: keys the IME is actively composing arrive as `VK_PROCESSKEY` and are
+        // intercepted + routed to the IME by the window subclass (`platform::
+        // install_ime_keyfix`) BEFORE reaching here — so by the time a key hits this
+        // handler the IME does NOT want it (we're not composing, or it's a real
+        // terminal key). That's what lets backspace/enter/arrows be encoded below
+        // without stealing them from a 中文 composition. See platform.rs for the why.
+        //
         // **Plain text keys must NOT be consumed here** — defer them to the IME input
         // handler (no `stop_propagation`, no encode). A single-char `key` with no
         // Ctrl/Alt/Win is a text-producing key; letting it through means gpui runs
@@ -1017,6 +1081,48 @@ impl EntityInputHandler for TerminalView {
     }
 }
 
+/// Ease-out cubic (`1-(1-t)³`): fast start, gentle settle — the natural curve for a
+/// cursor catching up to where you typed. `t` is clamped 0..1 by the caller.
+fn ease_out_cubic(t: f32) -> f32 {
+    let u = 1.0 - t;
+    1.0 - u * u * u
+}
+
+/// Flatten visible runs into a per-column glyph grid for the character-fade diff:
+/// `[row][col] = glyph` (`' '` blank, `'\0'` = a CJK wide char's trailing cell, so the
+/// diff handles it once at the start col). `row_runs` splits wide chars into their own
+/// 2-col runs, so a run is either narrow (1 col/char) or a single wide char.
+fn rows_to_cells(rows: &[Vec<CellRun>], cols: usize) -> Vec<Vec<char>> {
+    rows.iter()
+        .map(|runs| {
+            let mut line = vec![' '; cols];
+            let mut c = 0usize;
+            for run in runs {
+                let mut chars = run.text.chars();
+                if run.cols == 2 && run.text.chars().count() == 1 {
+                    if let Some(ch) = chars.next() {
+                        if c < cols {
+                            line[c] = ch;
+                        }
+                        if c + 1 < cols {
+                            line[c + 1] = '\u{0}';
+                        }
+                    }
+                    c += 2;
+                } else {
+                    for ch in chars {
+                        if c < cols {
+                            line[c] = ch;
+                        }
+                        c += 1;
+                    }
+                }
+            }
+            line
+        })
+        .collect()
+}
+
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused_once {
@@ -1099,6 +1205,118 @@ impl Render for TerminalView {
         // Focused: solid block on the "on" half of the blink; nothing on the "off"
         // half. Unfocused: a steady slim outline (no blink).
         let draw_solid = focused && self.cursor_on;
+
+        // ── Smooth cursor glide (待优化清单 §3.1) ──────────────────────────────
+        // Ease the drawn block toward the target cell instead of teleporting. Only
+        // small same-row moves glide (typing / deleting / local nav); bigger jumps
+        // (line wrap, prompt redraw, screen clear, vertical nav) and the first frame
+        // snap. The glyph is already at the target — only the block trails, so input
+        // reads as fluid. `spawn_cursor_glide` notifies each frame during the ease.
+        let target_px = (
+            BODY_PAD_X + cur_col as f32 * self.cell_width,
+            BODY_PAD_Y + cur_row as f32 * self.line_height,
+        );
+        if (cur_row, cur_col) != self.cursor_cell {
+            let same_row = self.cursor_cell.0 == cur_row;
+            let dcol = cur_col as i64 - self.cursor_cell.1 as i64;
+            let first = self.cursor_cell == (usize::MAX, usize::MAX);
+            let small = same_row && dcol.abs() <= CURSOR_GLIDE_MAX_COLS;
+            self.cursor_cell = (cur_row, cur_col);
+            if focused && small && !first {
+                self.cursor_glide_from = self.cursor_px; // glide from where it is now
+                self.cursor_glide_start = Some(Instant::now());
+                self.spawn_cursor_glide(cx);
+            } else {
+                self.cursor_glide_start = None; // snap
+                self.cursor_px = target_px;
+            }
+        }
+        let (cur_x, cur_y) = if let Some(start) = self.cursor_glide_start {
+            let t = (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+            let e = ease_out_cubic(t);
+            if t >= 1.0 {
+                self.cursor_glide_start = None;
+            }
+            (
+                self.cursor_glide_from.0 + (target_px.0 - self.cursor_glide_from.0) * e,
+                self.cursor_glide_from.1 + (target_px.1 - self.cursor_glide_from.1) * e,
+            )
+        } else {
+            target_px
+        };
+        self.cursor_px = (cur_x, cur_y);
+
+        // ── Character fade-in / fade-out (待优化清单 §3.1) ─────────────────────
+        // Diff this frame's visible glyph grid against the last to spot appeared /
+        // removed cells, then fade them (overlay only — no run-splitting, so the perf
+        // budget is safe). A change touching more than CHAR_FADE_MAX_CELLS cells is a
+        // bulk update (paste / clear / scroll / program output) → snap (no fade). Only
+        // the focused pane runs this (typing happens focused; a background pane's output
+        // would otherwise diff every frame for nothing).
+        if focused {
+            let cur_cells = rows_to_cells(&rows, self.size.cols);
+            let now = Instant::now();
+            let mut fresh: Vec<CellFade> = Vec::new();
+            let mut bulk = false;
+            'diff: for (r, line) in cur_cells.iter().enumerate() {
+                let prev_row = self.prev_cells.get(r);
+                for (c, &cur) in line.iter().enumerate() {
+                    if cur == '\u{0}' {
+                        continue; // wide-char trailing filler — handled at its start col
+                    }
+                    let prev = prev_row.and_then(|pr| pr.get(c).copied()).unwrap_or(' ');
+                    if cur == prev {
+                        continue;
+                    }
+                    if cur != ' ' {
+                        // appeared (blank→glyph) or changed (x→y): fade the new glyph in.
+                        let cols = if line.get(c + 1) == Some(&'\u{0}') { 2 } else { 1 };
+                        fresh.push(CellFade { row: r, col: c, ch: cur, cols, fade_in: true, start: now });
+                    } else if prev != '\u{0}' {
+                        // removed (glyph→blank): fade a ghost of the old glyph out.
+                        let cols = if prev_row.and_then(|pr| pr.get(c + 1).copied()) == Some('\u{0}') { 2 } else { 1 };
+                        fresh.push(CellFade { row: r, col: c, ch: prev, cols, fade_in: false, start: now });
+                    }
+                    if fresh.len() > CHAR_FADE_MAX_CELLS {
+                        bulk = true;
+                        break 'diff;
+                    }
+                }
+            }
+            if bulk {
+                self.cell_fades.clear(); // bulk change → snap; drop in-flight fades
+            } else if !fresh.is_empty() {
+                self.cell_fades.extend(fresh);
+                self.spawn_cell_fade(cx);
+            }
+            self.prev_cells = cur_cells;
+        } else if !self.prev_cells.is_empty() {
+            self.prev_cells.clear(); // returning focus re-snaps — no spurious fades
+        }
+        self.cell_fades.retain(|f| f.start.elapsed().as_millis() < CHAR_FADE_MS as u128);
+        // Build the fade overlays: fade-in = a bg-colored cover ramping to transparent
+        // (reveals the glyph drawn in the grid underneath); fade-out = the old glyph as
+        // a ghost ramping away over the now-blank cell.
+        let fade_overlays: Vec<_> = self
+            .cell_fades
+            .iter()
+            .map(|f| {
+                let t = (f.start.elapsed().as_secs_f32() / (CHAR_FADE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+                let d = div()
+                    .absolute()
+                    .left(px(BODY_PAD_X + f.col as f32 * self.cell_width))
+                    .top(px(BODY_PAD_Y + f.row as f32 * self.line_height))
+                    .w(px(f.cols as f32 * self.cell_width))
+                    .h(px(self.line_height))
+                    .overflow_hidden();
+                if f.fade_in {
+                    d.bg(cola(bg, 1.0 - t)) // cover ramps away → glyph emerges
+                } else {
+                    d.text_color(cola(fg, 1.0 - t)).child(SharedString::from(f.ch.to_string()))
+                }
+            })
+            .collect();
+
         // The glyph under the cursor (≈1 col/char; cursor-on-wide-char is rare) so the
         // focused block can redraw it in the background color = a crisp **inverse**
         // cursor instead of a muddy translucent overlay. Whitespace → just the block.
@@ -1121,9 +1339,10 @@ impl Render for TerminalView {
             .then(|| {
                 let base = div()
                     .absolute()
-                    // +BODY_PAD: the grid is inset from the content edge (mockup .body)
-                    .left(px(BODY_PAD_X + cur_col as f32 * self.cell_width))
-                    .top(px(BODY_PAD_Y + cur_row as f32 * self.line_height))
+                    // Glided position (eases toward the target cell; see above). Already
+                    // includes BODY_PAD — the grid is inset from the content edge.
+                    .left(px(cur_x))
+                    .top(px(cur_y))
                     .w(px(self.cell_width))
                     .h(px(self.line_height))
                     .rounded(px(2.));
@@ -1270,6 +1489,9 @@ impl Render for TerminalView {
                             }))
                     })),
             )
+            // Character fades (待优化清单 §3.1): above the grid (fade-in covers / fade-out
+            // ghosts), below the cursor so the block stays on top.
+            .children(fade_overlays)
             .when_some(cursor_el, |this, c| this.child(c))
             .when_some(ime_preedit, |this, p| this.child(p))
             .when_some(scrollbar, |this, s| this.child(s))
@@ -1321,6 +1543,40 @@ mod tests {
             .into_iter()
             .next()
             .expect("a profile")
+    }
+
+    fn cellrun(text: &str, cols: usize) -> CellRun {
+        CellRun {
+            text: text.to_string(),
+            fg: Rgb::new(0, 0, 0),
+            bg: Rgb::new(0, 0, 0),
+            bold: false,
+            italic: false,
+            underline: false,
+            cols,
+        }
+    }
+
+    #[test]
+    fn rows_to_cells_maps_narrow_wide_and_blanks() {
+        // "ab" (narrow, 2 cols) + "中" (wide, 2 cols) then padding to 6 cols.
+        let rows = vec![vec![cellrun("ab", 2), cellrun("中", 2)]];
+        let cells = rows_to_cells(&rows, 6);
+        assert_eq!(cells.len(), 1);
+        let line = &cells[0];
+        assert_eq!(line[0], 'a');
+        assert_eq!(line[1], 'b');
+        assert_eq!(line[2], '中'); // wide glyph sits at its start col
+        assert_eq!(line[3], '\u{0}'); // wide trailing filler (diff skips it)
+        assert_eq!(line[4], ' '); // padded blank
+        assert_eq!(line[5], ' ');
+    }
+
+    #[test]
+    fn ease_out_cubic_endpoints_and_shape() {
+        assert!((ease_out_cubic(0.0)).abs() < 1e-6);
+        assert!((ease_out_cubic(1.0) - 1.0).abs() < 1e-6);
+        assert!(ease_out_cubic(0.5) > 0.5); // ease-out: most distance covered early
     }
 
     #[test]

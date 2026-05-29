@@ -24,8 +24,8 @@ use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
 use super::{
-    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
-    RAIL_WATCH_DEBOUNCE_MS,
+    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CHAR_FADE_MS,
+    CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
 impl TerminalView {
@@ -248,6 +248,67 @@ impl TerminalView {
                     }
                     cx.notify();
                     !done
+                });
+                if !matches!(again, Ok(true)) {
+                    break; // done, or view dropped
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Drive the smooth cursor glide (待优化清单 §3.1): notify every frame until the
+    /// ease window elapses, then stop. `cursor_gliding` ensures a single task — a new
+    /// move mid-glide just refreshes `cursor_glide_start` (extends, not stacks). Mirror
+    /// of `spawn_bell_fade`; render reads the elapsed time to interpolate the position.
+    pub(super) fn spawn_cursor_glide(&mut self, cx: &mut Context<Self>) {
+        if self.cursor_gliding {
+            return;
+        }
+        self.cursor_gliding = true;
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                exec.timer(Duration::from_millis(16)).await;
+                let again = this.update(cx, |v, cx| {
+                    let active = v
+                        .cursor_glide_start
+                        .map(|t| t.elapsed() < Duration::from_millis(CURSOR_GLIDE_MS))
+                        .unwrap_or(false);
+                    if !active {
+                        v.cursor_gliding = false;
+                    }
+                    cx.notify();
+                    active
+                });
+                if !matches!(again, Ok(true)) {
+                    break; // done, or view dropped
+                }
+            }
+        })
+        .detach();
+    }
+
+    /// Drive the character fade (待优化清单 §3.1): notify every frame, pruning expired
+    /// fades, until none remain. `cell_fading` guards against spawning more than one.
+    pub(super) fn spawn_cell_fade(&mut self, cx: &mut Context<Self>) {
+        if self.cell_fading {
+            return;
+        }
+        self.cell_fading = true;
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            loop {
+                exec.timer(Duration::from_millis(16)).await;
+                let again = this.update(cx, |v, cx| {
+                    v.cell_fades
+                        .retain(|f| f.start.elapsed() < Duration::from_millis(CHAR_FADE_MS));
+                    let active = !v.cell_fades.is_empty();
+                    if !active {
+                        v.cell_fading = false;
+                    }
+                    cx.notify();
+                    active
                 });
                 if !matches!(again, Ok(true)) {
                     break; // done, or view dropped

@@ -13,6 +13,30 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 中文输入根治(VK_PROCESSKEY 路由)+ 打字光标平滑滑动 / 字符淡化(2026-05-29)
+
+> 前几轮在 `on_key` 的「放行集」里反复横跳(空格放行、退格放行又改回编码)其实是**打地鼠**:gpui 0.2.2 走旧
+> IMM32、判定合成只认 `GCS_COMPSTR`(微软拼音从不发),`is_composing` 恒 false → 每键先进 `on_key`,我们只能
+> **猜**该编码还是放行,合成期的退格/回车/方向必然猜错。**WT 走 TSF**(IME 在键到应用前认领合成键)故无此问题。
+> 本轮找到 OS 明示「此键属 IME」的信号 `VK_PROCESSKEY`,从根上路由,终结打地鼠。
+
+### 修复 (Fixed)
+- **中文合成期的退格/回车/方向键不再被终端抢走(`platform::install_ime_keyfix`)**:在 gpui wndproc 之前**子类化
+  窗口**(`SetWindowSubclass`),凡 `WM_KEYDOWN` 且 `wParam == VK_PROCESSKEY`(IME 正在处理此键)就替它
+  `TranslateMessage`(驱动 IME 合成/提交 → `replace_text` 写 PTY)并消费掉,gpui 永不会误编码它;IME 不要的键
+  以真实虚拟键到达、原样透传给 `on_key` 照常编码。**IME 自己逐键决定要不要**,IME 无关、无需 fork gpui。主窗 +
+  Quick Terminal 各装一次。诊断日志:命中 info `routed VK_PROCESSKEY`,每键 raw vk 在 `RUST_LOG=tn::ime=debug`。
+
+### 新增 (Added)
+- **打字/删除时光标平滑滑动(待优化清单 §3.1)**:光标块向目标格 ~90ms `ease_out_cubic` 缓动滑动,不再瞬移。
+  **只对同行小幅移动**(打字/删除/本地导航)滑动;换行/清屏/远跳/首帧贴位,免「甩」过半屏。字形即时出现、只有
+  光标块追上去 → 输入流畅。`CURSOR_GLIDE_MS` 可调感。
+- **字符淡入/淡出(待优化清单 §3.1)**:逐帧 diff 可见网格,新字 ~75ms 淡入(bg 盖层 alpha 1→0 显影)、删字
+  淡出(旧字残影 alpha 1→0)。**纯 overlay 实现(不拆 run)** + **一帧变化超 24 格(批量粘贴/清屏/滚动/程序
+  输出)直接贴位不淡化** → 守住 perf 红线(无逐格 div 爆量)。仅聚焦窗格跑。`CHAR_FADE_MS` 可调感。
+- `spawn_cursor_glide` / `spawn_cell_fade` 逐帧驱动复刻 `spawn_bell_fade`;`rows_to_cells`(宽字符→格)与
+  `ease_out_cubic` 纯函数 headless 单测(tn-ui 58 测)。
+
 ## [Unreleased] — IME 退格删拼音 + 光标贴合中文(2026-05-29)
 
 > `tn.log` 实证:微软拼音**从不发合成串(GCS_COMPSTR)**——`marked_text_range` 恒返回 `None`、`replace_and_mark`
