@@ -22,7 +22,12 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
   触发的**那一刻**(浮层尚未抢焦点)就把分屏目标**快照**进 `split_target`,`split_session` 优先用快照而非事后的
   `focused`——与 `⌃⇧E/D` 读取时机对齐。另加**兜底**:若快照目标已不在活动树中(失效/dummy),回退到第一个叶子并
   `warn`,避免新窗格变成不可见孤儿。诊断:`FOCUSDBG`/`split_session` tracing 打 `active`/`focused_field`/`gpui_focused`,
-  真机复现时可从 `tn.log` 核对焦点是否漂移。
+  真机复现时可从 `tn.log` 核对焦点是否漂移。**`tn.log` 已实锤**:一次「窗格 1 上开新会话」的会话里,启动器浮层期间
+  gpui 焦点掉到了**窗格 0**(`gpui_focused=[0]`)、`focused_field` 被同步逻辑从 1 改写成 0,而快照把 `target` 钉回 1。
+- **根因加固 —— 覆盖层持焦点时冻结 `focused`(`render` 焦点同步跳过)**:上条暴露的病根是「抢焦点的覆盖层
+  (命令面板 / 新会话启动器 / 布局管理器 / Quick Look)开着时,gpui 可能把焦点瞬时甩到第一个叶子,`render` 的焦点
+  同步据此改写 `focused`」。这些覆盖层开着时用户本就不会点窗格 → **同步直接跳过、冻结 `focused`**,从源头杜绝漂移
+  (快照是「保险带」、这道守卫是「背带」)。
 - **`焦点描边 / 新会话分屏基准` 不跟随点击的窗格**:`tabs[active].focused` 只在 `focus_pane`(点窗格外壳)时更新,
   但点击进**终端正文**时 gpui 已把焦点切到该终端(`track_focus`),`focused` 却没跟上 → 焦点描边停在旧窗格、
   「新会话」分屏也以旧窗格为基准。**修**:在 `render` 里把 `tabs[active].focused` **同步成真正持有 gpui 焦点的那个

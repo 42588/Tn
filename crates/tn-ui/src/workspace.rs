@@ -2228,8 +2228,18 @@ impl Render for Workspace {
         // active tab currently holds keyboard focus, that's the selected pane. Fixes
         // the focus border + `新会话` split target tracking the pane you clicked into
         // (clicking a pane focuses its `track_focus` element; this reflects it back).
-        // No-op when an overlay / explorer holds focus (keep the last pane).
-        if !self.tabs[active].welcome {
+        //
+        // BUT skip while a focus-stealing overlay is open: the user can't be clicking
+        // panes then, and gpui can transiently drop the overlay's focus onto the first
+        // leaf (observed in tn.log: a `新会话` launcher session where gpui focus fell to
+        // pane 0 while the user was on pane 1) — letting that rewrite `focused` would
+        // drift the split target. Freezing `focused` under overlays prevents the drift
+        // at its source (the snapshot in `new_session` is the belt; this is suspenders).
+        let overlay_focused = self.palette_open
+            || self.split_launcher_open
+            || self.layout_manager_open
+            || self.quick_look_open;
+        if !overlay_focused && !self.tabs[active].welcome {
             let mut leaves = Vec::new();
             collect_leaves(&self.tabs[active].root, &mut leaves);
             if let Some(id) = leaves.into_iter().find(|id| {
