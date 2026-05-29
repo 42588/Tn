@@ -16,7 +16,7 @@ use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
     AnyElement, App, AppContext, AsyncApp, Context, Entity, FocusHandle, KeyBinding, KeyDownEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Rgba, SharedString,
-    WeakEntity, Window, WindowControlArea,
+    Subscription, WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -25,7 +25,7 @@ use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::terminal_view::{LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
-use crate::welcome::{launch_agent_of, launch_tile_accent, LaunchRequested, WelcomeView};
+use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
 type PaneId = u64;
 
@@ -165,19 +165,6 @@ pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
         });
     }
     profiles
-}
-
-/// Launchable profiles matching the query (case-insensitive substring on name).
-fn launchable_matches<'a>(
-    profiles: &'a [tn_config::Profile],
-    query: &str,
-) -> Vec<&'a tn_config::Profile> {
-    let q = query.to_ascii_lowercase();
-    profiles
-        .iter()
-        .filter(|p| is_launchable(p))
-        .filter(|p| q.is_empty() || p.name.to_ascii_lowercase().contains(&q))
-        .collect()
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -503,6 +490,12 @@ pub struct Workspace {
     pane_specs: HashMap<PaneId, LaunchSpec>,
     next_id: PaneId,
     focused_init: bool,
+    /// Re-park focus when it's orphaned (dropped to `None`): `on_focus_out` on the
+    /// root anchor fires whenever focus leaves *everything*, so we re-grab it and the
+    /// `Workspace` shortcuts stay live (fixes "失焦后唤不出命令面板" for non-click
+    /// orphans — overlay closes, programmatic blur — that the in-render parking missed).
+    /// Registered once on first render; the `Subscription` lives as long as the view.
+    focus_out_sub: Option<Subscription>,
     /// The main window opens hidden; revealed after the first frame paints (avoids
     /// the pre-paint transparent flash). Tracks the one-shot reveal.
     revealed: bool,
@@ -532,17 +525,20 @@ pub struct Workspace {
     /// blurring the pane), `render` parks focus here so `key_context("Workspace")`
     /// stays live and `Ctrl+Shift+P` (and the other shortcuts) keep working.
     ///
-    /// This handle is `track_focus`'d onto the **body** (the work area), NOT the
-    /// window root: a `track_focus` element registers a focus-on-click listener that
-    /// calls `prevent_default`, and the Windows NC-drag is suppressed when the
-    /// mouse-down at the titlebar is default-prevented — so a window-spanning
-    /// `track_focus` root silently kills titlebar dragging (踩过的坑). The body sits
-    /// below the titlebar, so its focus-on-click never covers the drag region.
+    /// This handle is `track_focus`'d onto the **window root**, so clicking *anywhere*
+    /// re-anchors focus under the `Workspace` context (fixing "失去焦点后唤不出命令面板"
+    /// when a click lands on the status bar / a closed overlay's spot). A `track_focus`
+    /// element registers a focus-on-click listener that calls `prevent_default`, and the
+    /// Windows NC-drag is suppressed when the titlebar mouse-down is default-prevented —
+    /// which is why the titlebar drag spacer is `.occlude()`d (BlockMouse): its
+    /// mouse-down never reaches the root's focus-on-click, so the drag survives (踩过的坑).
     workspace_focus: FocusHandle,
     /// Command palette (Ctrl+Shift+P) state.
     palette_open: bool,
     palette_query: String,
     palette_sel: usize,
+    /// Within the palette, drilled into the WSL group's distros.
+    palette_wsl: bool,
     palette_focus: FocusHandle,
     /// `新会话` split launcher (app menu): pick a split direction, then a profile,
     /// then open the session in a new split. `split_dir = None` = phase 1 (picking
@@ -551,6 +547,8 @@ pub struct Workspace {
     split_launcher_open: bool,
     split_dir: Option<SplitDir>,
     split_sel: usize,
+    /// Within phase 2, drilled into the WSL group's distros.
+    split_wsl: bool,
     split_focus: FocusHandle,
     split_needs_focus: bool,
     /// Pane to split on, snapshotted when `新会话` is invoked (before the launcher
@@ -645,6 +643,7 @@ impl Workspace {
             pane_specs: HashMap::new(),
             next_id: 0,
             focused_init: false,
+            focus_out_sub: None,
             revealed: false,
             config,
             explorer,
@@ -659,11 +658,13 @@ impl Workspace {
             palette_open: false,
             palette_query: String::new(),
             palette_sel: 0,
+            palette_wsl: false,
             palette_focus: cx.focus_handle(),
             split_launcher_open: false,
             split_target: None,
             split_dir: None,
             split_sel: 0,
+            split_wsl: false,
             split_focus: cx.focus_handle(),
             split_needs_focus: false,
             layouts: Layouts::load(),
@@ -949,6 +950,7 @@ impl Workspace {
         if self.palette_open {
             self.palette_query.clear();
             self.palette_sel = 0;
+            self.palette_wsl = false;
             self.palette_needs_focus = true; // focus in render (see field doc)
         } else {
             self.refocus_active(window, cx);
@@ -989,20 +991,33 @@ impl Workspace {
         }
     }
 
-    fn palette_match_count(&self) -> usize {
-        launchable_matches(&self.launch_profiles, &self.palette_query).len()
+    /// The palette's current rows (aggregated + drill-resolved + query-filtered).
+    fn palette_rows(&self) -> Vec<LaunchRow> {
+        launch_rows(&self.launch_profiles, self.palette_wsl, &self.palette_query)
     }
 
-    /// Palette keystrokes: type to filter, ↑↓ to select, Enter launches, Esc closes.
+    fn palette_match_count(&self) -> usize {
+        self.palette_rows().len()
+    }
+
+    /// Palette keystrokes: type to filter, ↑↓ to select, Enter activates, Esc backs out
+    /// of the WSL sub-list (or closes the palette).
     fn on_palette_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let m = &ev.keystroke.modifiers;
         match ev.keystroke.key.as_str() {
             "escape" => {
-                self.palette_open = false;
-                self.refocus_active(window, cx);
-                cx.notify();
+                if self.palette_wsl {
+                    self.palette_wsl = false; // back to the root list
+                    self.palette_query.clear();
+                    self.palette_sel = 0;
+                    cx.notify();
+                } else {
+                    self.palette_open = false;
+                    self.refocus_active(window, cx);
+                    cx.notify();
+                }
             }
-            "enter" => self.launch_selected(window, cx),
+            "enter" => self.activate_palette_sel(window, cx),
             "backspace" => {
                 self.palette_query.pop();
                 self.palette_sel = 0;
@@ -1033,26 +1048,39 @@ impl Workspace {
         }
     }
 
-    /// Launch the selected profile in a new tab, then close the palette.
-    fn launch_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let spec = {
-            let matches = launchable_matches(&self.launch_profiles, &self.palette_query);
-            matches
-                .get(self.palette_sel)
-                .and_then(|p| LaunchSpec::from_profile(p))
+    /// Activate the selected palette row: launch a profile (new tab), drill into the WSL
+    /// sub-list (or launch the lone distro), or no-op on the parked SSH placeholder.
+    fn activate_palette_sel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.palette_rows();
+        let Some(row) = rows.get(self.palette_sel) else { return };
+        match *row {
+            LaunchRow::Profile(i) => self.launch_profile_in_tab(i, window, cx),
+            LaunchRow::DrillWsl => {
+                let distros = wsl_distros(&self.launch_profiles);
+                if distros.len() == 1 {
+                    self.launch_profile_in_tab(distros[0], window, cx);
+                } else {
+                    self.palette_wsl = true;
+                    self.palette_query.clear(); // filter the distros fresh
+                    self.palette_sel = 0;
+                    cx.notify();
+                }
+            }
+            LaunchRow::SshSoon => {} // parked placeholder — no-op
+        }
+    }
+
+    /// Launch the profile at `idx` in a new tab, then close the palette.
+    fn launch_profile_in_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(spec) = self.launch_profiles.get(idx).and_then(LaunchSpec::from_profile) else {
+            return;
         };
-        let Some(spec) = spec else { return };
         self.palette_open = false;
+        self.palette_wsl = false;
         let id = self.spawn_pane_with(cx, spec);
         self.tabs.push(Tab::panes(Node::Leaf(id), id));
         self.active = self.tabs.len() - 1;
         self.focus_pane(id, window, cx);
-    }
-
-    /// Launch the profile at `idx` (mouse click on a palette row).
-    fn launch_index(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        self.palette_sel = idx;
-        self.launch_selected(window, cx);
     }
 
     fn new_tab(&mut self, _: &NewTab, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1687,10 +1715,29 @@ impl Workspace {
         let t = &self.config.theme;
         let ui = &t.ui;
         let mono = SharedString::from(self.config.font().family.clone());
-        let matches = launchable_matches(&self.launch_profiles, &self.palette_query);
-        let sel = self.palette_sel.min(matches.len().saturating_sub(1));
+        let rows = self.palette_rows();
+        let sel = self.palette_sel.min(rows.len().saturating_sub(1));
 
-        // ── .pinput: term icon + query/placeholder + caret (mockup .pinput) ──
+        // ── .pinput: leading icon (term, or a clickable ‹ back when drilled into WSL) +
+        // query / placeholder + caret (mockup .pinput) ──
+        let placeholder = if self.palette_wsl { "WSL 发行版 / 搜索…" } else { "启动会话 / 搜索…" };
+        let lead = if self.palette_wsl {
+            div()
+                .rounded(px(6.))
+                .hover(|s| s.bg(rgba(INSET)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        this.palette_wsl = false; // ‹ back to the root list
+                        this.palette_query.clear();
+                        this.palette_sel = 0;
+                        cx.notify();
+                    }),
+                )
+                .child(icon("chev-l", 16., ui.muted))
+        } else {
+            div().child(icon("term", 16., ui.muted)) // .pinput .i 16 muted
+        };
         let input = div()
             .flex()
             .flex_row()
@@ -1699,18 +1746,40 @@ impl Workspace {
             .px(px(16.)) // mockup .pinput padding 13px 16px
             .py(px(13.))
             .text_size(px(14.)) // mockup .pinput font-size 14
-            .child(icon("term", 16., ui.muted)) // .pinput .i 16 muted
-            .child(if self.palette_query.is_empty() {
-                div().text_color(col(ui.muted)).child(SharedString::from("启动会话 / 搜索…"))
-            } else {
-                div().text_color(col(ui.foreground)).child(SharedString::from(self.palette_query.clone()))
-            })
-            .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))); // .ph caret
+            .child(lead)
+            .child(
+                // query + caret (AT the insertion point) + placeholder-when-empty, so the
+                // caret sits where text goes (start when empty), not floating after the hint.
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .when(!self.palette_query.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(self.palette_query.clone())),
+                        )
+                    })
+                    .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
+                    .when(self.palette_query.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .ml(px(2.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(placeholder)),
+                        )
+                    }),
+            );
 
-        let rows = matches.iter().enumerate().map(|(i, p)| {
+        let row_divs = rows.iter().enumerate().map(|(i, row)| {
             let is_sel = i == sel;
-            let dot = launch_tile_accent(t, p, launch_agent_of(p)); // identity color = tiles/.dot
-            let hint = p.command.clone().unwrap_or_default();
+            let card = row_card(t, &self.launch_profiles, row); // identity = tiles/.dot
+            // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
+            let meta = match row {
+                LaunchRow::Profile(pi) => self.launch_profiles[*pi].command.clone().unwrap_or_default(),
+                _ => card.sub.clone(),
+            };
             div()
                 .flex()
                 .flex_row()
@@ -1723,15 +1792,18 @@ impl Workspace {
                 .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(move |this, _e, w, cx| this.launch_index(i, w, cx)),
+                    cx.listener(move |this, _e, w, cx| {
+                        this.palette_sel = i;
+                        this.activate_palette_sel(w, cx);
+                    }),
                 )
-                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot))) // .dot 7px
+                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(card.accent))) // .dot 7px
                 .child(
                     div()
                         .text_size(px(13.)) // mockup .prow font-size 13
                         // .prow color = fg-dim(#A6AFD4, 无 token) → 选中 fg
                         .text_color(if is_sel { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
-                        .child(SharedString::from(p.name.clone())),
+                        .child(SharedString::from(card.name)),
                 )
                 .child(div().flex_1())
                 .child(
@@ -1739,7 +1811,7 @@ impl Workspace {
                         .font_family(mono.clone()) // mockup .meta font mono
                         .text_size(px(11.)) // .meta 11
                         .text_color(gpui::rgb(0x474E72)) // .meta faint(无 token)
-                        .child(SharedString::from(hint)),
+                        .child(SharedString::from(meta)),
                 )
         });
 
@@ -1760,7 +1832,7 @@ impl Workspace {
                 ))
                 .child(input)
                 .child(div().h(px(1.)).bg(rgba(0xffffff0f))) // .pinput border-bottom 白 .06
-                .child(div().flex().flex_col().p(px(6.)).gap(px(2.)).children(rows)), // .plist padding 6
+                .child(div().flex().flex_col().p(px(6.)).gap(px(2.)).children(row_divs)), // .plist padding 6
             vec![soft_shadow(40.0, 120.0, -30.0, 0.9)], // mockup .palette box-shadow
         );
 
@@ -1792,6 +1864,7 @@ impl Workspace {
         self.split_launcher_open = true;
         self.split_dir = None;
         self.split_sel = 0;
+        self.split_wsl = false;
         self.split_needs_focus = true;
         cx.notify();
     }
@@ -1845,33 +1918,65 @@ impl Workspace {
                 }
             }
             Some(dir) => {
-                let n = self.launch_profiles.len();
+                let n = self.split_rows().len();
                 match key {
                     "up" => {
                         self.split_sel = self.split_sel.saturating_sub(1);
                         cx.notify();
                     }
                     "down" => {
-                        if self.split_sel + 1 < n {
-                            self.split_sel += 1;
+                        if n > 0 {
+                            self.split_sel = (self.split_sel + 1).min(n - 1);
                         }
                         cx.notify();
                     }
-                    "enter" => {
-                        if let Some(spec) =
-                            self.launch_profiles.get(self.split_sel).and_then(LaunchSpec::from_profile)
-                        {
-                            self.split_launcher_open = false;
-                            self.split_session(dir, spec, window, cx);
-                        }
-                    }
+                    "enter" => self.activate_split_sel(dir, window, cx),
                     "escape" => {
-                        self.split_dir = None; // back to direction picking
+                        if self.split_wsl {
+                            self.split_wsl = false; // back to phase-2 root
+                            self.split_sel = 0;
+                        } else {
+                            self.split_dir = None; // back to direction picking
+                        }
                         cx.notify();
                     }
                     _ => {}
                 }
             }
+        }
+    }
+
+    /// Phase-2 rows: the aggregated launchers (profiles + WSL card + SSH placeholder),
+    /// or — when drilled — the WSL distros. No query (split launcher is arrow-driven).
+    fn split_rows(&self) -> Vec<LaunchRow> {
+        launch_rows(&self.launch_profiles, self.split_wsl, "")
+    }
+
+    /// Activate the selected phase-2 row: split + launch a profile, drill into the WSL
+    /// distros (or split the lone one), or no-op on the parked SSH placeholder.
+    fn activate_split_sel(&mut self, dir: SplitDir, window: &mut Window, cx: &mut Context<Self>) {
+        let rows = self.split_rows();
+        let Some(row) = rows.get(self.split_sel) else { return };
+        let launch = |this: &mut Self, idx: usize, window: &mut Window, cx: &mut Context<Self>| {
+            if let Some(spec) = this.launch_profiles.get(idx).and_then(LaunchSpec::from_profile) {
+                this.split_launcher_open = false;
+                this.split_wsl = false;
+                this.split_session(dir, spec, window, cx);
+            }
+        };
+        match *row {
+            LaunchRow::Profile(i) => launch(self, i, window, cx),
+            LaunchRow::DrillWsl => {
+                let distros = wsl_distros(&self.launch_profiles);
+                if distros.len() == 1 {
+                    launch(self, distros[0], window, cx);
+                } else {
+                    self.split_wsl = true;
+                    self.split_sel = 0;
+                    cx.notify();
+                }
+            }
+            LaunchRow::SshSoon => {} // parked placeholder — no-op
         }
     }
 
@@ -1936,12 +2041,14 @@ impl Workspace {
                     .child(div().flex().flex_row().gap(px(6.)).child(dir_tile(SplitDir::Left)).child(center).child(dir_tile(SplitDir::Right)))
                     .child(div().flex().flex_row().gap(px(6.)).child(spacer()).child(dir_tile(SplitDir::Down)).child(spacer()))
             }
-            // ── phase 2: pick the launcher profile ──
-            Some(_) => {
-                let sel = self.split_sel.min(self.launch_profiles.len().saturating_sub(1));
-                let rows = self.launch_profiles.iter().enumerate().map(|(i, p)| {
+            // ── phase 2: pick the launcher (aggregated: profiles + WSL card + SSH;
+            // drilling into WSL swaps in the distros) ──
+            Some(dir) => {
+                let rows = self.split_rows();
+                let sel = self.split_sel.min(rows.len().saturating_sub(1));
+                let row_divs = rows.iter().enumerate().map(|(i, row)| {
                     let is_sel = i == sel;
-                    let dot = p.accent.unwrap_or(t.agents.claude);
+                    let card = row_card(t, &self.launch_profiles, row);
                     div()
                         .flex()
                         .flex_row()
@@ -1956,36 +2063,33 @@ impl Workspace {
                             MouseButton::Left,
                             cx.listener(move |this, _e, w, cx| {
                                 this.split_sel = i;
-                                if let Some(dir) = this.split_dir {
-                                    if let Some(spec) =
-                                        this.launch_profiles.get(i).and_then(LaunchSpec::from_profile)
-                                    {
-                                        this.split_launcher_open = false;
-                                        this.split_session(dir, spec, w, cx);
-                                    }
-                                }
+                                this.activate_split_sel(dir, w, cx);
                             }),
                         )
-                        .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot)))
+                        .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(card.accent)))
                         .child(
                             div()
                                 .text_size(px(12.5))
                                 .text_color(col(ui.foreground))
-                                .child(SharedString::from(p.name.clone())),
+                                .child(SharedString::from(card.name)),
                         )
                 });
-                div().flex().flex_col().p_1().gap_1().children(rows)
+                div().flex().flex_col().p_1().gap_1().children(row_divs)
             }
         };
 
-        let (title, hint) = match self.split_dir {
-            None => ("新会话 · 选择分屏位置", "方向键 / 点击选择 · Esc 取消"),
-            Some(d) => match d {
-                SplitDir::Left => ("新会话 · 左侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                SplitDir::Right => ("新会话 · 右侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                SplitDir::Up => ("新会话 · 上方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                SplitDir::Down => ("新会话 · 下方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-            },
+        let (title, hint) = if self.split_wsl {
+            ("新会话 · 选择 WSL 发行版", "↑↓ 选择 · Enter 启动 · Esc 返回")
+        } else {
+            match self.split_dir {
+                None => ("新会话 · 选择分屏位置", "方向键 / 点击选择 · Esc 取消"),
+                Some(d) => match d {
+                    SplitDir::Left => ("新会话 · 左侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                    SplitDir::Right => ("新会话 · 右侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                    SplitDir::Up => ("新会话 · 上方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                    SplitDir::Down => ("新会话 · 下方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                },
+            }
         };
 
         let panel = shadowed(
@@ -2229,6 +2333,21 @@ impl Render for Workspace {
                 view.read(cx).focus_handle().focus(window);
             }
         }
+        // Re-park focus when it's orphaned. `workspace_focus` is `track_focus`'d on the
+        // ROOT, so `on_focus_out` for it fires exactly when focus leaves *everything*
+        // (drops to `None`) — any orphan (overlay close, programmatic blur, a click that
+        // blurred without re-anchoring) — at which point we re-grab it so the
+        // `key_context("Workspace")` shortcuts (Ctrl+Shift+P …) stay dispatchable. No
+        // loop: re-focusing is a focus-IN, not a focus-out; guarded to the active window
+        // so Alt-Tab away doesn't yank focus back. Registered once (needs `&mut Window`).
+        if self.focus_out_sub.is_none() {
+            let anchor = self.workspace_focus.clone();
+            self.focus_out_sub = Some(window.on_focus_out(&self.workspace_focus, cx, move |_ev, window, _cx| {
+                if window.is_window_active() {
+                    anchor.focus(window);
+                }
+            }));
+        }
         // Reveal the window once, after this first frame is built (the window was
         // opened hidden). Reading the HWND here is read-only (safe); the actual
         // `ShowWindow` runs in a spawned task *outside* this update borrow — calling
@@ -2251,18 +2370,25 @@ impl Render for Workspace {
                 }
             }
         }
-        // Focus the palette overlay here (its track_focus element exists this
-        // frame), so ↑↓/Enter/Esc reach it instead of the terminal underneath.
-        if self.palette_open && self.palette_needs_focus {
+        // Keep the open overlay focused so its keys (↑↓/Enter/Esc/typing) land on it,
+        // not the terminal underneath. Re-asserting **every render while open** (not a
+        // one-shot on open) is the fix for "焦点漏给底层 shell": the single `*_needs_focus`
+        // grab sometimes failed to land on the first frame (踩过的坑). `focus()` is
+        // idempotent — it early-returns when already focused — so this can't loop; the
+        // `_needs_focus` flag is still consulted so the very first frame always grabs.
+        if self.palette_open && (self.palette_needs_focus || !self.palette_focus.is_focused(window)) {
             self.palette_needs_focus = false;
             self.palette_focus.focus(window);
         }
-        // Same for the 新会话 split launcher (focus its overlay so arrows/Enter land).
-        if self.split_launcher_open && self.split_needs_focus {
+        if self.split_launcher_open
+            && (self.split_needs_focus || !self.split_focus.is_focused(window))
+        {
             self.split_needs_focus = false;
             self.split_focus.focus(window);
         }
-        if self.layout_manager_open && self.layout_needs_focus {
+        if self.layout_manager_open
+            && (self.layout_needs_focus || !self.layout_focus.is_focused(window))
+        {
             self.layout_needs_focus = false;
             self.layout_focus.focus(window);
         }
@@ -2551,7 +2677,17 @@ impl Render for Workspace {
             .child(brand)
             .child(tabs)
             // A flexible draggable spacer fills the gap between tabs and controls.
-            .child(div().flex_1().h_full().window_control_area(WindowControlArea::Drag))
+            // `.occlude()` (BlockMouse) so its mouse-down never reaches the root's
+            // focus-on-click (track_focus) — that calls `prevent_default`, which would
+            // consume the NC click and kill the OS window drag (踩过的坑). The
+            // window_control_area hit-test still sees the occluding hitbox → HTCAPTION.
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .occlude()
+                    .window_control_area(WindowControlArea::Drag),
+            )
             .child(controls);
 
         // Both side panels are clean panes (mockup .sidebar): no wrapper bars.
@@ -2561,10 +2697,6 @@ impl Render for Workspace {
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
-            // Focus anchor (see `workspace_focus` doc): track_focus lives HERE, on the
-            // work area below the titlebar — never on the window root — so its
-            // focus-on-click `prevent_default` can't swallow the titlebar's NC drag.
-            .track_focus(&self.workspace_focus)
             // No overflow_hidden (mockup .work doesn't clip): panes clip their own
             // content + min_h 0 bounds them, so dropping it lets each pane's drop
             // shadow bleed into the gaps and through the translucent status bar —
@@ -2647,8 +2779,12 @@ impl Render for Workspace {
                         .top(px(24.)) // 70 − 46
                         .bottom(px(30.)) // 60 − 30
                         .left(px(left - scrim_left))
-                        .right(px(64.))
-                        .max_w(px(880.))
+                        // Relative right margin (was a fixed `right(64) + max_w(880)`). The
+                        // absolute cap froze the width, so on a maximized window the panel
+                        // stranded against the left with a big empty right (用户反馈失衡).
+                        // ~7% of the body ≈ the default 64px gap, but now scales with the
+                        // window so the viewer/editor keeps its proportion at any size.
+                        .right(relative(0.07))
                         .child(self.quick_look.clone()),
                 )
         });
@@ -2659,6 +2795,12 @@ impl Render for Workspace {
         let app_menu = self.render_app_menu(cx);
 
         let root = div()
+            // Full-window focus anchor: clicking anywhere (except the panes + the
+            // occluded titlebar drag spacer, which handle their own focus) parks focus
+            // here, so the `key_context("Workspace")` shortcuts (Ctrl+Shift+P …) always
+            // dispatch even when no pane is focused. Safe on the root because the drag
+            // spacer is `.occlude()`d — this focus-on-click can't swallow the NC drag.
+            .track_focus(&self.workspace_focus)
             .key_context("Workspace")
             .on_action(cx.listener(Self::new_tab))
             .on_action(cx.listener(Self::split_right))

@@ -13,6 +13,31 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 启动卡聚合(WSL 一卡 / SSH 占位)+ 失焦重锚 + 速览相对宽(2026-05-30)
+
+> 四个启动页(欢迎页 / Quick Terminal / 命令面板 / 新会话分屏)统一:发现的 WSL 发行版折成**一张 WSL 卡**
+> (点开钻取选发行版、只有 1 个直接起),末尾一张 **SSH 占位卡**(后端 parked,点了 no-op),**agents
+> (Claude/Codex)排在最前**。共享聚合层 `welcome::launch_entries` / `launch_rows`(headless 单测)。
+
+### 新增 (Added)
+- **启动卡聚合 + WSL 钻取 + SSH 占位**(四个启动页统一):`launch_entries`(profiles → 卡:agents 优先 → shell →
+  WSL 折一张 → SSH 占位)+ `launch_rows`(命令面板/分屏用的扁平可搜索行,按当前层过滤;WSL 卡在打发行版名时也不消失)。
+  **欢迎页 / Quick Terminal 两行排版**(agents 上、PowerShell/WSL/SSH 下);**命令面板 / 新会话**列表(agents 在前 +
+  WSL 钻取 + SSH 占位)。点 WSL 卡 → 发行版二级选择器(`‹` 标题/Esc 返回),**只有 1 个发行版直接启动**。新增图标 `chev-l`。
+
+### 修复 (Fixed)
+- **失焦后唤不出命令面板**(三层):焦点锚点 `track_focus` 放**窗口根**(整窗,点哪儿都重锚)+ 标题栏拖拽条 `.occlude()`
+  (保住 NC 拖窗)+ `on_focus_out` 在焦点掉成 `None` 时立即重锚(覆盖关浮层/程序性失焦等非点击失焦)。详见踩坑。
+- **命令面板焦点 / 光标位置**:浮层聚焦改「开着且未聚焦每帧重抢」(幂等、不循环;一次性首帧偶尔没落上 → 键漏给底层
+  shell);输入光标移到**插入点**(空时在最前,不再飘在占位文字「搜索…」之后)。
+- **Quick Terminal 启动器底部提示被裁**:`card_height` 按中文行高(比 ASCII 高)调宽,两行排版下余量由 `flex_1` 吸收。
+- **文件速览/编辑器最大化失衡**:浮层右边距从绝对 `right(64)+max_w(880)` 改**相对** `right(relative(0.07))` →
+  随窗口同比例缩放,默认观感不变,放大时不再卡死 880 缩在左边。
+
+### 未完成 (TODO)
+- **命令面板中文搜索**:面板还没接 IME `EntityInputHandler`(同终端「打中文」那套:合成态 + 提交进 query + canvas
+  注册 `handle_input` + `on_palette_key` 放行可打印键),目前只能搜英文。parked 待做。
+
 ## [Unreleased] — 中文输入根治(VK_PROCESSKEY 路由)+ 打字光标平滑滑动 / 字符淡化(2026-05-29)
 
 > 前几轮在 `on_key` 的「放行集」里反复横跳(空格放行、退格放行又改回编码)其实是**打地鼠**:gpui 0.2.2 走旧

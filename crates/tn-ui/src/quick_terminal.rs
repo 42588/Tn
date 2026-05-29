@@ -31,7 +31,10 @@ use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 use crate::platform;
 use crate::style::{col, cola, icon, specular_top, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
 use crate::terminal_view::{LaunchSpec, ProcessExited, TerminalView, UsageUpdated};
-use crate::welcome::{launch_agent_of, launch_tile_accent, launch_tile_sub};
+use crate::welcome::{
+    launch_agent_of, launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
+    LaunchEntry,
+};
 
 /// Launcher → session cross-fade duration (待优化:手感真机调).
 const TRANSITION_MS: u64 = 190;
@@ -48,6 +51,8 @@ pub struct QuickTerminal {
     /// Launcher overlay state.
     picker_open: bool,
     picker_sel: usize,
+    /// Within the launcher, drilled into the WSL group's distro sub-picker.
+    wsl_drill: bool,
     picker_focus: FocusHandle,
     /// OS window handle, grabbed lazily on first toggle (needs a `&Window`).
     hwnd: Option<isize>,
@@ -67,6 +72,20 @@ pub struct QuickTerminal {
     launch_profiles: Vec<tn_config::Profile>,
 }
 
+/// What a launcher tile does when activated. Built from [`launch_entries`] + the
+/// `wsl_drill` flag so render, keyboard nav, and click all agree on the current view.
+#[derive(Clone, Copy)]
+enum PickerItem {
+    /// Launch the profile at this index into `launch_profiles`.
+    Launch(usize),
+    /// Synthetic fallback when nothing is launchable (default local PowerShell).
+    Pwsh,
+    /// The aggregated WSL card: drill into the distro sub-picker (or launch the lone one).
+    DrillWsl,
+    /// SSH placeholder (parked) — activating is a no-op.
+    SshSoon,
+}
+
 impl QuickTerminal {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let launch_profiles = crate::workspace::discover_profiles(&config);
@@ -75,6 +94,7 @@ impl QuickTerminal {
             term: None,
             picker_open: false,
             picker_sel: 0,
+            wsl_drill: false,
             picker_focus: cx.focus_handle(),
             hwnd: None,
             visible: false,
@@ -87,13 +107,68 @@ impl QuickTerminal {
         }
     }
 
-    /// Launchable profiles (shell / agent / WSL distro) — the launcher's entries.
-    /// Shares the command palette's predicate.
-    fn launchable(&self) -> Vec<&tn_config::Profile> {
-        self.launch_profiles
-            .iter()
-            .filter(|p| crate::workspace::is_launchable(p))
-            .collect()
+    /// Indices (into `launch_profiles`) of all discovered WSL distros, in order.
+    fn wsl_indices(&self) -> Vec<usize> {
+        wsl_distros(&self.launch_profiles)
+    }
+
+    /// The launcher's tiles grouped into visual **rows**: a bare launcher shows agents
+    /// (Claude/Codex) on top and shells + WSL + SSH below (用户要的两行排版); a drill
+    /// shows the WSL distros in one row. Render, card sizing, and keyboard nav all read
+    /// this so `picker_sel` (a flat index across the rows) stays consistent.
+    fn picker_rows(&self) -> Vec<Vec<PickerItem>> {
+        if self.wsl_drill {
+            // Just the distros — back is via the clickable "‹" header or Esc.
+            return vec![self.wsl_indices().into_iter().map(PickerItem::Launch).collect()];
+        }
+        let mut agents = Vec::new();
+        let mut others = Vec::new();
+        for e in launch_entries(&self.launch_profiles) {
+            match e {
+                LaunchEntry::Profile(i) => {
+                    if launch_agent_of(&self.launch_profiles[i]).is_some() {
+                        agents.push(PickerItem::Launch(i)); // Claude / Codex → top row
+                    } else {
+                        others.push(PickerItem::Launch(i)); // pwsh → bottom row
+                    }
+                }
+                LaunchEntry::Wsl(_) => others.push(PickerItem::DrillWsl), // WSL → bottom
+                LaunchEntry::SshSoon => others.push(PickerItem::SshSoon), // SSH → bottom
+            }
+        }
+        // Defensive: nothing launchable (only the SSH placeholder) → offer pwsh.
+        if agents.is_empty() && others.iter().all(|it| matches!(it, PickerItem::SshSoon)) {
+            others.insert(0, PickerItem::Pwsh);
+        }
+        let mut rows = Vec::new();
+        if !agents.is_empty() {
+            rows.push(agents);
+        }
+        if !others.is_empty() {
+            rows.push(others);
+        }
+        rows
+    }
+
+    /// Flat tile list across all rows — `picker_sel` indexes this (for click + activate).
+    fn picker_items(&self) -> Vec<PickerItem> {
+        self.picker_rows().into_iter().flatten().collect()
+    }
+
+    /// The card identity (name / sub / glyph / accent) for a picker tile.
+    fn item_card(&self, item: &PickerItem) -> CardId {
+        let t = &self.config.theme;
+        match item {
+            PickerItem::Launch(i) => profile_card(t, &self.launch_profiles[*i]),
+            PickerItem::Pwsh => CardId {
+                name: "PowerShell".into(),
+                sub: "powershell.exe".into(),
+                glyph: "term",
+                accent: t.ui.accent,
+            },
+            PickerItem::DrillWsl => wsl_card(t, self.wsl_indices().len()),
+            PickerItem::SshSoon => ssh_card(t),
+        }
     }
 
     /// Toggle visibility — the action bound to the global hotkey.
@@ -101,9 +176,10 @@ impl QuickTerminal {
         self.ensure_init(window, cx);
         let reveal = !self.visible;
         if reveal && self.term.is_none() {
-            // Nothing running yet — summon straight into the launcher.
+            // Nothing running yet — summon straight into the launcher (root view).
             self.picker_open = true;
             self.picker_sel = 0;
+            self.wsl_drill = false;
         }
         self.pending_focus = true;
         self.slide(reveal, cx);
@@ -135,29 +211,56 @@ impl QuickTerminal {
         }
     }
 
-    /// Launch the selected launcher entry as the hosted session (replacing any
-    /// previous one — its process is killed by `LocalPty::Drop`), then show it.
-    fn launch_selected(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let entries = self.launchable();
-        // Ephemeral launch: an agent's pwsh host omits `-NoExit`, so exiting the
-        // agent exits the PTY and we fall back to the launcher (below).
-        let spec = if entries.is_empty() {
-            LaunchSpec::pwsh()
-        } else {
-            let sel = self.picker_sel.min(entries.len() - 1);
-            LaunchSpec::from_profile_ephemeral(entries[sel]).unwrap_or_else(LaunchSpec::pwsh)
-        };
+    /// Activate the currently-selected tile: launch a profile, drill into / out of the
+    /// WSL sub-picker, or no-op on the parked SSH placeholder.
+    fn activate_sel(&mut self, cx: &mut Context<Self>) {
+        let items = self.picker_items();
+        let Some(item) = items.get(self.picker_sel) else { return };
+        match *item {
+            PickerItem::Launch(i) => self.launch_profile(i, cx),
+            PickerItem::Pwsh => self.launch_spec(LaunchSpec::pwsh(), cx),
+            PickerItem::DrillWsl => {
+                let distros = self.wsl_indices();
+                if distros.len() == 1 {
+                    self.launch_profile(distros[0], cx); // lone distro → skip the sub-picker
+                } else {
+                    self.wsl_drill = true;
+                    self.picker_sel = 0;
+                    self.resnap(cx); // resize the card to fit the distro list
+                    cx.notify();
+                }
+            }
+            PickerItem::SshSoon => {} // parked placeholder — no-op
+        }
+    }
+
+    /// Launch the profile at `idx` (ephemeral) as the hosted session.
+    fn launch_profile(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let spec = self
+            .launch_profiles
+            .get(idx)
+            .and_then(LaunchSpec::from_profile_ephemeral)
+            .unwrap_or_else(LaunchSpec::pwsh);
+        self.launch_spec(spec, cx);
+    }
+
+    /// Launch `spec` as the hosted session (replacing any previous one — its process is
+    /// killed by `LocalPty::Drop`), grow the card-sized window to the drop-down, fade in.
+    fn launch_spec(&mut self, spec: LaunchSpec, cx: &mut Context<Self>) {
+        // Ephemeral launch: an agent's pwsh host omits `-NoExit`, so exiting the agent
+        // exits the PTY and we fall back to the launcher (the ProcessExited sub below).
         let config = self.config.clone();
         let term = cx.new(|cx| TerminalView::new(cx, config, spec));
         // Repaint when this session's agent usage changes (keeps the ring live).
         cx.subscribe(&term, |_qt, _t, _ev: &UsageUpdated, cx| cx.notify()).detach();
-        // When the session's process exits, return to the launcher (guard against
-        // a stale watcher from a session we've since replaced).
+        // When the session's process exits, return to the launcher (guard against a
+        // stale watcher from a session we've since replaced).
         cx.subscribe(&term, |this, emitter, _ev: &ProcessExited, cx| {
             if this.term.as_ref().map(|t| t.entity_id()) == Some(emitter.entity_id()) {
                 this.term = None;
                 this.picker_open = true;
                 this.picker_sel = 0;
+                this.wsl_drill = false;
                 this.pending_focus = true;
                 this.resnap(cx); // shrink the window back to the compact launcher card
                 cx.notify();
@@ -166,45 +269,70 @@ impl QuickTerminal {
         .detach();
         self.term = Some(term); // replaces any prior session (old one is dropped -> killed)
         self.picker_open = false;
+        self.wsl_drill = false;
         self.pending_focus = true; // focus happens in render
         self.resnap(cx); // grow the card-sized window to the session drop-down
         self.start_transition(cx); // cross-fade the launcher → session
         cx.notify();
     }
 
-    /// Launcher keystrokes: ↑↓←→ select (the tiles are a 4-col grid: ←→ move by one,
-    /// ↑↓ by a row), Enter launch, Esc back (to the running session, or hide the
-    /// window if there's nothing to go back to).
-    fn on_picker_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        const COLS: usize = 4; // mockup .tiles grid-template-columns: repeat(4,1fr)
-        let n = self.launchable().len().max(1); // ≥1 (synthetic pwsh fallback)
+    /// Launcher keystrokes: ←→ walk the flat order, ↑↓ move between the visual rows
+    /// (agents ↔ shells/WSL/SSH) at the same column, Enter activates, Esc backs out of
+    /// the WSL sub-picker (or, at the root, returns to the session / hides the window).
+    fn on_picker_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let lens: Vec<usize> = self.picker_rows().iter().map(|r| r.len()).collect();
+        let n: usize = lens.iter().sum::<usize>().max(1);
+        // Resolve the flat `picker_sel` to its (row, column).
+        let (mut cur_row, mut col, mut acc) = (0usize, 0usize, 0usize);
+        for (ri, &len) in lens.iter().enumerate() {
+            if self.picker_sel < acc + len {
+                cur_row = ri;
+                col = self.picker_sel - acc;
+                break;
+            }
+            acc += len;
+        }
+        let row_start = |ri: usize| lens[..ri].iter().sum::<usize>();
         match ev.keystroke.key.as_str() {
             "escape" => {
-                self.picker_open = false;
-                if self.term.is_some() {
-                    self.pending_focus = true; // back to the terminal
+                if self.wsl_drill {
+                    self.wsl_drill = false; // back to the root launcher
+                    self.picker_sel = 0;
+                    self.resnap(cx);
                     cx.notify();
                 } else {
-                    self.slide(false, cx); // nothing running — just hide
+                    self.picker_open = false;
+                    if self.term.is_some() {
+                        self.pending_focus = true; // back to the terminal
+                        cx.notify();
+                    } else {
+                        self.slide(false, cx); // nothing running — just hide
+                    }
                 }
             }
             "left" => {
                 self.picker_sel = self.picker_sel.saturating_sub(1);
                 cx.notify();
             }
-            "up" => {
-                self.picker_sel = self.picker_sel.saturating_sub(COLS);
-                cx.notify();
-            }
             "right" => {
                 self.picker_sel = (self.picker_sel + 1).min(n - 1);
                 cx.notify();
             }
-            "down" => {
-                self.picker_sel = (self.picker_sel + COLS).min(n - 1);
+            "up" => {
+                if cur_row > 0 {
+                    let tr = cur_row - 1;
+                    self.picker_sel = row_start(tr) + col.min(lens[tr].saturating_sub(1));
+                }
                 cx.notify();
             }
-            "enter" => self.launch_selected(window, cx),
+            "down" => {
+                if cur_row + 1 < lens.len() {
+                    let tr = cur_row + 1;
+                    self.picker_sel = row_start(tr) + col.min(lens[tr].saturating_sub(1));
+                }
+                cx.notify();
+            }
+            "enter" => self.activate_sel(cx),
             _ => {}
         }
     }
@@ -213,10 +341,18 @@ impl QuickTerminal {
     /// The launcher window is sized to exactly this (see [`shown_for`]) so the
     /// transparent window hugs the card — no surrounding window rectangle to peek.
     fn card_height(&self) -> f32 {
-        let n = self.launchable().len().max(1);
-        let rows = n.div_ceil(4) as f32; // 4 tiles per row
-        // lhead(~42) + tiles(pad 28 + rows×110 + gaps) + divider(1) + footer(~40), a hair generous.
-        116.0 + rows * 110.0 + (rows - 1.0) * 11.0
+        // Sum each logical row's wrapped height (4 tiles per visual row).
+        let rows = self
+            .picker_rows()
+            .iter()
+            .map(|r| r.len().max(1).div_ceil(4))
+            .sum::<usize>()
+            .max(1) as f32;
+        // lhead + footer + tiles-padding + divider + border (~126) + each tile row
+        // (~114) + 11px inter-row gaps. Deliberately generous so the bottom hint never
+        // clips (CJK line heights run taller than ASCII estimates); any surplus is
+        // absorbed by the `flex_1` body spacer rather than cutting the footer.
+        126.0 + rows * 114.0 + (rows - 1.0) * 11.0
     }
 
     /// On-screen window rect for the current state: a bare launcher is a **card-sized**
@@ -370,33 +506,42 @@ impl QuickTerminal {
         cx.notify();
     }
 
-    /// The launcher (mockup `.quick` / `.launcher` / `.tiles`): a **centered** frosted
-    /// card on a dim scrim — same shape as the command palette, so its rounded corners
-    /// read clearly against the scrim (a window-filling strip looked unrefined and hid
-    /// the radius). `None` when closed; a launched session fills the window behind it.
+    /// The launcher card (mockup `.quick`): fills the (card-sized, transparent) window
+    /// so its rounded corners float on the desktop. Tiles come from [`picker_items`] —
+    /// the aggregated root (profiles + WSL card + SSH placeholder), or, when drilled, a
+    /// Back tile + the WSL distros. `None` when closed.
     fn render_picker(&self, cx: &mut Context<Self>) -> Option<Div> {
         if !self.picker_open {
             return None;
         }
         let t = &self.config.theme;
         let ui = &t.ui;
-        let entries = self.launchable();
-        let sel = self.picker_sel.min(entries.len().saturating_sub(1));
+        let rows = self.picker_rows();
+        let total: usize = rows.iter().map(|r| r.len()).sum();
+        let sel = self.picker_sel.min(total.saturating_sub(1));
+        // One flex-wrap row per visual row; a running flat index keeps `picker_sel` +
+        // click in step with `picker_items`.
+        let mut row_divs: Vec<Div> = Vec::new();
+        let mut flat = 0usize;
+        for row in &rows {
+            let mut tiles: Vec<Div> = Vec::new();
+            for item in row {
+                let i = flat;
+                flat += 1;
+                let c = self.item_card(item);
+                tiles.push(self.launcher_tile(i, i == sel, c.name, c.sub, c.glyph, c.accent, cx));
+            }
+            row_divs.push(
+                div().flex().flex_row().flex_wrap().justify_center().gap(px(11.)).children(tiles),
+            );
+        }
 
-        // Tiles: each launchable profile, or a single synthetic pwsh fallback.
-        let tiles: Vec<Div> = if entries.is_empty() {
-            vec![self.launcher_tile(0, true, "PowerShell".into(), "powershell.exe".into(), "term", ui.accent, cx)]
+        let head =
+            if self.wsl_drill { "‹ 选择 WSL 发行版" } else { "起一个会话 — Quick Terminal" };
+        let hint = if self.wsl_drill {
+            "↑↓←→ 选择 · Enter 启动 · Esc 返回"
         } else {
-            entries
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let agent = launch_agent_of(p);
-                    let accent = launch_tile_accent(t, p, agent);
-                    let glyph = if agent.is_some() { "spark" } else { "term" };
-                    self.launcher_tile(i, i == sel, p.name.clone(), launch_tile_sub(p, agent), glyph, accent, cx)
-                })
-                .collect()
+            "↑↓←→ 选择 · Enter 启动 · Esc 收起 · 退出当前会话即回到此启动器"
         };
 
         // The card **fills the whole (card-sized, transparent) window** — its rounded
@@ -422,7 +567,7 @@ impl QuickTerminal {
             ))
             .child(specular_top())
             .child(
-                // .lhead:13 / 640 / fg-dim
+                // .lhead:13 / 640 / fg-dim;drilled 时整行可点 = 返回
                 div()
                     .px(px(22.))
                     .pt(px(20.))
@@ -430,33 +575,40 @@ impl QuickTerminal {
                     .text_size(px(13.))
                     .font_weight(FontWeight(640.))
                     .text_color(gpui::rgb(0xA6AFD4)) // fg-dim(无 token)
-                    .child(SharedString::from("起一个会话 — Quick Terminal")),
+                    .when(self.wsl_drill, |d| {
+                        d.hover(|s| s.text_color(col(ui.foreground))).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| {
+                                this.wsl_drill = false;
+                                this.picker_sel = 0;
+                                this.resnap(cx);
+                                cx.notify();
+                            }),
+                        )
+                    })
+                    .child(SharedString::from(head)),
             )
             .child(
-                // .tiles:4 列网格(flex_wrap + 定宽磁贴,居中,>4 自动换行)
+                // .tiles:两行(agents 上 / shells·WSL·SSH 下),每行 4 列定宽磁贴居中、>4 换行
                 div()
                     .px(px(22.))
                     .pt(px(10.))
                     .pb(px(18.))
                     .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .justify_center()
+                    .flex_col()
                     .gap(px(11.))
-                    .children(tiles),
+                    .children(row_divs),
             )
             .child(div().flex_1()) // body 留白:吸收窗口高度余量,提示贴底
             .child(div().h(px(1.)).bg(rgba(0xffffff0d))) // mockup .body border-top 白 .05
             .child(
-                // .body 底部 ephemeral 提示
+                // .body 底部提示(随视图变)
                 div()
                     .px(px(22.))
                     .py(px(12.))
                     .text_size(px(11.5))
                     .text_color(col(ui.muted))
-                    .child(SharedString::from(
-                        "↑↓←→ 选择 · Enter 启动 · Esc 收起 · 退出当前会话即回到此启动器",
-                    )),
+                    .child(SharedString::from(hint)),
             );
 
         Some(card)
@@ -491,9 +643,9 @@ impl QuickTerminal {
             .when(!is_sel, |d| d.border_color(rgba(RIM)).hover(|s| s.bg(rgba(HOVER))))
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _e, w, cx| {
+                cx.listener(move |this, _e, _w, cx| {
                     this.picker_sel = i;
-                    this.launch_selected(w, cx);
+                    this.activate_sel(cx);
                 }),
             )
             .child(
