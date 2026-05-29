@@ -13,6 +13,17 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — IME 提交键(空格)修复:中文候选词可按空格上屏(2026-05-29)
+
+### 修复 (Fixed)
+- **IME 按空格提交候选词(终端 + 编辑器)**:`on_key` 的「纯文本键放行」条件原是 `key.chars().count()==1`,但
+  **空格的 `key` 是 `"space"`(命名键,非单字符)**,于是被 encode+`stop_propagation` → gpui 判定 keydown 已处理、
+  **跳过 `translate_message` → IME 收不到空格 → 无法提交候选词**,只打出一个空格(数字/标点是单字符已放行,故只有空格
+  这类命名键中招——正是「很多输入法自带方式都这样」)。**修**:把 `"space"` 也纳入放行(终端 defer;编辑器移除
+  `"space"` 分支让其落到 `_ => 不处理`)→ 空格流向 IME 提交;非合成态则经 WM_CHAR 正常写一个空格。
+- 加 `tn::ime` 定向日志(on_key 放行/编码 + `replace_and_mark`/`replace_text` + `marked_text_range`),便于核查
+  IME 合成态跟踪是否还需放行更多键(回退/回车)。
+
 ## [Unreleased] — 中文渲染(宽字符对齐)+ IME preedit 内联 + 反相光标(2026-05-29)
 
 > IME 输入通了之后,中文**显示**仍不对:每个汉字后有半角空隙、字符错位。根因 = **宽字符(CJK,占 2 格)

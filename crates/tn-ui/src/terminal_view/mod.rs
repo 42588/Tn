@@ -812,9 +812,18 @@ impl TerminalView {
         // started — that was the "无法输入中文" root cause. Named/modified keys
         // (Enter, Tab, arrows, Ctrl-*, function keys, …) still encode below; during
         // an active composition gpui short-circuits keydown to the IME on its own.
-        if !m.control && !m.alt && !m.platform && key.chars().count() == 1 {
+        // `space` is a named key but it IS text input — and critically the IME's main
+        // **commit** key. If we encode+stop it (as for other named keys), gpui marks
+        // the keydown handled and skips `translate_message`, so the IME never sees the
+        // space and can't commit the candidate → a literal space is typed instead of
+        // 中文 (the reported bug). So treat space as a plain text key: defer it.
+        let is_text_input =
+            !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
+        if is_text_input {
+            tracing::info!(target: "tn::ime", "term on_key DEFER key={key:?} ime_marked={:?}", self.ime_marked);
             return;
         }
+        tracing::info!(target: "tn::ime", "term on_key ENCODE key={key:?} ctrl={} alt={} ime_marked={:?}", m.control, m.alt, self.ime_marked);
 
         // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
         // input also snaps the viewport back to the live bottom.
@@ -923,7 +932,9 @@ impl EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
         // `Some` ⇒ gpui knows we're composing and feeds keys to the IME (events.rs).
-        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
+        let r = self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count());
+        tracing::info!(target: "tn::ime", "term marked_text_range -> {r:?}");
+        r
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -940,6 +951,7 @@ impl EntityInputHandler for TerminalView {
     ) {
         // Committed text (IME result 中文, or any text the platform routes here) →
         // straight to the PTY, like a paste of one grapheme cluster.
+        tracing::info!(target: "tn::ime", "term replace_text(commit) text={text:?}");
         if !text.is_empty() {
             self.terminal.lock().unwrap().scroll_to_bottom();
             self.send_bytes(text.as_bytes());
@@ -958,6 +970,7 @@ impl EntityInputHandler for TerminalView {
     ) {
         // Composition preedit (pinyin in progress): don't touch the PTY until commit;
         // just track it so we report composing state + position the candidate window.
+        tracing::info!(target: "tn::ime", "term replace_and_mark text={new_text:?}");
         self.ime_marked = (!new_text.is_empty()).then(|| new_text.to_string());
         cx.notify();
     }
@@ -1196,6 +1209,7 @@ impl Render for TerminalView {
                     // Register the per-frame IME/text input handler so composed text
                     // (中文) reaches `replace_text_in_range`. No-op unless focused.
                     move |bounds, _state, window, cx| {
+                        tracing::trace!(target: "tn::ime", "term canvas paint: handle_input focused={}", ime_focus.is_focused(window));
                         window.handle_input(
                             &ime_focus,
                             ElementInputHandler::new(bounds, ime_entity.clone()),

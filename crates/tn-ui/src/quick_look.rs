@@ -810,10 +810,11 @@ impl QuickLook {
                 "delete" => self.delete_forward(),
                 "enter" => self.newline(),
                 "tab" => self.indent(),
-                // Space by name: gpui on Windows often leaves `key_char` empty for
-                // the space key (terminal input handles "space" the same way), so
-                // the key_char branch below would silently drop it (踩过的坑).
-                "space" => self.type_char(" "),
+                // NOTE: `space` is intentionally NOT handled here — it falls to the
+                // `_ => handled = false` arm so it defers to the IME input handler
+                // (WM_CHAR → `replace_text_in_range` → `type_char(" ")`). Handling it
+                // here (+stop) would starve the IME of its commit key → a literal
+                // space instead of 中文 (same bug as the terminal).
                 "left" | "right" | "up" | "down" | "home" | "end" => self.move_cursor(key, shift),
                 "pageup" => self.page(-1, shift),
                 "pagedown" => self.page(1, shift),
