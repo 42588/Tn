@@ -22,10 +22,10 @@ use std::time::Instant;
 
 use futures::channel::mpsc;
 use gpui::{
-    canvas, div, prelude::*, px, relative, rgba, Bounds,
+    canvas, div, prelude::*, px, relative, rgba, AsyncApp, Bounds,
     ClipboardItem, Context, Div, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent,
-    SharedString, Window,
+    SharedString, WeakEntity, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
@@ -107,6 +107,13 @@ const COLS: usize = 110;
 /// sizes to the *inset* area) — all relative to `content_bounds`.
 const BODY_PAD_X: f32 = 15.0;
 const BODY_PAD_Y: f32 = 11.0;
+/// Activity rail (mockup `.arail` 本次改动): cap the changed-file cards (the narrow
+/// rail shows a short stack) and the first card's mini-diff preview lines.
+pub(super) const RAIL_MAX_FILES: usize = 6;
+pub(super) const RAIL_PREVIEW_LINES: usize = 3;
+/// Debounce for the working-tree change watcher: coalesce a burst of file events
+/// (a save touches several files, a build churns many) into one `git diff` refresh.
+const RAIL_WATCH_DEBOUNCE_MS: u64 = 450;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
 /// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
@@ -169,8 +176,18 @@ pub struct TerminalView {
     rail_preview: Vec<(bool, String)>,
     /// Base dir git ran in for the rail (with `--relative`, `rail_files` paths are
     /// relative to this) — used to resolve a clicked card to an absolute path for
-    /// Quick Look. `None` until the first poll.
+    /// Quick Look. `None` until the first refresh.
     rail_root: Option<std::path::PathBuf>,
+    /// `true` when `agent` was inferred from a **typed shell command** (the user ran
+    /// `claude`/`codex` at a plain-shell prompt — detected via shell-integration's
+    /// command line, not a fragile process walk) rather than from launch intent.
+    /// Such an agent is cleared when its command block finishes (vs launch-intent
+    /// agents, which clear on the [`AGENT_EXIT_SENTINEL`]).
+    agent_from_shell: bool,
+    /// Working-tree change watcher for the activity rail (本次改动): fires `git diff`
+    /// on file changes (变化即刷新). `Some` only while this pane is an agent; dropping
+    /// it stops watching. Stored so it outlives `new` (a dropped watcher = no events).
+    change_watcher: Option<notify::RecommendedWatcher>,
     // Set by the reader when a hosted agent emits [`AGENT_EXIT_SENTINEL`] on exit
     // (the `-NoExit` pwsh outlives it). The foreground then clears `agent`/`usage`
     // so the pane reverts to a plain shell (no stale header). Only agent panes
@@ -316,11 +333,15 @@ impl TerminalView {
         // *separate* process (e.g. the dev's own Claude Code editing this repo).
         // So a plain pwsh pane stays a shell (no agent header, no usage).
         let agent = launch.agent;
+        let mut change_watcher = None;
         if agent.is_some() {
             if let Some(cwd) =
                 std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string))
             {
-                Self::spawn_usage_poller(cx, cwd, agent);
+                Self::spawn_usage_poller(cx, cwd.clone(), agent);
+                // 活动栏「本次改动」: watch the cwd → refresh `git diff` on file change
+                // (变化即刷新). Also does the initial populate.
+                change_watcher = Self::spawn_change_watcher(cx, cwd);
             }
         }
 
@@ -366,6 +387,8 @@ impl TerminalView {
             rail_files: Vec::new(),
             rail_preview: Vec::new(),
             rail_root: None,
+            agent_from_shell: false,
+            change_watcher,
             agent_exited,
             bell,
             bell_flash_at: None,
@@ -399,12 +422,97 @@ impl TerminalView {
     /// just cleared, so the caller can repaint the workspace tab. Idempotent.
     pub(super) fn clear_agent_if_exited(&mut self) -> bool {
         if self.agent.is_some() && self.agent_exited.load(Ordering::Relaxed) {
-            self.agent = None;
-            self.usage = None;
+            self.clear_agent();
             true
         } else {
             false
         }
+    }
+
+    /// Drop the agent identity + everything that hangs off it (usage, activity-rail
+    /// data, the change watcher) so the pane reverts cleanly to a plain shell.
+    fn clear_agent(&mut self) {
+        self.agent = None;
+        self.agent_from_shell = false;
+        self.usage = None;
+        self.rail_files.clear();
+        self.rail_preview.clear();
+        self.rail_root = None;
+        self.change_watcher = None; // stop watching the working tree
+    }
+
+    /// Flip the pane to / from agent state based on what's **running** in the shell
+    /// (shell-integration command line, OSC 633): typing `claude`/`codex` at a plain
+    /// prompt shows the agent header + activity rail for the duration of that command,
+    /// reverting when it finishes. Honest — the user literally ran that command (not a
+    /// fragile process-tree walk / session-freshness guess, which mislabels; see坑).
+    /// No-op for launch-intent agents (they own `agent` for the whole session).
+    /// Called from the repaint loop (cheap: one lock + a first-token check).
+    pub(super) fn sync_shell_agent(&mut self, cx: &mut Context<Self>) {
+        // First token of the currently-running command → an agent? (Match the
+        // PROGRAM, not the whole line, so `cd claude-proj` / `cat codex.md` don't trip.)
+        let running_agent = {
+            let bm = self.blocks.lock().unwrap();
+            bm.current()
+                .filter(|b| b.is_running())
+                .and_then(|b| b.command.as_deref())
+                .and_then(|cmd| cmd.split_whitespace().next())
+                .and_then(tn_ai::agent_kind_for_command)
+        };
+        match (running_agent, self.agent) {
+            // A typed agent command started in a plain (non-agent) shell.
+            (Some(kind), None) => {
+                self.agent = Some(kind);
+                self.agent_from_shell = true;
+                self.usage = None;
+                if let Some(cwd) = self.cwd() {
+                    Self::spawn_usage_poller(cx, cwd.clone(), Some(kind));
+                    self.change_watcher = Self::spawn_change_watcher(cx, cwd);
+                }
+                cx.emit(UsageUpdated); // relabel the tab + repaint chrome
+            }
+            // The shell-inferred agent's command finished → revert to plain shell.
+            // (Launch-intent agents have `agent_from_shell == false` → left alone;
+            // they clear via the exit sentinel instead.)
+            (None, Some(_)) if self.agent_from_shell => {
+                self.clear_agent();
+                cx.emit(UsageUpdated);
+            }
+            _ => {}
+        }
+    }
+
+    /// Refresh the activity-rail「本次改动」from real `git diff HEAD` in the pane's
+    /// cwd — off the UI thread, bounded. Triggered by the change watcher (变化即刷新)
+    /// and once on agent start. No-op once the agent is gone.
+    pub(super) fn refresh_changes(&mut self, cx: &mut Context<Self>) {
+        if self.agent.is_none() {
+            return;
+        }
+        let Some(cwd) = self.cwd() else { return };
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let (files, preview, root) = exec
+                .spawn(async move {
+                    let root = std::path::PathBuf::from(&cwd);
+                    let mut files = crate::gitutil::changes_for(&root);
+                    files.truncate(RAIL_MAX_FILES);
+                    let preview = files
+                        .first()
+                        .map(|f| crate::gitutil::diff_preview(&root, &f.path, RAIL_PREVIEW_LINES))
+                        .unwrap_or_default();
+                    (files, preview, root)
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                v.rail_files = files;
+                v.rail_preview = preview;
+                v.rail_root = Some(root);
+                cx.emit(UsageUpdated);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// This pane's latest AI usage snapshot, if any has been parsed yet.

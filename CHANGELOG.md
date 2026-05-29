@@ -13,6 +13,26 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 活动栏:变化即刷新 + shell 内敲命令起 agent 自动切态(2026-05-29)
+
+### 新增 (Added)
+- **活动栏「本次改动」变化即刷新**(`notify` 文件监听):新增 `spawn_change_watcher` 递归监听 agent pane 的 cwd,
+  过滤噪声目录(`.git`/`target`/`node_modules`/`dist`/`.next`——`.git` 每次 git 操作都抖、构建目录巨大且与
+  `git diff` 无关)+ **450ms 防抖**(一次保存/构建会触发多文件事件,合并成一次 diff)→ 触发 `refresh_changes`
+  (后台有界 `git diff HEAD`)。**git 改动从「会话 mtime 门控」解耦** → **agent 改文件、用户手动改都即时刷新**;
+  idle 时监听器阻塞在事件队列、零唤醒(保 idle 零开销)。监听器存在 view 上,**丢弃即停**(agent 退出/pane 关闭)。
+- **shell 内敲 `claude`/`codex` 自动切 agent 态**(`sync_shell_agent`):此前 `agent` **只认 launch intent**——在普通
+  shell 里**敲命令**起 agent 不会切到 agent 头/活动栏卡片。现在 repaint loop 读 shell 集成的**当前运行命令**
+  (`BlockModel::current().command`,OSC 633),**首个 token** 命中 claude/codex(用 `tn_ai::agent_kind_for_command`,
+  只判程序名故 `cd claude-proj`/`cat codex.md` 不误触)→ 翻成 agent 态(起用量轮询 + 活动栏监听 + 重标签),
+  命令块结束即还原。**诚实**:用户真敲了这命令(非脆弱的进程树轮询 / 会话新鲜度猜测,后者会误标同目录的 dev agent)。
+
+### 修复 / 调整 (Changed)
+- `spawn_usage_poller` 还原为**仅用量**(上一版把 git 塞进轮询、绑会话 mtime;现 git 改由文件监听驱动,更及时)。
+- `clear_agent` 统一收口:agent 退出(launcher 的退出哨兵 / shell agent 的命令块结束)时,一并清 usage / 活动栏数据 /
+  **停文件监听**,干净回落普通 shell。区分 `agent_from_shell`:launcher agent 靠 `AGENT_EXIT_SENTINEL` 清,
+  shell agent 靠命令块结束清。
+
 ## [Unreleased] — 工作区窗格重建:活动栏接真实 git + 正文内边距(2026-05-29)
 
 > 原型 [②工作区窗格](design/panels/02-workspace-panes.html) 端口收尾:agent 面板右侧**活动栏**从占位示例

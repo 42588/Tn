@@ -25,13 +25,8 @@ use tn_shell::ShellParser;
 
 use super::{
     ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
+    RAIL_WATCH_DEBOUNCE_MS,
 };
-
-/// Activity rail (mockup `.arail` 本次改动): cap the changed-file cards (the narrow
-/// rail shows a short stack; more would overflow) and the first card's mini-diff
-/// preview lines.
-const RAIL_MAX_FILES: usize = 6;
-const RAIL_PREVIEW_LINES: usize = 3;
 
 impl TerminalView {
     /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
@@ -170,6 +165,9 @@ impl TerminalView {
                         if view.clear_agent_if_exited() {
                             cx.emit(UsageUpdated);
                         }
+                        // Typed `claude`/`codex` at a plain-shell prompt → flip to
+                        // agent state (and back when it finishes) via shell integration.
+                        view.sync_shell_agent(cx);
                         // BEL on this batch → start the flash / beep (待优化清单 §3.8).
                         view.handle_bell_if_rung(cx);
                         cx.notify();
@@ -321,42 +319,28 @@ impl TerminalView {
                     break;
                 }
                 let cwd2 = cwd.clone();
-                let git_cwd = cwd.clone();
                 let prev = last.clone();
                 let res = exec
                     .spawn(async move {
                         let sref = tn_ai::resolve_session(&cwd2, hint)?;
                         let mtime = std::fs::metadata(&sref.path).ok()?.modified().ok()?;
                         if prev.as_ref() == Some(&(sref.path.clone(), mtime)) {
-                            return None; // unchanged — skip the re-parse + git
+                            return None; // unchanged — skip the re-parse
                         }
                         let text = std::fs::read_to_string(&sref.path).ok()?;
                         let usage = tn_ai::parse_session(sref.kind, &text)?;
-                        // 活动栏「本次改动」: real, bounded `git diff HEAD` in the
-                        // pane's cwd. Runs on THIS background thread (never the UI
-                        // thread); gated on session-mtime change so an idle agent
-                        // costs nothing while a busy one that just edited files
-                        // refreshes the rail. HONEST — git, not terminal parsing.
-                        let root = std::path::Path::new(&git_cwd);
-                        let mut files = crate::gitutil::changes_for(root);
-                        files.truncate(RAIL_MAX_FILES);
-                        let preview = files
-                            .first()
-                            .map(|f| crate::gitutil::diff_preview(root, &f.path, RAIL_PREVIEW_LINES))
-                            .unwrap_or_default();
-                        Some((sref.kind, sref.path, mtime, usage, files, preview, root.to_path_buf()))
+                        Some((sref.kind, sref.path, mtime, usage))
                     })
                     .await;
-                if let Some((_kind, path, mtime, usage, files, preview, git_root)) = res {
+                if let Some((_kind, path, mtime, usage)) = res {
                     last = Some((path, mtime));
                     // `agent` is fixed from launch intent; the poller only updates
-                    // the usage snapshot + activity-rail data (never relabels the pane).
+                    // the usage snapshot (never relabels the pane). The activity-rail
+                    // git data is refreshed separately by the change watcher
+                    // (`spawn_change_watcher` → `refresh_changes`, 变化即刷新).
                     if this
                         .update(cx, |v, cx| {
                             v.usage = Some(usage);
-                            v.rail_files = files;
-                            v.rail_preview = preview;
-                            v.rail_root = Some(git_root);
                             cx.emit(UsageUpdated);
                             cx.notify();
                         })
@@ -370,4 +354,75 @@ impl TerminalView {
         })
         .detach();
     }
+
+    /// Watch the agent pane's working tree and refresh the activity-rail `git diff`
+    /// on each (debounced) change — 「变化即刷新」. Returns the live watcher (store it;
+    /// **dropping it stops watching**). Also does the initial populate. Noise dirs
+    /// (`.git` churns on every git op incl. our own diff; build/dep dirs are huge +
+    /// irrelevant) are filtered so a `cargo build` / git op doesn't spam refreshes.
+    /// Bounded git runs off-thread in `refresh_changes`. `None` if unwatchable.
+    pub(super) fn spawn_change_watcher(
+        cx: &mut Context<Self>,
+        cwd: String,
+    ) -> Option<notify::RecommendedWatcher> {
+        use notify::Watcher;
+        let root = PathBuf::from(&cwd);
+        if !root.is_dir() {
+            return None;
+        }
+        // notify callback (own thread) → unbounded channel → debounce task.
+        let (tx, mut rx) = mpsc::unbounded::<()>();
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                if let Ok(ev) = res {
+                    if ev.paths.iter().any(|p| is_noise_path(p)) {
+                        return;
+                    }
+                    let _ = tx.unbounded_send(());
+                }
+            })
+            .ok()?;
+        if watcher.watch(&root, notify::RecursiveMode::Recursive).is_err() {
+            return None;
+        }
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Initial populate: pre-existing changes when the agent starts.
+            if this.update(cx, |v, cx| v.refresh_changes(cx)).is_err() {
+                return;
+            }
+            while rx.next().await.is_some() {
+                // Debounce: a save / build touches many files — coalesce to one diff.
+                exec.timer(Duration::from_millis(RAIL_WATCH_DEBOUNCE_MS)).await;
+                while rx.try_recv().is_ok() {} // drain the burst
+                // Stop once the pane is no longer an agent (rail gone) / view dropped.
+                let go_on = this
+                    .update(cx, |v, cx| {
+                        if v.agent().is_none() {
+                            return false;
+                        }
+                        v.refresh_changes(cx);
+                        true
+                    })
+                    .unwrap_or(false);
+                if !go_on {
+                    break;
+                }
+            }
+        })
+        .detach();
+        Some(watcher)
+    }
+}
+
+/// Working-tree change-watcher noise filter: paths under these dirs don't affect
+/// `git diff HEAD` (or churn constantly — `.git` ticks on every git op, including
+/// our own diff), so a change there must not trigger a rail refresh.
+fn is_noise_path(p: &std::path::Path) -> bool {
+    p.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
+        )
+    })
 }

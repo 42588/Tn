@@ -20,6 +20,7 @@ tracing.workspace = true
 raw-window-handle.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+notify.workspace = true # 活动栏「本次改动」文件监听(变化即刷新)
 
 # Quick Terminal (M5) global hotkey + topmost window glue — Windows only.
 [target.'cfg(target_os = "windows")'.dependencies]
