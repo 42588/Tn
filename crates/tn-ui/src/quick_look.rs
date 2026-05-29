@@ -806,15 +806,15 @@ impl QuickLook {
                     self.sel_anchor = None;
                     self.editing = false; // exit edit → preview (stay focused)
                 }
+                "backspace" => self.backspace(),
                 "delete" => self.delete_forward(),
                 "enter" => self.newline(),
                 "tab" => self.indent(),
-                // NOTE: `space` and `backspace` are intentionally NOT handled here —
-                // they fall to `_ => handled = false` and defer to the IME input
-                // handler (so an IME with no composition string can still commit/edit
-                // while composing). When NOT composing they return as WM_CHAR:
-                // `replace_text_in_range` types the space and remaps 0x08 → `backspace()`.
-                // Handling them here (+stop) would starve the IME of its commit/edit keys.
+                // NOTE: `space` is intentionally NOT handled here — it falls to
+                // `_ => handled = false` and defers to the IME input handler (the IME
+                // commit key; a real WM_CHAR 0x20 → `replace_text_in_range` → typed when
+                // not composing). `backspace` IS handled here (encoded): the platform
+                // emits no WM_CHAR for it, so deferring would drop it (same as terminal).
                 "left" | "right" | "up" | "down" | "home" | "end" => self.move_cursor(key, shift),
                 "pageup" => self.page(-1, shift),
                 "pagedown" => self.page(1, shift),
@@ -1408,14 +1408,10 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // IME commit (中文) → insert at the cursor like typed text (op handles
-        // multi-char + selection + undo). A deferred Backspace not consumed by the IME
-        // (not composing) arrives as WM_CHAR 0x08 → delete, don't insert it. Empty
-        // `text` = composition cancel.
-        if text == "\u{8}" {
-            self.backspace();
-            self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
-        } else if !text.is_empty() {
+        // IME commit (中文) or a printable WM_CHAR → insert at the cursor like typed
+        // text (op handles multi-char + selection + undo). Empty `text` = composition
+        // cancel. (Backspace is encoded in `on_key`, never routed here.)
+        if !text.is_empty() {
             self.type_char(text);
             self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
         }

@@ -812,27 +812,25 @@ impl TerminalView {
         // started — that was the "无法输入中文" root cause. Named/modified keys
         // (Enter, Tab, arrows, Ctrl-*, function keys, …) still encode below; during
         // an active composition gpui short-circuits keydown to the IME on its own.
-        // Keys that must reach the IME during composition (and have a WM_CHAR fallback
-        // when NOT composing) are deferred — NOT encoded+stopped. Background: some IMEs
-        // (e.g. MS Pinyin) never send a composition string (GCS_COMPSTR), so gpui's
+        // Defer only keys that gpui's `translate_message` turns into a WM_CHAR — i.e.
+        // **printable** keys — so they flow to the IME input handler (English via
+        // WM_CHAR, 中文 via composition → `replace_text_in_range`). Background: some
+        // IMEs (e.g. MS Pinyin) never send a composition string, so gpui's
         // `is_composing` is always false and never short-circuits keydown to the IME
-        // (confirmed in tn.log: `marked_text_range -> None`, `replace_and_mark` never
-        // fires). So WE must keep these keys un-consumed so gpui runs `translate_message`
-        // → the IME eats them while composing (no WM_CHAR), or they arrive as WM_CHAR
-        // when not composing:
-        //   • `space`    — the IME **commit** key (else a literal space is typed).
-        //   • `backspace`— deletes a composing pinyin letter (else it ate a terminal
-        //                  cell). When not composing it returns as WM_CHAR 0x08, which
-        //                  `replace_text_in_range` remaps to 0x7f (terminal DEL).
+        // (tn.log: `marked_text_range -> None`, `replace_and_mark` never fires). So WE
+        // keep printable keys un-consumed; the IME eats them while composing (no
+        // WM_CHAR) or they return as WM_CHAR otherwise:
         //   • single-char keys (letters/digits/punctuation) — pinyin + candidate select.
-        // Named keys WITHOUT a WM_CHAR fallback (arrows / Home / End / PageUp·Down / F*)
-        // stay encoded below — deferring them would break terminal nav when not
-        // composing (no char to fall back to). `enter`/`tab`/`escape` also stay encoded
-        // (terminal-critical + mode-aware); IME candidate-paging via those is a known gap.
-        let is_text_input = !m.control
-            && !m.alt
-            && !m.platform
-            && (key.chars().count() == 1 || key == "space" || key == "backspace");
+        //   • `space` — the IME **commit** key (a real WM_CHAR 0x20 when not composing).
+        // **`backspace` is NOT deferred** (it's encoded below): `translate_message` does
+        // **not** emit a WM_CHAR for VK_BACK (a control key), so deferring it dropped the
+        // key entirely — terminal backspace stopped deleting (tn.log: `DEFER backspace`
+        // with no following `replace_text`). Same logic excludes all non-printable named
+        // keys (Enter/Tab/Escape/arrows/Home/End/PageUp·Down/F*): they have no WM_CHAR to
+        // fall back on, so they must be encoded. (Cost: those keys can't reach the IME
+        // mid-composition — a gpui IMM32 limitation, see CLAUDE.md / WT-uses-TSF note.)
+        let is_text_input =
+            !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
         if is_text_input {
             tracing::info!(target: "tn::ime", "term on_key DEFER key={key:?} ime_marked={:?}", self.ime_marked);
             return;
@@ -966,17 +964,12 @@ impl EntityInputHandler for TerminalView {
         // Committed text (IME result 中文, or any text the platform routes here) →
         // straight to the PTY, like a paste of one grapheme cluster.
         tracing::info!(target: "tn::ime", "term replace_text(commit) text={text:?}");
-        // A deferred Backspace the IME did NOT consume (not composing) arrives as
-        // WM_CHAR 0x08 (BS); terminals expect 0x7f (DEL) — remap so it matches
-        // `encode_key`'s backspace. (Other committed text — 中文 / typed chars — has
-        // no 0x08, so this only ever affects backspace.)
+        // Committed IME text (中文) or a printable WM_CHAR → straight to the PTY.
+        // (Backspace is encoded in `on_key`, never routed here — `translate_message`
+        // emits no WM_CHAR for it, see the on_key note.)
         if !text.is_empty() {
             self.terminal.lock().unwrap().scroll_to_bottom();
-            if text == "\u{8}" {
-                self.send_bytes(&[0x7f]);
-            } else {
-                self.send_bytes(text.as_bytes());
-            }
+            self.send_bytes(text.as_bytes());
         }
         self.ime_marked = None;
         cx.notify();
