@@ -86,7 +86,7 @@ pub fn run() {
         // a global hotkey. Opened hidden up front (its shell pre-spawns) so the
         // first summon is instant. Win32 details (topmost, slide, hotkey) live in
         // `platform.rs` — see CLAUDE.md M5.
-        spawn_quick_terminal(cx, config.clone(), window_background);
+        spawn_quick_terminal(cx, config.clone());
 
         // Quit when the MAIN workspace window closes (gpui doesn't quit on its
         // own). We can't just check `windows().is_empty()`: the Quick Terminal is
@@ -107,7 +107,7 @@ pub fn run() {
 
 /// Open the hidden Quick Terminal window and wire its global hotkey toggle.
 /// No-op (with a log) when disabled or the hotkey is unparseable.
-fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>, bg: WindowBackgroundAppearance) {
+fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
     // The headless self-test (TN_AUTOQUIT) drives the first pane and quits; a
     // second self-testing TerminalView would race it. Keep that mode focused.
     if std::env::var("TN_AUTOQUIT").is_ok() {
@@ -136,7 +136,10 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>, bg: Window
             is_minimizable: false,
             focus: false,
             show: false,
-            window_background: bg,
+            // Transparent so the launcher reads as just its centered glass card
+            // floating on the desktop (no big opaque window rectangle around it).
+            // A running session paints its own opaque dark fill (see QuickTerminal::render).
+            window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
         move |_window, cx| cx.new(|cx| QuickTerminal::new(cx, win_cfg.clone())),

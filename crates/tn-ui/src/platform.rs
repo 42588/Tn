@@ -17,8 +17,10 @@ mod imp {
     use tn_config::{HotkeySpec, Rect};
     use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+        CreateRoundRectRgn, GetMonitorInfoW, MonitorFromWindow, SetWindowRgn, HRGN, MONITORINFO,
+        MONITOR_DEFAULTTONEAREST,
     };
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
         VK_PROCESSKEY,
@@ -143,6 +145,35 @@ mod imp {
         }
     }
 
+    /// Clip the window to a rounded rectangle (physical px size + corner radius), so a
+    /// borderless **transparent** window reads as a clean rounded card instead of the
+    /// OS's square window rectangle showing past the card's rounded corners. The gpui
+    /// quad shader already rounds the card's fill, but the window itself is a sharp
+    /// rectangle (Win10 doesn't round borderless windows), so its corners can peek;
+    /// `SetWindowRgn` makes the *window shape* rounded to match. The system takes
+    /// ownership of the region handle (do NOT delete it). Size-relative, so it survives
+    /// the slide (which only moves the window); re-set it whenever the size changes.
+    pub fn set_round_region(h: isize, w: f32, ht: f32, radius: f32) {
+        unsafe {
+            // CreateRoundRectRgn's right/bottom edges are exclusive → +1 to cover the
+            // last column/row. Ellipse diameter = 2×radius.
+            let d = (radius * 2.0).round() as i32;
+            let rgn = CreateRoundRectRgn(0, 0, w as i32 + 1, ht as i32 + 1, d, d);
+            if !rgn.is_invalid() {
+                // redraw = true. System owns `rgn` after this; we don't free it.
+                let _ = SetWindowRgn(as_hwnd(h), Some(rgn), true);
+            }
+        }
+    }
+
+    /// Drop any window region → back to a plain rectangle (a running session fills the
+    /// drop-down edge-to-edge; only the launcher card wants rounding).
+    pub fn clear_region(h: isize) {
+        unsafe {
+            let _ = SetWindowRgn(as_hwnd(h), None::<HRGN>, true);
+        }
+    }
+
     /// Show or hide the window. Showing also pulls it to the foreground so the
     /// user can type immediately (the hotkey press grants us foreground rights).
     pub fn show(h: isize, visible: bool) {
@@ -151,6 +182,21 @@ mod imp {
             let _ = ShowWindow(h, if visible { SW_SHOW } else { SW_HIDE });
             if visible {
                 let _ = SetForegroundWindow(h);
+            }
+        }
+    }
+
+    /// DPI scale factor (1.0 = 96 DPI / 100%) of the monitor the window sits on.
+    /// `set_bounds`/`work_area` speak physical px, but gpui lays out content in
+    /// **logical** px — so the launcher card (sized in logical px) must scale its
+    /// window bounds up by this, or it clips on a HiDPI display. `GetDpiForWindow`
+    /// (Win10 1607+) reads the window's per-monitor DPI directly, so it's right on
+    /// the very first summon (no render needed) and tracks cross-monitor DPI.
+    pub fn scale_for(h: isize) -> f32 {
+        unsafe {
+            match GetDpiForWindow(as_hwnd(h)) {
+                0 => 1.0, // invalid window — assume 100%
+                dpi => dpi as f32 / 96.0,
             }
         }
     }
@@ -287,7 +333,12 @@ mod stub {
     }
     pub fn make_topmost(_h: isize) {}
     pub fn set_bounds(_h: isize, _r: Rect) {}
+    pub fn set_round_region(_h: isize, _w: f32, _ht: f32, _radius: f32) {}
+    pub fn clear_region(_h: isize) {}
     pub fn show(_h: isize, _visible: bool) {}
+    pub fn scale_for(_h: isize) -> f32 {
+        1.0
+    }
     pub fn work_area(_h: isize) -> Option<Rect> {
         None
     }

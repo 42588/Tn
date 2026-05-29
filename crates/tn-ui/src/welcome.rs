@@ -23,6 +23,59 @@ use crate::style::{
     col, cola, glass_pane, icon, pane_fill, specular_top, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
 };
 
+// ── Shared launch-tile helpers (mockup `.tile` / `.dot`) ────────────────────────
+// The welcome launchpad, the Quick Terminal launcher, and the command palette all
+// render the same per-profile identity (color + icon + sub-label). These free fns
+// are the single source so the three can't drift.
+
+/// A launch profile's detected agent (Claude / Codex), from its `agent` field or
+/// its command's first token. `None` = a plain shell / WSL / SSH.
+pub(crate) fn launch_agent_of(p: &Profile) -> Option<AgentKind> {
+    p.agent
+        .as_deref()
+        .and_then(agent_kind_for_command)
+        .or_else(|| p.command.as_deref().and_then(agent_kind_for_command))
+}
+
+/// A profile's identity accent (mockup `.tile.claude/.codex/.sh/.wsl` / `.dot`):
+/// explicit `accent`, else Claude coral / Codex teal / WSL violet / shell blue.
+pub(crate) fn launch_tile_accent(
+    t: &tn_config::Theme,
+    p: &Profile,
+    agent: Option<AgentKind>,
+) -> tn_config::Color {
+    p.accent.unwrap_or(match (agent, p.kind) {
+        (Some(AgentKind::ClaudeCode), _) => t.agents.claude,
+        (Some(AgentKind::Codex), _) => t.agents.codex,
+        (_, ProfileKind::Wsl) => t.ui.accent_alt, // violet
+        _ => t.ui.accent,                         // blue
+    })
+}
+
+/// Tile sub-label (mockup `.td`: "Claude Code" / "PowerShell" / "Ubuntu").
+pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<AgentKind>) -> String {
+    match agent {
+        Some(AgentKind::ClaudeCode) => "Claude Code".into(),
+        Some(AgentKind::Codex) => "Codex".into(),
+        None => match p.kind {
+            ProfileKind::Wsl => {
+                p.distro.clone().filter(|d| !d.is_empty()).unwrap_or_else(|| "WSL".into())
+            }
+            ProfileKind::Ssh => p.host.clone().unwrap_or_else(|| "SSH".into()),
+            _ => {
+                let c = p.command.clone().unwrap_or_default().to_ascii_lowercase();
+                if c.contains("pwsh") || c.contains("powershell") {
+                    "PowerShell".into()
+                } else if c.contains("cmd") {
+                    "Command Prompt".into()
+                } else {
+                    p.command.clone().unwrap_or_else(|| "shell".into())
+                }
+            }
+        },
+    }
+}
+
 /// Emitted when a launch tile is clicked; carries the index into the profile list
 /// the view was constructed with (the workspace's discovered profiles).
 pub struct LaunchRequested(pub usize);
@@ -38,51 +91,16 @@ impl WelcomeView {
         Self { config, profiles, focus_handle: cx.focus_handle() }
     }
 
-    /// A profile's identity accent (mockup `.tile.claude/.codex/.sh/.wsl`):
-    /// explicit `accent`, else Claude coral / Codex teal / WSL violet / shell blue.
-    fn tile_accent(&self, p: &Profile, agent: Option<AgentKind>) -> tn_config::Color {
-        let t = &self.config.theme;
-        p.accent.unwrap_or(match (agent, p.kind) {
-            (Some(AgentKind::ClaudeCode), _) => t.agents.claude,
-            (Some(AgentKind::Codex), _) => t.agents.codex,
-            (_, ProfileKind::Wsl) => t.ui.accent_alt, // violet
-            _ => t.ui.accent,                         // blue
-        })
-    }
-
-    /// Tile sub-label (mockup `.td`: "Claude Code" / "PowerShell" / "Ubuntu").
-    fn tile_sub(p: &Profile, agent: Option<AgentKind>) -> String {
-        match agent {
-            Some(AgentKind::ClaudeCode) => "Claude Code".into(),
-            Some(AgentKind::Codex) => "Codex".into(),
-            None => match p.kind {
-                ProfileKind::Wsl => {
-                    p.distro.clone().filter(|d| !d.is_empty()).unwrap_or_else(|| "WSL".into())
-                }
-                ProfileKind::Ssh => p.host.clone().unwrap_or_else(|| "SSH".into()),
-                _ => {
-                    let c = p.command.clone().unwrap_or_default().to_ascii_lowercase();
-                    if c.contains("pwsh") || c.contains("powershell") {
-                        "PowerShell".into()
-                    } else if c.contains("cmd") {
-                        "Command Prompt".into()
-                    } else {
-                        p.command.clone().unwrap_or_else(|| "shell".into())
-                    }
-                }
-            },
-        }
-    }
+    // `tile_accent` / `tile_sub` / agent detection now live as module-level free fns
+    // (`launch_tile_accent` / `launch_tile_sub` / `launch_agent_of`) — shared with the
+    // Quick Terminal launcher (and the command palette's identity dot) so all three
+    // render the identical mockup `.tile`/.dot identity.
 
     /// One launch tile (mockup `.tile`): icon chip + name + sub-label.
     fn tile(&self, i: usize, p: &Profile, cx: &mut Context<Self>) -> Div {
         let ui = &self.config.theme.ui;
-        let agent = p
-            .agent
-            .as_deref()
-            .and_then(agent_kind_for_command)
-            .or_else(|| p.command.as_deref().and_then(agent_kind_for_command));
-        let accent = self.tile_accent(p, agent);
+        let agent = launch_agent_of(p);
+        let accent = launch_tile_accent(&self.config.theme, p, agent);
         let glyph = if agent.is_some() { "spark" } else { "term" };
         div()
             .w(px(131.)) // (560 − 3×11)/4 ≈ 131:与 mockup grid repeat(4,1fr) 同宽,>4 自动换行
@@ -124,7 +142,7 @@ impl WelcomeView {
                 div()
                     .text_size(px(11.))
                     .text_color(col(ui.muted))
-                    .child(SharedString::from(Self::tile_sub(p, agent))),
+                    .child(SharedString::from(launch_tile_sub(p, agent))),
             )
     }
 

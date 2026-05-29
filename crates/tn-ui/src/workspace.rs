@@ -25,7 +25,7 @@ use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::terminal_view::{LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
-use crate::welcome::{LaunchRequested, WelcomeView};
+use crate::welcome::{launch_agent_of, launch_tile_accent, LaunchRequested, WelcomeView};
 
 type PaneId = u64;
 
@@ -158,7 +158,9 @@ pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
             host: None,
             user: None,
             agent: None,
-            accent: Some(tn_config::Color::new(0x7A, 0xA2, 0xF7)), // a soft blue for WSL
+            // No explicit accent → `launch_tile_accent` derives the WSL identity
+            // (violet, mockup `.dot`/`.tile.wsl` = --violet). (Was a hardcoded blue.)
+            accent: None,
             glyph: None,
         });
     }
@@ -524,6 +526,19 @@ pub struct Workspace {
     welcome: Entity<WelcomeView>,
     /// Current git branch of the app cwd (status bar), resolved at startup.
     branch: Option<String>,
+    /// Fallback focus anchor for the workspace. gpui dispatches keybindings by
+    /// **focus**, not mouse position, and the action context lives on the workspace
+    /// root. When focus is orphaned (e.g. a click landed on an empty chrome gap,
+    /// blurring the pane), `render` parks focus here so `key_context("Workspace")`
+    /// stays live and `Ctrl+Shift+P` (and the other shortcuts) keep working.
+    ///
+    /// This handle is `track_focus`'d onto the **body** (the work area), NOT the
+    /// window root: a `track_focus` element registers a focus-on-click listener that
+    /// calls `prevent_default`, and the Windows NC-drag is suppressed when the
+    /// mouse-down at the titlebar is default-prevented — so a window-spanning
+    /// `track_focus` root silently kills titlebar dragging (踩过的坑). The body sits
+    /// below the titlebar, so its focus-on-click never covers the drag region.
+    workspace_focus: FocusHandle,
     /// Command palette (Ctrl+Shift+P) state.
     palette_open: bool,
     palette_query: String,
@@ -640,6 +655,7 @@ impl Workspace {
             app_menu_open: false,
             welcome,
             branch: git_branch(),
+            workspace_focus: cx.focus_handle(),
             palette_open: false,
             palette_query: String::new(),
             palette_sel: 0,
@@ -1670,49 +1686,59 @@ impl Workspace {
         }
         let t = &self.config.theme;
         let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
         let matches = launchable_matches(&self.launch_profiles, &self.palette_query);
         let sel = self.palette_sel.min(matches.len().saturating_sub(1));
 
-        let query_line = div().px_3().py_2().text_size(px(13.)).child(if self.palette_query.is_empty() {
-            div()
-                .text_color(col(ui.muted))
-                .child(SharedString::from("启动会话 / 搜索…   ↑↓ 选择 · Enter 启动 · Esc 关闭"))
-        } else {
-            div()
-                .text_color(col(ui.foreground))
-                .child(SharedString::from(self.palette_query.clone()))
-        });
+        // ── .pinput: term icon + query/placeholder + caret (mockup .pinput) ──
+        let input = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.)) // mockup .pinput gap 10
+            .px(px(16.)) // mockup .pinput padding 13px 16px
+            .py(px(13.))
+            .text_size(px(14.)) // mockup .pinput font-size 14
+            .child(icon("term", 16., ui.muted)) // .pinput .i 16 muted
+            .child(if self.palette_query.is_empty() {
+                div().text_color(col(ui.muted)).child(SharedString::from("启动会话 / 搜索…"))
+            } else {
+                div().text_color(col(ui.foreground)).child(SharedString::from(self.palette_query.clone()))
+            })
+            .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))); // .ph caret
 
         let rows = matches.iter().enumerate().map(|(i, p)| {
             let is_sel = i == sel;
-            let dot = p.accent.unwrap_or(t.agents.claude);
+            let dot = launch_tile_accent(t, p, launch_agent_of(p)); // identity color = tiles/.dot
             let hint = p.command.clone().unwrap_or_default();
             div()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap_2()
-                .px_3()
-                .py_1()
-                .rounded(px(R_CARD))
-                .when(is_sel, |d| d.bg(rgba(HOVER)))
+                .gap(px(10.)) // mockup .prow gap 10
+                .px(px(12.)) // mockup .prow padding 9px 12px
+                .py(px(9.))
+                .rounded(px(9.)) // mockup .prow radius 9
+                .when(is_sel, |d| d.bg(rgba(HOVER))) // .prow.sel bg --g3
                 .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, w, cx| this.launch_index(i, w, cx)),
                 )
-                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot)))
+                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(dot))) // .dot 7px
                 .child(
                     div()
-                        .text_size(px(12.5))
-                        .text_color(col(ui.foreground))
+                        .text_size(px(13.)) // mockup .prow font-size 13
+                        // .prow color = fg-dim(#A6AFD4, 无 token) → 选中 fg
+                        .text_color(if is_sel { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
                         .child(SharedString::from(p.name.clone())),
                 )
                 .child(div().flex_1())
                 .child(
                     div()
-                        .text_size(px(11.))
-                        .text_color(col(ui.muted))
+                        .font_family(mono.clone()) // mockup .meta font mono
+                        .text_size(px(11.)) // .meta 11
+                        .text_color(gpui::rgb(0x474E72)) // .meta faint(无 token)
                         .child(SharedString::from(hint)),
                 )
         });
@@ -1721,17 +1747,21 @@ impl Workspace {
             div()
                 .flex()
                 .flex_col()
-                .w(px(540.))
-                .rounded(px(R_WINDOW))
+                .w(px(560.)) // mockup .palette width 560
+                .rounded(px(R_PANEL)) // mockup .palette radius --r-pane
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(cola(ui.palette_bg, 0.86)) // frosted panel over the scrim + acrylic
-                .child(div().h(px(1.)).bg(rgba(SHEEN))) // top mirror highlight
-                .child(query_line)
-                .child(div().h(px(1.)).bg(rgba(RIM)))
-                .child(div().flex().flex_col().p_1().gap_1().children(rows)),
-            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)], // floats above the workspace
+                .border_color(rgba(RIM)) // mockup .palette border 1px --rim
+                // mockup .palette bg:两停冷调渐变 #1F2335@.92 → #161826@.92(底停无 token)
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
+                    linear_color_stop(rgba(0x161826eb), 1.),
+                ))
+                .child(input)
+                .child(div().h(px(1.)).bg(rgba(0xffffff0f))) // .pinput border-bottom 白 .06
+                .child(div().flex().flex_col().p(px(6.)).gap(px(2.)).children(rows)), // .plist padding 6
+            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)], // mockup .palette box-shadow
         );
 
         Some(
@@ -1741,12 +1771,12 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .items_center()
-                .bg(rgba(0x0a0b11cc))
+                .bg(rgba(0x0a0b118c)) // mockup .scrim rgba(10,11,17,.55)(无 token)
                 .track_focus(&self.palette_focus)
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
                     this.on_palette_key(ev, w, cx)
                 }))
-                .child(div().h(px(110.))) // top spacer (centers the panel below the tab bar)
+                .child(div().h(px(110.))) // top spacer (clears the title + tab bar)
                 .child(panel),
         )
     }
@@ -2271,6 +2301,20 @@ impl Render for Workspace {
                 self.panes.get(id).is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
             }) {
                 self.tabs[active].focused = id;
+            } else {
+                // No pane holds focus — e.g. the user clicked an empty chrome gap and
+                // gpui dropped focus off the pane. Park focus on the workspace body so
+                // its `key_context("Workspace")` stays live and `Ctrl+Shift+P` (and
+                // friends) keep dispatching — gpui binds actions by focus, not mouse
+                // position. Clicking a pane re-focuses it; the focus border stays on the
+                // last-focused pane (we don't clear `focused`). BUT don't steal from the
+                // explorer: it's also under the Workspace context, so its keyboard nav
+                // already keeps shortcuts live — re-parking would break it (它也要焦点).
+                let explorer_focused = self.explorer_open
+                    && self.explorer.read(cx).focus_handle().is_focused(window);
+                if !explorer_focused && !self.workspace_focus.is_focused(window) {
+                    self.workspace_focus.focus(window);
+                }
             }
         }
         let focused = self.tabs[active].focused;
@@ -2517,6 +2561,10 @@ impl Render for Workspace {
         let body = div()
             .flex_1()
             .min_h(px(0.)) // let the flex child be bounded by the window, not its content
+            // Focus anchor (see `workspace_focus` doc): track_focus lives HERE, on the
+            // work area below the titlebar — never on the window root — so its
+            // focus-on-click `prevent_default` can't swallow the titlebar's NC drag.
+            .track_focus(&self.workspace_focus)
             // No overflow_hidden (mockup .work doesn't clip): panes clip their own
             // content + min_h 0 bounds them, so dropping it lets each pane's drop
             // shadow bleed into the gaps and through the translucent status bar —
