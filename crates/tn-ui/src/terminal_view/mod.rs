@@ -712,7 +712,8 @@ impl TerminalView {
             return None; // full-screen app owns the viewport — no chrome
         }
         let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap())?;
-        let pal = block_view::BarPalette::from_palette(&self.palette);
+        // Chrome tokens (mockup .block uses --fg/--muted/--accent), + ANSI green/red for status.
+        let pal = block_view::BarPalette::new(self.ui_fg, self.ui_muted, self.ui_accent, &self.palette);
         let mut bar = block_view::bar_base(&data, &pal);
         if !data.command.is_empty() {
             let copy_cmd = data.command.clone();

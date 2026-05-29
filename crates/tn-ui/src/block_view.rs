@@ -14,27 +14,34 @@
 
 use gpui::{div, prelude::*, px, rgba, Div, Rgba, SharedString};
 use tn_blocks::{Block, BlockModel, BlockState};
-use tn_core::Palette;
+use tn_core::{Palette, Rgb};
 
 use crate::style::col;
 
-/// Colors the bar needs, pulled from the live terminal palette.
+/// Colors the bar needs. The block card is **chrome** (Calm Glass), so its text
+/// follows the UI tokens (mockup `.block` uses `--fg` / `--muted` / `--accent`),
+/// NOT the terminal ANSI palette — the muted `--muted` (#6E76A0) is much lighter
+/// than ANSI bright-black, which read as too dim for the duration/cwd. The status
+/// stripe + exit chip use ANSI green/red (= mockup `--green`/`--red`) with the UI
+/// accent for "running" (= mockup `.block.run` / `.exit.run` `--accent`).
 pub(crate) struct BarPalette {
-    pub fg: Rgba,
-    pub dim: Rgba,
-    pub green: Rgba,
-    pub red: Rgba,
-    pub blue: Rgba,
+    pub fg: Rgba,     // command text = mockup --fg (ui.foreground)
+    pub muted: Rgba,  // duration / cwd = mockup --muted (ui.muted)
+    pub accent: Rgba, // program name + running status = mockup --accent (ui.accent)
+    pub green: Rgba,  // success = mockup --green (ansi.green)
+    pub red: Rgba,    // failure = mockup --red (ansi.red)
 }
 
 impl BarPalette {
-    pub fn from_palette(p: &Palette) -> Self {
+    /// `ui_*` are the chrome tokens (from the theme `[ui]` table); `p` supplies the
+    /// ANSI green/red for the success/fail status.
+    pub fn new(ui_fg: Rgb, ui_muted: Rgb, ui_accent: Rgb, p: &Palette) -> Self {
         Self {
-            fg: col(p.fg),
-            dim: col(p.ansi[8]), // bright black = muted
+            fg: col(ui_fg),
+            muted: col(ui_muted),
+            accent: col(ui_accent),
             green: col(p.ansi[2]),
             red: col(p.ansi[1]),
-            blue: col(p.ansi[4]),
         }
     }
 }
@@ -71,10 +78,10 @@ impl BlockBar {
 /// Stripe / status color for the block's state + exit code.
 fn status_color(data: &BlockBar, pal: &BarPalette) -> Rgba {
     match (data.state, data.exit) {
-        (BlockState::Running, _) => pal.blue,
+        (BlockState::Running, _) => pal.accent, // mockup .block.run / .exit.run = --accent
         (BlockState::Finished, Some(0)) => pal.green,
         (BlockState::Finished, Some(_)) => pal.red,
-        _ => pal.dim,
+        _ => pal.muted,
     }
 }
 
@@ -145,14 +152,32 @@ fn short_path(s: &str, max: usize) -> String {
 /// buttons to the returned [`Div`].
 pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     let stripe = status_color(data, pal);
-    let cmd = if data.command.is_empty() {
-        "(command…)".to_string()
+    // Command as `❯ <accent>prog</accent> rest` (mockup .bh + .blu): program name in
+    // the UI accent, args/prompt in fg. Empty (a bare prompt, no command yet) → muted ❯.
+    let cmd = short(&data.command, 64);
+    let cmd_el = if cmd.is_empty() {
+        div().text_color(pal.muted).child(SharedString::from("❯"))
     } else {
-        short(&data.command, 64)
+        let (prog, rest) = match cmd.split_once(char::is_whitespace) {
+            Some((p, r)) => (p.to_string(), format!(" {r}")),
+            None => (cmd.clone(), String::new()),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .child(div().text_color(pal.fg).child(SharedString::from("❯ ")))
+            .child(div().text_color(pal.accent).child(SharedString::from(prog)))
+            .child(div().text_color(pal.fg).child(SharedString::from(rest)))
     };
 
-    // A floating rounded "block card" (Calm Glass) rather than a flush shelf —
-    // accent left-stripe, command, duration, exit chip, cwd.
+    // A floating rounded "block card" (Calm Glass, mockup .block): a glass panel with a
+    // 3px left status stripe. The stripe is the card's own **left border**, not an
+    // absolute child — gpui's `overflow_hidden` clips children RECTANGULARLY, not by
+    // `corner_radii` (踩过的坑), so a full-height absolute stripe would poke square
+    // corners past the rounded card (左两角变方). A border follows the rounded corners
+    // natively → the stripe curves into the 11px radius like mockup `.block::before`
+    // does when the browser clips it. `pl` drops 14→11 so the 3px border + 11 padding
+    // keeps the command text at the mockup's 14px from the card edge.
     let mut row = div()
         .flex()
         .flex_row()
@@ -161,16 +186,15 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         .mx_2()
         .mb(px(10.)) // mockup .block margin-bottom 10
         .py(px(8.)) // mockup .bh padding 8(上下)
-        .pl(px(14.)) // mockup .bh padding-left 14
+        .pl(px(11.)) // mockup .bh padding-left 14 − 3px border
         .pr(px(12.)) // mockup .bh padding-right 12
         .rounded(px(11.)) // --r-card
+        .border_l(px(3.)) // mockup .block::before 3px 左缘状态条 → 走边框跟随圆角
+        .border_color(stripe)
+        .overflow_hidden() // clip the (truncated) command text to the card radius
         .text_size(px(12.)) // mockup .bh font-size 12
-        // mockup .block:bg 白 @ .035,无边框(去掉原 glass rim)
-        .bg(rgba(0xffffff09)) // round(.035×255)=9
-        // left status stripe
-        .child(div().w(px(3.)).h(px(16.)).rounded_full().bg(stripe))
-        // command line (monospace, inherited from the pane root)
-        .child(div().text_color(pal.fg).child(SharedString::from(cmd)))
+        .bg(rgba(0xffffff09)) // .035×255≈9 白叠加(mockup .block,无边框)
+        .child(cmd_el)
         .child(div().flex_1());
 
     if let Some(ms) = data.duration_ms {
@@ -179,13 +203,13 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
             div()
                 .text_size(px(10.5))
                 .font_weight(gpui::FontWeight(640.))
-                .text_color(pal.dim)
+                .text_color(pal.muted)
                 .child(SharedString::from(fmt_duration(ms))),
         );
     }
     row = row.child(exit_chip(data, pal));
     if let Some(cwd) = &data.cwd {
-        row = row.child(div().text_color(pal.dim).child(SharedString::from(short_path(cwd, 22))));
+        row = row.child(div().text_color(pal.muted).child(SharedString::from(short_path(cwd, 22))));
     }
     row
 }
