@@ -16,6 +16,13 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 ## [Unreleased] — 焦点跟踪修复(分屏基准 + Quick Look 返回)(2026-05-29)
 
 ### 修复 (Fixed)
+- **`新会话(⌃⇧N)` 分屏不以当前窗格为基准(`⌃⇧E/D` 直接分屏却正常)**:`新会话` 弹的启动器**浮层会抢焦点**,而
+  `split_session` 在浮层关闭后才读 `tabs[active].focused` —— 这中间 `focused` 可能已被 `render` 的焦点同步改写 →
+  分屏落到错的窗格。`⌃⇧E/D` 因为是**当场同步分屏**(焦点还在窗格上读 `focused`)所以一直对。**修**:`new_session`
+  触发的**那一刻**(浮层尚未抢焦点)就把分屏目标**快照**进 `split_target`,`split_session` 优先用快照而非事后的
+  `focused`——与 `⌃⇧E/D` 读取时机对齐。另加**兜底**:若快照目标已不在活动树中(失效/dummy),回退到第一个叶子并
+  `warn`,避免新窗格变成不可见孤儿。诊断:`FOCUSDBG`/`split_session` tracing 打 `active`/`focused_field`/`gpui_focused`,
+  真机复现时可从 `tn.log` 核对焦点是否漂移。
 - **`焦点描边 / 新会话分屏基准` 不跟随点击的窗格**:`tabs[active].focused` 只在 `focus_pane`(点窗格外壳)时更新,
   但点击进**终端正文**时 gpui 已把焦点切到该终端(`track_focus`),`focused` 却没跟上 → 焦点描边停在旧窗格、
   「新会话」分屏也以旧窗格为基准。**修**:在 `render` 里把 `tabs[active].focused` **同步成真正持有 gpui 焦点的那个

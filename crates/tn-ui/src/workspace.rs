@@ -538,6 +538,10 @@ pub struct Workspace {
     split_sel: usize,
     split_focus: FocusHandle,
     split_needs_focus: bool,
+    /// Pane to split on, snapshotted when `新会话` is invoked (before the launcher
+    /// overlay steals focus). `split_session` prefers this over the live `focused`
+    /// field, which can drift while the overlay is up.
+    split_target: Option<PaneId>,
     /// `布局` manager (app menu): 7 slots that save/load the active tab's pane
     /// structure + launchers (loading re-spawns; a live session isn't serialized).
     layouts: Layouts,
@@ -632,6 +636,7 @@ impl Workspace {
             palette_sel: 0,
             palette_focus: cx.focus_handle(),
             split_launcher_open: false,
+            split_target: None,
             split_dir: None,
             split_sel: 0,
             split_focus: cx.focus_handle(),
@@ -1071,6 +1076,7 @@ impl Workspace {
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         tracing::info!("ACTION split {}", if axis == Axis::Row { "right" } else { "down" });
+        self.dbg_focus("split(E/D)", window, cx);
         if self.tabs[self.active].welcome {
             return; // nothing to split on the welcome launchpad
         }
@@ -1083,15 +1089,27 @@ impl Workspace {
 
     /// `新会话` split direction (app menu). Maps to a (`Axis`, before?) split.
     fn split_session(&mut self, dir: SplitDir, spec: LaunchSpec, window: &mut Window, cx: &mut Context<Self>) {
+        self.dbg_focus("split_session", window, cx);
         let active = self.active;
         let new_id = self.spawn_pane_with(cx, spec);
         if self.tabs[active].welcome {
             // No pane to split on a welcome tab — fill the tab with the session.
             self.tabs[active] = Tab::panes(Node::Leaf(new_id), new_id);
         } else {
-            let target = self.tabs[active].focused;
-            self.tabs[active].root.split(target, new_id, dir.axis(), dir.before());
+            // Prefer the target snapshotted at `新会话` invocation (before the
+            // launcher overlay stole focus); fall back to the live `focused` field.
+            let target = self.split_target.take().unwrap_or(self.tabs[active].focused);
+            tracing::info!("split_session: target={target} dir_axis={:?} before={}", dir.axis(), dir.before());
+            let ok = self.tabs[active].root.split(target, new_id, dir.axis(), dir.before());
+            if !ok {
+                // `target` wasn't in the active tree (stale/dummy id) — splitting it
+                // would orphan the new pane. Anchor to the first real leaf instead.
+                let fallback = first_leaf(&self.tabs[active].root);
+                tracing::warn!("split_session: target {target} not in tree, falling back to {fallback}");
+                self.tabs[active].root.split(fallback, new_id, dir.axis(), dir.before());
+            }
         }
+        self.split_target = None;
         self.focus_pane(new_id, window, cx);
         cx.notify();
     }
@@ -1713,7 +1731,13 @@ impl Workspace {
     }
 
     /// `新会话` (app menu / Ctrl+Shift+N): open the split launcher at phase 1.
-    fn new_session(&mut self, _: &NewSession, _w: &mut Window, cx: &mut Context<Self>) {
+    fn new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
+        // Snapshot the split target NOW, while the pane the user is on still holds
+        // focus — the launcher overlay is about to steal focus, so reading
+        // `focused` later (in `split_session`) is fragile. `dbg_focus` logs what
+        // gpui actually considers focused vs our `focused` field (diagnostics).
+        self.dbg_focus("new_session", window, cx);
+        self.split_target = Some(self.tabs[self.active].focused);
         self.split_launcher_open = true;
         self.split_dir = None;
         self.split_sel = 0;
@@ -1721,8 +1745,29 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Diagnostic: dump `active`, our `focused` field, and which active-tab leaf
+    /// gpui actually reports as focused. Lets us see (in tn.log) whether the
+    /// `新会话` split target drifts vs `Ctrl+Shift+E` (which splits immediately).
+    fn dbg_focus(&self, who: &str, window: &mut Window, cx: &Context<Self>) {
+        let active = self.active;
+        let field = self.tabs[active].focused;
+        let mut leaves = Vec::new();
+        if !self.tabs[active].welcome {
+            collect_leaves(&self.tabs[active].root, &mut leaves);
+        }
+        let gpui_focused: Vec<PaneId> = leaves
+            .iter()
+            .copied()
+            .filter(|id| self.panes.get(id).is_some_and(|v| v.read(cx).focus_handle().is_focused(window)))
+            .collect();
+        tracing::info!(
+            "FOCUSDBG {who}: active={active} focused_field={field} leaves={leaves:?} gpui_focused={gpui_focused:?}"
+        );
+    }
+
     fn close_split_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.split_launcher_open = false;
+        self.split_target = None;
         self.refocus_active(window, cx);
         cx.notify();
     }
