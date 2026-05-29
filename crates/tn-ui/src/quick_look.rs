@@ -15,7 +15,6 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
-use std::process::Command;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -845,49 +844,25 @@ impl QuickLook {
     /// `git diff` for `path`, parsed into renderable lines (tracking new-file
     /// line numbers from each hunk header). Empty when not a repo / no changes.
     fn compute_diff(&self, path: &PathBuf) -> Vec<DiffLine> {
-        let rel = path.strip_prefix(&self.root).unwrap_or(path);
-        let args = vec![
-            "diff".to_string(),
-            "--no-color".to_string(),
-            "--".to_string(),
-            rel.to_string_lossy().into_owned(),
-        ];
+        let rel = path
+            .strip_prefix(&self.root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
         // Bounded so a slow / .git-locked / AV-scanned git can never hang the UI
         // (worst case ~1.5s on an explicit Diff-tab view); `None` = timed out → no diff.
-        let text = git_capture_bounded(&self.root, args, std::time::Duration::from_millis(1500));
+        // Shared bounded git capture lives in `crate::gitutil` (single source).
+        let text = crate::gitutil::capture_bounded(
+            &self.root,
+            &["diff", "--no-color", "--", &rel],
+            std::time::Duration::from_millis(1500),
+        );
         if text.is_none() {
             tracing::warn!(target: "tn::quicklook", path = %path.display(), "git diff timed out (>1.5s); showing no diff");
         }
         parse_diff(text.as_deref().unwrap_or(""))
     }
 
-}
-
-/// Run `git <args>` in `root`, stdout captured, **bounded** to `timeout` and with
-/// **no console flash**. Returns `None` on timeout / spawn failure (caller treats
-/// that as "no diff"). The blocking `.output()` runs on a throwaway thread so a
-/// slow or `.git/index.lock`-stuck git can never block the UI thread — on timeout
-/// the orphaned thread + git exit on their own. (`.output()` drains stdout, so this
-/// also avoids the pipe-buffer deadlock a `try_wait` loop would hit on big diffs.)
-fn git_capture_bounded(root: &std::path::Path, args: Vec<String>, timeout: std::time::Duration) -> Option<String> {
-    let root = root.to_path_buf();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(&root).args(&args);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
-        let _ = tx.send(out);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(s)) => Some(s),
-        _ => None, // timeout or spawn error
-    }
 }
 
 /// Parse `git diff --no-color` output into renderable lines (tracking new-file line

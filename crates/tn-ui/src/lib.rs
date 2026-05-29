@@ -8,6 +8,7 @@
 mod assets;
 mod block_view;
 mod explorer;
+mod gitutil;
 mod input;
 mod layout;
 mod perf;
