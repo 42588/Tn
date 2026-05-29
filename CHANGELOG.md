@@ -13,6 +13,26 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — IME 退格删拼音 + 光标贴合中文(2026-05-29)
+
+> `tn.log` 实证:微软拼音**从不发合成串(GCS_COMPSTR)**——`marked_text_range` 恒返回 `None`、`replace_and_mark`
+> 从不触发,只在提交时发结果。故 gpui 的 `is_composing` 恒 false、**从不**把按键短路给 IME → 每个键都进 `on_key`。
+> 这意味着:**所有 IME 合成期要用、且有 WM_CHAR 回退的键,都必须由我们放行**(不能 encode+stop)。
+
+### 修复 (Fixed)
+- **退格在合成时删拼音(终端 + 编辑器)**:`backspace` 改为放行 → 合成时 IME 吃掉它删拼音(不产生 WM_CHAR、不碰
+  终端);非合成时经 WM_CHAR `0x08` 到 `replace_text_in_range`,**终端重映射为 `0x7f`(DEL,与 encode_key 一致)、
+  编辑器调 `backspace()` 删除**。此前 backspace 被编码送 PTY,合成时删的是终端字符。
+- **中文后光标贴合(消除累积间距)**:`tn-core::row_runs` 把宽字符拆成**独立 run**(每个 2 列盒),而非并入相邻
+  run。原先整段中文是一个被强制定宽到 `列数×cell_width` 的 run,而 CJK 回退字体字形步进 < 2×cell_width → 多出的
+  宽度全堆在 run 末尾 → 光标落在文字很远的右侧。逐格独立盒把这点细微差摊到字间、每格贴齐网格 → 光标紧跟文字。
+  headless 单测更新。
+
+### 已知限制 (Known limitations)
+- 合成期间 **回车 / Esc / 方向键 / Tab / 翻页**仍走终端(不进 IME):方向键等无 WM_CHAR 回退,放行会破坏非合成态的
+  终端导航;回车/Esc 对终端(运行命令 / vim)太关键、LNM/转义风险高。核心流程(拼音→退格纠错→空格/数字提交)完整。
+- CJK 与 2×cell_width 的字形步进细微差表现为字间微距;要完全贴合需指定等宽 CJK 字体(`[font].fallback` 待接)。
+
 ## [Unreleased] — IME 提交键(空格)修复:中文候选词可按空格上屏(2026-05-29)
 
 ### 修复 (Fixed)

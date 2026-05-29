@@ -358,34 +358,47 @@ impl TerminalSnapshot {
         grid.into_iter()
             .map(|row| {
                 let mut runs: Vec<CellRun> = Vec::new();
+                // A wide char is emitted as its **own** run so the renderer can box it
+                // to exactly 2 cols. Batching it with neighbours into one wide run made
+                // the run's forced width (cols×cell_width) exceed the glyphs' real
+                // advance (CJK fallback font ≠ 2×cell_width), pushing all the slack to
+                // the run's end → the cursor sat far past the text ("光标距离很长").
+                // Per-char boxes distribute that tiny slack and keep every cell on the
+                // grid, so the cursor lands right after the last char.
+                let mut last_wide = false;
                 for cell in row {
                     // A wide char (CJK) occupies two grid columns: the char itself
                     // (WIDE_CHAR) + a phantom spacer in the next column. **Skip the
                     // spacer** — rendering it as a blank put a half-width gap after
-                    // every CJK char ("间距那么大" bug) — and count the wide char as
-                    // 2 columns so the renderer can size its box to the real grid.
+                    // every CJK char ("间距那么大" bug).
                     if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
                         || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
                     {
                         continue;
                     }
                     let ch = if cell.c == '\0' { ' ' } else { cell.c };
-                    let span = if cell.flags.contains(Flags::WIDE_CHAR) { 2 } else { 1 };
+                    let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                    let span = if wide { 2 } else { 1 };
                     let bold = cell.flags.contains(Flags::BOLD);
                     let italic = cell.flags.contains(Flags::ITALIC);
                     let underline = cell.flags.contains(Flags::UNDERLINE);
-                    match runs.last_mut() {
-                        Some(r)
+                    // Merge into the previous run only for narrow chars whose neighbour
+                    // is also narrow + same style; a wide char always starts (and ends)
+                    // its own run.
+                    let merge = !wide
+                        && !last_wide
+                        && matches!(runs.last(), Some(r)
                             if r.fg == cell.fg
                                 && r.bg == cell.bg
                                 && r.bold == bold
                                 && r.italic == italic
-                                && r.underline == underline =>
-                        {
-                            r.text.push(ch);
-                            r.cols += span;
-                        }
-                        _ => runs.push(CellRun {
+                                && r.underline == underline);
+                    if merge {
+                        let r = runs.last_mut().unwrap();
+                        r.text.push(ch);
+                        r.cols += span;
+                    } else {
+                        runs.push(CellRun {
                             text: ch.to_string(),
                             fg: cell.fg,
                             bg: cell.bg,
@@ -393,8 +406,9 @@ impl TerminalSnapshot {
                             italic,
                             underline,
                             cols: span,
-                        }),
+                        });
                     }
+                    last_wide = wide;
                 }
                 runs
             })

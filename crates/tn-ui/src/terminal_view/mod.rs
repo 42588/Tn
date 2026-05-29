@@ -812,13 +812,27 @@ impl TerminalView {
         // started — that was the "无法输入中文" root cause. Named/modified keys
         // (Enter, Tab, arrows, Ctrl-*, function keys, …) still encode below; during
         // an active composition gpui short-circuits keydown to the IME on its own.
-        // `space` is a named key but it IS text input — and critically the IME's main
-        // **commit** key. If we encode+stop it (as for other named keys), gpui marks
-        // the keydown handled and skips `translate_message`, so the IME never sees the
-        // space and can't commit the candidate → a literal space is typed instead of
-        // 中文 (the reported bug). So treat space as a plain text key: defer it.
-        let is_text_input =
-            !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
+        // Keys that must reach the IME during composition (and have a WM_CHAR fallback
+        // when NOT composing) are deferred — NOT encoded+stopped. Background: some IMEs
+        // (e.g. MS Pinyin) never send a composition string (GCS_COMPSTR), so gpui's
+        // `is_composing` is always false and never short-circuits keydown to the IME
+        // (confirmed in tn.log: `marked_text_range -> None`, `replace_and_mark` never
+        // fires). So WE must keep these keys un-consumed so gpui runs `translate_message`
+        // → the IME eats them while composing (no WM_CHAR), or they arrive as WM_CHAR
+        // when not composing:
+        //   • `space`    — the IME **commit** key (else a literal space is typed).
+        //   • `backspace`— deletes a composing pinyin letter (else it ate a terminal
+        //                  cell). When not composing it returns as WM_CHAR 0x08, which
+        //                  `replace_text_in_range` remaps to 0x7f (terminal DEL).
+        //   • single-char keys (letters/digits/punctuation) — pinyin + candidate select.
+        // Named keys WITHOUT a WM_CHAR fallback (arrows / Home / End / PageUp·Down / F*)
+        // stay encoded below — deferring them would break terminal nav when not
+        // composing (no char to fall back to). `enter`/`tab`/`escape` also stay encoded
+        // (terminal-critical + mode-aware); IME candidate-paging via those is a known gap.
+        let is_text_input = !m.control
+            && !m.alt
+            && !m.platform
+            && (key.chars().count() == 1 || key == "space" || key == "backspace");
         if is_text_input {
             tracing::info!(target: "tn::ime", "term on_key DEFER key={key:?} ime_marked={:?}", self.ime_marked);
             return;
@@ -952,9 +966,17 @@ impl EntityInputHandler for TerminalView {
         // Committed text (IME result 中文, or any text the platform routes here) →
         // straight to the PTY, like a paste of one grapheme cluster.
         tracing::info!(target: "tn::ime", "term replace_text(commit) text={text:?}");
+        // A deferred Backspace the IME did NOT consume (not composing) arrives as
+        // WM_CHAR 0x08 (BS); terminals expect 0x7f (DEL) — remap so it matches
+        // `encode_key`'s backspace. (Other committed text — 中文 / typed chars — has
+        // no 0x08, so this only ever affects backspace.)
         if !text.is_empty() {
             self.terminal.lock().unwrap().scroll_to_bottom();
-            self.send_bytes(text.as_bytes());
+            if text == "\u{8}" {
+                self.send_bytes(&[0x7f]);
+            } else {
+                self.send_bytes(text.as_bytes());
+            }
         }
         self.ime_marked = None;
         cx.notify();
