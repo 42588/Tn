@@ -601,6 +601,15 @@ impl Workspace {
                     ws.ql_refocus_pane = true; // refocus the pane in next render
                     cx.notify();
                 }
+                QuickLookEvent::FileSaved(_path) => {
+                    // Editor saved a file → refresh every agent pane's「本次改动」now
+                    // (synchronous + deterministic; `refresh_changes` no-ops on plain
+                    // shells and recomputes git only for panes whose cwd covers it).
+                    for view in ws.panes.values() {
+                        view.update(cx, |v, cx| v.refresh_changes(cx));
+                    }
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -2556,16 +2565,40 @@ impl Render for Workspace {
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
             let left = if self.explorer_open { 244. } else { 40. };
+            // Click-away scrim over the **workspace body** (terminal area) — NOT the
+            // explorer / titlebar / status bar. A click on the bare terminal used to
+            // `focus_pane` and steal focus to the shell mid-edit (the「焦点漏到底层
+            // shell / 面板穿透」bug); now it closes the overlay cleanly (`ql_refocus`
+            // returns focus to the tree / active pane). Clicking the panel itself is
+            // swallowed by its own root (see `quick_look.rs` inner `on_mouse_down`),
+            // and the explorer stays clickable (scrim starts at its right edge) so
+            // 点树里另一个文件仍能换预览。
+            let scrim_left = if self.explorer_open { 238. } else { 0. };
             div()
                 .absolute()
-                // 留足四边边距 = 浮起的「卡片」而非铺满浮层;`max_w` 在宽屏下封顶,
-                // 贴树左缘锚定不被拉得过宽(原型那种比例)。
-                .top(px(70.)) // 标题栏 46 之下,留白
-                .bottom(px(60.)) // 状态栏 30 之上,留白
-                .left(px(left)) // explorer 右缘(12 + 224 + 8)/ 工作区左缘
-                .right(px(64.))
-                .max_w(px(880.))
-                .child(self.quick_look.clone())
+                .top(px(46.)) // below the titlebar
+                .bottom(px(30.)) // above the status bar
+                .left(px(scrim_left))
+                .right(px(0.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|ws, _e, _w, cx| {
+                        ws.quick_look_open = false;
+                        ws.ql_refocus_pane = true;
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        // 浮起「卡片」(原 top70/bottom60/left/right64,这里换算到 scrim 原点)。
+                        .top(px(24.)) // 70 − 46
+                        .bottom(px(30.)) // 60 − 30
+                        .left(px(left - scrim_left))
+                        .right(px(64.))
+                        .max_w(px(880.))
+                        .child(self.quick_look.clone()),
+                )
         });
 
         let palette = self.render_palette(cx);

@@ -801,6 +801,21 @@ impl TerminalView {
             return;
         }
 
+        // **Plain text keys must NOT be consumed here** — defer them to the IME input
+        // handler (no `stop_propagation`, no encode). A single-char `key` with no
+        // Ctrl/Alt/Win is a text-producing key; letting it through means gpui runs
+        // `translate_message`, so the platform routes it to the input handler:
+        // English via WM_CHAR, **中文 via WM_IME_COMPOSITION** →
+        // `replace_text_in_range` (which writes the committed bytes to the PTY).
+        // Consuming + stopping these (the previous version) made gpui mark the
+        // keydown handled and SKIP `translate_message`, so IME composition never
+        // started — that was the "无法输入中文" root cause. Named/modified keys
+        // (Enter, Tab, arrows, Ctrl-*, function keys, …) still encode below; during
+        // an active composition gpui short-circuits keydown to the IME on its own.
+        if !m.control && !m.alt && !m.platform && key.chars().count() == 1 {
+            return;
+        }
+
         // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
         // input also snaps the viewport back to the live bottom.
         let bytes = {

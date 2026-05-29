@@ -179,6 +179,10 @@ pub enum QuickLookEvent {
     Nav(i32),
     /// `Esc`/`Space` in preview: close the overlay (give space back to the terminal).
     Close,
+    /// `Ctrl+S` wrote this file to disk — the workspace refreshes any agent pane's
+    /// activity rail (本次改动) **synchronously**, instead of waiting on the file
+    /// watcher (which can miss the edit: file outside the watched cwd, debounce, etc.).
+    FileSaved(std::path::PathBuf),
 }
 
 pub struct QuickLook {
@@ -395,6 +399,9 @@ impl QuickLook {
                 if self.tab == Tab::Diff {
                     self.ensure_diff();
                 }
+                // Tell the workspace so it refreshes any agent pane's「本次改动」rail
+                // now — don't rely on the file watcher (debounce / cwd coverage gaps).
+                cx.emit(QuickLookEvent::FileSaved(path.clone()));
                 tracing::info!(target: "tn::quicklook", path = %path.display(), lines = self.buf.len(), "quick look saved");
             }
             Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
@@ -810,10 +817,13 @@ impl QuickLook {
                 "left" | "right" | "up" | "down" | "home" | "end" => self.move_cursor(key, shift),
                 "pageup" => self.page(-1, shift),
                 "pagedown" => self.page(1, shift),
-                _ => match ks.key_char.as_ref().filter(|s| !s.is_empty()) {
-                    Some(ch) => self.type_char(ch),
-                    None => handled = false,
-                },
+                // Plain text → **defer to the IME input handler** (registered while
+                // editing & no find bar): English via WM_CHAR, 中文 via composition,
+                // both land in `replace_text_in_range` → `type_char`. Typing it here
+                // (+stop_propagation) would make gpui skip `translate_message` and the
+                // IME could never start composing (the "编辑器无法输入中文" bug). Named
+                // keys above stay handled here (they don't start composition).
+                _ => handled = false,
             }
             if handled {
                 if self.editing {
@@ -1573,10 +1583,12 @@ impl Render for QuickLook {
         let row_bounds = self.code_bounds.clone(); // for the per-row click handler
         const GUTTER: f32 = CODE_GUTTER; // ln(38) + mr(14) + mk(14)
         // IME/text input handler captures (registered in the canvas paint below) —
-        // only while editing, so composed text (中文) inserts at the cursor.
+        // only while editing AND the find bar is closed (else composed/typed text
+        // would wrongly insert into the buffer instead of the find query; find typing
+        // stays on the `find_key`/key_char path).
         let ime_focus = self.focus_handle.clone();
         let ime_entity = cx.entity();
-        let ime_editing = editing;
+        let ime_active = editing && !self.find_open;
         let count = if editing {
             buf.len()
         } else if tab == Tab::Diff {
@@ -1609,7 +1621,7 @@ impl Render for QuickLook {
                         // Register the IME/text input handler for this frame (edit mode
                         // only) so composed text (中文) reaches `replace_text_in_range`.
                         move |bounds, _s, window, cx| {
-                            if ime_editing {
+                            if ime_active {
                                 window.handle_input(
                                     &ime_focus,
                                     ElementInputHandler::new(bounds, ime_entity.clone()),
@@ -1641,6 +1653,10 @@ impl Render for QuickLook {
                                                 this.place_cursor(i, col, shift);
                                                 cx.notify();
                                             });
+                                            // Don't let the click bubble to the workspace scrim /
+                                            // a terminal pane (would steal focus to the shell — the
+                                            // "焦点漏到底层 shell" bug).
+                                            app.stop_propagation();
                                         },
                                     )
                                 } else if tab == Tab::File {
@@ -1800,6 +1816,12 @@ impl Render for QuickLook {
         let inner = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            // Swallow any click landing on the panel (not already handled by a child
+            // like a code row) so it neither bubbles to the workspace click-away scrim
+            // (which would close the overlay) nor passes through to a terminal pane
+            // (which would steal focus to the shell). Clicking the panel keeps focus
+            // here (track_focus). 修「面板穿透事件 / 焦点漏到底层 shell」。
+            .on_mouse_down(MouseButton::Left, cx.listener(|_, _ev, _w, cx| cx.stop_propagation()))
             .size_full()
             .relative() // anchor specular / seam absolute layers
             .flex()

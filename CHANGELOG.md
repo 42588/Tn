@@ -13,6 +13,24 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — IME 真正修好 + 编辑器焦点穿透 + 保存即刷新(2026-05-29)
+
+> 上一轮接了 `EntityInputHandler` 但中文仍打不出——**真因**:`on_key` 对可打印键 `stop_propagation`,
+> gpui 据此判定 keydown 已处理、**跳过 `translate_message`**,IME 合成永远启动不了(gpui 官方
+> `examples/input.rs` 佐证:控制键走 `on_action`、**可打印文本完全不在 key_down 处理**,全交输入处理器)。
+
+### 修复 (Fixed)
+- **中文输入真正可用(终端 + 编辑器)**:`on_key` 改为**不消费纯文本键**(单字符 `key`、无 Ctrl/Alt/Win)
+  → 放它走 `translate_message`:英文经 WM_CHAR、中文经 WM_IME_COMPOSITION,统一进 `replace_text_in_range`
+  (终端写 PTY / 编辑器 `type_char` 插入)。命名/带修饰键(回车/方向/Ctrl-*等)仍 encode + `stop_propagation`;
+  合成进行中 gpui 自动把键交给 IME。编辑器输入处理器仅在「编辑态且未开查找栏」注册(否则会把文本误插入缓冲而非查找框)。
+- **编辑器焦点漏到底层 shell / 面板穿透**:① 代码行点击 `app.stop_propagation()`;② 面板根 `on_mouse_down`
+  兜底吞掉未被子元素处理的点击(点面板保持焦点在此、不穿透);③ workspace 加**正文区 click-away scrim**
+  (覆盖终端区、**不盖文件树/标题栏/状态栏**)——点裸终端不再 `focus_pane` 偷走焦点,而是干净关闭浮层
+  (`ql_refocus` 把焦点还给树/当前窗格);点文件树仍能换预览。
+- **编辑器保存即刷新 git**:Quick Look `save()` 成功后发 `QuickLookEvent::FileSaved`,workspace 订阅后**同步**
+  刷新所有 agent 窗格的「本次改动」(`refresh_changes`,非 agent 自动跳过)——绕过文件监听的覆盖/防抖/多 cwd 坑。
+
 ## [Unreleased] — IME / 中文输入:终端 + 编辑器接 gpui 输入处理器(2026-05-29)
 
 > **重大修复**:此前**整个 app 无法输入中文**(终端所有窗格 + Quick Look 编辑器)——根因是从未接
