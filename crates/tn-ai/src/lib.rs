@@ -21,8 +21,8 @@ pub use codex::{
     codex_sessions_dir, latest_codex_session_file, parse_codex_session, usage_for_cwd_codex,
 };
 pub use detect::{
-    agent_kind_for_command, parse_session, resolve_session, usage_for_cwd as usage_for_cwd_any,
-    SessionRef,
+    agent_kind_for_command, detect_subscription, parse_session, resolve_session,
+    resolve_session_for_pane, session_mtimes, usage_for_cwd as usage_for_cwd_any, SessionRef,
 };
 pub use pricing::{pricing_for, Pricing};
 

@@ -18,7 +18,7 @@ use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
 use futures::channel::mpsc;
 use gpui::{
@@ -40,6 +40,10 @@ use crate::block_view;
 /// (which renders the *focused* pane's usage) can repaint without re-rendering
 /// on every terminal frame.
 pub struct UsageUpdated;
+
+/// Emitted when the change watcher detects filesystem modifications in the pane's
+/// cwd — the workspace uses this to refresh the explorer's git-status tags.
+pub struct FilesChanged;
 
 /// Emitted once the pane's child process exits (detected via ConPTY `try_wait`,
 /// since ConPTY doesn't reliably EOF the reader). The quick terminal listens for
@@ -227,6 +231,11 @@ pub struct TerminalView {
     /// relative to this) — used to resolve a clicked card to an absolute path for
     /// Quick Look. `None` until the first refresh.
     rail_root: Option<std::path::PathBuf>,
+    /// The directory the change watcher was started on (app cwd at launch, or
+    /// the shell cwd for shell-typed agents). Used as a fallback in
+    /// `refresh_changes` when the blocks model has no known cwd (launched
+    /// agent panes carry no shell integration, so OSC 7 never fires).
+    rail_cwd: Option<String>,
     /// `true` when `agent` was inferred from a **typed shell command** (the user ran
     /// `claude`/`codex` at a plain-shell prompt — detected via shell-integration's
     /// command line, not a fragile process walk) rather than from launch intent.
@@ -255,6 +264,16 @@ pub struct TerminalView {
     // `[appearance]` bell prefs, resolved once at construction.
     visual_bell: bool,
     audio_bell: bool,
+    // Config-resolved STARTING usage-pill mode per agent (`[general].billing_mode`
+    // + optional `claude_billing`/`codex_billing`). Kept so a shell-typed agent
+    // (sync_shell_agent) can compute its starting mode when it appears.
+    billing_mode: tn_config::BillingMode,
+    claude_billing: Option<tn_config::BillingMode>,
+    codex_billing: Option<tn_config::BillingMode>,
+    // Live per-pane usage-pill display mode ($ / % / tokens). Starts from the
+    // config default for this pane's agent (auto-resolved via usage_display) and
+    // is cycled in memory when the user clicks the pill — independent per pane.
+    usage_mode: tn_config::BillingMode,
     // Theme accents for the per-pane header (Claude coral / Codex teal / UI blue).
     claude_accent: Rgb,
     codex_accent: Rgb,
@@ -304,6 +323,10 @@ fn fallback_pwsh(size: PtySize) -> LocalPty {
 
 impl TerminalView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, launch: LaunchSpec) -> Self {
+        // Captured before spawning the agent so its session log (created moments
+        // later) is reliably newer — that's how the usage poller binds to THIS
+        // pane's session and never a pre-existing one (see spawn_usage_poller).
+        let launched_at = SystemTime::now();
         let size = GridSize::new(ROWS, COLS);
         let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
         // Pick the backend: a remote SSH session, or a local ConPTY. A bad
@@ -351,6 +374,9 @@ impl TerminalView {
         let ui_muted = to_rgb(config.theme.ui.muted);
         let visual_bell = config.config.appearance.visual_bell;
         let audio_bell = config.config.appearance.audio_bell;
+        let billing_mode = config.config.general.billing_mode;
+        let claude_billing = config.config.general.claude_billing;
+        let codex_billing = config.config.general.codex_billing;
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
         term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
@@ -388,14 +414,28 @@ impl TerminalView {
         // *separate* process (e.g. the dev's own Claude Code editing this repo).
         // So a plain pwsh pane stays a shell (no agent header, no usage).
         let agent = launch.agent;
+        // Per-pane starting display mode: config default for this agent, with
+        // `auto` resolved to %/$ by detecting the agent's login (member vs API).
+        let usage_mode = match agent {
+            Some(a) => {
+                crate::usage_display::starting_mode(a, billing_mode, claude_billing, codex_billing)
+            }
+            None => tn_config::BillingMode::default(),
+        };
+        // For launched agents: stash the app cwd so refresh_changes has a fallback
+        // when the blocks model returns no cwd (no shell integration -> no OSC 7).
+        let rail_cwd =
+            std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string));
         let mut change_watcher = None;
-        if agent.is_some() {
-            if let Some(cwd) =
-                std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string))
-            {
-                Self::spawn_usage_poller(cx, cwd.clone(), agent);
-                // 活动栏「本次改动」: watch the cwd → refresh `git diff` on file change
-                // (变化即刷新). Also does the initial populate.
+        if let Some(kind) = agent {
+            // Usage binds to the session THIS pane launches (newest log created
+            // at/after `launched_at`), not whatever's newest in the cwd — a dev
+            // Claude editing this very repo must not hijack a fresh pane's readout
+            // (see tn_ai::resolve_session_for_pane). cwd-independent: hosted agent
+            // panes carry no shell integration, so the agent's cwd is unknowable.
+            Self::spawn_usage_poller(cx, kind, launched_at);
+            // 活动栏「本次改动」still needs a working dir for `git diff` (变化即刷新).
+            if let Some(cwd) = rail_cwd.clone() {
                 change_watcher = Self::spawn_change_watcher(cx, cwd);
             }
         }
@@ -450,6 +490,7 @@ impl TerminalView {
             rail_files: Vec::new(),
             rail_preview: Vec::new(),
             rail_root: None,
+            rail_cwd,
             agent_from_shell: false,
             change_watcher,
             agent_exited,
@@ -458,6 +499,10 @@ impl TerminalView {
             bell_fading: false,
             visual_bell,
             audio_bell,
+            billing_mode,
+            claude_billing,
+            codex_billing,
+            usage_mode,
             claude_accent,
             codex_accent,
             ui_accent,
@@ -502,6 +547,7 @@ impl TerminalView {
         self.rail_files.clear();
         self.rail_preview.clear();
         self.rail_root = None;
+        self.rail_cwd = None;
         self.change_watcher = None; // stop watching the working tree
     }
 
@@ -529,9 +575,19 @@ impl TerminalView {
                 self.agent = Some(kind);
                 self.agent_from_shell = true;
                 self.usage = None;
+                // Resolve this pane's starting pill mode for the now-known agent.
+                self.usage_mode = crate::usage_display::starting_mode(
+                    kind,
+                    self.billing_mode,
+                    self.claude_billing,
+                    self.codex_billing,
+                );
+                // Bind usage to the session this just-typed command starts (created
+                // ~now); the grace in resolve_session_for_pane absorbs detection lag.
+                Self::spawn_usage_poller(cx, kind, SystemTime::now());
                 if let Some(cwd) = self.cwd() {
-                    Self::spawn_usage_poller(cx, cwd.clone(), Some(kind));
-                    self.change_watcher = Self::spawn_change_watcher(cx, cwd);
+                    self.change_watcher = Self::spawn_change_watcher(cx, cwd.clone());
+                    self.rail_cwd = Some(cwd);
                 }
                 cx.emit(UsageUpdated); // relabel the tab + repaint chrome
             }
@@ -553,7 +609,10 @@ impl TerminalView {
         if self.agent.is_none() {
             return;
         }
-        let Some(cwd) = self.cwd() else { return };
+        // Shell-typed agents get their cwd from the blocks model (OSC 7).
+        // Launched agents have no shell integration; fall back to the
+        // directory the change watcher was set up on (app cwd at launch).
+        let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else { return };
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let (files, preview, root) = exec
@@ -573,6 +632,7 @@ impl TerminalView {
                 v.rail_preview = preview;
                 v.rail_root = Some(root);
                 cx.emit(UsageUpdated);
+                cx.emit(FilesChanged);
                 cx.notify();
             });
         })
@@ -903,14 +963,22 @@ impl TerminalView {
         tracing::info!(target: "tn::ime", "term on_key ENCODE key={key:?} ctrl={} alt={} ime_marked={:?}", m.control, m.alt, self.ime_marked);
 
         // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
-        // input also snaps the viewport back to the live bottom.
-        let bytes = {
+        // input also snaps the viewport back to the live bottom. Skip the
+        // scroll AND the repaint if already at the bottom (common case when
+        // typing) — the PTY echo triggers a repaint via the reader with the
+        // actual new terminal state. Only notify when we scrolled (bumped
+        // generation) so the viewport change is painted.
+        let (bytes, did_scroll) = {
             let mut t = self.terminal.lock().unwrap();
             let mode = t.input_mode();
             match crate::input::encode_key(&event.keystroke, mode) {
                 Some(b) => {
-                    t.scroll_to_bottom();
-                    b
+                    let (offset, hist) = t.scroll_position();
+                    let did_scroll = offset != hist;
+                    if did_scroll {
+                        t.scroll_to_bottom();
+                    }
+                    (b, did_scroll)
                 }
                 // Not a terminal-input key (UI shortcut / unmapped): let it BUBBLE
                 // (no stop) so workspace keybindings still fire. Crucially we also
@@ -926,7 +994,9 @@ impl TerminalView {
         // composition (中文) arrives via WM_IME_COMPOSITION, not keydown, so it's
         // unaffected. UI shortcuts took the `None` path above and still bubble.
         cx.stop_propagation();
-        cx.notify();
+        if did_scroll {
+            cx.notify();
+        }
     }
 
     /// Mouse wheel: scroll the scrollback buffer on the main screen; on the
@@ -964,6 +1034,7 @@ impl TerminalView {
 }
 
 impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
+impl gpui::EventEmitter<FilesChanged> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
 
@@ -1197,7 +1268,10 @@ impl Render for TerminalView {
         let ime_focus = self.focus_handle.clone();
         let ime_entity = cx.entity();
         let block_bar = self.render_block_bar(cx);
-        let header = self.render_pane_header();
+        // Pane header (agent pill / shell chip). The pill's click handler needs a
+        // handle to THIS pane to cycle usage_mode at event time, so pass a weak
+        // ref (cheap; the pane outlives its own render).
+        let header = self.render_pane_header(cx.entity().downgrade());
 
         // Cursor (positioned over the grid, which starts at the term-area origin).
         // Hidden when the app hides it (vim) or the viewport is scrolled off the row.

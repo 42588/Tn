@@ -234,6 +234,18 @@ pub fn latest_codex_session_any() -> Option<PathBuf> {
     rollouts.into_iter().next().map(|(_, p)| p)
 }
 
+/// Every Codex rollout, as `(path, mtime)`. Keyed on mtime by the pane-binding
+/// logic (see the Claude analogue + `detect::resolve_session_for_pane`): a
+/// resumed session reuses an old file, so creation time can't identify it.
+pub fn codex_sessions_with_mtime() -> Vec<(PathBuf, SystemTime)> {
+    let Some(dir) = codex_sessions_dir() else {
+        return Vec::new();
+    };
+    let mut rollouts = Vec::new();
+    collect_rollouts(&dir, &mut rollouts); // pushes (mtime, path)
+    rollouts.into_iter().map(|(mtime, path)| (path, mtime)).collect()
+}
+
 /// Read + parse the newest Codex session for `cwd`.
 pub fn usage_for_cwd_codex(cwd: &str) -> Option<AiUsage> {
     let text = std::fs::read_to_string(latest_codex_session_file(cwd)?).ok()?;

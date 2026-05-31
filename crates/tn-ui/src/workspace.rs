@@ -24,7 +24,7 @@ use crate::explorer::{ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
-use crate::terminal_view::{LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
+use crate::terminal_view::{FilesChanged, LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
 type PaneId = u64;
@@ -621,6 +621,8 @@ impl Workspace {
                     for view in ws.panes.values() {
                         view.update(cx, |v, cx| v.refresh_changes(cx));
                     }
+                    // Also mark the explorer stale so git tags refresh.
+                    ws.explorer.update(cx, |explorer, _cx| explorer.mark_stale());
                     cx.notify();
                 }
             }
@@ -888,6 +890,11 @@ impl Workspace {
         // rather than relying on plain `notify`).
         cx.subscribe(&view, |_ws, _view, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
+        // File watcher fired → refresh explorer git tags too.
+        cx.subscribe(&view, |ws, _view, _ev: &FilesChanged, cx| {
+            ws.explorer.update(cx, |explorer, _cx| explorer.mark_stale());
+        })
+        .detach();
         // Agent activity-rail card click → open that file in Quick Look (Diff tab).
         // The rail emits an absolute path; Quick Look reads it + shows its git diff.
         cx.subscribe(&view, |ws, _view, ev: &OpenInQuickLook, cx| {
@@ -2643,6 +2650,9 @@ impl Render for Workspace {
         // (HTMINBUTTON / HTMAXBUTTON / HTCLOSE) — no click handler needed.
         // mockup .wctl .b.close:hover bg = 红 @ 0.22(原硬编码 0x33=0.2)
         let danger_bg = cola(self.config.theme.ansi.red, 0.22);
+        // `.occlude()` (BlockMouse) prevents the root track_focus from intercepting
+        // NC mouse-down events and calling prevent_default, which would swallow the
+        // OS window command (same pattern as the drag spacer).
         let ctl_btn = |name: &'static str, area: WindowControlArea, danger: bool| {
             div()
                 .w(px(35.)) // mockup .wctl .b 35×30
@@ -2652,6 +2662,7 @@ impl Render for Workspace {
                 .justify_center()
                 .rounded(px(9.)) // mockup .b radius 9
                 .hover(move |s| s.bg(if danger { danger_bg } else { rgba(INSET) })) // mockup hover = g2(.04)
+                .occlude()
                 .window_control_area(area)
                 .child(icon(name, 13., ui.muted))
         };

@@ -8,15 +8,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
+use std::time::Duration;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, FocusHandle,
-    KeyDownEvent, MouseButton, SharedString, Window,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, AsyncApp, Context,
+    FocusHandle, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, UniformListScrollHandle,
+    WeakEntity, Window,
 };
 use tn_config::Loaded;
 
+use crate::gitutil;
 use crate::style::{col, cola, glass_pane, icon, pane_fill, specular_top, INSET, R_PANEL};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
@@ -75,11 +77,14 @@ fn parse_porcelain(stdout: &str) -> HashMap<String, char> {
 const IGNORED: &[&str] = &[".git", "target", "node_modules", ".idea", ".vs"];
 /// Cap the visible tree so a huge repo can't blow up a render pass.
 const MAX_ROWS: usize = 400;
+/// Fixed row height so `uniform_list` can measure once and assume the rest.
+const TREE_ROW_H: f32 = 26.0; // §16 .tnode height 26
 
 /// Emitted when a file row is clicked, so the workspace can open it in the viewer.
 pub struct OpenFile(pub PathBuf);
 
 /// One rendered tree row (a directory or a file at some depth).
+#[derive(Clone)]
 struct Row {
     path: PathBuf,
     name: String,
@@ -95,9 +100,94 @@ pub struct ExplorerView {
     selected: Option<PathBuf>,
     rows: Vec<Row>,
     /// `git status --porcelain` tags, keyed by forward-slash path relative to
-    /// the root (`crates/tn-ui/src/x.rs` → 'M'). Refreshed on rebuild.
+    /// the root (`crates/tn-ui/src/x.rs` → 'M'). Refreshed asynchronously.
     git_status: HashMap<String, char>,
+    /// Set true when the tree is rebuilt; the next render will spawn a background
+    /// task to refresh git status without blocking the UI thread.
+    git_stale: bool,
+    /// Keeps the background git task alive until completion.
+    _git_task: Option<gpui::Task<()>>,
+    /// Scroll controller for the virtualised tree list.
+    scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+}
+
+/// One tree row (`.tnode`): indent guide + chevron + icon + name + optional git
+/// tag. Pure rendering — free fn so the `'static` [`uniform_list`] closure can
+/// call it without borrowing the view.
+fn tree_row(
+    ui: &tn_config::UiColors,
+    t: &tn_config::Theme,
+    row: &Row,
+    indent: f32,
+    is_sel: bool,
+    maybe_tag: Option<(char, tn_config::Color)>,
+) -> gpui::Div {
+    let mut r = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .relative()
+        .gap(px(7.)) // §16 .tnode gap 7
+        .h(px(TREE_ROW_H))
+        .pr_2()
+        .pl(px(indent))
+        .rounded(px(8.)) // §16 .tnode radius 8
+        .text_size(px(12.5))
+        // mockup .tnode.active bg = 白渐变 .075→.025
+        .when(is_sel, |d| {
+            d.bg(linear_gradient(
+                180.,
+                linear_color_stop(rgba(0xffffff13), 0.), // .075 → 19 = 0x13
+                linear_color_stop(rgba(0xffffff06), 1.), // .025 → 6 = 0x06
+            ))
+        })
+        .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))));
+
+    // Indent guide (mockup .tnode[class*="ind"]::before)
+    if row.depth > 0 {
+        r = r.child(
+            div()
+                .absolute()
+                .left(px(indent - 8.0))
+                .top(px(0.))
+                .bottom(px(0.))
+                .w(px(1.))
+                .bg(rgba(0xffffff1f)),
+        );
+    }
+
+    // chevron (directories) or spacer (files)
+    if row.is_dir {
+        let chev = if row.expanded { "chev-d" } else { "chev-r" };
+        r = r.child(icon(chev, 13., ui.muted));
+    } else {
+        r = r.child(div().w(px(13.)).flex_none());
+    }
+
+    // type icon
+    let (glyph, glyph_color) = if row.is_dir {
+        ("folder", ui.accent)
+    } else if is_sel {
+        ("file", t.agents.claude)
+    } else {
+        ("file", ui.muted)
+    };
+    r = r.child(icon(glyph, 14., glyph_color)).child(
+        div()
+            .flex_1()
+            .overflow_hidden()
+            .text_ellipsis()
+            .text_color(if is_sel || row.is_dir { col(ui.foreground) } else { col(ui.muted) })
+            .when(row.is_dir, |d| d.font_weight(gpui::FontWeight(540.)))
+            .child(SharedString::from(row.name.clone())),
+    );
+
+    // git-status tag (files + directories)
+    if let Some((tag, c)) = maybe_tag {
+        r = r.child(git_tag(tag, c));
+    }
+    r
 }
 
 impl ExplorerView {
@@ -110,6 +200,9 @@ impl ExplorerView {
             selected: None,
             rows: Vec::new(),
             git_status: HashMap::new(),
+            git_stale: true,
+            _git_task: None,
+            scroll_handle: UniformListScrollHandle::default(),
             focus_handle: cx.focus_handle(),
         };
         me.rebuild();
@@ -135,29 +228,55 @@ impl ExplorerView {
     /// Run `git status --porcelain` in the root and map each changed path
     /// (forward-slash, relative) to a one-letter tag: M(odified) / U(ntracked)
     /// / A(dded) / D(eleted) / R(enamed).
+    /// Uses the bounded git helper (off-thread + timeout) so a slow / locked git
+    /// never freezes the caller; propagates tags upward so parent directories also
+    /// show an aggregated git indicator.
     fn compute_git_status(root: &Path) -> HashMap<String, char> {
         let mut map = HashMap::new();
-        let mut cmd = Command::new("git");
-        cmd.arg("-C").arg(root).arg("status").arg("--porcelain");
-        // No console flash when spawned from the GUI process (see tn-pty::wsl).
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-        let out = match cmd.output() {
-            Ok(o) => o,
-            Err(e) => {
-                // git missing / not spawnable: log once, then stay silent
-                // (待优化清单 §8.2). Not-a-repo just yields empty output.
-                static WARN: std::sync::Once = std::sync::Once::new();
-                WARN.call_once(|| tracing::warn!(error = %e, "git unavailable; explorer status marks off"));
-                return map;
-            }
+        let out = match gitutil::capture_bounded(root, &["status", "--porcelain"], Duration::from_millis(1500)) {
+            Some(s) => s,
+            None => return map,
         };
-        map.extend(parse_porcelain(&String::from_utf8_lossy(&out.stdout)));
+        map.extend(parse_porcelain(&out));
+        // Propagate tags upward: for each entry, walk up to every ancestor and
+        // keep the highest-priority tag (M > A > D > U > R). One pass, O(files × depth).
+        for (path, &tag) in map.clone().iter() {
+            let rank = Self::tag_rank(tag);
+            let mut parent = path.clone();
+            while let Some(pos) = parent.rfind('/') {
+                parent.truncate(pos);
+                map.entry(parent.clone())
+                    .and_modify(|t| {
+                        if rank > Self::tag_rank(*t) {
+                            *t = Self::rank_to_tag(rank);
+                        }
+                    })
+                    .or_insert(Self::rank_to_tag(rank));
+            }
+        }
         map
+    }
+
+    fn tag_rank(t: char) -> u32 {
+        match t {
+            'M' => 5,
+            'A' => 4,
+            'D' => 3,
+            'U' => 2,
+            'R' => 1,
+            _ => 0,
+        }
+    }
+
+    fn rank_to_tag(r: u32) -> char {
+        match r {
+            5 => 'M',
+            4 => 'A',
+            3 => 'D',
+            2 => 'U',
+            1 => 'R',
+            _ => 'M',
+        }
     }
 
     /// Read `dir`'s entries, drop hidden/ignored, and sort directories first
@@ -197,14 +316,36 @@ impl ExplorerView {
         }
     }
 
-    /// Rebuild the cached row list from the filesystem + current expansion,
-    /// refreshing the git-status tags.
+    /// Rebuild the cached row list from the filesystem + current expansion.
+    /// Git status is refreshed asynchronously (spawned on next render) to avoid
+    /// blocking the UI thread on a slow/locked git repository.
     fn rebuild(&mut self) {
         let mut rows = Vec::new();
         let root = self.root.clone();
         self.walk(&root, 0, &mut rows);
         self.rows = rows;
-        self.git_status = Self::compute_git_status(&self.root);
+        self.git_stale = true;
+    }
+
+    /// Kick off an async git-status refresh. Safe to call from any context;
+    /// only one task runs at a time (the flag is cleared immediately).
+    fn start_git_refresh(&mut self, cx: &mut Context<Self>) {
+        let root = self.root.clone();
+        let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let status = Self::compute_git_status(&root);
+            this.update(cx, |this, cx| {
+                this.git_status = status;
+                cx.notify();
+            })
+            .ok();
+        });
+        self._git_task = Some(task);
+    }
+
+    /// Signal that the file tree may be stale — trigger a full rebuild + git
+    /// refresh on the next render cycle.
+    pub fn mark_stale(&mut self) {
+        self.git_stale = true;
     }
 
     fn on_row_click(&mut self, path: PathBuf, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -274,6 +415,7 @@ impl ExplorerView {
             None => if delta >= 0 { 0 } else { self.rows.len() - 1 },
         };
         self.selected = Some(self.rows[next].path.clone());
+        self.scroll_to_selected();
     }
 
     /// Select the next/prev **file** row (skipping directories) and return its path
@@ -299,102 +441,21 @@ impl ExplorerView {
             if !self.rows[i as usize].is_dir {
                 let p = self.rows[i as usize].path.clone();
                 self.selected = Some(p.clone());
+                self.scroll_to_selected();
                 cx.notify();
                 return Some(p);
             }
         }
     }
 
-    fn render_row(&self, row: &Row, cx: &mut Context<Self>) -> gpui::Div {
-        let ui = &self.config.theme.ui;
-        let t = &self.config.theme;
-        let is_sel = self.selected.as_deref() == Some(row.path.as_path());
-        let indent = 10.0 + row.depth as f32 * 16.0; // mockup .tnode padding 10 + margin-left 16/级
-        let path = row.path.clone();
-        let is_dir = row.is_dir;
-
-        let mut r = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .relative() // anchor the indent guide line
-            .gap(px(7.)) // §16 .tnode gap 7
-            .h(px(26.)) // §16 .tnode height 26
-            .pr_2()
-            .pl(px(indent))
-            .rounded(px(8.)) // §16 .tnode radius 8
-            .text_size(px(12.5))
-            // mockup .tnode.active bg = 白渐变 .075→.025
-            .when(is_sel, |d| {
-                d.bg(linear_gradient(
-                    180.,
-                    linear_color_stop(rgba(0xffffff13), 0.), // .075 → 19 = 0x13
-                    linear_color_stop(rgba(0xffffff06), 1.), // .025 → 6 = 0x06
-                ))
-            })
-            .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _e, w, cx| this.on_row_click(path.clone(), is_dir, w, cx)),
-            );
-
-        // Indent guide (mockup .tnode[class*="ind"]::before): a 1px vertical line
-        // 8px left of the content, full row height (flush rows → continuous tree
-        // guides). 白 .05 overlay。
-        if row.depth > 0 {
-            r = r.child(
-                div()
-                    .absolute()
-                    .left(px(indent - 8.0))
-                    .top(px(0.))
-                    .bottom(px(0.))
-                    .w(px(1.))
-                    // mockup .tnode::before 是白 .05,但真机无 backdrop-blur 衬托会看不见 →
-                    // 提到 .12 才读得出引导线(白叠加,round(.12×255)=31)
-                    .bg(rgba(0xffffff1f)),
-            );
-        }
-
-        // chevron (directories only; files get a matching-width spacer)
-        if row.is_dir {
-            let chev = if row.expanded { "chev-d" } else { "chev-r" };
-            r = r.child(icon(chev, 13., ui.muted));
-        } else {
-            r = r.child(div().w(px(13.)).flex_none());
-        }
-        // type icon: folder (accent) / file (muted, or claude when selected)
-        let (glyph, glyph_color) = if row.is_dir {
-            ("folder", ui.accent)
-        } else if is_sel {
-            ("file", t.agents.claude)
-        } else {
-            ("file", ui.muted)
-        };
-        let mut r = r.child(icon(glyph, 14., glyph_color)).child(
-            div()
-                // mockup: .tnode 文件 = fg-dim;.tnode.dir = fg(亮)、weight 540;active → fg。
-                // (#A6AFD4 = fg-dim,无主题 token → 字面量)
-                .text_color(if is_sel || is_dir { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
-                .when(is_dir, |d| d.font_weight(gpui::FontWeight(540.)))
-                .child(SharedString::from(row.name.clone())),
-        );
-        // git-status tag (files only), right-aligned.
-        if !row.is_dir {
-            let key = row
-                .path
-                .strip_prefix(&self.root)
-                .ok()
-                .map(|p| p.to_string_lossy().replace('\\', "/"));
-            if let Some(&tag) = key.as_ref().and_then(|k| self.git_status.get(k)) {
-                let c = match tag {
-                    'U' | 'A' => t.ansi.green,
-                    'D' => t.ansi.red,
-                    _ => t.ansi.yellow,
-                };
-                r = r.child(div().flex_1()).child(git_tag(tag, c));
+    /// After changing the selection, scroll the virtualised list so the newly-
+    /// selected row is visible.
+    fn scroll_to_selected(&self) {
+        if let Some(ref p) = self.selected {
+            if let Some(idx) = self.rows.iter().position(|r| &r.path == p) {
+                self.scroll_handle.scroll_to_item(idx, ScrollStrategy::Top);
             }
         }
-        r
     }
 }
 
@@ -402,6 +463,12 @@ impl gpui::EventEmitter<OpenFile> for ExplorerView {}
 
 impl Render for ExplorerView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // If the file tree was rebuilt (or first shown), kick off async git refresh.
+        if self.git_stale {
+            self.git_stale = false;
+            self.start_git_refresh(cx);
+        }
+
         let ui = &self.config.theme.ui;
         let root_name = self
             .root
@@ -429,11 +496,13 @@ impl Render for ExplorerView {
                     .child(SharedString::from(root_name)),
             );
 
-        // Precompute the row Divs (collecting ends the `self.rows` borrow before
-        // the `.children()` closure). `render_row` takes `&Row`, so we pass the
-        // cached row by reference — no per-row clone (待优化清单 §2.5).
-        let rows: Vec<gpui::Div> =
-            (0..self.rows.len()).map(|i| self.render_row(&self.rows[i], cx)).collect();
+        // Prepare data for the 'static uniform_list closure (Rc/Arc clones are cheap).
+        let tree_rows: std::rc::Rc<Vec<Row>> = std::rc::Rc::new(self.rows.clone());
+        let tree_config = self.config.clone(); // Arc
+        let tree_root: std::rc::Rc<PathBuf> = std::rc::Rc::new(self.root.clone());
+        let tree_git: std::rc::Rc<HashMap<String, char>> = std::rc::Rc::new(self.git_status.clone());
+        let tree_sel: std::rc::Rc<Option<PathBuf>> = std::rc::Rc::new(self.selected.clone());
+        let tree_entity = cx.entity().downgrade();
 
         // Inner content, rounded 1px tighter so the gradient-border ring shows
         // (see style::glass_pane); g1 glass + specular + header + tree.
@@ -452,14 +521,64 @@ impl Render for ExplorerView {
             .child(specular_top())
             .child(header)
             .child(
-                div()
-                    .flex_1()
-                    .min_h(px(0.))
-                    .overflow_hidden()
-                    .p(px(6.)) // mockup .tree padding 6
-                    .flex()
-                    .flex_col()
-                    .children(rows),
+                uniform_list("explorer-tree", self.rows.len(), move |range, _window, _cx| {
+                    range
+                        .map(|i| {
+                            let row = &tree_rows[i];
+                            let indent = 10.0 + row.depth as f32 * 16.0;
+                            let is_sel =
+                                tree_sel.as_ref().as_ref() == Some(&row.path);
+                            let key = row
+                                .path
+                                .strip_prefix(tree_root.as_ref())
+                                .ok()
+                                .map(|p| p.to_string_lossy().replace('\\', "/"));
+                            let git_tag =
+                                key.as_ref()
+                                    .and_then(|k| tree_git.get(k))
+                                    .map(|&tag| {
+                                        let c = match tag {
+                                            'U' | 'A' => tree_config.theme.ansi.green,
+                                            'D' => tree_config.theme.ansi.red,
+                                            _ => tree_config.theme.ansi.yellow,
+                                        };
+                                        (tag, c)
+                                    });
+                            let path = row.path.clone();
+                            let is_dir = row.is_dir;
+                            let entity = tree_entity.clone();
+                            tree_row(
+                                &tree_config.theme.ui,
+                                &tree_config.theme,
+                                row,
+                                indent,
+                                is_sel,
+                                git_tag,
+                            )
+                            .on_mouse_down(MouseButton::Left, move |_ev, _w, app| {
+                                app.stop_propagation();
+                                let path = path.clone();
+                                let _ = entity.update(app, move |this, cx| {
+                                    if is_dir {
+                                        if !this.expanded.remove(&path) {
+                                            this.expanded.insert(path.clone());
+                                        }
+                                        this.rebuild();
+                                    } else {
+                                        let p = path.clone();
+                                        this.selected = Some(path);
+                                        cx.emit(OpenFile(p));
+                                    }
+                                    cx.notify();
+                                });
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .flex_1()
+                .min_h(px(0.))
+                .p(px(6.)) // mockup .tree padding 6
+                .track_scroll(self.scroll_handle.clone()),
             );
         // mockup .pane::before 竖向渐变描边 + 浮起投影(与终端面板一致;explorer 恒非焦点)
         glass_pane(inner, false, ui.accent)

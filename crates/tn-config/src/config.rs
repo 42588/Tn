@@ -38,6 +38,33 @@ impl Config {
     }
 }
 
+/// How a pane's usage pill presents its readout. Clicking the pill cycles
+/// through the concrete modes **per pane** (runtime, in memory); these values are
+/// the *starting* mode for a new pane, chosen by config.
+/// - `auto` (default): detect from the agent's auth — a subscription login
+///   (Claude Pro/Max, ChatGPT) shows context `%`, a metered API key shows `$`.
+///   Members and API users each get the right thing with zero config.
+/// - `api`: always the USD cost estimate (`$0.00` for an unpriced/proxy model).
+/// - `subscription`: always the context-usage percentage.
+/// - `tokens`: always the session's total token throughput.
+///
+/// Set the global starting default via `[general].billing_mode`, or per agent via
+/// `claude_billing` / `codex_billing` (a window can mix a subscription Claude and
+/// an API Codex). The per-pane click overrides the starting default at runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BillingMode {
+    /// Detect from the agent's auth (the smart default — zero config).
+    #[default]
+    Auto,
+    /// Always show the estimated USD cost.
+    Api,
+    /// Always show the context-usage percentage.
+    Subscription,
+    /// Always show the session's total token throughput.
+    Tokens,
+}
+
 /// `[general]`.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
@@ -46,13 +73,27 @@ pub struct General {
     pub scrollback_lines: usize,
     /// Confirm before closing a session that is still running (not yet wired).
     pub confirm_close: bool,
+    /// Starting usage-pill mode for a new pane (see [`BillingMode`]); default
+    /// `auto`. Each pane can then cycle its own pill at runtime by clicking it.
+    #[serde(default)]
+    pub billing_mode: BillingMode,
+    /// Per-agent starting-mode overrides of [`billing_mode`]. `None` (default)
+    /// inherits the global value. Lets one window default a Claude Pro/Max member
+    /// to `%` and a Codex API user to `$` (or `tokens` for a proxy model).
+    #[serde(default)]
+    pub claude_billing: Option<BillingMode>,
+    #[serde(default)]
+    pub codex_billing: Option<BillingMode>,
 }
 
 impl Default for General {
     fn default() -> Self {
         Self {
-            scrollback_lines: 10_000,
+            scrollback_lines: 5_000,
             confirm_close: true,
+            billing_mode: BillingMode::default(),
+            claude_billing: None,
+            codex_billing: None,
         }
     }
 }
@@ -230,5 +271,22 @@ mod tests {
         let c = Config::from_toml_str("[font]\nfamily = \"JetBrains Mono\"\nweird = 3\n")
             .expect("unknown keys tolerated");
         assert_eq!(c.font.family, "JetBrains Mono");
+    }
+
+    #[test]
+    fn billing_mode_defaults_and_per_agent_overrides() {
+        // Default: global api, no per-agent overrides (inherit).
+        let c = Config::default();
+        assert_eq!(c.general.billing_mode, BillingMode::Auto); // smart default
+        assert_eq!(c.general.claude_billing, None);
+        assert_eq!(c.general.codex_billing, None);
+        // The owner's case: subscription Claude (%) + token-throughput Codex.
+        let c = Config::from_toml_str(
+            "[general]\nclaude_billing = \"subscription\"\ncodex_billing = \"tokens\"\n",
+        )
+        .expect("per-agent billing parses");
+        assert_eq!(c.general.billing_mode, BillingMode::Auto); // inherited
+        assert_eq!(c.general.claude_billing, Some(BillingMode::Subscription));
+        assert_eq!(c.general.codex_billing, Some(BillingMode::Tokens));
     }
 }

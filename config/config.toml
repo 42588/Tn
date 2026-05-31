@@ -3,8 +3,16 @@
 # 所有字段都可省略,缺省时回退到内置默认值。颜色取自 [appearance].theme 指向的主题文件。
 
 [general]
-scrollback_lines = 10000      # 每个会话保留的滚动历史行数(暂未接线)
+scrollback_lines = 5000        # 每个会话保留的滚动历史行数
 confirm_close    = true       # 关闭仍在运行的会话前确认(暂未接线)
+billing_mode     = "auto"     # 用量药丸的「初始」显示维度。每个窗格可点击药丸随时切换
+                              #   ($ 费用 → % 上下文 → token 消耗),互不影响(运行时、不写盘)。
+                              #   可选值:auto = 按登录方式自动判断(会员→%,API key→$);
+                              #   api = 估算美元 $X.XX;subscription = 上下文 %;tokens = token 消耗。
+# 想给某个 agent 单独定初始默认(省略 = 跟随上面的 billing_mode):
+# claude_billing = "subscription"  # Claude 会员 → 起始显 %
+# codex_billing  = "tokens"        # Codex 代理模型 → 起始显 token 消耗
+#   注:$ 需模型在内置价目表;自定义/代理模型(如 moonbridge)无价 → 显示 $0.00。
 
 [font]
 family      = "CaskaydiaCove Nerd Font"  # 等宽 Nerd Font(含图标/特殊字符/emoji;需系统已安装,缺失则 DirectWrite 回退)

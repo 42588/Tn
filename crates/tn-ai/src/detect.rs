@@ -1,15 +1,18 @@
-//! Agent detection + per-cwd session resolution.
+//! Agent detection + session resolution.
 //!
 //! A pane's agent is known from **launch intent** (we launched `claude` /
 //! `codex`), which is the strongest signal — see [`agent_kind_for_command`].
-//! When that's unknown (a plain shell where the user typed an agent by hand),
-//! we fall back to **freshness**: whichever agent wrote the most recently
-//! modified session log for this `cwd` is the one on screen. The richer signals
-//! (process tree / OSC title / banner) are deferred; freshness covers the
-//! dogfooding case (running `claude` in a pwsh pane) without any of them.
+//!
+//! Binding a pane to *its* session log is [`resolve_session_for_pane`]: it picks
+//! the session that went **stale→fresh after the pane launched** (created anew or
+//! resumed), ignoring one already active at launch (a concurrent dev agent). The
+//! older cwd/freshness resolver ([`resolve_session`]) remains for callers that
+//! only have a cwd. The richer signals (process tree / OSC title / banner) are
+//! deferred — activity-after-launch covers the dogfooding case without them.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::{claude, codex, AgentKind, AiUsage};
 
@@ -56,6 +59,67 @@ pub fn resolve_session(cwd: &str, hint: Option<AgentKind>) -> Option<SessionRef>
     }
 }
 
+/// A session whose mtime sat within this window *before* launch was already
+/// being written when the pane started → it's a **concurrently-running** session
+/// (e.g. a dev Claude editing this repo while Tn runs from it), not this pane's.
+/// Our session goes from stale/absent at launch to freshly written *after*.
+const SESSION_ACTIVE_MARGIN: Duration = Duration::from_secs(120);
+
+/// Snapshot every `kind` session's mtime — the **baseline** a pane captures at
+/// launch. Sessions already fresh in this snapshot are someone else's; the pane's
+/// own is the one that transitions stale→fresh afterward (see
+/// [`resolve_session_for_pane`]).
+pub fn session_mtimes(kind: AgentKind) -> HashMap<PathBuf, SystemTime> {
+    let sessions = match kind {
+        AgentKind::ClaudeCode => claude::claude_sessions_with_mtime(),
+        AgentKind::Codex => codex::codex_sessions_with_mtime(),
+    };
+    sessions.into_iter().collect()
+}
+
+/// Pick the session this pane activated from a `(path, mtime)` list + the
+/// launch-time `baseline`: the newest-mtime one that (a) is absent from baseline
+/// (created after launch) or was **stale** then (baseline mtime older than
+/// `launched_at − SESSION_ACTIVE_MARGIN`), **and** (b) has since been written
+/// (`mtime ≥ launched_at`). Splitting this out keeps it unit-testable with
+/// synthetic timestamps (no filesystem).
+fn pick_pane_session(
+    sessions: Vec<(PathBuf, SystemTime)>,
+    launched_at: SystemTime,
+    baseline: &HashMap<PathBuf, SystemTime>,
+) -> Option<PathBuf> {
+    let stale_before = launched_at.checked_sub(SESSION_ACTIVE_MARGIN).unwrap_or(launched_at);
+    sessions
+        .into_iter()
+        .filter(|(path, mtime)| {
+            *mtime >= launched_at
+                && baseline.get(path).is_none_or(|&b| b < stale_before)
+        })
+        .max_by_key(|(_, mtime)| *mtime)
+        .map(|(path, _)| path)
+}
+
+/// The session **this pane activated** — whether it created a fresh log or
+/// **resumed** an old one. Binds by *activity after launch*, not file creation:
+/// agents reuse session files (`claude --continue`, or simply appending to the
+/// project's latest), so a brand-new pane that resumes yesterday's session must
+/// still show that session's usage. `baseline` = [`session_mtimes`] captured at
+/// launch; a session already fresh then is a **concurrent** one (a dev Claude
+/// editing this repo) and is excluded, fixing "a fresh pane shows another
+/// session's numbers". `None` until the agent writes — honest, not a guess.
+pub fn resolve_session_for_pane(
+    kind: AgentKind,
+    launched_at: SystemTime,
+    baseline: &HashMap<PathBuf, SystemTime>,
+) -> Option<SessionRef> {
+    let sessions = match kind {
+        AgentKind::ClaudeCode => claude::claude_sessions_with_mtime(),
+        AgentKind::Codex => codex::codex_sessions_with_mtime(),
+    };
+    let path = pick_pane_session(sessions, launched_at, baseline)?;
+    session_ref(kind, path)
+}
+
 /// Parse a session file's text for the given agent.
 pub fn parse_session(kind: AgentKind, text: &str) -> Option<AiUsage> {
     match kind {
@@ -70,6 +134,49 @@ pub fn usage_for_cwd(cwd: &str, hint: Option<AgentKind>) -> Option<(AgentKind, A
     let sref = resolve_session(cwd, hint)?;
     let text = std::fs::read_to_string(&sref.path).ok()?;
     Some((sref.kind, parse_session(sref.kind, &text)?))
+}
+
+/// Best-effort: is this agent signed in via a **subscription** (Claude Pro/Max,
+/// ChatGPT) rather than a metered **API key**? Drives the `Auto` usage-display
+/// default — members see context %, API users see $. Reads the agent's local
+/// auth file; anything unreadable/unknown → `false` (assume API, the money view).
+pub fn detect_subscription(kind: AgentKind) -> bool {
+    match kind {
+        AgentKind::ClaudeCode => claude_is_subscription(),
+        AgentKind::Codex => codex_is_subscription(),
+    }
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+/// Claude Code writes `~/.claude/.credentials.json` with a `claudeAiOauth` object
+/// carrying `subscriptionType` (e.g. `"pro"`) when logged in as a member; an
+/// API-key user has no such OAuth block.
+fn claude_is_subscription() -> bool {
+    let Some(home) = home_dir() else { return false };
+    let path = home.join(".claude").join(".credentials.json");
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    v.get("claudeAiOauth")
+        .and_then(|o| o.get("subscriptionType"))
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+/// Codex writes `~/.codex/auth.json` with `auth_mode`: `"ApiKey"` for a metered
+/// key, otherwise a ChatGPT (subscription) login.
+fn codex_is_subscription() -> bool {
+    let Some(home) = home_dir() else { return false };
+    let path = home.join(".codex").join("auth.json");
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    v.get("auth_mode")
+        .and_then(|s| s.as_str())
+        .is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("apikey"))
 }
 
 /// Classify a launch command into an agent kind (the launch-intent signal).
@@ -104,5 +211,52 @@ mod tests {
         assert_eq!(u.model, "claude-opus-4-7");
         // Codex text fed to the Claude parser yields nothing (and vice versa).
         assert!(parse_session(AgentKind::Codex, claude).is_none());
+    }
+
+    // Helpers for pick_pane_session timestamp math.
+    fn secs(n: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(n)
+    }
+
+    #[test]
+    fn binds_to_resumed_session_not_concurrent_dev() {
+        // launch at T; our session was stale (modified 1h before), the dev session
+        // was active 5s before launch and keeps writing (newer mtime). We must pick
+        // OURS once it's written after launch — never the concurrent dev session,
+        // even though the dev session's mtime is newer.
+        let launch = secs(1_000_000);
+        let mine = PathBuf::from("mine.jsonl");
+        let dev = PathBuf::from("dev.jsonl");
+        let mut baseline = HashMap::new();
+        baseline.insert(mine.clone(), secs(1_000_000 - 3600)); // stale at launch
+        baseline.insert(dev.clone(), secs(1_000_000 - 5)); // concurrent at launch
+        let sessions = vec![
+            (mine.clone(), secs(1_000_000 + 30)), // written after launch
+            (dev.clone(), secs(1_000_000 + 31)),  // newer, but concurrent → excluded
+        ];
+        assert_eq!(pick_pane_session(sessions, launch, &baseline), Some(mine));
+    }
+
+    #[test]
+    fn binds_to_freshly_created_session() {
+        // A session file that didn't exist at launch (absent from baseline) and is
+        // written after launch is ours.
+        let launch = secs(1_000_000);
+        let fresh = PathBuf::from("fresh.jsonl");
+        let baseline = HashMap::new();
+        let sessions = vec![(fresh.clone(), secs(1_000_000 + 10))];
+        assert_eq!(pick_pane_session(sessions, launch, &baseline), Some(fresh));
+    }
+
+    #[test]
+    fn idle_pane_binds_to_nothing() {
+        // Only a concurrent dev session exists (active at launch, still writing).
+        // An idle pane (ours not yet written) must show NOTHING, not the dev one.
+        let launch = secs(1_000_000);
+        let dev = PathBuf::from("dev.jsonl");
+        let mut baseline = HashMap::new();
+        baseline.insert(dev.clone(), secs(1_000_000 - 2)); // concurrent
+        let sessions = vec![(dev.clone(), secs(1_000_000 + 50))];
+        assert_eq!(pick_pane_session(sessions, launch, &baseline), None);
     }
 }

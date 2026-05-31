@@ -5,10 +5,11 @@
 //! the parent (`render`); the rest are header-internal.
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, Div, FontWeight,
-    MouseButton, SharedString,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, App, Context, Div, FontWeight,
+    MouseButton, SharedString, WeakEntity,
 };
 use tn_ai::AgentKind;
+use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
@@ -25,6 +26,11 @@ impl TerminalView {
         }
     }
 
+    /// Effective billing display mode for THIS pane's agent: a per-agent override
+    /// (`[general].claude_billing` / `codex_billing`) if set, else the global
+    /// `[general].billing_mode`. Lets one window mix a subscription Claude (`%`)
+    /// and an API Codex (`$`). Resolved from `self.agent` so it tracks a
+    /// shell-typed agent (sync_shell_agent), not just launch intent.
     /// A two-tone context-usage ring (grey track + agent-colored arc) with a
     /// centered percent label — the mockup's signature per-agent readout.
     fn usage_ring(&self, pct: u32, accent: Rgb) -> Div {
@@ -64,7 +70,7 @@ impl TerminalView {
     /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
     /// indicator — we can't observe the agent's think state from the PTY, so we
     /// don't fake one (Calm Glass: honest chrome).
-    fn render_agent_header(&self, agent: AgentKind) -> Div {
+    fn render_agent_header(&self, agent: AgentKind, weak: WeakEntity<Self>) -> Div {
         let accent = self.agent_accent();
         let name = match agent {
             AgentKind::ClaudeCode => "Claude Code",
@@ -122,6 +128,11 @@ impl TerminalView {
             .child(div().flex_1());
         if let Some(u) = &self.usage {
             let pct = (u.context_frac() * 100.0).round() as u32;
+            // This pane's chosen display mode (WYSIWYG): API always shows the
+            // dollar estimate ($0.00 for an unpriced/proxy model like `moonbridge`),
+            // subscription always the context %, tokens the throughput. No
+            // cross-fallback — clicking the pill cycles it, per pane (usage_mode).
+            let billing = self.usage_mode;
             let meta = div()
                 .flex()
                 .flex_col()
@@ -137,7 +148,7 @@ impl TerminalView {
                             crate::workspace::human_tokens(u.context_max as u64)
                         ))),
                 )
-                .when(u.cost_usd > 0.0, |d| {
+                .when(billing == BillingMode::Api, |d| {
                     d.child(
                         div()
                             .text_size(px(10.5))
@@ -145,10 +156,36 @@ impl TerminalView {
                             .text_color(col(self.palette.ansi[2])) // green
                             .child(SharedString::from(format!("${:.2}", u.cost_usd))),
                     )
+                })
+                .when(billing == BillingMode::Subscription, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight(640.))
+                            .text_color(col(self.ui_fg))
+                            .child(SharedString::from(format!("{}%", pct))),
+                    )
+                })
+                // Tokens: total session throughput (input+output+cache), the
+                // raw-consumption view for proxy models with no priced cost.
+                .when(billing == BillingMode::Tokens, |d| {
+                    d.child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight(640.))
+                            .text_color(gpui::rgb(0xA6AFD4)) // fg-dim (无 token)
+                            .child(SharedString::from(format!(
+                                "{} tok",
+                                crate::workspace::human_tokens(u.total_tokens())
+                            ))),
+                    )
                 });
             head = head.child(
                 // mockup .usage 药丸:gap 11 · padding 4 5 4 12 · radius 999 · bg g2(.04)
+                // Clickable: cycles THIS pane's display mode ($ → % → tokens) in
+                // memory (usage_mode). cursor + hover signal it's a control.
                 div()
+                    .id("usage-pill")
                     .flex()
                     .flex_row()
                     .items_center()
@@ -158,6 +195,18 @@ impl TerminalView {
                     .pr(px(5.))
                     .rounded_full()
                     .bg(rgba(INSET))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgba(HOVER)))
+                    .on_mouse_down(MouseButton::Left, move |_e, _w, app: &mut App| {
+                        // Per-pane: cycle just this pane's pill ($ → % → tokens) at
+                        // CLICK time. The pane isn't leased then; calling update during
+                        // workspace render (the old `pane.update`) re-leased an already
+                        // -leased pane → unwrap panic / window crash (see workspace).
+                        let _ = weak.update(app, |v, c| {
+                            v.usage_mode = crate::usage_display::cycle(v.usage_mode);
+                            c.notify();
+                        });
+                    })
                     .child(meta)
                     .child(self.usage_ring(pct, accent)),
             );
@@ -396,9 +445,13 @@ impl TerminalView {
     }
 
     /// Per-pane header — agent header for agents, else a shell `.phead`(cwd + chip).
-    pub(super) fn render_pane_header(&self) -> Option<Div> {
+    /// `weak` = a handle to THIS pane, captured by the usage-pill click closure so
+    /// it can cycle the display mode at event time. The caller (workspace) passes
+    /// `pane.downgrade()` and renders via `read` — never `update` during render
+    /// (that re-leases the pane mid-render → panic).
+    pub(super) fn render_pane_header(&self, weak: WeakEntity<Self>) -> Option<Div> {
         Some(match self.agent {
-            Some(a) => self.render_agent_header(a),
+            Some(a) => self.render_agent_header(a, weak),
             None => self.render_shell_header(),
         })
     }

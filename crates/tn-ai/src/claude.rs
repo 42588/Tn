@@ -50,7 +50,11 @@ pub fn parse_claude_session(jsonl: &str) -> Option<AiUsage> {
         output += ot;
         cache_create += cc;
         cache_read += cr;
-        // Latest turn's total input = the live context size.
+        // Latest turn's total input = the live context size. Anthropic splits
+        // input into three ADDITIVE buckets — plain `input_tokens`,
+        // `cache_creation_input_tokens`, `cache_read_input_tokens` (a real turn
+        // reads 47K cached with input_tokens=2) — so sum all three to match
+        // what `/context` reports.
         context_used = (it + cc + cr).min(u32::MAX as u64) as u32;
         if let Some(m) = msg.get("model").and_then(|m| m.as_str()) {
             if !m.is_empty() {
@@ -163,6 +167,38 @@ pub fn latest_claude_session_any() -> Option<PathBuf> {
     newest.map(|(_, p)| p)
 }
 
+/// Every Claude session log across all projects, as `(path, mtime)`. The
+/// pane-binding logic (see `detect::resolve_session_for_pane`) keys on mtime —
+/// an agent **resumes** an old session file as often as it creates one, so file
+/// creation time can't identify "this pane's session"; activity (mtime) can.
+pub fn claude_sessions_with_mtime() -> Vec<(PathBuf, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    let Some(projects) = claude_projects_dir() else {
+        return out;
+    };
+    let Ok(projs) = std::fs::read_dir(&projects) else {
+        return out;
+    };
+    for proj in projs.flatten() {
+        if !proj.path().is_dir() {
+            continue;
+        }
+        let Ok(files) = std::fs::read_dir(proj.path()) else {
+            continue;
+        };
+        for entry in files.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(mtime) = entry.metadata().ok().and_then(|m| m.modified().ok()) {
+                out.push((path, mtime));
+            }
+        }
+    }
+    out
+}
+
 /// Read + parse the newest Claude session for `cwd`.
 pub fn usage_for_cwd(cwd: &str) -> Option<AiUsage> {
     let text = std::fs::read_to_string(latest_session_file(cwd)?).ok()?;
@@ -188,6 +224,7 @@ mod tests {
         // context = LAST turn total input = 200 + 0 + 2000.
         assert_eq!(u.context_used, 2200);
         assert_eq!(u.context_max, 200_000);
+        // input/cache_create/cache_read are separate additive buckets, each billed at its own rate.
         let expect = 300.0 / 1e6 * 15.0 + 130.0 / 1e6 * 75.0 + 10.0 / 1e6 * 18.75 + 3000.0 / 1e6 * 1.5;
         assert!((u.cost_usd - expect).abs() < 1e-9);
     }

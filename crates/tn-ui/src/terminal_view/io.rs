@@ -47,11 +47,11 @@ impl TerminalView {
             // stateful (a sequence can split across reads), so it lives here.
             let mut shell = ShellParser::new();
             let start = Instant::now();
-            // 64 KiB: high-throughput output (cat big files, build logs) drains in
-            // far fewer read calls than the old 8 KiB, cutting lock churn on the
-            // shared Terminal (待优化清单 §2.3). Heap-boxed to keep the thread stack
-            // small.
-            let mut buf = vec![0u8; 65536];
+            // 16 KiB: balances throughput with lock-hold latency. Larger buffers
+            // would hold the terminal lock longer during `advance()` and block the
+            // UI thread on keystrokes (input stutter). Heap-boxed to keep the
+            // thread stack small.
+            let mut buf = vec![0u8; 16384];
             // Outer guard (待优化清单 §8.1): a panic anywhere in the reader loop is
             // logged with context instead of the thread dying silently (which
             // would leave the pane frozen with no clue why).
@@ -365,49 +365,74 @@ impl TerminalView {
         .detach();
     }
 
-    /// Poll this pane's agent usage off the main thread, re-parsing only when the
-    /// resolved session file changes (path or mtime) — an idle agent costs a
-    /// cheap `stat`, preserving the idle-zero-wakeup property. Emits
+    /// Poll this pane's agent usage off the main thread. Binds to the session
+    /// **this pane activated** — created fresh OR **resumed** from an old file —
+    /// by watching for one that goes stale→fresh after `launched_at`, ignoring a
+    /// session already active at launch (a concurrent dev Claude editing this very
+    /// repo); see [`tn_ai::resolve_session_for_pane`]. Once found it's **pinned**,
+    /// so a later session can't hijack the readout. Re-parses only when the pinned
+    /// file's mtime changes (idle agent = one cheap `stat`, idle-zero-wakeup).
+    /// Until the agent writes nothing is shown — honest, not a guess. Emits
     /// [`UsageUpdated`] on change so the workspace status bar repaints.
-    pub(super) fn spawn_usage_poller(cx: &mut Context<Self>, cwd: String, hint: Option<AgentKind>) {
+    pub(super) fn spawn_usage_poller(
+        cx: &mut Context<Self>,
+        kind: AgentKind,
+        launched_at: SystemTime,
+    ) {
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let mut last: Option<(PathBuf, SystemTime)> = None;
+            // Baseline mtimes at launch: any session already fresh now is a
+            // concurrent (someone else's) one; ours flips stale→fresh later.
+            let baseline = std::sync::Arc::new(
+                exec.spawn(async move { tn_ai::session_mtimes(kind) }).await,
+            );
+            let mut pinned: Option<PathBuf> = None; // this pane's session, once found
+            let mut last_mtime: Option<SystemTime> = None;
             loop {
                 // Stop once the agent identity is gone (it exited → pane is now a
                 // plain shell) or the view dropped — no point polling a dead agent.
                 if this.update(cx, |v, _| v.agent().is_none()).unwrap_or(true) {
                     break;
                 }
-                let cwd2 = cwd.clone();
-                let prev = last.clone();
+                let pinned2 = pinned.clone();
+                let prev = last_mtime;
+                let baseline2 = baseline.clone();
                 let res = exec
                     .spawn(async move {
-                        let sref = tn_ai::resolve_session(&cwd2, hint)?;
-                        let mtime = std::fs::metadata(&sref.path).ok()?.modified().ok()?;
-                        if prev.as_ref() == Some(&(sref.path.clone(), mtime)) {
-                            return None; // unchanged — skip the re-parse
+                        // Lock onto this pane's session once; afterward just follow
+                        // that exact file (a later session can't steal it).
+                        let path = match pinned2 {
+                            Some(p) => p,
+                            None => {
+                                tn_ai::resolve_session_for_pane(kind, launched_at, &baseline2)?.path
+                            }
+                        };
+                        let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+                        if prev == Some(mtime) {
+                            return Some((path, mtime, None)); // pinned, unchanged
                         }
-                        let text = std::fs::read_to_string(&sref.path).ok()?;
-                        let usage = tn_ai::parse_session(sref.kind, &text)?;
-                        Some((sref.kind, sref.path, mtime, usage))
+                        let usage = tn_ai::parse_session(kind, &std::fs::read_to_string(&path).ok()?);
+                        Some((path, mtime, usage))
                     })
                     .await;
-                if let Some((_kind, path, mtime, usage)) = res {
-                    last = Some((path, mtime));
+                if let Some((path, mtime, usage)) = res {
+                    pinned = Some(path); // bound from now on
+                    last_mtime = Some(mtime);
                     // `agent` is fixed from launch intent; the poller only updates
                     // the usage snapshot (never relabels the pane). The activity-rail
                     // git data is refreshed separately by the change watcher
                     // (`spawn_change_watcher` → `refresh_changes`, 变化即刷新).
-                    if this
-                        .update(cx, |v, cx| {
-                            v.usage = Some(usage);
-                            cx.emit(UsageUpdated);
-                            cx.notify();
-                        })
-                        .is_err()
-                    {
-                        break; // view dropped
+                    if let Some(usage) = usage {
+                        if this
+                            .update(cx, |v, cx| {
+                                v.usage = Some(usage);
+                                cx.emit(UsageUpdated);
+                                cx.notify();
+                            })
+                            .is_err()
+                        {
+                            break; // view dropped
+                        }
                     }
                 }
                 exec.timer(Duration::from_secs(4)).await;

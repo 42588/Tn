@@ -434,7 +434,7 @@ impl QuickLook {
             return; // same insert run — already captured at its start
         }
         self.undo.push((self.buf.clone(), self.cursor));
-        if self.undo.len() > 500 {
+        if self.undo.len() > 100 {
             self.undo.remove(0);
         }
         self.redo.clear();

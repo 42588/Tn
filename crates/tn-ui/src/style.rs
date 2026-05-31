@@ -102,6 +102,10 @@ fn over(ov: u32, base: (u8, u8, u8)) -> Rgba {
 /// Shared by terminal panes (`render_node`) + explorer so the deep cool glass
 /// can't drift ([`G1_TOP`]/[`G1_BOT`], guarded against mockup). Opaque (not the
 /// raw translucent g1) so [`glass_pane`]'s gradient border doesn't bleed through.
+///
+/// gpui 0.2.2's `linear_gradient` only supports two stops; a multi-stop ramp
+/// (to reduce 8-bit colour-banding) must wait for a framework upgrade or custom
+/// element rendering.
 pub(crate) fn pane_fill(bg: impl Rgb8) -> gpui::Background {
     let base = bg.channels();
     linear_gradient(

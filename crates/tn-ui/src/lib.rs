@@ -18,6 +18,7 @@ mod quick_terminal;
 mod style;
 mod terminal_view;
 mod welcome;
+mod usage_display;
 mod workspace;
 
 use std::sync::Arc;

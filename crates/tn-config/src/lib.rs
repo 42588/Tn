@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 pub use color::{Color, ColorError};
 pub use config::{
-    Action, Appearance, Config, Font, General, Keybinding, Profile, ProfileKind,
+    Action, Appearance, BillingMode, Config, Font, General, Keybinding, Profile, ProfileKind,
     DEFAULT_CONFIG_TOML,
 };
 pub use paths::{config_dir, config_path, themes_dir};

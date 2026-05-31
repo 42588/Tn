@@ -17,6 +17,11 @@ pub struct Pricing {
 
 impl Pricing {
     /// Estimated cost (USD) for the given token counts.
+    /// Anthropic reports `input_tokens`, `cache_creation_input_tokens`, and
+    /// `cache_read_input_tokens` as three **separate, additive** buckets — input
+    /// does NOT include either cache count (a real turn reads 47K cached tokens
+    /// with `input_tokens=2`). Charge each at its own rate; never subtract cache
+    /// from input (that underflows u64 → astronomical cost / debug panic).
     pub fn cost(&self, input: u64, output: u64, cache_create: u64, cache_read: u64) -> f64 {
         const M: f64 = 1_000_000.0;
         input as f64 / M * self.input

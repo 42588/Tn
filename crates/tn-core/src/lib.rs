@@ -451,10 +451,10 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    /// Create a terminal of the given viewport size with the default 10 000
+    /// Create a terminal of the given viewport size with the default 5 000
     /// lines of scrollback.
     pub fn new(size: GridSize) -> Self {
-        Self::with_scrollback(size, 10_000)
+        Self::with_scrollback(size, 5_000)
     }
 
     /// Create a terminal with an explicit scrollback history size (lines).
