@@ -13,7 +13,7 @@ use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, icon, HOVER, INSET, R_CARD, UI_SANS};
+use crate::style::{col, cola, glass_card, icon, HOVER, INSET, R_CARD, UI_SANS};
 
 impl TerminalView {
     /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
@@ -412,24 +412,38 @@ impl TerminalView {
                     let is_cur = i == 0;
                     let plus = format!("+{}", f.add);
                     let minus = (f.del > 0).then(|| format!("−{}", f.del));
-                    let mut card = div()
-                        .rounded(px(R_CARD)).py(px(8.)).px(px(10.))
-                        .flex().flex_col().gap(px(6.));
-                    card = if is_cur {
-                        card.bg(cola(self.ui_accent, 0.06))
-                            .border_1().border_color(cola(self.ui_accent, 0.22))
+                    // 内层卡片:纯色背景防色带 + 圆角裁切
+                    let inner_bg = if is_cur {
+                        cola(self.ui_accent, 0.06)
                     } else {
-                        card.bg(rgba(INSET))
+                        rgba(INSET)
                     };
-                    card = card.child(self.arail_file(f.name(), &plus, minus.as_deref()));
+                    let inner_hover = if is_cur {
+                        cola(self.ui_accent, 0.12)
+                    } else {
+                        rgba(HOVER)
+                    };
+                    let inner = div()
+                        .rounded(px(R_CARD - 1.)) // 留 1px 给光环
+                        .overflow_hidden()
+                        .py(px(8.))
+                        .px(px(10.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .bg(inner_bg)
+                        .hover(|s| s.bg(inner_hover))
+                        .child(self.arail_file(f.name(), &plus, minus.as_deref()));
                     // root is from the Ready variant — always consistent with files
                     let abs = root.join(&f.path);
-                    card = card.hover(|s| s.bg(rgba(HOVER))).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _e, _w, cx| {
-                            cx.emit(super::OpenInQuickLook(abs.clone()));
-                        }),
-                    );
+                    let card = glass_card(inner, is_cur, self.agent_accent())
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_this, _e, _w, cx| {
+                                cx.emit(super::OpenInQuickLook(abs.clone()));
+                            }),
+                        );
                     scrollable = scrollable.child(card);
                 }
 

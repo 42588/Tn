@@ -1,12 +1,103 @@
 # UI 渲染管线 — 物理隔离架构
 
-> **对应源码**: `crates/tn-ui/src/terminal_view/mod.rs` · `crates/tn-ui/src/terminal_view/header.rs` · `crates/tn-ui/src/gitutil.rs`  
-> **提交**: `fc9c03e refactor(ui): 活动栏状态机 — RailState 枚举 + 骨架屏 + 防过期丢弃`  
+> **对应源码**: `crates/tn-ui/src/style.rs` · `crates/tn-ui/src/terminal_view/mod.rs` · `crates/tn-ui/src/terminal_view/header.rs` · `crates/tn-ui/src/gitutil.rs` · `crates/tn-ui/src/quick_look.rs`  
+> **提交**: `fc9c03e` 活动栏状态机 · `66d52fa` Quick Look 异步化 · `(glass_card)` 边缘导光卡片  
 > **日期**: 2026-06-02
 
 ---
 
-## 1. `crates/tn-ui/src/terminal_view/mod.rs` — RailState 枚举 + 代次计数 + refresh_changes
+## 1. `crates/tn-ui/src/style.rs` — glass_card 边缘导光封装器
+
+```rust
+/// 现代发光玻璃卡片 (Modern Glowing Glass Card)
+///
+/// 解决了大面积渐变带来的"色带 (Color Banding)" Bug。
+/// 采用"边缘导光"设计：背景使用绝对纯色防色带，利用 1px 的高对比度渐变外环
+/// 模拟光线折射，并通过带有 `accent` 颜色的弥散阴影（Ambient Glow）实现现代发光感。
+///
+/// `inner` 必须 `rounded(R_CARD - 1.)` + `overflow_hidden()` + 纯色背景
+/// （同 [`glass_pane`] 的 1px-padding reveal 范式）。
+pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
+    let (ar, ag, ab) = accent.channels();
+    let ar = ar as f32 / 255.0;
+    let ag = ag as f32 / 255.0;
+    let ab = ab as f32 / 255.0;
+
+    // 1. 边缘导光环 (Gradient Ring)
+    // 顶部迎接环境冷白光，底部汇聚强调色（发光感来源）
+    let top_edge = if focused {
+        rgba(0xffffff3d) // 白 .24
+    } else {
+        rgba(0xffffff1a) // 白 .10
+    };
+    let bot_edge = Rgba {
+        r: ar,
+        g: ag,
+        b: ab,
+        a: if focused { 0.45 } else { 0.10 },
+    };
+
+    let edge_bg = linear_gradient(
+        180.,
+        linear_color_stop(top_edge, 0.),
+        linear_color_stop(bot_edge, 1.),
+    );
+
+    // 2. 漫反射发光投影 (Ambient Glow)
+    // 放弃死黑的阴影，将 accent 颜色注入阴影中，形成真实的物理光晕
+    let glow_shadows = if focused {
+        vec![
+            // 基础物理切边，让卡片凸起
+            soft_shadow(0.0, 2.0, 0.0, 0.25),
+            // ★ 核心发光层：带有 accent 颜色的彩色投影
+            BoxShadow {
+                color: Rgba {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.20,
+                }
+                .into(),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(20.),
+                spread_radius: px(-2.),
+            },
+            // 底部深色结构影，撑起空间感
+            soft_shadow(12.0, 24.0, -12.0, 0.45),
+        ]
+    } else {
+        vec![
+            soft_shadow(0.0, 2.0, 0.0, 0.2),
+            soft_shadow(4.0, 8.0, -2.0, 0.3),
+        ]
+    };
+
+    shadowed(
+        div()
+            .size_full()
+            .rounded(px(R_CARD))
+            .p(px(1.)) // 留出 1px 的光环
+            .bg(edge_bg)
+            .child(inner),
+        glow_shadows,
+    )
+}
+```
+
+### 设计原理
+
+| 策略 | 旧方案（已废弃） | 新方案 |
+|------|------------------|--------|
+| 背景 | 大面积双色渐变（8-bit 色带严重） | 纯色中点（彻底消灭色带） |
+| 渐变 | `pane_fill` 两停渐变 | 压缩到 1px 边框环（窄到人眼看不出断层） |
+| 发光 | `soft_shadow` 纯黑投影 | accent 色彩注入 `BoxShadow`（利用 GPU 平滑渲染模拟光晕） |
+| 深度 | `box_shadow` 多层柔影 | 基础阴影 + 彩色光晕 + 结构影三层 |
+
+**范式**: 调用方传入 `inner`（必须 `rounded(R_CARD - 1.)` + `overflow_hidden()` + 纯色背景），`glass_card` 仅负责「发光边缘」+「投影」，完全复刻 `glass_pane` 的 1px-padding reveal 模式。
+
+---
+
+## 2. `crates/tn-ui/src/terminal_view/mod.rs` — RailState 枚举 + 代次计数 + refresh_changes
 
 ```rust
 // ── 常量 ──
@@ -142,7 +233,7 @@ pub fn set_rail_root(&mut self, root: &std::path::Path, cx: &mut Context<Self>) 
 
 ---
 
-## 2. `crates/tn-ui/src/terminal_view/header.rs` — 骨架屏 + Ready 渲染
+## 3. `crates/tn-ui/src/terminal_view/header.rs` — 骨架屏 + glass_card 卡片渲染
 
 ```rust
 //! Agent pane header UI (待优化清单 §6.2): the avatar + name/model + context
@@ -160,7 +251,7 @@ use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, icon, HOVER, INSET, R_CARD, UI_SANS};
+use crate::style::{col, cola, glass_card, icon, HOVER, INSET, R_CARD, UI_SANS};
 
 impl TerminalView {
     /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
@@ -296,24 +387,39 @@ impl TerminalView {
                     let is_cur = i == 0;
                     let plus = format!("+{}", f.add);
                     let minus = (f.del > 0).then(|| format!("−{}", f.del));
-                    let mut card = div()
-                        .rounded(px(R_CARD)).py(px(8.)).px(px(10.))
-                        .flex().flex_col().gap(px(6.));
-                    card = if is_cur {
-                        card.bg(cola(self.ui_accent, 0.06))
-                            .border_1().border_color(cola(self.ui_accent, 0.22))
+                    // ★ 内层卡片:纯色背景防色带 + 圆角裁切
+                    let inner_bg = if is_cur {
+                        cola(self.ui_accent, 0.06)
                     } else {
-                        card.bg(rgba(INSET))
+                        rgba(INSET)
                     };
-                    card = card.child(self.arail_file(f.name(), &plus, minus.as_deref()));
+                    let inner_hover = if is_cur {
+                        cola(self.ui_accent, 0.12)
+                    } else {
+                        rgba(HOVER)
+                    };
+                    let inner = div()
+                        .rounded(px(R_CARD - 1.)) // 留 1px 给光环
+                        .overflow_hidden()
+                        .py(px(8.))
+                        .px(px(10.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .bg(inner_bg)
+                        .hover(|s| s.bg(inner_hover))
+                        .child(self.arail_file(f.name(), &plus, minus.as_deref()));
                     // root is from the Ready variant — always consistent with files
                     let abs = root.join(&f.path);
-                    card = card.hover(|s| s.bg(rgba(HOVER))).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_this, _e, _w, cx| {
-                            cx.emit(super::OpenInQuickLook(abs.clone()));
-                        }),
-                    );
+                    // ★ 外层 glass_card: 边缘导光 + 环境漫反射投影
+                    let card = glass_card(inner, is_cur, self.agent_accent())
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |_this, _e, _w, cx| {
+                                cx.emit(super::OpenInQuickLook(abs.clone()));
+                            }),
+                        );
                     scrollable = scrollable.child(card);
                 }
 
@@ -341,9 +447,23 @@ impl TerminalView {
 }
 ```
 
+### 卡片从旧方案迁移到 glass_card
+
+```
+旧:  div().rounded(R_CARD).bg(cola/accent/.06).border_1().border_color(...)
+      └── 扁平卡片，无投影，无光晕
+
+新:  inner = div().rounded(R_CARD-1.).overflow_hidden().bg(solid)
+      └── 纯色内层，防色带
+      glass_card(inner, focused, accent)
+      ├── 1px 渐变环（冷白顶 → accent 底）
+      ├── focused: accent 彩色投影光晕 (blur=20px, a=.20)
+      └── 基础结构影 (2px → 24px 多层)
+```
+
 ---
 
-## 3. `crates/tn-ui/src/gitutil.rs` — 有界 git 调用(死代码已清除)
+## 4. `crates/tn-ui/src/gitutil.rs` — 有界 git 调用(死代码已清除)
 
 ```rust
 //! Shared, **bounded** git helpers: run git off the UI thread with a hard timeout
@@ -478,12 +598,12 @@ mod tests {
 
 ---
 
-## 4. `crates/tn-ui/src/quick_look.rs` — Quick Look 异步化
+## 5. `crates/tn-ui/src/quick_look.rs` — Quick Look 异步化
 
-> **提交**: `40cbec4`  
+> **提交**: `66d52fa`  
 > **日期**: 2026-06-02
 
-### 4.1 LoadingState 枚举
+### 5.1 LoadingState 枚举
 
 ```rust
 /// QuickLook data-fetch state machine — render-pure: zero I/O inside `render()`.
@@ -497,7 +617,7 @@ enum LoadingState {
 }
 ```
 
-### 4.2 新增字段 (QuickLook struct)
+### 5.2 新增字段 (QuickLook struct)
 
 ```rust
 pub struct QuickLook {
@@ -510,7 +630,7 @@ pub struct QuickLook {
 }
 ```
 
-### 4.3 open() — 异步文件读取 + 代次防乱序
+### 5.3 open() — 异步文件读取 + 代次防乱序
 
 ```rust
 pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
@@ -548,7 +668,7 @@ pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
 }
 ```
 
-### 4.4 ensure_diff() — 异步 git diff + 独立代次
+### 5.4 ensure_diff() — 异步 git diff + 独立代次
 
 ```rust
 fn ensure_diff(&mut self, cx: &mut Context<Self>) {
@@ -581,7 +701,7 @@ fn ensure_diff(&mut self, cx: &mut Context<Self>) {
 }
 ```
 
-### 4.5 render() 骨架屏
+### 5.5 render() 骨架屏
 
 ```rust
 // Skeleton helper: short "code lines" of varying width
@@ -608,7 +728,7 @@ let body = if self.loading_state == LoadingState::Loading {
 };
 ```
 
-### 4.6 调用点变更 (workspace.rs)
+### 5.6 调用点变更 (workspace.rs)
 
 所有 QuickLook 公共方法现在需要 `cx: &mut Context<QuickLook>`:
 
@@ -619,11 +739,11 @@ let body = if self.loading_state == LoadingState::Loading {
 // App menu "设置":                     v.open_for_edit(p, cx)
 ```
 
-### 4.7 移除的代码
+### 5.7 移除的代码
 
 - `fn compute_diff(&self, path: &PathBuf) -> Vec<DiffLine>` — 已内联到 `ensure_diff()` 的异步闭包中
 
-### 4.8 架构总结
+### 5.8 架构总结
 
 ```
         open() / open_diff() / open_for_edit()
@@ -650,3 +770,17 @@ let body = if self.loading_state == LoadingState::Loading {
               else:
                   return  ← 静默丢弃过期数据
 ```
+
+---
+
+## 附录: 共用模式
+
+三个模块（活动栏 / Quick Look / glass_card）共用同一套架构原则：
+
+| 模式 | RailState | LoadingState | glass_card |
+|------|-----------|-------------|------------|
+| **职责** | 状态枚举 | 状态枚举 | 视觉封装 |
+| **render()** | 只读枚举 | 只读枚举 | 纯样式（无 I/O） |
+| **后台任务** | git diff ← gen 防过期 | fs + git ← gen 防过期 | 无（纯 CSS→gpui） |
+| **骨架屏** | 3 条 INSET 占位 | 8–16 条代码行骨架 | 无（调用方负责 inner） |
+| **反色带** | inner 纯色 bg | Rc 数据，不渐变 | 1px 渐变环 + 纯色 inner |

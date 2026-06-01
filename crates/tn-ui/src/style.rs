@@ -201,6 +201,80 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     )
 }
 
+/// 现代发光玻璃卡片 (Modern Glowing Glass Card)
+///
+/// 解决了大面积渐变带来的"色带 (Color Banding)" Bug。
+/// 采用"边缘导光"设计：背景使用绝对纯色防色带，利用 1px 的高对比度渐变外环
+/// 模拟光线折射，并通过带有 `accent` 颜色的弥散阴影（Ambient Glow）实现现代发光感。
+///
+/// `inner` 必须 `rounded(R_CARD - 1.)` + `overflow_hidden()` + 纯色背景
+/// （同 [`glass_pane`] 的 1px-padding reveal 范式）。
+pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
+    let (ar, ag, ab) = accent.channels();
+    let ar = ar as f32 / 255.0;
+    let ag = ag as f32 / 255.0;
+    let ab = ab as f32 / 255.0;
+
+    // 1. 边缘导光环 (Gradient Ring)
+    // 顶部迎接环境冷白光，底部汇聚强调色（发光感来源）
+    let top_edge = if focused {
+        rgba(0xffffff3d) // 白 .24
+    } else {
+        rgba(0xffffff1a) // 白 .10
+    };
+    let bot_edge = Rgba {
+        r: ar,
+        g: ag,
+        b: ab,
+        a: if focused { 0.45 } else { 0.10 },
+    };
+
+    let edge_bg = linear_gradient(
+        180.,
+        linear_color_stop(top_edge, 0.),
+        linear_color_stop(bot_edge, 1.),
+    );
+
+    // 2. 漫反射发光投影 (Ambient Glow)
+    // 放弃死黑的阴影，将 accent 颜色注入阴影中，形成真实的物理光晕
+    let glow_shadows = if focused {
+        vec![
+            // 基础物理切边，让卡片凸起
+            soft_shadow(0.0, 2.0, 0.0, 0.25),
+            // ★ 核心发光层：带有 accent 颜色的彩色投影
+            BoxShadow {
+                color: Rgba {
+                    r: ar,
+                    g: ag,
+                    b: ab,
+                    a: 0.20,
+                }
+                .into(),
+                offset: point(px(0.), px(6.)),
+                blur_radius: px(20.),
+                spread_radius: px(-2.),
+            },
+            // 底部深色结构影，撑起空间感
+            soft_shadow(12.0, 24.0, -12.0, 0.45),
+        ]
+    } else {
+        vec![
+            soft_shadow(0.0, 2.0, 0.0, 0.2),
+            soft_shadow(4.0, 8.0, -2.0, 0.3),
+        ]
+    };
+
+    shadowed(
+        div()
+            .size_full()
+            .rounded(px(R_CARD))
+            .p(px(1.)) // 留出 1px 的光环
+            .bg(edge_bg)
+            .child(inner),
+        glow_shadows,
+    )
+}
+
 /// Quick Look 速览浮层的玻璃填充(mockup `.quicklook` 底层暗玻璃,baked **opaque**)。
 /// 比常驻面板更实:浮层飘在终端正文之上、要**压住**后面的字保证代码可读。mockup 用
 /// `rgba(28,34,58,.88)→rgba(15,19,34,.94)` + backdrop-blur;我们没有 blur,半透会把后面
