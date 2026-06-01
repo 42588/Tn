@@ -15,7 +15,6 @@ fn main() {
     let _guard = init_logging();
     install_panic_hook();
 
-    tracing::info!("starting Tn");
     tn_ui::run();
 }
 

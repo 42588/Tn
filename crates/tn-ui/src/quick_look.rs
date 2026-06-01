@@ -402,7 +402,6 @@ impl QuickLook {
                 // Tell the workspace so it refreshes any agent pane's「本次改动」rail
                 // now — don't rely on the file watcher (debounce / cwd coverage gaps).
                 cx.emit(QuickLookEvent::FileSaved(path.clone()));
-                tracing::info!(target: "tn::quicklook", path = %path.display(), lines = self.buf.len(), "quick look saved");
             }
             Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
         }
@@ -882,12 +881,8 @@ impl QuickLook {
             &["diff", "--no-color", "--", &rel],
             std::time::Duration::from_millis(1500),
         );
-        if text.is_none() {
-            tracing::warn!(target: "tn::quicklook", path = %path.display(), "git diff timed out (>1.5s); showing no diff");
-        }
         parse_diff(text.as_deref().unwrap_or(""))
     }
-
 }
 
 /// Parse `git diff --no-color` output into renderable lines (tracking new-file line

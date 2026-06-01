@@ -1022,10 +1022,8 @@ impl TerminalView {
         let is_text_input =
             !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
         if is_text_input {
-            tracing::info!(target: "tn::ime", "term on_key DEFER key={key:?} ime_marked={:?}", self.ime_marked);
             return;
         }
-        tracing::info!(target: "tn::ime", "term on_key ENCODE key={key:?} ctrl={} alt={} ime_marked={:?}", m.control, m.alt, self.ime_marked);
 
         // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
         // input also snaps the viewport back to the live bottom. Skip the
@@ -1145,9 +1143,7 @@ impl EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
         // `Some` ⇒ gpui knows we're composing and feeds keys to the IME (events.rs).
-        let r = self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count());
-        tracing::info!(target: "tn::ime", "term marked_text_range -> {r:?}");
-        r
+        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1164,8 +1160,6 @@ impl EntityInputHandler for TerminalView {
     ) {
         // Committed text (IME result 中文, or any text the platform routes here) →
         // straight to the PTY, like a paste of one grapheme cluster.
-        tracing::info!(target: "tn::ime", "term replace_text(commit) text={text:?}");
-        // Committed IME text (中文) or a printable WM_CHAR → straight to the PTY.
         // (Backspace is encoded in `on_key`, never routed here — `translate_message`
         // emits no WM_CHAR for it, see the on_key note.)
         if !text.is_empty() {
@@ -1186,7 +1180,6 @@ impl EntityInputHandler for TerminalView {
     ) {
         // Composition preedit (pinyin in progress): don't touch the PTY until commit;
         // just track it so we report composing state + position the candidate window.
-        tracing::info!(target: "tn::ime", "term replace_and_mark text={new_text:?}");
         self.ime_marked = (!new_text.is_empty()).then(|| new_text.to_string());
         cx.notify();
     }
@@ -1583,7 +1576,6 @@ impl Render for TerminalView {
                     // Register the per-frame IME/text input handler so composed text
                     // (中文) reaches `replace_text_in_range`. No-op unless focused.
                     move |bounds, _state, window, cx| {
-                        tracing::trace!(target: "tn::ime", "term canvas paint: handle_input focused={}", ime_focus.is_focused(window));
                         window.handle_input(
                             &ime_focus,
                             ElementInputHandler::new(bounds, ime_entity.clone()),

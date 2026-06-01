@@ -36,11 +36,6 @@ use workspace::Workspace;
 pub fn run() {
     // Load config + theme once (writes defaults on first run); shared by panes.
     let config = Arc::new(tn_config::load());
-    tracing::info!(
-        theme = %config.theme.name,
-        font = %config.config.font.family,
-        "loaded config"
-    );
 
     // Window material. gpui 0.2.2 only exposes Opaque / Transparent / Blurred,
     // and `Blurred` on Windows = ACRYLIC (genuinely see-through blur) — NOT true
@@ -119,8 +114,7 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
         return;
     }
     let Some(spec) = tn_config::parse_hotkey(&qt.hotkey) else {
-        tracing::warn!(hotkey = %qt.hotkey, "invalid quick_terminal hotkey; not registered");
-        return;
+        return; // invalid quick_terminal hotkey; not registered
     };
 
     // Placeholder bounds; the window is repositioned (and resized) to the docking
@@ -155,8 +149,7 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
     // Listen for the global hotkey on a dedicated thread; toggle on the main
     // thread (where the window lives) each time it fires.
     let Some(mut rx) = platform::spawn_hotkey_listener(&spec) else {
-        tracing::warn!(hotkey = %qt.hotkey, "could not register quick_terminal hotkey");
-        return;
+        return; // could not register quick_terminal hotkey
     };
     cx.spawn(async move |cx: &mut AsyncApp| {
         while rx.next().await.is_some() {

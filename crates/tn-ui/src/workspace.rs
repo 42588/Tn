@@ -109,11 +109,7 @@ fn git_branch() -> Option<String> {
         .output()
     {
         Ok(o) => o,
-        Err(e) => {
-            static WARN: std::sync::Once = std::sync::Once::new();
-            WARN.call_once(|| tracing::warn!(error = %e, "git unavailable; status bar branch disabled"));
-            return None;
-        }
+        Err(_) => return None, // git unavailable; status bar branch disabled
     };
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!s.is_empty()).then_some(s)
@@ -473,9 +469,8 @@ pub fn bind_keys(cx: &mut App, config: &Loaded) {
         .collect();
     for kb in &config.config.keybindings {
         let command = cmd_for_id.get(kb.id.as_str()).copied().unwrap_or(kb.id.as_str());
-        match binding_for(&kb.keys, command) {
-            Some(b) => binds.push(b),
-            None => tracing::warn!(keys = %kb.keys, id = %kb.id, "unknown keybinding action; skipped"),
+        if let Some(b) = binding_for(&kb.keys, command) {
+            binds.push(b); // unknown action ids are silently skipped
         }
     }
     cx.bind_keys(binds);
@@ -1100,7 +1095,6 @@ impl Workspace {
     }
 
     fn new_tab(&mut self, _: &NewTab, _window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("ACTION new_tab");
         // A new tab opens on the welcome launchpad (no pane yet) — a tile click
         // there launches the chosen session into this tab.
         self.tabs.push(Tab::welcome());
@@ -1109,7 +1103,6 @@ impl Workspace {
     }
 
     fn next_tab(&mut self, _: &NextTab, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("ACTION next_tab");
         if self.tabs.len() <= 1 {
             return;
         }
@@ -1156,8 +1149,6 @@ impl Workspace {
     }
 
     fn split(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("ACTION split {}", if axis == Axis::Row { "right" } else { "down" });
-        self.dbg_focus("split(E/D)", window, cx);
         if self.tabs[self.active].welcome {
             return; // nothing to split on the welcome launchpad
         }
@@ -1170,7 +1161,6 @@ impl Workspace {
 
     /// `新会话` split direction (app menu). Maps to a (`Axis`, before?) split.
     fn split_session(&mut self, dir: SplitDir, spec: LaunchSpec, window: &mut Window, cx: &mut Context<Self>) {
-        self.dbg_focus("split_session", window, cx);
         let active = self.active;
         let new_id = self.spawn_pane_with(cx, spec);
         if self.tabs[active].welcome {
@@ -1180,13 +1170,11 @@ impl Workspace {
             // Prefer the target snapshotted at `新会话` invocation (before the
             // launcher overlay stole focus); fall back to the live `focused` field.
             let target = self.split_target.take().unwrap_or(self.tabs[active].focused);
-            tracing::info!("split_session: target={target} dir_axis={:?} before={}", dir.axis(), dir.before());
             let ok = self.tabs[active].root.split(target, new_id, dir.axis(), dir.before());
             if !ok {
                 // `target` wasn't in the active tree (stale/dummy id) — splitting it
                 // would orphan the new pane. Anchor to the first real leaf instead.
                 let fallback = first_leaf(&self.tabs[active].root);
-                tracing::warn!("split_session: target {target} not in tree, falling back to {fallback}");
                 self.tabs[active].root.split(fallback, new_id, dir.axis(), dir.before());
             }
         }
@@ -1204,7 +1192,6 @@ impl Workspace {
     }
 
     fn close_pane(&mut self, _: &ClosePane, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("ACTION close_pane");
         let active = self.active;
         let target = self.tabs[active].focused;
         if self.tabs[active].root.leaf_count() <= 1 {
@@ -1226,7 +1213,6 @@ impl Workspace {
     }
 
     fn next_pane(&mut self, _: &NextPane, window: &mut Window, cx: &mut Context<Self>) {
-        tracing::info!("ACTION next_pane");
         let mut leaves = Vec::new();
         collect_leaves(&self.tabs[self.active].root, &mut leaves);
         if leaves.len() <= 1 {
@@ -1243,7 +1229,6 @@ impl Workspace {
     fn reload_config(&mut self, _: &ReloadConfig, _window: &mut Window, cx: &mut Context<Self>) {
         let loaded = Arc::new(tn_config::load());
         let palette = crate::terminal_view::palette_from(&loaded.theme);
-        tracing::info!(theme = %loaded.theme.name, "reloaded config");
         self.config = loaded;
         let views: Vec<_> = self.panes.values().cloned().collect();
         for view in views {
@@ -1721,7 +1706,6 @@ impl Workspace {
                 tracing::error!(path = %tp.display(), error = %e, "reset_config: write theme failed");
             }
         }
-        tracing::info!("reset config to defaults");
         self.reload_config(&ReloadConfig, window, cx);
     }
 
@@ -1873,12 +1857,10 @@ impl Workspace {
     }
 
     /// `新会话` (app menu / Ctrl+Shift+N): open the split launcher at phase 1.
-    fn new_session(&mut self, _: &NewSession, window: &mut Window, cx: &mut Context<Self>) {
+    fn new_session(&mut self, _: &NewSession, _window: &mut Window, cx: &mut Context<Self>) {
         // Snapshot the split target NOW, while the pane the user is on still holds
         // focus — the launcher overlay is about to steal focus, so reading
-        // `focused` later (in `split_session`) is fragile. `dbg_focus` logs what
-        // gpui actually considers focused vs our `focused` field (diagnostics).
-        self.dbg_focus("new_session", window, cx);
+        // `focused` later (in `split_session`) is fragile.
         self.split_target = Some(self.tabs[self.active].focused);
         self.split_launcher_open = true;
         self.split_dir = None;
@@ -1886,26 +1868,6 @@ impl Workspace {
         self.split_wsl = false;
         self.split_needs_focus = true;
         cx.notify();
-    }
-
-    /// Diagnostic: dump `active`, our `focused` field, and which active-tab leaf
-    /// gpui actually reports as focused. Lets us see (in tn.log) whether the
-    /// `新会话` split target drifts vs `Ctrl+Shift+E` (which splits immediately).
-    fn dbg_focus(&self, who: &str, window: &mut Window, cx: &Context<Self>) {
-        let active = self.active;
-        let field = self.tabs[active].focused;
-        let mut leaves = Vec::new();
-        if !self.tabs[active].welcome {
-            collect_leaves(&self.tabs[active].root, &mut leaves);
-        }
-        let gpui_focused: Vec<PaneId> = leaves
-            .iter()
-            .copied()
-            .filter(|id| self.panes.get(id).is_some_and(|v| v.read(cx).focus_handle().is_focused(window)))
-            .collect();
-        tracing::info!(
-            "FOCUSDBG {who}: active={active} focused_field={field} leaves={leaves:?} gpui_focused={gpui_focused:?}"
-        );
     }
 
     fn close_split_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {

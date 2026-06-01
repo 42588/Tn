@@ -95,10 +95,8 @@ mod imp {
             .name("tn-quick-hotkey".into())
             .spawn(move || unsafe {
                 if RegisterHotKey(None, 1, mods, vk).is_err() {
-                    tracing::warn!("RegisterHotKey failed (hotkey likely owned by another app)");
-                    return;
+                    return; // hotkey likely owned by another app
                 }
-                tracing::info!("quick-terminal global hotkey registered");
                 let mut msg = MSG::default();
                 // GetMessageW: >0 normal, 0 on WM_QUIT, -1 on error.
                 while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
@@ -279,7 +277,6 @@ mod imp {
     ) -> LRESULT {
         if msg == WM_KEYDOWN {
             let vk = wparam.0 as u16; // virtual-key in the loword of wParam
-            tracing::debug!(target: "tn::ime", "subclass keydown vk={vk:#06x} processkey={}", vk == VK_PROCESSKEY.0);
             if vk == VK_PROCESSKEY.0 {
                 // The IME owns this key (active composition). Route it to the IME and
                 // CONSUME it so gpui's keydown handler never sees it (and so can't
@@ -293,7 +290,6 @@ mod imp {
                     pt: POINT::default(),
                 };
                 let _ = TranslateMessage(&m);
-                tracing::info!(target: "tn::ime", "ime subclass: routed VK_PROCESSKEY → IME (composing)");
                 return LRESULT(0);
             }
         }
@@ -309,13 +305,7 @@ mod imp {
     /// callback.
     pub fn install_ime_keyfix(h: isize) {
         unsafe {
-            if SetWindowSubclass(as_hwnd(h), Some(ime_subclass_proc), TN_IME_SUBCLASS_ID, 0)
-                .as_bool()
-            {
-                tracing::info!("IME key-routing subclass installed (VK_PROCESSKEY → IME)");
-            } else {
-                tracing::warn!("SetWindowSubclass for IME keyfix failed");
-            }
+            let _ = SetWindowSubclass(as_hwnd(h), Some(ime_subclass_proc), TN_IME_SUBCLASS_ID, 0);
         }
     }
 }

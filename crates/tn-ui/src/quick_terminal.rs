@@ -198,8 +198,6 @@ impl QuickTerminal {
             // Same IME key-routing fix as the main window (中文 composition in the
             // drop-down terminal). See platform.rs.
             platform::install_ime_keyfix(h);
-        } else {
-            tracing::warn!("quick terminal: no HWND; topmost/slide disabled");
         }
         if self.config.config.quick_terminal.autohide {
             cx.observe_window_activation(window, |qt, window, cx| {

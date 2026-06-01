@@ -74,10 +74,7 @@ impl Default for Loaded {
 pub fn load() -> Loaded {
     match paths::config_dir() {
         Some(dir) => load_from(&dir, true),
-        None => {
-            tracing::warn!("no config directory available; using built-in defaults");
-            Loaded::builtin()
-        }
+        None => Loaded::builtin(),
     }
 }
 
@@ -95,13 +92,10 @@ pub fn load_from(dir: &Path, write_defaults: bool) -> Loaded {
 
     let config = read_config(&config_file);
     let themes = load_themes(&themes_path);
-    let theme = themes.get(&config.appearance.theme).cloned().unwrap_or_else(|| {
-        tracing::warn!(
-            theme = %config.appearance.theme,
-            "configured theme not found; falling back to Tn Dark"
-        );
-        Theme::tn_dark()
-    });
+    let theme = themes
+        .get(&config.appearance.theme)
+        .cloned()
+        .unwrap_or_else(Theme::tn_dark);
 
     Loaded {
         config,
@@ -116,15 +110,10 @@ fn write_if_absent(file: &Path, contents: &str, parent: &Path) {
     if file.exists() {
         return;
     }
-    if let Err(e) = fs::create_dir_all(parent) {
-        tracing::warn!(dir = %parent.display(), error = %e, "could not create config dir");
+    if fs::create_dir_all(parent).is_err() {
         return;
     }
-    if let Err(e) = fs::write(file, contents) {
-        tracing::warn!(file = %file.display(), error = %e, "could not write default file");
-    } else {
-        tracing::info!(file = %file.display(), "wrote default config file");
-    }
+    let _ = fs::write(file, contents);
 }
 
 /// Read + parse `config.toml`, falling back to defaults on any error.
@@ -132,10 +121,7 @@ fn read_config(file: &Path) -> Config {
     match fs::read_to_string(file) {
         Ok(text) => match Config::from_toml_str(&text) {
             Ok(c) => c,
-            Err(e) => {
-                tracing::warn!(file = %file.display(), error = %e, "invalid config; using defaults");
-                Config::default()
-            }
+            Err(_) => Config::default(),
         },
         Err(_) => Config::default(),
     }
@@ -160,12 +146,7 @@ fn load_themes(dir: &Path) -> HashMap<String, Theme> {
             Ok(Ok(theme)) => {
                 themes.insert(theme.name.clone(), theme);
             }
-            Ok(Err(e)) => {
-                tracing::warn!(file = %path.display(), error = %e, "invalid theme; skipped");
-            }
-            Err(e) => {
-                tracing::warn!(file = %path.display(), error = %e, "could not read theme; skipped");
-            }
+            Ok(Err(_)) | Err(_) => {} // invalid / unreadable theme — skipped
         }
     }
     themes

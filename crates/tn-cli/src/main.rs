@@ -28,13 +28,6 @@ const MARKER: &str = "HELLO_TN_MARKER";
 const HARD_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
-        .init();
-
     // `TN_RESIZE_EXP=1`: instead of the smoke test, run a ConPTY resize probe
     // (does growing/shrinking the PTY lose scrollback content?). See fn below.
     if let Ok(v) = std::env::var("TN_RESIZE_EXP") {
@@ -60,14 +53,7 @@ fn main() -> anyhow::Result<()> {
         SpawnSpec::program("cmd.exe").arg("/c").arg(format!("echo {MARKER}"))
     };
 
-    tracing::info!(
-        "spawning `{}` in a {}x{} ConPTY",
-        spec.program,
-        size.rows,
-        size.cols
-    );
     let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))?;
-    tracing::info!("child pid = {:?}", pty.process_id());
 
     let mut reader = pty.take_reader()?;
     let mut writer = pty.writer()?;
@@ -116,13 +102,9 @@ fn main() -> anyhow::Result<()> {
                 break;
             }
             Ok(None) => {}
-            Err(e) => {
-                tracing::warn!("try_wait error: {e}");
-                break;
-            }
+            Err(_) => break,
         }
         if start.elapsed() > HARD_TIMEOUT {
-            tracing::warn!("hard timeout; killing child");
             let _ = pty.killer().and_then(|mut k| k.kill());
             break;
         }
@@ -167,7 +149,6 @@ fn resize_experiment() -> anyhow::Result<()> {
         .arg("-Command")
         .arg("1..40 | ForEach-Object { Write-Host \"LINE_$_\" }; Start-Sleep -Seconds 8");
 
-    tracing::info!("resize probe: {}x{} ConPTY", start.rows, start.cols);
     let mut pty = LocalPty::spawn(&spec, PtySize::new(start.rows as u16, start.cols as u16))?;
     let mut reader = pty.take_reader()?;
     let mut writer = pty.writer()?;

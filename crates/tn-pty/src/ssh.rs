@@ -279,17 +279,13 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, cfg: &SshConfig) -> an
     for path in &keys {
         let key = match load_secret_key(path, None) {
             Ok(k) => k,
-            Err(e) => {
-                tracing::debug!(key = %path.display(), "skip key: {e}");
-                continue;
-            }
+            Err(_) => continue,
         };
         let hash = handle.best_supported_rsa_hash().await?.flatten();
         let res = handle
             .authenticate_publickey(cfg.user.as_str(), PrivateKeyWithHashAlg::new(Arc::new(key), hash))
             .await?;
         if res.success() {
-            tracing::info!(key = %path.display(), "ssh authenticated (publickey)");
             return Ok(());
         }
     }
@@ -297,7 +293,6 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, cfg: &SshConfig) -> an
     if let Some(pw) = &cfg.password {
         let res = handle.authenticate_password(cfg.user.as_str(), pw.as_str()).await?;
         if res.success() {
-            tracing::info!("ssh authenticated (password)");
             return Ok(());
         }
     }
