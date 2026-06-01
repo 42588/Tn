@@ -430,18 +430,22 @@ impl TerminalView {
                     let inner = div()
                         .rounded(px(R_CARD - 1.)) // 留 1px 给光环
                         .overflow_hidden()
-                        .py(px(8.))
-                        .px(px(10.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .bg(inner_bg)
-                        .hover(|s| s.bg(inner_hover))
-                        .child(self.arail_file(f.name(), &plus, minus.as_deref()));
+                        .bg(gpui::rgb(0x181A24)) // ★ 死色垫底：阻断光晕从半透 inner_bg 穿透
+                        .child(
+                            div()
+                                .size_full()
+                                .py(px(8.))
+                                .px(px(10.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .bg(inner_bg)
+                                .hover(|s| s.bg(inner_hover))
+                                .child(self.arail_file(f.name(), &plus, minus.as_deref()))
+                        );
                     // root is from the Ready variant — always consistent with files
                     let abs = root.join(&f.path);
                     let card = glass_card(inner, is_cur, self.agent_accent())
-                        .mx(px(12.)) // 发光隔离带：给光晕阴影腾出空间，不被 overflow_hidden 截断
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -449,7 +453,15 @@ impl TerminalView {
                                 cx.emit(super::OpenInQuickLook(abs.clone()));
                             }),
                         );
-                    scrollable = scrollable.child(card);
+                    // ★ 外层 div.px(12) 物理隔离：在 overflow_hidden 容器内
+                    // 撑开 12px 安全区保护阴影；mx 在 w_full 子元素上会向外撑爆，
+                    // 但父级 padding 会向内挤压子元素 → 阴影活在里面
+                    scrollable = scrollable.child(
+                        div()
+                            .px(px(12.))
+                            .py(px(4.))
+                            .child(card),
+                    );
                 }
 
                 scrollable = scrollable.child(
