@@ -86,6 +86,27 @@ pub fn run() {
     Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
         workspace::bind_keys(cx, &config);
 
+        // ── 嵌入 CaskaydiaCove Nerd Font ──────────────────────────────────
+        // include_bytes! 在编译期将字体硬编码进二进制，运行时不再依赖系统安装。
+        // GPUI 解析 .ttf 提取 Family Name → 与 config.toml 的 family 字段匹配。
+        let font_regular =
+            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Regular.ttf").to_vec();
+        let font_bold =
+            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Bold.ttf").to_vec();
+        let font_italic =
+            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Italic.ttf").to_vec();
+        let font_bold_italic =
+            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-BoldItalic.ttf").to_vec();
+        cx.text_system()
+            .add_fonts(vec![
+                std::borrow::Cow::Owned(font_regular),
+                std::borrow::Cow::Owned(font_bold),
+                std::borrow::Cow::Owned(font_italic),
+                std::borrow::Cow::Owned(font_bold_italic),
+            ])
+            .expect("Failed to load embedded CaskaydiaCove Nerd Font");
+        // ──────────────────────────────────────────────────────────────────
+
         let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
         let main_config = config.clone();
         let main_window = cx
