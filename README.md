@@ -2,8 +2,6 @@
 
 **为 vibe coding 打造的 Windows 终端** — Rust 编写、GPU 加速,把 Claude Code / Codex 等 AI 编码 CLI 当**一等公民**托管,配 Warp 式命令块、灵活平铺,以及随叫随到的幽灵下拉终端。
 
-> 状态:**已可日用**。许可证 GPL-3.0-or-later。
-
 ![Tn 默认主题 Tn Dark 原型](design/mockup.png)
 
 > 上图为默认主题 **Tn Dark** 的高保真原型([design/mockup.html](design/mockup.html));交互式预览用浏览器打开该 HTML。
@@ -20,13 +18,12 @@ Tn 做的事 = **取代 Windows 默认的 conhost**:同一套机制能跑 `power
 
 ## 特点
 
-- 🤖 **AI 一等公民** — 命令面板(`Ctrl+Shift+P`)一键起 Claude Code / Codex;每个 agent 窗格头部带**实时用量环**(token / 上下文占用 / 估算花费),状态栏跟随焦点窗格;Windows 上的 npm shim 自动经 pwsh 解析托管(`claude.cmd` 等)。
-- 👻 **Quick Terminal(幽灵下拉终端)** — 任意 app 里按全局热键(默认 `Ctrl+Alt+Space`)从屏幕边缘**滑下**一个置顶悬浮终端,唤出时选 Claude / Codex / pwsh,**失焦自动隐藏**,会话保留;退出当前 agent 即回到选择器。不打断手头工作就能召唤 AI。
-- 🧱 **Warp 式命令块** — shell 集成(OSC 133/633/7)把每条命令聚成一个**块**:状态条(成功/失败/运行中)、退出码、时长、cwd;进全屏程序(vim / agent TUI)时自动隐藏让位。
-- 🪟 **灵活平铺** — 标签 + **n-ary 分屏**(真正的多路容器,非二叉树):键盘切分 / 改尺寸 / 聚焦。
-- 📂 **文件浏览器 + 文件/Diff 查看器** — 侧栏文件树(git M/U/A 标记),查看器带行号 + 轻量语法着色 + `git diff`。
-- ⌨️ **扎实的终端底子** — Windows Terminal 级按键编码、滚动历史、选择 + 复制粘贴、可配置键位 + 配置热重载、崩溃保护 + 文件日志 + ctrl + shift + N 快速分屏。
-- 🐧 **WSL + 远程 Linux(SSH)** — 规划中(M2)。
+- **为AI设计的终端** — 命令面板(`Ctrl+Shift+P`)一键起 Claude Code / Codex;每个 agent 窗格头部带**实时用量环**(token / 上下文占用 / 估算花费),窗口右侧提供agent改动大纲;。
+- **Quick Terminal(幽灵下拉终端)** — 任意 app 里按全局热键(默认 `Ctrl+Alt+Space`)从屏幕边缘**滑下**一个置顶悬浮终端,唤出时选 Claude / Codex / pwsh,**失焦自动隐藏**,会话保留;退出当前 agent 即回到选择器。不打断手头工作就能召唤 AI。
+- **Warp 式命令块** — 把每条命令聚成一个**块**:状态条(成功/失败/运行中)、退出码、时长、cwd;
+- **多AI合作完成项目** 通过实现独特的分屏逻辑，能够让多个AI在同一个屏幕内公用一个项目，不需要复杂的配置，如果你对某一窗口布局满意，可以在左上角的布局选项中一键保存布局。
+- **文件浏览器 + 文件/Diff 查看器** — 侧栏文件树(git M/U/A 标记)：实现现代化的文件浏览器，不需要再专门装其他的文件浏览工具，同时提供文件预览功能，点击文件，按空格就能实现快速预览，上下方向键位快速切换文件，如果有git仓库的存在，会即时显示更改。
+- **WSL + 远程 Linux(SSH)** — 规划中(M2)：支持链接wsl与ssh。
 
 ## 快速开始
 
