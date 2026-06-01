@@ -15,7 +15,21 @@ fn main() {
     let _guard = init_logging();
     install_panic_hook();
 
+    // Give Tn its own taskbar identity (like Windows Terminal does) so it pins,
+    // groups, and switches independently — not lumped with other GPUI/Zed apps.
+    #[cfg(windows)]
+    set_app_user_model_id();
+
     tn_ui::run();
+}
+
+/// Tell Windows this process is "Tn.Terminal" so the taskbar treats it as a
+/// distinct application.  The matching shortcut is created by the install script.
+#[cfg(windows)]
+fn set_app_user_model_id() {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    let id = windows::core::w!("Tn.Terminal");
+    unsafe { SetCurrentProcessExplicitAppUserModelID(id).ok() };
 }
 
 /// Initialize logging: a stderr layer (visible in debug) plus a best-effort file

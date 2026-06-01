@@ -1659,7 +1659,13 @@ impl Workspace {
                         if readme.exists() { cx.open_with_system(&readme); }
                     }
                 })))
-                .child(mi("power", "退出", Some("⌃⇧Q"), true, Box::new(|_t, _w, cx| cx.quit()))),
+                .child(mi("power", "退出", Some("⌃⇧Q"), true, Box::new(|_t, _w, cx| {
+                    crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+                        crate::platform::remove_tray_icon(th.0);
+                    }
+                    cx.quit();
+                }))),
             vec![soft_shadow(30.0, 80.0, -24.0, 0.9)], // mockup .appmenu shadow
         );
 
@@ -2865,7 +2871,13 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_explorer))
             .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::new_session))
-            .on_action(cx.listener(|_this, _: &Quit, _w, cx| cx.quit()))
+            .on_action(cx.listener(|_this, _: &Quit, _w, cx| {
+                    crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+                        crate::platform::remove_tray_icon(th.0);
+                    }
+                    cx.quit();
+                }))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
             // thin handle) recomputes weights; mouse-up anywhere ends it.

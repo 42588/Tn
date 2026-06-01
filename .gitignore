@@ -4,12 +4,21 @@
 .DS_Store
 Thumbs.db
 
-# Claude Code local / runtime files (personal, not shared)
-.claude/settings.local.json
-.claude/scheduled_tasks.lock
+# IDE
+.vscode/
+.idea/
+
+# Claude Code local runtime files
+.claude/
 
 # MCP tool caches (local, not shared)
 .web-rooter/
+
+# Local vendoring
+vendor/
+
+# Release artifact
+tn.zip
 
 # Reference repos cloned locally for design study (not part of this project)
 /_refs/

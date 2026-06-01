@@ -14,6 +14,23 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 常驻后台:主窗口关闭后 Quick Terminal 仍可唤出(2026-06-01)
+
+> 关闭主窗口后进程不再退出,Quick Terminal 全局热键持续生效。系统托盘图标 + 单实例检测。
+
+### 新增 (Added)
+- **常驻后台**:主窗口关闭 → 进程保持存活(Quick Terminal 隐藏 PopUp 窗口维持 GPUI 事件循环),全局热键(`Ctrl+Alt+Space`)随时唤出幽灵下拉终端。
+- **系统托盘图标**:Win32 `Shell_NotifyIconW` 创建托盘图标,右键菜单「显示 Tn」/「退出」,左键双击恢复主窗口。托盘图标在主窗口首次关闭时出现(可选配置 `always_show`)。
+- **单实例检测**:命名 mutex(`Tn.Terminal.SingleInstance.v1`)防止重复启动;第二个 `tn` 进程通过 `RegisterWindowMessageW` IPC 通知已有实例恢复主窗口后立即退出。
+- **托盘→重创主窗口**:点击「显示 Tn」重建 Workspace 窗口(全新启动页,不保存关闭前的标签状态)。
+- **Quick Terminal「打开 Tn 主窗口」磁贴**:主窗口隐藏到托盘后,Quick Terminal 启动器顶部显示恢复磁贴,点击重建主窗口。
+- **真退出 vs 关窗**:`Ctrl+Shift+Q` / app 菜单「退出」= 真退出(清理托盘图标 + 终止进程);窗口 X 按钮 = 隐藏到托盘。
+
+### 涉及的 crates/files
+`tn-ui/platform.rs`(托盘+单实例原语), `tn-ui/lib.rs`(核心生命周期改造),`tn-ui/workspace.rs`(退出逻辑),`tn-ui/quick_terminal.rs`(恢复磁贴),`tn-ui/Cargo.toml`(Win32_System_Threading+LibraryLoader)
+
+---
+
 ## [Unreleased] — 色带根治(渐变→纯色)+ 投影全摘 + QL 左缘柔光(2026-06-01)
 
 > gpui 0.2.2 的 `linear_gradient` 只支持 2 个 color stop,大面积渐变在 8-bit 色深下产生肉眼可见的断层色带。

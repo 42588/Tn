@@ -12,24 +12,36 @@
 #[cfg(target_os = "windows")]
 mod imp {
     use std::ffi::c_void;
+    use std::sync::atomic::AtomicBool;
 
-    use futures::channel::mpsc::{self, UnboundedReceiver};
+    use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
     use tn_config::{HotkeySpec, Rect};
-    use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
+    use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
     use windows::Win32::Graphics::Gdi::{
         CreateRoundRectRgn, GetMonitorInfoW, MonitorFromWindow, SetWindowRgn, HRGN, MONITORINFO,
         MONITOR_DEFAULTTONEAREST,
     };
+    use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
         VK_PROCESSKEY,
     };
-    use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
+    use windows::Win32::UI::Shell::{
+        DefSubclassProc, SetWindowSubclass, Shell_NotifyIconW, NOTIFYICONDATAW,
+        NOTIFY_ICON_DATA_FLAGS, NOTIFY_ICON_MESSAGE,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetMessageW, GetWindowLongPtrW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, TranslateMessage, GWL_EXSTYLE, HWND_TOPMOST, MSG, SWP_NOACTIVATE, SWP_NOMOVE,
-        SWP_NOSIZE, SW_HIDE, SW_SHOW, WM_HOTKEY, WM_KEYDOWN, WS_EX_TOPMOST,
+        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
+        GetCursorPos, GetMessageW, GetWindowLongPtrW, LoadIconW, PostMessageW,
+        RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetWindowLongPtrW,
+        SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, GWLP_USERDATA, GWL_EXSTYLE,
+        HICON, HWND_MESSAGE, HWND_TOPMOST, IDI_APPLICATION, MF_STRING,
+        MSG, PostQuitMessage, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+        TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
+        WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOPMOST,
+        CS_HREDRAW, CS_VREDRAW, DispatchMessageW, FindWindowExW,
     };
 
     fn as_hwnd(h: isize) -> HWND {
@@ -308,6 +320,348 @@ mod imp {
             let _ = SetWindowSubclass(as_hwnd(h), Some(ime_subclass_proc), TN_IME_SUBCLASS_ID, 0);
         }
     }
+
+    // ── System tray + single-instance ──────────────────────────────────────
+    //
+    // When the main workspace window closes, the process stays alive (kept
+    // running by the Quick Terminal's hidden PopUp window). A system-tray icon
+    // gives the user a visible indication that Tn is still resident and a
+    // right-click menu to restore the main window or quit entirely.
+    //
+    // Single-instance: a named mutex prevents a second `tn` process from
+    // starting. Instead, the second instance signals the first (via a custom
+    // window message to the tray message-only window) to restore the main
+    // window and then exits immediately.
+
+    /// Events from the tray icon message loop to the GPUI main thread.
+    #[derive(Clone, Copy, Debug)]
+    pub enum TrayEvent {
+        /// User clicked "Show Tn" (double-click or context menu).
+        Show,
+        /// User clicked "Quit" in the tray context menu.
+        Quit,
+        /// Another instance asked us to show (via IPC message).
+        ShowFromIpc,
+    }
+
+    /// Result of the single-instance check at process start.
+    pub enum InstanceCheck {
+        /// We are the first instance; the global mutex is held.
+        FirstInstance,
+        /// Another instance is already running. The caller should exit.
+        AlreadyRunning,
+    }
+
+    /// Set to `true` when the user initiates a genuine quit (not close-to-tray).
+    /// The `on_window_closed` handler checks this to decide: quit the process,
+    /// or just hide to tray.
+    pub static QUITTING: AtomicBool = AtomicBool::new(false);
+
+    // Tray and IPC constants.
+    const WM_TRAYICON: u32 = 0x8000 + 1; // WM_APP + 1
+    const IDM_TRAY_SHOW: usize = 1001;
+    const IDM_TRAY_QUIT: usize = 1002;
+    const TRAY_ICON_UID: u32 = 1;
+    #[allow(dead_code)]
+    const TRAY_WINDOW_CLASS: &str = "Tn.TrayWindow";
+
+    /// Per-window data hung off the tray message-only window via `GWLP_USERDATA`.
+    struct TrayWindowData {
+        tx: UnboundedSender<TrayEvent>,
+        msg_show_main: u32, // registered window message for IPC
+    }
+
+    /// Window procedure for the hidden message-only tray window: handles tray
+    /// icon callbacks (`WM_TRAYICON`) and IPC from a second `tn` instance.
+    unsafe extern "system" fn tray_wndproc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        // Retrieve our TrayWindowData from GWLP_USERDATA.
+        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut TrayWindowData;
+        if ptr.is_null() {
+            return DefWindowProcW(hwnd, msg, wparam, lparam);
+        }
+        let data = &*ptr;
+
+        if msg == WM_TRAYICON {
+            let event = lparam.0 as u32;
+            if event == WM_RBUTTONUP {
+                // Right-click: show context menu.
+                if let Some(ev) = show_tray_menu(hwnd) {
+                    let _ = data.tx.unbounded_send(ev);
+                }
+            } else if event == WM_LBUTTONDBLCLK {
+                // Double-click: restore main window.
+                let _ = data.tx.unbounded_send(TrayEvent::Show);
+            }
+            return LRESULT(0);
+        }
+
+        // IPC: another instance posted our registered "show main" message.
+        if msg == data.msg_show_main && data.msg_show_main != 0 {
+            let _ = data.tx.unbounded_send(TrayEvent::ShowFromIpc);
+            return LRESULT(0);
+        }
+
+        if msg == WM_DESTROY {
+            // Free the TrayWindowData allocation.
+            drop(Box::from_raw(ptr));
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            PostQuitMessage(0);
+            return LRESULT(0);
+        }
+
+        DefWindowProcW(hwnd, msg, wparam, lparam)
+    }
+
+    /// Show the tray icon context menu at the cursor position. Returns the
+    /// selected action, or `None` if the menu was dismissed without a selection.
+    unsafe fn show_tray_menu(hwnd: HWND) -> Option<TrayEvent> {
+        let menu = CreatePopupMenu().ok()?;
+        let _ = AppendMenuW(menu, MF_STRING, IDM_TRAY_SHOW, windows::core::w!("显示 Tn"));
+        let _ = AppendMenuW(menu, MF_STRING, IDM_TRAY_QUIT, windows::core::w!("退出"));
+
+        let mut pt = POINT::default();
+        GetCursorPos(&mut pt).ok()?;
+        // `SetForegroundWindow` is required so that `TrackPopupMenu` dismisses
+        // properly when the user clicks elsewhere.
+        let _ = SetForegroundWindow(hwnd);
+
+        let cmd = TrackPopupMenu(
+            menu,
+            TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD,
+            pt.x,
+            pt.y,
+            Some(0),
+            hwnd,
+            None,
+        );
+
+        // Workaround: post a benign message so the menu definitely closes.
+        let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+
+        match cmd.0 as usize {
+            IDM_TRAY_SHOW => Some(TrayEvent::Show),
+            IDM_TRAY_QUIT => Some(TrayEvent::Quit),
+            _ => None,
+        }
+    }
+
+    // ── Tray icon create / remove ─────────────────────────────────────────
+
+    /// Create the tray icon. `hwnd` must be the tray message-only window (the
+    /// one receiving `WM_TRAYICON`). Returns `true` on success.
+    pub fn create_tray_icon(hwnd: isize) -> bool {
+        let hwnd = as_hwnd(hwnd);
+        let icon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or(HICON::default());
+        let mut nid = NOTIFYICONDATAW::default();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = TRAY_ICON_UID;
+        nid.uFlags = NOTIFY_ICON_DATA_FLAGS(0x01 | 0x02 | 0x04); // NIF_MESSAGE | NIF_ICON | NIF_TIP
+        nid.uCallbackMessage = WM_TRAYICON;
+        nid.hIcon = icon;
+        // Set the tooltip text: "Tn"
+        let tip: Vec<u16> = "Tn\0".encode_utf16().collect();
+        let len = tip.len().min(128);
+        nid.szTip[..len].copy_from_slice(&tip[..len]);
+
+        unsafe { Shell_NotifyIconW(NOTIFY_ICON_MESSAGE(0), &nid).as_bool() } // NIM_ADD = 0
+    }
+
+    /// Remove the tray icon. Call before quitting.
+    pub fn remove_tray_icon(hwnd: isize) {
+        let hwnd = as_hwnd(hwnd);
+        let mut nid = NOTIFYICONDATAW::default();
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = hwnd;
+        nid.uID = TRAY_ICON_UID;
+        unsafe {
+            let _ = Shell_NotifyIconW(NOTIFY_ICON_MESSAGE(2), &nid); // NIM_DELETE = 2
+        }
+    }
+
+    // ── Tray listener (message-only window + pump thread) ─────────────────
+
+    /// Create a hidden message-only window that serves as the callback target
+    /// for tray icon notifications and the IPC target for single-instance
+    /// communication. Spawns a background thread running `GetMessageW`.
+    /// Returns `(hwnd, receiver)`, or `None` on failure.
+    pub fn spawn_tray_listener() -> Option<(isize, UnboundedReceiver<TrayEvent>)> {
+        let (tx, rx) = mpsc::unbounded::<TrayEvent>();
+
+        // Register a custom "Tn show main" message for cross-instance IPC.
+        let msg_show_main = unsafe {
+            RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1"))
+        };
+
+        let hinstance = {
+            let hmod = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
+            HINSTANCE(hmod.0)
+        };
+
+        // Register the window class.
+        let class_name = windows::core::w!("Tn.TrayWindow");
+        let wc = WNDCLASSW {
+            style: CS_HREDRAW | CS_VREDRAW,
+            lpfnWndProc: Some(tray_wndproc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinstance,
+            hIcon: HICON::default(),
+            hCursor: unsafe { std::mem::zeroed() },
+            hbrBackground: unsafe { std::mem::zeroed() },
+            lpszMenuName: windows::core::PCWSTR::null(),
+            lpszClassName: class_name,
+        };
+        let atom = unsafe { RegisterClassW(&wc) };
+        if atom == 0 {
+            // Class might already be registered by a previous (crashed) instance.
+            // That's fine — the OS cleans up class registrations on process exit,
+            // so only a same-process race could trigger this. Try to proceed.
+            tracing::warn!("RegisterClassW for Tn.TrayWindow returned 0 (may already exist)");
+        }
+
+        // Create the message-only window.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                Default::default(),               // dwExStyle
+                class_name,
+                windows::core::w!(""),            // window name (unused)
+                windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(0), // style (0 for message-only)
+                0,
+                0, // x, y
+                0,
+                0, // w, h
+                Some(HWND_MESSAGE),               // parent = message-only
+                None,                             // no menu
+                Some(hinstance),                  // hInstance
+                None,                             // no extra param
+            )
+        };
+        let hwnd = match hwnd {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!("CreateWindowExW for tray window failed: {e:?}");
+                return None;
+            }
+        };
+
+        // Allocate the per-window data and store its pointer in GWLP_USERDATA.
+        let data = Box::new(TrayWindowData {
+            tx: tx.clone(),
+            msg_show_main,
+        });
+        let data_ptr = Box::into_raw(data);
+        unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, data_ptr as isize) };
+
+        let hwnd_value = hwnd.0 as isize;
+
+        // Spawn the message pump thread.
+        std::thread::Builder::new()
+            .name("tn-tray".into())
+            .spawn(move || unsafe {
+                let mut msg = MSG::default();
+                while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+                    // Messages are dispatched by the wndproc via RegisterClassW
+                    // (not TranslateMessage/DispatchMessage — GetMessageW already
+                    // dispatched them because we registered the class with a
+                    // lpfnWndProc). Actually, we need to dispatch.
+                    // Wait — RegisterClassW with lpfnWndProc means GetMessageW
+                    // returns messages but does NOT dispatch them. We must call
+                    // DispatchMessageW.
+                    // Actually, for a message-only window, GetMessageW retrieves
+                    // the message; we need DispatchMessageW to call the wndproc.
+                    let _ = TranslateMessage(&msg);
+                    // Note: TranslateMessage is needed for WM_KEYDOWN→WM_CHAR
+                    // translation, which we don't need here, but DispatchMessageW
+                    // is the critical one.
+                    DispatchMessageW(&msg);
+                }
+                // If the tx was dropped (GPUI side gone), the sender is dead;
+                // the thread exits cleanly.
+            })
+            .ok();
+
+        Some((hwnd_value, rx))
+    }
+
+    // ── Single-instance ───────────────────────────────────────────────────
+
+    /// Mutex handle for single-instance detection. Held for the process lifetime;
+    /// the OS releases it on exit so no explicit cleanup is needed.
+    static mut SINGLE_INSTANCE_MUTEX: *mut c_void = std::ptr::null_mut();
+
+    /// Check whether another Tn instance is already running. If so, signal it
+    /// to show its main window and return `AlreadyRunning`. Otherwise, create
+    /// the named mutex and return `FirstInstance`.
+    pub fn try_acquire_single_instance() -> InstanceCheck {
+        unsafe {
+            let mutex = CreateMutexW(
+                None,
+                true, // initial owner
+                windows::core::w!("Tn.Terminal.SingleInstance.v1"),
+            );
+            match mutex {
+                Ok(h) => {
+                    let err = windows::Win32::Foundation::GetLastError();
+                    if err == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
+                        // Another instance already holds the mutex — we're the
+                        // second instance. Close our handle and signal.
+                        let _ = windows::Win32::Foundation::CloseHandle(
+                            windows::Win32::Foundation::HANDLE(h.0),
+                        );
+                        return InstanceCheck::AlreadyRunning;
+                    }
+                    // We're the first instance. Keep the handle alive.
+                    SINGLE_INSTANCE_MUTEX = h.0;
+                    InstanceCheck::FirstInstance
+                }
+                Err(_) => {
+                    // Mutex creation failed — fall open (allow multiple instances
+                    // rather than refusing to start).
+                    tracing::warn!("CreateMutexW for single-instance failed; allowing multi-instance");
+                    InstanceCheck::FirstInstance
+                }
+            }
+        }
+    }
+
+    /// Signal the existing Tn instance to restore its main window. Called by
+    /// the second `tn` process before it exits.
+    pub fn signal_existing_instance_to_show() {
+        // Find the existing tray message-only window.
+        let class = windows::core::w!("Tn.TrayWindow");
+        let target = unsafe {
+            FindWindowExW(
+                Some(HWND_MESSAGE),
+                None,
+                class,
+                windows::core::w!(""),
+            )
+        };
+        let target = match target {
+            Ok(h) => h,
+            Err(_) => {
+                tracing::warn!("signal_existing: FindWindowExW failed — existing tray window not found");
+                return;
+            }
+        };
+
+        // Post the registered "show main" message.
+        let msg = unsafe {
+            RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1"))
+        };
+        if msg != 0 {
+            unsafe {
+                let _ = PostMessageW(Some(target), msg, WPARAM(0), LPARAM(0));
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -334,6 +688,30 @@ mod stub {
     }
     pub fn system_beep() {}
     pub fn install_ime_keyfix(_h: isize) {}
+
+    // Tray + single-instance stubs.
+    #[derive(Clone, Copy, Debug)]
+    pub enum TrayEvent {
+        Show,
+        Quit,
+        ShowFromIpc,
+    }
+    pub enum InstanceCheck {
+        FirstInstance,
+        AlreadyRunning,
+    }
+    pub static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    pub fn create_tray_icon(_hwnd: isize) -> bool {
+        false
+    }
+    pub fn remove_tray_icon(_hwnd: isize) {}
+    pub fn spawn_tray_listener() -> Option<(isize, UnboundedReceiver<TrayEvent>)> {
+        None
+    }
+    pub fn try_acquire_single_instance() -> InstanceCheck {
+        InstanceCheck::FirstInstance
+    }
+    pub fn signal_existing_instance_to_show() {}
 }
 
 #[cfg(not(target_os = "windows"))]

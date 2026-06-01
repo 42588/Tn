@@ -22,6 +22,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use futures::channel::mpsc::UnboundedSender;
 use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, Context, Div, Entity,
     FocusHandle, FontWeight, KeyDownEvent, MouseButton, SharedString, Window,
@@ -70,6 +71,10 @@ pub struct QuickTerminal {
     /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
     /// resolved once (shares the workspace's discovery).
     launch_profiles: Vec<tn_config::Profile>,
+    /// Channel to request main window recreation (set by `lib.rs`).
+    show_main_tx: Option<UnboundedSender<()>>,
+    /// Whether the main workspace window is currently hidden to tray.
+    main_window_hidden: bool,
 }
 
 /// What a launcher tile does when activated. Built from [`launch_entries`] + the
@@ -84,6 +89,8 @@ enum PickerItem {
     DrillWsl,
     /// SSH placeholder (parked) — activating is a no-op.
     SshSoon,
+    /// Show the main workspace window (hidden to tray).
+    OpenMainWindow,
 }
 
 impl QuickTerminal {
@@ -104,7 +111,21 @@ impl QuickTerminal {
             anim_token: 0,
             transition_at: None,
             launch_profiles,
+            show_main_tx: None,
+            main_window_hidden: false,
         }
+    }
+
+    /// Called by `lib.rs` to wire the "show main window" channel.
+    pub fn set_show_main_tx(&mut self, tx: UnboundedSender<()>) {
+        self.show_main_tx = Some(tx);
+    }
+
+    /// Called by `lib.rs` when the main window is closed / recreated so the
+    /// launcher can show or hide the "Open Main Window" tile.
+    pub fn set_main_window_hidden(&mut self, hidden: bool, cx: &mut Context<Self>) {
+        self.main_window_hidden = hidden;
+        cx.notify();
     }
 
     /// Indices (into `launch_profiles`) of all discovered WSL distros, in order.
@@ -141,6 +162,10 @@ impl QuickTerminal {
             others.insert(0, PickerItem::Pwsh);
         }
         let mut rows = Vec::new();
+        // ── "Open Main Window" tile (when hidden to tray) ──────────
+        if self.main_window_hidden {
+            rows.push(vec![PickerItem::OpenMainWindow]);
+        }
         if !agents.is_empty() {
             rows.push(agents);
         }
@@ -168,6 +193,12 @@ impl QuickTerminal {
             },
             PickerItem::DrillWsl => wsl_card(t, self.wsl_indices().len()),
             PickerItem::SshSoon => ssh_card(t),
+            PickerItem::OpenMainWindow => CardId {
+                name: "显示 Tn 主窗口".into(),
+                sub: "".into(),
+                glyph: "window",
+                accent: t.ui.accent,
+            },
         }
     }
 
@@ -229,6 +260,11 @@ impl QuickTerminal {
                 }
             }
             PickerItem::SshSoon => {} // parked placeholder — no-op
+            PickerItem::OpenMainWindow => {
+                if let Some(ref tx) = self.show_main_tx {
+                    let _ = tx.unbounded_send(());
+                }
+            }
         }
     }
 
