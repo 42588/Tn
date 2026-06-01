@@ -594,8 +594,7 @@ impl Workspace {
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
             let path = ev.0.clone();
             ws.quick_look.update(cx, |v, cx| {
-                v.open(path);
-                cx.notify();
+                v.open(path, cx);
             });
             ws.quick_look_open = true;
             cx.notify();
@@ -609,8 +608,7 @@ impl Workspace {
                     let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
                     if let Some(path) = next {
                         ws.quick_look.update(cx, |v, cx| {
-                            v.open(path);
-                            cx.notify();
+                            v.open(path, cx);
                         });
                     }
                 }
@@ -705,7 +703,7 @@ impl Workspace {
         // so a `cargo run` with this env reproduces the freeze headlessly-ish here.
         if let Ok(p) = std::env::var("TN_QL_BENCH") {
             let path = std::path::PathBuf::from(&p);
-            ws.quick_look.update(cx, |v, _| v.open(path));
+            ws.quick_look.update(cx, |v, cx| v.open(path, cx));
             ws.quick_look_open = true;
             tracing::info!(target: "tn::quicklook", path = %p, "bench: opened, will quit in 2.5s");
             let exec = cx.background_executor().clone();
@@ -927,8 +925,7 @@ impl Workspace {
         cx.subscribe(&view, |ws, _view, ev: &OpenInQuickLook, cx| {
             let path = ev.0.clone();
             ws.quick_look.update(cx, |v, cx| {
-                v.open_diff(path);
-                cx.notify();
+                v.open_diff(path, cx);
             });
             ws.quick_look_open = true;
             cx.notify();
@@ -1639,8 +1636,7 @@ impl Workspace {
                 .child(mi("sliders", "设置", None, false, Box::new(|this, _w, cx| {
                     if let Some(p) = tn_config::config_path() {
                         this.quick_look.update(cx, |v, cx| {
-                            v.open_for_edit(p);
-                            cx.notify();
+                            v.open_for_edit(p, cx);
                         });
                         this.quick_look_open = true;
                     }

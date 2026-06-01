@@ -20,9 +20,10 @@ use std::sync::Arc;
 
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
-    uniform_list, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler,
-    FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point, Rgba, ScrollStrategy,
-    SharedString, UniformListScrollHandle, UTF16Selection, Window,
+    uniform_list, AsyncApp, Bounds, ClipboardItem, Context, ElementInputHandler,
+    EntityInputHandler, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    Rgba, ScrollStrategy, SharedString, UniformListScrollHandle, UTF16Selection, WeakEntity,
+    Window,
 };
 use tn_config::Loaded;
 
@@ -70,6 +71,16 @@ const CODE_FS: f32 = 12.5;
 enum Tab {
     File,
     Diff,
+}
+
+/// QuickLook data-fetch state machine — render-pure: zero I/O inside `render()`.
+/// Mirrors the activity rail's `RailState` pattern.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LoadingState {
+    /// File content / binary peek is being read off-thread.
+    Loading,
+    /// Data has arrived — render real content (or the binary placeholder).
+    Ready,
 }
 
 /// A syntax tint class (best-effort, language-agnostic-ish).
@@ -345,6 +356,15 @@ pub struct QuickLook {
     /// land — the overlay isn't rendered yet; see 踩过的坑).
     needs_focus: bool,
     focus_handle: FocusHandle,
+    // ── Async-loading control (render-pure: zero I/O in render()) ──
+    loading_state: LoadingState,
+    generation: usize,
+    /// Deferred-edit flag: if `open_for_edit` is called while the file is still
+    /// loading, this is set so the async completion handler enters edit afterwards.
+    edit_on_ready: bool,
+    /// Independent loading track for the `git diff` path (separate from file I/O).
+    diff_loading: bool,
+    diff_generation: usize,
 }
 
 impl QuickLook {
@@ -388,6 +408,11 @@ impl QuickLook {
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
             focus_handle: cx.focus_handle(),
+            loading_state: LoadingState::Ready,
+            generation: 0,
+            edit_on_ready: false,
+            diff_loading: false,
+            diff_generation: 0,
         }
     }
 
@@ -411,13 +436,17 @@ impl QuickLook {
         Some((name, lang))
     }
 
-    /// Open `path`: read its text + compute its git diff, default to the File tab
-    /// (preview). Always (re)grabs focus so keys route to the overlay.
+    /// Open `path`: read its text off the **background** thread, default to the File
+    /// tab (preview). Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`]
+    /// are detected early — instead of garbled/empty content, the overlay shows file
+    /// info with size and a "can't preview" note.
     ///
-    /// Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`] are detected
-    /// early — instead of garbled/empty content, the overlay shows file info with
-    /// size and a "can't preview" note.
-    pub fn open(&mut self, path: PathBuf) {
+    /// ## Async + stale-result prevention
+    /// The file read and binary peek are dispatched to `cx.background_executor()`;
+    /// the UI switches to `LoadingState::Loading` immediately (skeleton renders).
+    /// A monotonic `generation` counter prevents out-of-order completion from
+    /// overwriting a newer open that was triggered while this one was in flight.
+    pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
@@ -428,70 +457,145 @@ impl QuickLook {
         self.file_lines = Rc::new(Vec::new());
         self.diff = Rc::new(Vec::new());
         self.diff_dirty = true;
+        self.diff_loading = false;
         self.scroll = UniformListScrollHandle::default();
         self.needs_focus = true;
         self.find_open = false;
 
-        // ── size check ──────────────────────────────────────────────────────
-        let meta = std::fs::metadata(&path).ok();
-        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        self.file_size = size;
+        // ── Async: bump generation + switch to Loading → skeleton renders ──
+        self.generation = self.generation.wrapping_add(1);
+        let gen = self.generation;
+        self.loading_state = LoadingState::Loading;
+        self.edit_on_ready = false;
+        cx.notify();
 
-        // ── binary detection (null bytes in first PEEK_SIZE) ────────────────
-        let mut peek_buf = vec![0u8; PEEK_SIZE.min(size as usize)];
-        let is_binary = if size > 0 {
-            let n = std::fs::File::open(&path)
-                .ok()
-                .and_then(|mut f| std::io::Read::read(&mut f, &mut peek_buf).ok())
-                .unwrap_or(0);
-            peek_buf[..n].contains(&0x00)
-        } else {
-            false
-        };
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let res = exec
+                .spawn(async move {
+                    let meta = std::fs::metadata(&path).ok();
+                    let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
 
-        if size > MAX_FILE_SIZE || is_binary {
-            self.file_binary = true;
-            // Leave file_lines empty — render shows the binary placeholder.
-            return;
-        }
+                    let mut peek_buf = vec![0u8; PEEK_SIZE.min(size as usize)];
+                    let is_binary = if size > 0 {
+                        let n = std::fs::File::open(&path)
+                            .ok()
+                            .and_then(|mut f| std::io::Read::read(&mut f, &mut peek_buf).ok())
+                            .unwrap_or(0);
+                        peek_buf[..n].contains(&0x00)
+                    } else {
+                        false
+                    };
 
-        let text = std::fs::read_to_string(&path).unwrap_or_default();
-        let all: Vec<String> = text.lines().map(str::to_string).collect();
-        self.file_truncated = all.len() > MAX_LINES;
-        self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
+                    if size > MAX_FILE_SIZE || is_binary {
+                        return (Vec::new(), false, true, size);
+                    }
+
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    let all: Vec<String> = text.lines().map(str::to_string).collect();
+                    let truncated = all.len() > MAX_LINES;
+                    let lines: Vec<String> = all.into_iter().take(MAX_LINES).collect();
+                    (lines, truncated, false, size)
+                })
+                .await;
+
+            let _ = this.update(cx, |v, cx| {
+                // ── Stale guard: drop if a newer open() was dispatched ──
+                if v.generation != gen {
+                    return;
+                }
+                v.file_lines = Rc::new(res.0);
+                v.file_truncated = res.1;
+                v.file_binary = res.2;
+                v.file_size = res.3;
+                v.loading_state = LoadingState::Ready;
+
+                // Deferred edit: `open_for_edit` was called while loading.
+                if v.edit_on_ready {
+                    v.enter_edit();
+                    v.edit_on_ready = false;
+                }
+
+                // If the user is already on the Diff tab (e.g. clicked a card),
+                // kick off the async diff now that the file is ready.
+                if v.tab == Tab::Diff {
+                    v.ensure_diff(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Open `path` straight into the editor (app menu「设置」opens config.toml here).
-    pub fn open_for_edit(&mut self, path: PathBuf) {
-        self.open(path);
-        self.enter_edit();
+    /// If the file is still loading (skeleton shown), the edit is deferred — the
+    /// async completion handler enters edit once the content arrives.
+    pub fn open_for_edit(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open(path.clone(), cx);
+        if self.loading_state == LoadingState::Ready {
+            self.enter_edit();
+        } else {
+            self.edit_on_ready = true;
+        }
     }
 
     /// Open `path` straight on the Diff tab — the agent activity-rail card click
     /// ("点卡片 = 速览全 diff") lands here.
-    pub fn open_diff(&mut self, path: PathBuf) {
-        self.open(path);
-        self.select_tab(Tab::Diff);
+    pub fn open_diff(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.open(path, cx);
+        self.select_tab(Tab::Diff, cx);
     }
 
-    /// Recompute `diff` if stale — called only when the Diff tab is shown (keeps the
-    /// blocking `git diff` off the open/navigation hot path). Bounded + non-flashing
-    /// inside `compute_diff`.
-    fn ensure_diff(&mut self) {
-        if !self.diff_dirty {
+    /// Recompute `diff` **asynchronously** — dispatched to the background executor.
+    /// Stale-protected by an independent `diff_generation` counter so rapid
+    /// tab-toggling / file navigation never shows an old diff on a new file.
+    fn ensure_diff(&mut self, cx: &mut Context<Self>) {
+        if !self.diff_dirty || self.diff_loading {
             return;
         }
-        if let Some(path) = self.path.clone() {
-            self.diff = Rc::new(self.compute_diff(&path));
-        }
-        self.diff_dirty = false;
+        let Some(path) = self.path.clone() else { return };
+
+        self.diff_generation = self.diff_generation.wrapping_add(1);
+        let gen = self.diff_generation;
+        self.diff_loading = true;
+        cx.notify();
+
+        let exec = cx.background_executor().clone();
+        let root = self.root.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let diff_lines = exec
+                .spawn(async move {
+                    let rel = path
+                        .strip_prefix(&root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    let text = crate::gitutil::capture_bounded(
+                        &root,
+                        &["diff", "--no-color", "--", &rel],
+                        std::time::Duration::from_millis(1500),
+                    );
+                    parse_diff(text.as_deref().unwrap_or(""))
+                })
+                .await;
+
+            let _ = this.update(cx, |v, cx| {
+                if v.diff_generation == gen {
+                    v.diff = Rc::new(diff_lines);
+                    v.diff_dirty = false;
+                    v.diff_loading = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
-    /// Switch tabs; computing the diff lazily when entering the Diff tab.
-    fn select_tab(&mut self, tab: Tab) {
+    /// Switch tabs; computing the diff lazily (async) when entering the Diff tab.
+    fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         if tab == Tab::Diff {
-            self.ensure_diff();
+            self.ensure_diff(cx);
         }
     }
 
@@ -511,6 +615,8 @@ impl QuickLook {
     }
 
     /// Write the edit buffer back to disk, then refresh the preview + diff.
+    /// The `write` is sync (typically <1ms for reasonable files), but the
+    /// diff recomputation is dispatched off-thread via `ensure_diff`.
     fn save(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.path.clone() else { return };
         let joined = self.buf.join("\n");
@@ -524,7 +630,7 @@ impl QuickLook {
                 // fast and never blocks on `git diff`).
                 self.diff_dirty = true;
                 if self.tab == Tab::Diff {
-                    self.ensure_diff();
+                    self.ensure_diff(cx);
                 }
                 // Tell the workspace so it refreshes any agent pane's「本次改动」rail
                 // now — don't rely on the file watcher (debounce / cwd coverage gaps).
@@ -973,9 +1079,9 @@ impl QuickLook {
                     cx.stop_propagation();
                 }
                 "tab" => {
-                    self.select_tab(if self.tab == Tab::File { Tab::Diff } else { Tab::File });
+                    let next_tab = if self.tab == Tab::File { Tab::Diff } else { Tab::File };
+                    self.select_tab(next_tab, cx);
                     cx.stop_propagation();
-                    cx.notify();
                 }
                 "enter" => {
                     self.enter_edit();
@@ -992,24 +1098,6 @@ impl QuickLook {
         }
     }
 
-    /// `git diff` for `path`, parsed into renderable lines (tracking new-file
-    /// line numbers from each hunk header). Empty when not a repo / no changes.
-    fn compute_diff(&self, path: &PathBuf) -> Vec<DiffLine> {
-        let rel = path
-            .strip_prefix(&self.root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned();
-        // Bounded so a slow / .git-locked / AV-scanned git can never hang the UI
-        // (worst case ~1.5s on an explicit Diff-tab view); `None` = timed out → no diff.
-        // Shared bounded git capture lives in `crate::gitutil` (single source).
-        let text = crate::gitutil::capture_bounded(
-            &self.root,
-            &["diff", "--no-color", "--", &rel],
-            std::time::Duration::from_millis(1500),
-        );
-        parse_diff(text.as_deref().unwrap_or(""))
-    }
 }
 
 /// Parse `git diff --no-color` output into renderable lines (tracking new-file line
@@ -1618,8 +1706,7 @@ impl Render for QuickLook {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, _w, cx| {
-                        this.select_tab(to);
-                        cx.notify();
+                        this.select_tab(to, cx);
                     }),
                 )
                 .child(label)
@@ -1720,8 +1807,24 @@ impl Render for QuickLook {
         } else {
             lines.len()
         };
-        // ── binary file placeholder ──────────────────────────────────────────
-        let body = if self.file_binary {
+        // ── Skeleton helper: short "code lines" of varying width ──
+        let code_skeleton = |n: usize, ws: &[f32]| {
+            div()
+                .flex_1().min_h(px(0.)).flex().flex_col().gap(px(6.))
+                .pt(px(8.)).px(px(14.))
+                .children((0..n).map(|i| {
+                    let w_px = ws[i % ws.len()];
+                    div().flex().flex_row().items_center().h(px(ROW_H))
+                        .child(div().w(px(38.)).mr(px(28.))) // gutter: ln + mr
+                        .child(div().w(px(w_px)).h(px(10.)).rounded(px(3.)).bg(rgba(INSET)))
+                }))
+        };
+        // ── body condition chain ────────────────────────────────────────────
+        let body = if self.loading_state == LoadingState::Loading {
+            code_skeleton(16, &[220., 130., 310., 180., 260., 140., 330., 160.])
+        } else if self.tab == Tab::Diff && self.diff_loading {
+            code_skeleton(8, &[160., 280., 120., 200., 150., 310., 170.])
+        } else if self.file_binary {
             let size_str = human_size(self.file_size);
             let kind = self
                 .path
