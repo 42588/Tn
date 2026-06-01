@@ -150,15 +150,14 @@ pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
 }
 
 /// Wrap a glass pane's inner content with the mockup `.pane::before` **gradient
-/// edge** + the float shadow. gpui can't gradient a border, so this uses the
-/// 1px-padding reveal trick: an outer div with a vertical `cool-white → accent`
-/// gradient background + 1px padding, with the rounded inner content on top — the
-/// 1px ring that shows through *is* a continuous gradient border that follows the
-/// rounded corners (top reads cool-white 承光, bottom accent 回光, sides the
-/// gradient between = the mockup's non-uniform edge). `inner` must be built with
-/// `rounded(R_PANEL - 1.)` + `overflow_hidden`. Focused = brighter top + more
-/// accent bottom (+ deeper shadow). Cool-white = glass refraction tint (not a
-/// theme token); accent goes through `cola` so it's never a bare theme hex.
+/// edge** (1px-padding reveal trick, see below). No box-shadows — tiled split panes
+/// are tightly packed; any outward shadow would bleed into the neighbour below and
+/// show as dark banding through the semi-transparent glass fill.
+///
+/// `inner` must be built with `rounded(R_PANEL - 1.)` + `overflow_hidden`.
+/// Focused = brighter top + more accent bottom. Cool-white = glass refraction
+/// tint (not a theme token); accent goes through `cola` so it's never a bare
+/// theme hex.
 pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     // ── Inner top shadow ──
     // mockup has `inset 0 -22px 46px rgba(0,0,0,.55)` — a dark recess at the top
@@ -186,19 +185,21 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
         .child(top_glaze);
 
     // ── Gradient edge ring ──
-    // 冷白承光 — 已从 .36/.25 压到 .12/.08: 有投影后,渐变环只需隐约可见,
-    // 提供"玻璃折射"的微弱暗示,而非强硬的彩色边框。
+    // 冷白承光 .12/.08 + accent 回光 .08/.05 — 仅提供"玻璃折射"的微弱暗示。
     let top = if focused { rgba(0xd2e1ff1f) } else { rgba(0xbed6ff14) }; // .12 / .08
     let edge = linear_gradient(
         180.,
         linear_color_stop(top, 0.),
-        // accent 回光 — 同样压到 .08/.05, 底部只留一丝 accent 色调
         linear_color_stop(cola(accent, if focused { 0.08 } else { 0.05 }), 1.),
     );
-    shadowed(
-        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(wrapped),
-        pane_shadows(focused),
-    )
+    // ★ 平铺分屏禁止 box-shadow：紧密贴合时阴影会向下侵入邻居窗格，
+    // 透过半透玻璃填充形成黑色色带。只保留 1px 导光边缘。
+    div()
+        .size_full()
+        .rounded(px(R_PANEL))
+        .p(px(1.))
+        .bg(edge)
+        .child(wrapped)
 }
 
 /// 现代发光玻璃卡片 (Modern Glowing Glass Card)
