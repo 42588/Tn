@@ -211,6 +211,13 @@ struct DividerDrag {
     cur_pos: f32,   // latest mouse coord (drives the live preview line)
 }
 
+/// An in-progress explorer sidebar width drag (mouse). Simpler than a split
+/// divider — just tracks the horizontal delta and clamps between min/max.
+struct ExplorerDrag {
+    start_x: f32,
+    start_width: f32,
+}
+
 /// A tab's layout: a tree whose leaves are panes.
 enum Node {
     Leaf(PaneId),
@@ -498,6 +505,9 @@ pub struct Workspace {
     /// File explorer sidebar (left column) + whether it's shown.
     explorer: Entity<ExplorerView>,
     explorer_open: bool,
+    explorer_width: f32,
+    /// Active explorer-width drag (mouse), if any.
+    explorer_drag: Option<ExplorerDrag>,
     /// Quick Look 速览浮层(贴树右缘、浮于终端之上)+ whether it's shown
     /// (auto-opens on clicking a file in the explorer; only rendered when it
     /// actually has a file loaded).
@@ -645,6 +655,8 @@ impl Workspace {
             config,
             explorer,
             explorer_open: true,
+            explorer_width: 224.0,
+            explorer_drag: None,
             quick_look,
             quick_look_open: false,
             ql_refocus_pane: false,
@@ -802,31 +814,42 @@ impl Workspace {
             };
             cx.notify();
         }
+        // Explorer sidebar width drag: live resize as the handle moves.
+        if let Some(ref d) = self.explorer_drag {
+            let dx = f32::from(ev.position.x) - d.start_x;
+            self.explorer_width = (d.start_width + dx).clamp(150.0, 500.0);
+            cx.notify();
+        }
     }
 
     /// Mouse-up: commit the divider move — recompute the two adjacent weights
     /// from the drag delta and apply once (a single resize, like keyboard resize).
     fn on_divider_up(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let Some(d) = self.divider_drag.take() else { return };
-        cx.notify();
-        let extent = self.split_extents.borrow().get(&d.path).copied().unwrap_or(0.0);
-        if extent <= 1.0 {
-            return;
-        }
-        let sum: f32 = d.start_weights.iter().sum::<f32>().max(1.0);
-        let pair = d.start_weights[d.gap] + d.start_weights[d.gap + 1];
-        let min = 0.08 * sum; // keep both sides usably wide
-        if pair <= 2.0 * min {
-            return; // too small to redistribute
-        }
-        // Pixel delta → weight units (weights are relative: 1px = sum/extent units).
-        let dw = (d.cur_pos - d.start_pos) / extent * sum;
-        let w0 = (d.start_weights[d.gap] + dw).clamp(min, pair - min);
-        if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&d.path) {
-            if d.gap + 1 < weights.len() {
-                weights[d.gap] = w0;
-                weights[d.gap + 1] = pair - w0;
+        if let Some(d) = self.divider_drag.take() {
+            cx.notify();
+            let extent = self.split_extents.borrow().get(&d.path).copied().unwrap_or(0.0);
+            if extent <= 1.0 {
+                return;
             }
+            let sum: f32 = d.start_weights.iter().sum::<f32>().max(1.0);
+            let pair = d.start_weights[d.gap] + d.start_weights[d.gap + 1];
+            let min = 0.08 * sum; // keep both sides usably wide
+            if pair <= 2.0 * min {
+                return; // too small to redistribute
+            }
+            // Pixel delta → weight units (weights are relative: 1px = sum/extent units).
+            let dw = (d.cur_pos - d.start_pos) / extent * sum;
+            let w0 = (d.start_weights[d.gap] + dw).clamp(min, pair - min);
+            if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&d.path) {
+                if d.gap + 1 < weights.len() {
+                    weights[d.gap] = w0;
+                    weights[d.gap + 1] = pair - w0;
+                }
+            }
+        }
+        // End explorer-width drag (the width is already set live; just clean up).
+        if self.explorer_drag.take().is_some() {
+            cx.notify();
         }
     }
 
@@ -2713,23 +2736,47 @@ impl Render for Workspace {
             .flex_row()
             .gap(px(11.))
             // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
+            // Width is adjustable by dragging the right edge (same look-and-feel
+            // as split-pane dividers).
             .when(self.explorer_open, |d| {
+                let accent = self.config.theme.agents.claude;
+                let ew = self.explorer_width;
                 d.child(
-                    // mockup .sidebar:flex 0 0 224px —— 干净面板,无外层「资源管理器」标签栏。
-                    // No overflow_hidden: the explorer pane clips its own content
-                    // (+ min_h 0 bounds it), so the column passes the pane's drop
-                    // shadow through to float in the gap. (See render_node.)
                     div()
-                        .w(px(224.))
+                        .w(px(ew))
                         .flex_none()
                         .min_h(px(0.))
                         .flex()
                         .flex_col()
+                        .relative()
                         .child(
                             div()
                                 .flex_1()
                                 .min_h(px(0.))
                                 .child(self.explorer.clone()),
+                        )
+                        // Drag handle on the right edge; sits in the inter-column
+                        // gap so it doesn't occlude the tree.
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(0.))
+                                .bottom(px(0.))
+                                .right(px(-4.)) // spill 4 px into the gap
+                                .w(px(8.))
+                                .cursor_col_resize()
+                                .hover(|s| s.bg(cola(accent, 0.16)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                        this.explorer_drag = Some(ExplorerDrag {
+                                            start_x: f32::from(ev.position.x),
+                                            start_width: ew,
+                                        });
+                                        cx.stop_propagation();
+                                        cx.notify();
+                                    }),
+                                ),
                         ),
                 )
             })
@@ -2752,7 +2799,8 @@ impl Render for Workspace {
         // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
-            let left = if self.explorer_open { 244. } else { 40. };
+            // Anchored to the explorer's right edge (body pad 12 + width + gap).
+            let left = if self.explorer_open { self.explorer_width + 20. } else { 40. };
             // Click-away scrim over the **workspace body** (terminal area) — NOT the
             // explorer / titlebar / status bar. A click on the bare terminal used to
             // `focus_pane` and steal focus to the shell mid-edit (the「焦点漏到底层
@@ -2761,7 +2809,7 @@ impl Render for Workspace {
             // swallowed by its own root (see `quick_look.rs` inner `on_mouse_down`),
             // and the explorer stays clickable (scrim starts at its right edge) so
             // 点树里另一个文件仍能换预览。
-            let scrim_left = if self.explorer_open { 238. } else { 0. };
+            let scrim_left = if self.explorer_open { self.explorer_width + 14. } else { 0. };
             div()
                 .absolute()
                 .top(px(46.)) // below the titlebar

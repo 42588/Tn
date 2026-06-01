@@ -152,19 +152,6 @@ fn tree_row(
         })
         .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))));
 
-    // Indent guide (mockup .tnode[class*="ind"]::before)
-    if row.depth > 0 {
-        r = r.child(
-            div()
-                .absolute()
-                .left(px(indent - 8.0))
-                .top(px(0.))
-                .bottom(px(0.))
-                .w(px(1.))
-                .bg(rgba(0xffffff1f)),
-        );
-    }
-
     // chevron (directories) or spacer (files)
     if row.is_dir {
         let chev = if row.expanded { "chev-d" } else { "chev-r" };
@@ -200,7 +187,10 @@ fn tree_row(
 
 impl ExplorerView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let mut me = Self {
             config,
             root,

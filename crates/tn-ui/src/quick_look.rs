@@ -37,6 +37,32 @@ type Pos = (usize, usize);
 /// virtualized via `uniform_list`, so only visible rows ever lay out / highlight).
 const MAX_LINES: usize = 4000;
 
+/// Max file size for text preview (2 MB). Larger files get a size-exceeded placeholder
+/// instead — reading them would spike memory and blocking-IO time.
+const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
+
+/// Peek at the first N bytes of a file to decide binary vs text (null-byte test).
+const PEEK_SIZE: usize = 8192;
+
+/// Format a byte count as a short human-readable string ("1.2 KB", "3.4 MB").
+fn human_size(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 B".into();
+    }
+    let units = ["B", "KB", "MB", "GB"];
+    let mut v = bytes as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i + 1 < units.len() {
+        v /= 1024.0;
+        i += 1;
+    }
+    if v < 10.0 {
+        format!("{:.1} {}", v, units[i])
+    } else {
+        format!("{:.0} {}", v, units[i])
+    }
+}
+
 /// Code font size (px) — mockup `.code` font-size (also the mouse char-width probe).
 const CODE_FS: f32 = 12.5;
 
@@ -74,6 +100,81 @@ fn classify(word: &str, is_call: bool) -> Tint {
         Tint::Type
     } else {
         Tint::Plain
+    }
+}
+
+/// Map a text file's extension to a human-readable language label.
+fn text_label(ext: &str) -> &'static str {
+    match ext {
+        "rs" => "Rust",
+        "toml" => "TOML",
+        "md" => "Markdown",
+        "json" => "JSON",
+        "js" | "mjs" | "cjs" => "JavaScript",
+        "ts" | "tsx" => "TypeScript",
+        "jsx" => "JSX",
+        "py" | "pyw" => "Python",
+        "html" | "htm" => "HTML",
+        "css" => "CSS",
+        "scss" | "sass" => "SCSS",
+        "sh" | "bash" | "zsh" => "Shell",
+        "ps1" | "psm1" | "psd1" => "PowerShell",
+        "yml" | "yaml" => "YAML",
+        "lock" => "Lock",
+        "gitignore" | "gitattributes" => "Git",
+        "env" | "envrc" => "Env",
+        "cfg" | "conf" | "ini" | "config" => "Config",
+        "txt" | "log" => "Text",
+        "csv" => "CSV",
+        "xml" | "svg" => "XML",
+        "sql" => "SQL",
+        "c" | "h" => "C",
+        "cpp" | "cxx" | "cc" | "hpp" | "hxx" => "C++",
+        "java" => "Java",
+        "go" => "Go",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "swift" => "Swift",
+        "kt" | "kts" => "Kotlin",
+        "lua" => "Lua",
+        "r" => "R",
+        "dart" => "Dart",
+        "ex" | "exs" => "Elixir",
+        "hs" => "Haskell",
+        "scala" | "sc" => "Scala",
+        "clj" | "cljs" | "edn" => "Clojure",
+        "zig" => "Zig",
+        "nim" => "Nim",
+        "dockerfile" | "dockerignore" => "Docker",
+        "patch" | "diff" => "Diff",
+        "bat" | "cmd" => "Batch",
+        "makefile" | "mk" => "Makefile",
+        "vue" | "svelte" => "Web",
+        _ => "Plain",
+    }
+}
+
+/// Map a binary file's extension to a short format label (shown in the
+/// "can't preview" placeholder).
+fn binary_label(ext: &str) -> &'static str {
+    match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "ico" | "tiff" | "tif" => "Image",
+        "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" => "Audio",
+        "mp4" | "mkv" | "avi" | "mov" | "wmv" | "webm" | "flv" => "Video",
+        "pdf" => "PDF",
+        "zip" | "tar" | "gz" | "xz" | "bz2" | "7z" | "rar" | "zst" => "Archive",
+        "exe" | "dll" | "so" | "dylib" | "bin" => "Binary",
+        "ttf" | "otf" | "woff" | "woff2" => "Font",
+        "wasm" => "WebAssembly",
+        "class" => "Java Bytecode",
+        "pyc" | "pyo" => "Python Bytecode",
+        "obj" | "o" | "a" | "lib" => "Object",
+        "pdb" => "Debug Symbols",
+        "db" | "sqlite" | "sqlite3" => "Database",
+        "doc" | "docx" => "Word",
+        "xls" | "xlsx" => "Excel",
+        "ppt" | "pptx" => "PowerPoint",
+        _ => "Binary",
     }
 }
 
@@ -199,6 +300,12 @@ pub struct QuickLook {
     /// open / navigation. `true` = the cached `diff` is stale and must be recomputed
     /// the next time the Diff tab is viewed. (See 踩过的坑 + 架构蓝图 §8 ①.)
     diff_dirty: bool,
+    /// `true` when the file is binary (null bytes) or exceeds `MAX_FILE_SIZE` —
+    /// text preview is unavailable; render shows file info instead.
+    file_binary: bool,
+    /// Byte length of the open file (0 when unknown / no file). Shown in the
+    /// binary-file placeholder.
+    file_size: u64,
     /// Edit state (our own small modeless editor — see §16 / 架构蓝图 §8 ①).
     editing: bool,
     /// Editable buffer (copied from `file_lines` on entering edit; `Rc` so the
@@ -260,6 +367,8 @@ impl QuickLook {
             file_truncated: false,
             diff: Rc::new(Vec::new()),
             diff_dirty: true,
+            file_binary: false,
+            file_size: 0,
             editing: false,
             buf: Rc::new(Vec::new()),
             cursor: (0, 0),
@@ -293,45 +402,63 @@ impl QuickLook {
     pub fn status(&self) -> Option<(String, &'static str)> {
         let p = self.path.as_ref()?;
         let name = p.file_name()?.to_string_lossy().to_string();
-        let lang = match p.extension().and_then(|e| e.to_str()).unwrap_or("") {
-            "rs" => "Rust",
-            "toml" => "TOML",
-            "md" => "Markdown",
-            "json" => "JSON",
-            "js" | "mjs" | "cjs" => "JavaScript",
-            "ts" | "tsx" => "TypeScript",
-            "py" => "Python",
-            "html" | "htm" => "HTML",
-            "css" => "CSS",
-            "sh" | "bash" => "Shell",
-            "ps1" => "PowerShell",
-            "yml" | "yaml" => "YAML",
-            "lock" => "Lock",
-            "txt" => "Text",
-            _ => "Plain",
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let lang = if self.file_binary {
+            binary_label(ext)
+        } else {
+            text_label(ext)
         };
         Some((name, lang))
     }
 
     /// Open `path`: read its text + compute its git diff, default to the File tab
     /// (preview). Always (re)grabs focus so keys route to the overlay.
+    ///
+    /// Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`] are detected
+    /// early — instead of garbled/empty content, the overlay shows file info with
+    /// size and a "can't preview" note.
     pub fn open(&mut self, path: PathBuf) {
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
         self.dirty = false;
+        self.file_truncated = false;
+        self.file_binary = false;
+        self.file_size = 0;
+        self.file_lines = Rc::new(Vec::new());
+        self.diff = Rc::new(Vec::new());
+        self.diff_dirty = true;
+        self.scroll = UniformListScrollHandle::default();
+        self.needs_focus = true;
+        self.find_open = false;
+
+        // ── size check ──────────────────────────────────────────────────────
+        let meta = std::fs::metadata(&path).ok();
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        self.file_size = size;
+
+        // ── binary detection (null bytes in first PEEK_SIZE) ────────────────
+        let mut peek_buf = vec![0u8; PEEK_SIZE.min(size as usize)];
+        let is_binary = if size > 0 {
+            let n = std::fs::File::open(&path)
+                .ok()
+                .and_then(|mut f| std::io::Read::read(&mut f, &mut peek_buf).ok())
+                .unwrap_or(0);
+            peek_buf[..n].contains(&0x00)
+        } else {
+            false
+        };
+
+        if size > MAX_FILE_SIZE || is_binary {
+            self.file_binary = true;
+            // Leave file_lines empty — render shows the binary placeholder.
+            return;
+        }
+
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let all: Vec<String> = text.lines().map(str::to_string).collect();
         self.file_truncated = all.len() > MAX_LINES;
         self.file_lines = Rc::new(all.into_iter().take(MAX_LINES).collect());
-        // Defer the diff: `git diff` is a blocking subprocess and running it on
-        // every open/navigation froze the UI (踩过的坑). Mark stale; compute only
-        // when the Diff tab is actually shown (`ensure_diff`).
-        self.diff = Rc::new(Vec::new());
-        self.diff_dirty = true;
-        self.scroll = UniformListScrollHandle::default(); // new file → scroll to top
-        self.needs_focus = true;
-        self.find_open = false;
     }
 
     /// Open `path` straight into the editor (app menu「设置」opens config.toml here).
@@ -1593,7 +1720,44 @@ impl Render for QuickLook {
         } else {
             lines.len()
         };
-        let body = if !editing && tab == Tab::Diff && diff.is_empty() {
+        // ── binary file placeholder ──────────────────────────────────────────
+        let body = if self.file_binary {
+            let size_str = human_size(self.file_size);
+            let kind = self
+                .path
+                .as_ref()
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .map(binary_label)
+                .unwrap_or("Binary");
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(8.))
+                .child(icon("file", 32., ui.muted))
+                .child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(col(ui.foreground))
+                        .child(SharedString::from(format!("{kind} — 无法预览"))),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(size_str)),
+                        ),
+                )
+        } else if !editing && tab == Tab::Diff && diff.is_empty() {
             div()
                 .flex_1()
                 .min_h(px(0.))
