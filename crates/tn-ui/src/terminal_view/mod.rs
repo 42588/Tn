@@ -1658,8 +1658,8 @@ impl Render for TerminalView {
             .when_some(bell_overlay, |this, o| this.child(o));
 
         // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
-        // shell-with-integration:预留 212 px 占位槽,等宽,防止切换时 resize;
-        // plain-shell:正文满宽、无活动栏(mockup shell pane 无 .arail)。
+        // 普通 shell:正文满宽，不再预留 212px 占位槽。
+        // 敲 claude/codex 切 agent 态时发生一次 resize 重排，比永久浪费 212px 更划算。
         let body_region = if self.agent.is_some() {
             div()
                 .flex_1()
@@ -1668,15 +1668,6 @@ impl Render for TerminalView {
                 .flex_row() // mockup .abody
                 .child(term_area)
                 .child(self.render_activity_rail(cx))
-        } else if self.integrate_pwsh {
-            // shell 集成面板:预留 212 px 占位槽,与 agent 态等宽
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .flex()
-                .flex_row()
-                .child(term_area)
-                .child(div().w(px(212.)).flex_none())
         } else {
             term_area
         };
