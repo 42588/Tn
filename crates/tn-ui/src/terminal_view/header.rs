@@ -453,13 +453,14 @@ impl TerminalView {
                                 cx.emit(super::OpenInQuickLook(abs.clone()));
                             }),
                         );
-                    // ★ 外层 div.px(12) 物理隔离：在 overflow_hidden 容器内
-                    // 撑开 12px 安全区保护阴影；mx 在 w_full 子元素上会向外撑爆，
-                    // 但父级 padding 会向内挤压子元素 → 阴影活在里面
+                    // ★ 外层 div 物理隔离：px(12) 左右安全区 + py(6) 上下舒展空间。
+                    // flex_none() 禁止 scrollable 的 flex 容器挤压卡片高度，
+                    // 否则上下光晕被压扁、发散空间不足。
                     scrollable = scrollable.child(
                         div()
+                            .flex_none()
                             .px(px(12.))
-                            .py(px(4.))
+                            .py(px(6.))
                             .child(card),
                     );
                 }

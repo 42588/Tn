@@ -236,27 +236,30 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     );
 
     // 2. 漫反射发光投影 (Ambient Glow)
-    // 放弃死黑的阴影，将 accent 颜色注入阴影中，形成真实的物理光晕。
-    // blur=8 确保在 12px 隔离带内安全渲染，不被 overflow_hidden 截断。
+    // 彩色光晕 alpha 拉满 + spread 向外扩张；黑色结构影极度削弱，
+    // 避免暗影在 8-bit 下吞噬彩光（两个相近 blur 的阴影叠加 = 暗的赢）。
     let glow_shadows = if focused {
         vec![
-            // 基础物理切边，让卡片凸起
-            soft_shadow(0.0, 2.0, 0.0, 0.25),
-            // ★ 核心发光层：带有 accent 颜色的彩色投影
+            // ★ 纯粹彩色发光：居中、高亮、向外扩张
             BoxShadow {
                 color: Rgba {
                     r: ar,
                     g: ag,
                     b: ab,
-                    a: 0.35, // 提亮到 .35，清晰可见
+                    a: 0.85, // 拉到 85%，从暗色背景里"炸"出来
                 }
                 .into(),
-                offset: point(px(0.), px(2.)),
-                blur_radius: px(8.), // 缩到 8px，活在 12px 保护带内
+                offset: point(px(0.), px(0.)), // 居中发光
+                blur_radius: px(10.),
+                spread_radius: px(1.5), // 强制向外扩张，保证光溢出卡片边界
+            },
+            // 仅保留极弱的承重影（压在正下方），不干扰彩光
+            BoxShadow {
+                color: rgba(0x00000044).into(),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(4.),
                 spread_radius: px(0.),
             },
-            // 底部深色结构影，撑起空间感
-            soft_shadow(0.0, 12.0, -4.0, 0.45),
         ]
     } else {
         vec![
