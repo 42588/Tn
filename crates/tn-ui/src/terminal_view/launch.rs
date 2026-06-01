@@ -8,14 +8,29 @@ use tn_ai::AgentKind;
 
 use super::AGENT_EXIT_SENTINEL;
 
-/// How to launch a pane's process: program + args + whether to inject the pwsh
-/// shell-integration script. Built from a `tn_config::Profile` (command-bearing
+/// Which shell-integration flavour to inject at spawn time.
+/// `None` means no shell-integration markers are injected (plain WSL/SSH without
+/// the extra hooks, or a hosted agent pane that has no shell prompt to annotate).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShellIntegration {
+    Pwsh,
+    Bash,
+}
+
+/// How to launch a pane's process: program + args + whether to inject shell-
+/// integration scripts. Built from a `tn_config::Profile` (command-bearing
 /// shell/agent profiles), or the default local PowerShell via [`LaunchSpec::pwsh`].
 #[derive(Clone, Debug)]
 pub struct LaunchSpec {
     pub program: String,
     pub args: Vec<String>,
+    /// When true, the render reserves 212 px for the activity rail from the start
+    /// so the terminal never resizes when sync_shell_agent promotes a shell to an
+    /// agent, avoiding input lag. Derived from [`Self::shell_integration`] being set.
     pub integrate_pwsh: bool,
+    /// When set, the pane's shell is instrumented with OSC 133/633 markers so
+    /// command blocks, cwd tracking, and agent detection work automatically.
+    pub shell_integration: Option<ShellIntegration>,
     /// Which agent this pane hosts (launch-intent signal for per-pane usage).
     /// `None` for a plain shell — usage is then auto-detected by log freshness.
     pub agent: Option<AgentKind>,
@@ -23,6 +38,10 @@ pub struct LaunchSpec {
     /// `SshBackend` instead of a local ConPTY, and `program`/`args` are unused
     /// (`program` is just the `user@host` label).
     pub ssh: Option<tn_pty::SshConfig>,
+    /// Working directory for the spawned process. When None at spawn time,
+    /// Workspace::spawn_pane_with fills it from the explorer root so the
+    /// process inherits the file-tree directory.
+    pub cwd: Option<std::path::PathBuf>,
 }
 
 impl LaunchSpec {
@@ -32,8 +51,10 @@ impl LaunchSpec {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
             ssh: None,
+            shell_integration: Some(ShellIntegration::Pwsh),
             integrate_pwsh: true,
             agent: None,
+            cwd: None,
         }
     }
 
@@ -86,17 +107,25 @@ impl LaunchSpec {
         }
     }
 
-    /// WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`. ConPTY
-    /// runs `wsl.exe` like any program, so no special backend is needed; no pwsh
-    /// integration (the distro runs bash/zsh). An empty/absent distro launches
-    /// WSL's default distro.
+    /// WSL (M2): host the distro's login shell via `wsl.exe -d <distro>`.
+    /// ConPTY runs `wsl.exe` like any program, so no special backend is needed.
+    /// Now includes bash shell integration (OSC 133/633) via `--rcfile` injection
+    /// so command blocks, cwd tracking, and agent detection work automatically.
     fn launch_wsl(p: &tn_config::Profile) -> Self {
         let mut args = Vec::new();
         if let Some(distro) = p.distro.as_deref().filter(|d| !d.is_empty()) {
             args.push("-d".to_string());
             args.push(distro.to_string());
         }
-        Self { program: "wsl.exe".into(), args, integrate_pwsh: false, agent: None, ssh: None }
+        Self {
+            program: "wsl.exe".into(),
+            args,
+            shell_integration: Some(ShellIntegration::Bash),
+            integrate_pwsh: true,
+            agent: None,
+            ssh: None,
+            cwd: None,
+        }
     }
 
     /// SSH (M2b): a remote session over russh. `host` (optionally `host:port`) +
@@ -108,20 +137,34 @@ impl LaunchSpec {
         Some(Self {
             program: format!("{}@{}", cfg.user, cfg.host),
             args: Vec::new(),
+            shell_integration: None,
             integrate_pwsh: false,
             agent: None,
+            cwd: None,
             ssh: Some(cfg),
         })
     }
 
     /// Native PowerShell: run directly with OSC 133 integration. Empty args
     /// default to `-NoLogo`.
-    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentKind>) -> Self {
+    fn launch_pwsh(
+        command: String,
+        profile_args: &[String],
+        agent: Option<AgentKind>,
+    ) -> Self {
         let mut args = profile_args.to_vec();
         if args.is_empty() {
             args.push("-NoLogo".into());
         }
-        Self { program: command, args, integrate_pwsh: true, agent, ssh: None }
+        Self {
+            program: command,
+            args,
+            shell_integration: Some(ShellIntegration::Pwsh),
+            integrate_pwsh: true,
+            agent,
+            ssh: None,
+            cwd: None,
+        }
     }
 
     /// Host a non-pwsh command inside pwsh (single-quote-escaped call operator),
@@ -144,7 +187,9 @@ impl LaunchSpec {
         // pane reverts to a plain shell instead of keeping a stale agent header.
         // (Ephemeral panes exit pwsh outright → `ProcessExited`, so no sentinel.)
         if agent.is_some() && persist {
-            invoke.push_str(&format!("; $Host.UI.RawUI.WindowTitle = '{AGENT_EXIT_SENTINEL}'"));
+            invoke.push_str(&format!(
+                "; $Host.UI.RawUI.WindowTitle = '{AGENT_EXIT_SENTINEL}'"
+            ));
         }
         let mut args = vec!["-NoLogo".to_string()];
         if persist {
@@ -152,6 +197,14 @@ impl LaunchSpec {
         }
         args.push("-Command".into());
         args.push(invoke);
-        Self { program: "powershell.exe".into(), args, integrate_pwsh: false, agent, ssh: None }
+        Self {
+            program: "powershell.exe".into(),
+            args,
+            shell_integration: None,
+            integrate_pwsh: false,
+            agent,
+            ssh: None,
+            cwd: None,
+        }
     }
 }

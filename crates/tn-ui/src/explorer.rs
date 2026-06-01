@@ -73,6 +73,14 @@ fn parse_porcelain(stdout: &str) -> HashMap<String, char> {
     map
 }
 
+/// Carry a selection across a `cd`-driven re-root: keep it only while it still
+/// points inside the new root, else drop it (a highlight on a now-invisible path
+/// is meaningless). Pure (component-wise `starts_with`, separator-agnostic on
+/// Windows) so the [`ExplorerView::follow_root`] rule is unit-testable headless.
+fn selection_under_root(selected: &Option<PathBuf>, root: &Path) -> Option<PathBuf> {
+    selected.clone().filter(|p| p.starts_with(root))
+}
+
 /// Directories that are noise in a source tree — never listed.
 const IGNORED: &[&str] = &[".git", "target", "node_modules", ".idea", ".vs"];
 /// Cap the visible tree so a huge repo can't blow up a render pass.
@@ -223,6 +231,31 @@ impl ExplorerView {
         self.selected = None;
         self.rebuild();
         cx.notify();
+    }
+
+    /// Re-root the tree to follow a shell `cd` (render-driven, not the explicit
+    /// 「打开文件夹」). Unlike [`set_root`](Self::set_root), this **keeps the
+    /// expansion state**: `expanded` holds absolute paths, so entries under the
+    /// new root stay open and the tree does not collapse when you `cd` into a
+    /// subdirectory — or back out (the parent's previously-open children are
+    /// still remembered, so the tree re-expands exactly as it was). The selection
+    /// is kept only while it still points inside the new root. No-op (no rebuild,
+    /// no notify) when the root is unchanged.
+    pub fn follow_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+        if self.root == root {
+            return;
+        }
+        self.root = root;
+        self.selected = selection_under_root(&self.selected, &self.root);
+        self.rebuild();
+        cx.notify();
+    }
+
+    /// The current tree root — the single source of truth for the working
+    /// directory. Pane launch cwd and activity-rail git directory both read
+    /// this so they stay in sync with the explorer.
+    pub fn root(&self) -> PathBuf {
+        self.root.clone()
     }
 
     /// Run `git status --porcelain` in the root and map each changed path
@@ -617,6 +650,22 @@ mod tests {
         // A quoted path (git quotes names with spaces) is unquoted.
         assert_eq!(m.get("with space.txt"), Some(&'U'));
         assert_eq!(m.len(), 8);
+    }
+
+    #[test]
+    fn selection_kept_only_under_new_root() {
+        // `cd` into a subdir: a selection inside the new root survives (so the
+        // highlight follows you down); one outside is dropped (it'd point at a
+        // now-invisible path). None stays None.
+        let root = PathBuf::from("D:/proj/crates");
+        let inside = Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs"));
+        assert_eq!(selection_under_root(&inside, &root), inside);
+        let outside = Some(PathBuf::from("D:/proj/docs/x.md"));
+        assert_eq!(selection_under_root(&outside, &root), None);
+        assert_eq!(selection_under_root(&None, &root), None);
+        // The root itself counts as under-root (component-wise starts_with).
+        let at_root = Some(PathBuf::from("D:/proj/crates"));
+        assert_eq!(selection_under_root(&at_root, &root), at_root);
     }
 
     #[test]

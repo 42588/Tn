@@ -6,7 +6,7 @@
 
 use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, App, Context, Div, FontWeight,
-    MouseButton, SharedString, WeakEntity,
+    MouseButton, Overflow, SharedString, WeakEntity,
 };
 use tn_ai::AgentKind;
 use tn_config::BillingMode;
@@ -292,15 +292,6 @@ impl TerminalView {
             .child(pm) // .pm 右靠(margin-left:auto)
     }
 
-    /// 活动栏迷你 diff 的一行(mockup `.adiff div`):+ 绿 / − 红。
-    fn arail_dline(&self, is_add: bool, text: &str) -> Div {
-        let c = if is_add { self.palette.ansi[2] } else { self.palette.ansi[1] };
-        div()
-            .overflow_hidden()
-            .text_color(col(c))
-            .child(SharedString::from(text.to_string()))
-    }
-
     /// agent 活动栏(mockup `.arail`):诚实状态行 + 「本次改动」真实 git diff 卡 + 提示。
     /// 数据 = `git diff HEAD`(pane cwd,`io::spawn_usage_poller` 后台刷新),**不解析
     /// 终端正文**。**不伪造「运行中」实时态**(agent 思考/运行态 PTY 不可观测,见 CLAUDE.md)
@@ -351,7 +342,7 @@ impl TerminalView {
             );
         }
 
-        let mut rail = div()
+        let rail = div()
             .flex_none()
             .w(px(212.)) // §16 .arail flex 0 0 212
             .flex()
@@ -379,14 +370,26 @@ impl TerminalView {
             );
         }
 
+        // Scrollable cards area: flex_1 so it fills remaining space, overflow_y
+        // scroll so many changed files don't push the rail past the viewport.
+        let mut scrollable = div()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .gap(px(11.))
+            .pb(px(14.))
+            .overflow_hidden();
+        scrollable.interactivity().base_style.overflow.y = Some(Overflow::Scroll);
+
         // .alabel
-        rail = rail.child(
+        scrollable = scrollable.child(
             div()
                 .text_size(px(10.))
                 .font_weight(FontWeight(680.))
                 .text_color(col(self.ui_muted))
                 .pt(px(2.))
-                .px(px(2.)) // padding 2 2 0
+                .px(px(2.))
                 .child(SharedString::from("本次改动")),
         );
 
@@ -404,25 +407,13 @@ impl TerminalView {
                 .flex_col()
                 .gap(px(6.));
             card = if is_cur {
-                card.bg(cola(self.ui_accent, 0.06)) // .cur bg accent@.06
+                card.bg(cola(self.ui_accent, 0.06))
                     .border_1()
-                    .border_color(cola(self.ui_accent, 0.22)) // mockup inset 1px → 内描边
+                    .border_color(cola(self.ui_accent, 0.22))
             } else {
-                card.bg(rgba(INSET)) // .achip bg white@.04
+                card.bg(rgba(INSET))
             };
             card = card.child(self.arail_file(f.name(), &plus, minus.as_deref()));
-            if is_cur && !self.rail_preview.is_empty() {
-                let mut diff = div()
-                    .flex()
-                    .flex_col()
-                    .font_family(self.font_family.clone()) // .adiff = mono
-                    .text_size(px(10.))
-                    .line_height(px(15.5)); // line-height 1.55 × 10
-                for (is_add, text) in &self.rail_preview {
-                    diff = diff.child(self.arail_dline(*is_add, text));
-                }
-                card = card.child(diff);
-            }
             if let Some(abs) = self.rail_root.as_ref().map(|r| r.join(&f.path)) {
                 card = card.hover(|s| s.bg(rgba(HOVER))).on_mouse_down(
                     MouseButton::Left,
@@ -431,17 +422,19 @@ impl TerminalView {
                     }),
                 );
             }
-            rail = rail.child(card);
+            scrollable = scrollable.child(card);
         }
 
-        // .ahint — honest now that clicking actually opens Quick Look.
-        rail.child(
+        // .ahint
+        scrollable = scrollable.child(
             div()
                 .text_size(px(10.))
-                .text_color(gpui::rgb(0x474E72)) // faint(无 token)
+                .text_color(gpui::rgb(0x474E72))
                 .px(px(2.))
                 .child(SharedString::from("点卡片 = 速览全 diff")),
-        )
+        );
+
+        rail.child(scrollable)
     }
 
     /// Per-pane header — agent header for agents, else a shell `.phead`(cwd + chip).

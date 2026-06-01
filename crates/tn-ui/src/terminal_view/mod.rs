@@ -62,6 +62,7 @@ mod header; // agent pane header UI (avatar / model / usage ring)
 mod io; // off-thread workers (reader / repaint / blink / exit-watcher / usage poller)
 mod launch; // LaunchSpec: profile -> spawnable pane
 pub use launch::LaunchSpec;
+pub use launch::ShellIntegration;
 
 /// Cached per-frame render data (待优化清单 §2.1), keyed by the engine's
 /// [`generation`](tn_core::Terminal::generation). A repaint that changed nothing
@@ -236,12 +237,18 @@ pub struct TerminalView {
     /// `refresh_changes` when the blocks model has no known cwd (launched
     /// agent panes carry no shell integration, so OSC 7 never fires).
     rail_cwd: Option<String>,
+    spawn_cwd: Option<std::path::PathBuf>,
     /// `true` when `agent` was inferred from a **typed shell command** (the user ran
     /// `claude`/`codex` at a plain-shell prompt — detected via shell-integration's
     /// command line, not a fragile process walk) rather than from launch intent.
     /// Such an agent is cleared when its command block finishes (vs launch-intent
     /// agents, which clear on the [`AGENT_EXIT_SENTINEL`]).
     agent_from_shell: bool,
+    /// When true, the render reserves 212 px for the activity rail from
+    /// the start so the terminal never resizes when sync_shell_agent
+    /// promotes a shell to an agent, avoiding input lag and the
+    /// stuck-first-character bug.
+    integrate_pwsh: bool,
     /// Working-tree change watcher for the activity rail (本次改动): fires `git diff`
     /// on file changes (变化即刷新). `Some` only while this pane is an agent; dropping
     /// it stops watching. Stored so it outlives `new` (a dropped watcher = no events).
@@ -299,6 +306,19 @@ pub struct TerminalView {
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
+/// Convert a Windows path to its WSL `/mnt/...` equivalent.
+/// `C:\Users\Gua\..` becomes `/mnt/c/Users/Gua/..`.
+fn windows_to_wsl_path(path: &std::path::Path) -> String {
+    let s = path.to_string_lossy();
+    let s = s.replace('\\', "/");
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        let drive = (s.as_bytes()[0] as char).to_ascii_lowercase();
+        format!("/mnt/{}{}", drive, &s[2..])
+    } else {
+        s
+    }
+}
+
 fn shell_name_of(program: &str) -> String {
     let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let base = base
@@ -349,11 +369,29 @@ impl TerminalView {
             for a in &launch.args {
                 spec = spec.arg(a);
             }
-            if launch.integrate_pwsh && std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
-                spec = spec
-                    .arg("-NoExit")
-                    .arg("-EncodedCommand")
-                    .arg(Integration::new().encoded_command());
+            if let Some(cwd) = &launch.cwd {
+                spec = spec.cwd(cwd);
+            }
+            if std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
+                match launch.shell_integration {
+                    Some(ShellIntegration::Pwsh) => {
+                        spec = spec
+                            .arg("-NoExit")
+                            .arg("-EncodedCommand")
+                            .arg(Integration::new().encoded_command());
+                    }
+                    Some(ShellIntegration::Bash) => {
+                        let integration = Integration::new();
+                        let script = integration.bash();
+                        let temp_dir = std::env::temp_dir();
+                        let temp_file = temp_dir.join(format!("tn-bash-{}.sh", integration.nonce));
+                        std::fs::write(&temp_file, script.as_bytes())
+                            .expect("write bash integration temp file");
+                        let wsl_path = windows_to_wsl_path(&temp_file);
+                        spec = spec.arg("--").arg("bash").arg("--rcfile").arg(wsl_path);
+                    }
+                    None => {}
+                }
             }
             Box::new(LocalPty::spawn(&spec, pty_size).unwrap_or_else(|e| {
                 tracing::error!(program = %launch.program, "spawn failed: {e}; falling back to pwsh");
@@ -492,6 +530,8 @@ impl TerminalView {
             rail_root: None,
             rail_cwd,
             agent_from_shell: false,
+            spawn_cwd: launch.cwd.clone(),
+            integrate_pwsh: launch.integrate_pwsh,
             change_watcher,
             agent_exited,
             bell,
@@ -640,6 +680,20 @@ impl TerminalView {
     }
 
     /// This pane's latest AI usage snapshot, if any has been parsed yet.
+
+    /// Update the rail directory for existing agent panes after "Open Folder".
+    /// Only affects panes that already host an agent; running agent processes
+    /// keep their original cwd (PTY constraint), so a full restart is needed
+    /// to land in the new directory -- but the rail follows the tree immediately.
+    pub fn set_rail_root(&mut self, root: &std::path::Path, cx: &mut Context<Self>) {
+        if self.agent.is_none() {
+            return;
+        }
+        let cwd = root.to_string_lossy().to_string();
+        self.rail_cwd = Some(cwd.clone());
+        self.change_watcher = Self::spawn_change_watcher(cx, cwd);
+        self.refresh_changes(cx);
+    }
     pub fn usage(&self) -> Option<&AiUsage> {
         self.usage.as_ref()
     }
@@ -651,6 +705,17 @@ impl TerminalView {
         m.current()
             .and_then(|b| b.cwd.clone())
             .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
+    }
+
+    /// This pane's effective working directory: OSC 7 cwd first,
+    /// falling back to the directory it was launched in — essential for
+    /// agent panes that carry no shell integration (no OSC 7).
+    pub fn effective_cwd(&self) -> Option<String> {
+        self.cwd().or_else(|| {
+            self.spawn_cwd
+                .as_ref()
+                .and_then(|p| p.to_str().map(str::to_string))
+        })
     }
 
     /// A clean tab label: the agent name for an agent pane, else the shell name
@@ -1572,8 +1637,9 @@ impl Render for TerminalView {
             .when_some(scrollbar, |this, s| this.child(s))
             .when_some(bell_overlay, |this, o| this.child(o));
 
-        // agent 面板:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
-        // shell 面板:正文满宽、无活动栏(mockup shell pane 无 .arail)。
+        // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
+        // shell-with-integration:预留 212 px 占位槽,等宽,防止切换时 resize;
+        // plain-shell:正文满宽、无活动栏(mockup shell pane 无 .arail)。
         let body_region = if self.agent.is_some() {
             div()
                 .flex_1()
@@ -1582,6 +1648,15 @@ impl Render for TerminalView {
                 .flex_row() // mockup .abody
                 .child(term_area)
                 .child(self.render_activity_rail(cx))
+        } else if self.integrate_pwsh {
+            // shell 集成面板:预留 212 px 占位槽,与 agent 态等宽
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_row()
+                .child(term_area)
+                .child(div().w(px(212.)).flex_none())
         } else {
             term_area
         };
@@ -1660,7 +1735,7 @@ mod tests {
         let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
         assert_eq!(spec.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
-        assert!(!spec.integrate_pwsh); // a distro runs bash/zsh, not pwsh
+        assert!(spec.integrate_pwsh); // bash integration reserves rail space
         assert!(spec.agent.is_none());
     }
 

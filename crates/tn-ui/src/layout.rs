@@ -22,6 +22,8 @@ pub const SLOTS: usize = 7;
 /// not persisted (M2 parked) — an SSH pane saves as its hosting program.
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LayoutPane {
+    #[serde(default)]
+    pub shell_integration: Option<String>,
     pub program: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -38,6 +40,10 @@ impl LayoutPane {
             program: s.program.clone(),
             args: s.args.clone(),
             integrate_pwsh: s.integrate_pwsh,
+            shell_integration: s.shell_integration.map(|si| match si {
+                crate::terminal_view::ShellIntegration::Pwsh => "pwsh".to_string(),
+                crate::terminal_view::ShellIntegration::Bash => "bash".to_string(),
+            }),
             agent: s.agent.map(|a| match a {
                 AgentKind::ClaudeCode => "claude".to_string(),
                 AgentKind::Codex => "codex".to_string(),
@@ -46,16 +52,34 @@ impl LayoutPane {
     }
 
     pub fn to_spec(&self) -> LaunchSpec {
+        let shell_integration = match self.shell_integration.as_deref() {
+            Some("pwsh") => Some(crate::terminal_view::ShellIntegration::Pwsh),
+            Some("bash") => Some(crate::terminal_view::ShellIntegration::Bash),
+            _ => {
+                // Backward compat: derive from integrate_pwsh + program
+                if self.integrate_pwsh {
+                    if self.program.eq_ignore_ascii_case("wsl.exe") {
+                        Some(crate::terminal_view::ShellIntegration::Bash)
+                    } else {
+                        Some(crate::terminal_view::ShellIntegration::Pwsh)
+                    }
+                } else {
+                    None
+                }
+            }
+        };
         LaunchSpec {
             program: self.program.clone(),
             args: self.args.clone(),
             integrate_pwsh: self.integrate_pwsh,
+            shell_integration,
             agent: match self.agent.as_deref() {
                 Some("claude") => Some(AgentKind::ClaudeCode),
                 Some("codex") => Some(AgentKind::Codex),
                 _ => None,
             },
             ssh: None,
+            cwd: None,
         }
     }
 }
@@ -138,6 +162,7 @@ mod tests {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
             integrate_pwsh: true,
+            shell_integration: None,
             agent: Some("claude".into()),
         };
         let spec = p.to_spec();
@@ -154,12 +179,12 @@ mod tests {
         let tree = LayoutNode::Split {
             row: true,
             kids: vec![
-                LayoutNode::Pane(LayoutPane { program: "pwsh".into(), args: vec![], integrate_pwsh: true, agent: None }),
+                LayoutNode::Pane(LayoutPane { program: "pwsh".into(), args: vec![], integrate_pwsh: true, shell_integration: None, agent: None }),
                 LayoutNode::Split {
                     row: false,
                     kids: vec![
-                        LayoutNode::Pane(LayoutPane { program: "a".into(), args: vec![], integrate_pwsh: false, agent: Some("codex".into()) }),
-                        LayoutNode::Pane(LayoutPane { program: "b".into(), args: vec![], integrate_pwsh: false, agent: None }),
+                        LayoutNode::Pane(LayoutPane { program: "a".into(), args: vec![], integrate_pwsh: false, shell_integration: None, agent: Some("codex".into()) }),
+                        LayoutNode::Pane(LayoutPane { program: "b".into(), args: vec![], integrate_pwsh: false, shell_integration: None, agent: None }),
                     ],
                     weights: vec![1.0, 1.0],
                 },

@@ -882,7 +882,16 @@ impl Workspace {
         self.spawn_pane_with(cx, LaunchSpec::pwsh())
     }
 
-    fn spawn_pane_with(&mut self, cx: &mut Context<Self>, launch: LaunchSpec) -> PaneId {
+    fn spawn_pane_with(&mut self, cx: &mut Context<Self>, mut launch: LaunchSpec) -> PaneId {
+        // Use the active pane's cwd when splitting inside an existing tab, so the
+        // new pane opens in the same directory as its sibling. Fall back to the
+        // explorer root for the first pane (no sibling to inherit from).
+        launch.cwd.get_or_insert_with(|| {
+            self.panes
+                .get(&self.tabs[self.active].focused)
+                .and_then(|v| v.read(cx).effective_cwd().map(std::path::PathBuf::from))
+                .unwrap_or_else(|| self.explorer.read(cx).root())
+        });
         let config = self.config.clone();
         let view = cx.new(|cx| TerminalView::new(cx, config, launch.clone()));
         // Repaint the status bar when this pane's usage changes (only on change,
@@ -1685,6 +1694,9 @@ impl Workspace {
                     let _ = this.update(cx, |ws, cx| {
                         ws.explorer_open = true;
                         ws.cd_shells_to(&p, cx);
+                        for view in ws.panes.values() {
+                            view.update(cx, |v, cx| v.set_rail_root(&p, cx));
+                        }
                         cx.notify();
                     });
                 }
@@ -2452,6 +2464,25 @@ impl Render for Workspace {
         }
         let focused = self.tabs[active].focused;
         let ui = &self.config.theme.ui;
+
+        // Explorer always follows the focused pane's effective cwd, so `cd`
+        // (OSC 7) or switching focus to another split pane instantly redirects
+        // the file list. Compare before calling follow_root so we only rebuild
+        // when the path actually changed (never every frame). follow_root keeps
+        // the expansion state, so `cd` into a subdir — or back out — doesn't
+        // collapse the tree (子目录保留展开态). Skip welcome tabs (no panes).
+        if !self.tabs[active].welcome {
+            if let Some(cwd) = self
+                .panes
+                .get(&focused)
+                .and_then(|v| v.read(cx).effective_cwd())
+            {
+                let new_root = std::path::PathBuf::from(&cwd);
+                if self.explorer.read(cx).root() != new_root {
+                    self.explorer.update(cx, |e, cx| e.follow_root(new_root, cx));
+                }
+            }
+        }
 
         // Each tab labels itself with its focused pane's OSC title, falling back
         // to "Term N", and carries that pane's agent for an identity dot.
