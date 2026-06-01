@@ -56,20 +56,27 @@ struct AppState {
 
 /// Open the main window and run the GPUI event loop (blocks until quit).
 pub fn run() {
-    // ── Single-instance check (BEFORE GPUI) ────────────────────────────
-    match platform::try_acquire_single_instance() {
-        platform::InstanceCheck::AlreadyRunning => {
-            platform::signal_existing_instance_to_show();
-            return; // second instance exits — the first one will show its window
-        }
-        platform::InstanceCheck::FirstInstance => { /* continue */ }
-    }
-
-    // ── Tray listener (BEFORE GPUI, so the second instance can find it) ─
-    let tray = platform::spawn_tray_listener(); // Option<(isize, UnboundedReceiver<TrayEvent>)>
-
-    // ── Load config + start GPUI ───────────────────────────────────────
+    // ── Load config ────────────────────────────────────────────────────
     let config = Arc::new(tn_config::load());
+
+    // ── Determine primary vs secondary instance ────────────────────────
+    // "Primary" = we can register the global Quick Terminal hotkey. Only
+    // the primary instance gets the QT window + tray icon + hide-to-tray
+    // behaviour. Secondary instances are plain main-window-only processes
+    // that quit when their window closes.
+    let qt_cfg = &config.config.quick_terminal;
+    let is_primary = qt_cfg.enabled
+        && std::env::var("TN_AUTOQUIT").is_err()
+        && tn_config::parse_hotkey(&qt_cfg.hotkey)
+            .map(|spec| platform::probe_hotkey(&spec))
+            .unwrap_or(false);
+
+    // ── Tray listener (primary only, BEFORE GPUI) ──────────────────────
+    let tray = if is_primary {
+        platform::spawn_tray_listener()
+    } else {
+        None
+    };
 
     let window_background = match config.theme.ui.window.backdrop {
         tn_config::Backdrop::Acrylic => WindowBackgroundAppearance::Blurred,
@@ -99,18 +106,19 @@ pub fn run() {
             .expect("failed to open window");
         let main_id = main_window.window_id();
 
-        // ── Wire up tray (if available) ───────────────────────────────
+        // ── Wire up tray (primary only) ──────────────────────────────
         let tray_hwnd_opt = if let Some((tray_hwnd, tray_rx)) = tray {
             cx.set_global(TrayHwnd(tray_hwnd));
             spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd);
             Some(tray_hwnd)
         } else {
-            tracing::warn!("tray listener unavailable; Quick Terminal will not survive main-window close");
             None
         };
 
-        // ── Quick Terminal (always-on hidden PopUp) ────────────────────
-        spawn_quick_terminal(cx, config.clone());
+        // ── Quick Terminal (primary only — hotkey probe passed) ───────
+        if is_primary {
+            spawn_quick_terminal(cx, config.clone());
+        }
 
         // ── Shared state for window-close handling ─────────────────────
         let state = Arc::new(Mutex::new(AppState {
@@ -237,7 +245,10 @@ fn recreate_main_window(
 // ── Quick Terminal ─────────────────────────────────────────────────────────
 
 /// Open the hidden Quick Terminal window and wire its global hotkey toggle.
+/// Only called for the **primary** instance (the one that passed the hotkey probe).
 fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
+    // The `is_primary` check in `run()` already guards this, but keep the early
+    // returns so the function is self-contained.
     if std::env::var("TN_AUTOQUIT").is_ok() {
         return;
     }
@@ -246,6 +257,14 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
         return;
     }
     let Some(spec) = tn_config::parse_hotkey(&qt.hotkey) else {
+        return;
+    };
+
+    // Register the global hotkey *before* creating the window, so a failure
+    // (another instance grabbed it between the probe and now) doesn't leave an
+    // orphan QT window that can never be summoned.
+    let Some(mut hotkey_rx) = platform::spawn_hotkey_listener(&spec) else {
+        tracing::info!("quick terminal hotkey lost between probe and permanent registration; skipping QT");
         return;
     };
 
@@ -273,12 +292,8 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
         }
     };
 
-    // Listen for the global hotkey on a dedicated thread.
-    let Some(mut rx) = platform::spawn_hotkey_listener(&spec) else {
-        return;
-    };
     cx.spawn(async move |cx: &mut AsyncApp| {
-        while rx.next().await.is_some() {
+        while hotkey_rx.next().await.is_some() {
             let _ = window.update(cx, |qt, window, cx| qt.toggle(window, cx));
         }
     })

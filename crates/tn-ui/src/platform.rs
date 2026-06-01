@@ -22,7 +22,6 @@ mod imp {
         MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-    use windows::Win32::System::Threading::CreateMutexW;
     use windows::Win32::UI::HiDpi::GetDpiForWindow;
     use windows::Win32::UI::Input::KeyboardAndMouse::{
         RegisterHotKey, HOT_KEY_MODIFIERS, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT, MOD_WIN,
@@ -41,7 +40,7 @@ mod imp {
         MSG, PostQuitMessage, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
         TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
         WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WNDCLASSW, WS_EX_TOPMOST,
-        CS_HREDRAW, CS_VREDRAW, DispatchMessageW, FindWindowExW,
+        CS_HREDRAW, CS_VREDRAW, DispatchMessageW,
     };
 
     fn as_hwnd(h: isize) -> HWND {
@@ -119,6 +118,30 @@ mod imp {
             })
             .ok();
         Some(rx)
+    }
+
+    /// Check whether we can register the Quick Terminal global hotkey. Spawns a
+    /// short-lived thread that tries `RegisterHotKey` and exits (which unregisters
+    /// the key). Returns `true` if we're the only instance that owns this hotkey
+    /// (i.e. we can be the "primary" instance with tray + Quick Terminal).
+    pub fn probe_hotkey(spec: &HotkeySpec) -> bool {
+        let Some((mods, vk)) = to_win32(spec) else {
+            return false;
+        };
+        let (tx, rx) = std::sync::mpsc::channel::<bool>();
+        std::thread::Builder::new()
+            .name("tn-hotkey-probe".into())
+            .spawn(move || unsafe {
+                let ok = RegisterHotKey(None, 1, mods, vk).is_ok();
+                let _ = tx.send(ok);
+                // Thread exits — the OS unregisters the hotkey. A tiny window
+                // exists before the permanent listener re-registers, but another
+                // process would need to start and probe in that exact instant.
+                // We accept that (exceedingly rare) risk.
+            })
+            .ok();
+        rx.recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap_or(false)
     }
 
     /// Make the window an always-on-top overlay (called once, on first reveal).
@@ -342,14 +365,6 @@ mod imp {
         Quit,
         /// Another instance asked us to show (via IPC message).
         ShowFromIpc,
-    }
-
-    /// Result of the single-instance check at process start.
-    pub enum InstanceCheck {
-        /// We are the first instance; the global mutex is held.
-        FirstInstance,
-        /// Another instance is already running. The caller should exit.
-        AlreadyRunning,
     }
 
     /// Set to `true` when the user initiates a genuine quit (not close-to-tray).
@@ -590,78 +605,6 @@ mod imp {
         Some((hwnd_value, rx))
     }
 
-    // ── Single-instance ───────────────────────────────────────────────────
-
-    /// Mutex handle for single-instance detection. Held for the process lifetime;
-    /// the OS releases it on exit so no explicit cleanup is needed.
-    static mut SINGLE_INSTANCE_MUTEX: *mut c_void = std::ptr::null_mut();
-
-    /// Check whether another Tn instance is already running. If so, signal it
-    /// to show its main window and return `AlreadyRunning`. Otherwise, create
-    /// the named mutex and return `FirstInstance`.
-    pub fn try_acquire_single_instance() -> InstanceCheck {
-        unsafe {
-            let mutex = CreateMutexW(
-                None,
-                true, // initial owner
-                windows::core::w!("Tn.Terminal.SingleInstance.v1"),
-            );
-            match mutex {
-                Ok(h) => {
-                    let err = windows::Win32::Foundation::GetLastError();
-                    if err == windows::Win32::Foundation::ERROR_ALREADY_EXISTS {
-                        // Another instance already holds the mutex — we're the
-                        // second instance. Close our handle and signal.
-                        let _ = windows::Win32::Foundation::CloseHandle(
-                            windows::Win32::Foundation::HANDLE(h.0),
-                        );
-                        return InstanceCheck::AlreadyRunning;
-                    }
-                    // We're the first instance. Keep the handle alive.
-                    SINGLE_INSTANCE_MUTEX = h.0;
-                    InstanceCheck::FirstInstance
-                }
-                Err(_) => {
-                    // Mutex creation failed — fall open (allow multiple instances
-                    // rather than refusing to start).
-                    tracing::warn!("CreateMutexW for single-instance failed; allowing multi-instance");
-                    InstanceCheck::FirstInstance
-                }
-            }
-        }
-    }
-
-    /// Signal the existing Tn instance to restore its main window. Called by
-    /// the second `tn` process before it exits.
-    pub fn signal_existing_instance_to_show() {
-        // Find the existing tray message-only window.
-        let class = windows::core::w!("Tn.TrayWindow");
-        let target = unsafe {
-            FindWindowExW(
-                Some(HWND_MESSAGE),
-                None,
-                class,
-                windows::core::w!(""),
-            )
-        };
-        let target = match target {
-            Ok(h) => h,
-            Err(_) => {
-                tracing::warn!("signal_existing: FindWindowExW failed — existing tray window not found");
-                return;
-            }
-        };
-
-        // Post the registered "show main" message.
-        let msg = unsafe {
-            RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1"))
-        };
-        if msg != 0 {
-            unsafe {
-                let _ = PostMessageW(Some(target), msg, WPARAM(0), LPARAM(0));
-            }
-        }
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -696,10 +639,6 @@ mod stub {
         Quit,
         ShowFromIpc,
     }
-    pub enum InstanceCheck {
-        FirstInstance,
-        AlreadyRunning,
-    }
     pub static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     pub fn create_tray_icon(_hwnd: isize) -> bool {
         false
@@ -708,10 +647,9 @@ mod stub {
     pub fn spawn_tray_listener() -> Option<(isize, UnboundedReceiver<TrayEvent>)> {
         None
     }
-    pub fn try_acquire_single_instance() -> InstanceCheck {
-        InstanceCheck::FirstInstance
+    pub fn probe_hotkey(_spec: &HotkeySpec) -> bool {
+        false
     }
-    pub fn signal_existing_instance_to_show() {}
 }
 
 #[cfg(not(target_os = "windows"))]
