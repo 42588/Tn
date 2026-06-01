@@ -236,22 +236,23 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     );
 
     // 2. 漫反射发光投影 (Ambient Glow)
-    // 彩色光晕 alpha 拉满 + spread 向外扩张；黑色结构影极度削弱，
-    // 避免暗影在 8-bit 下吞噬彩光（两个相近 blur 的阴影叠加 = 暗的赢）。
+    // ★ 绝对不能用正数 spread_radius — GPUI 的 SDF 着色器遇到正 spread
+    // 会静默丢弃整层阴影。用更大 blur(14px) 代替 spread 的发散感。
+    // 黑色结构影极度削弱，避免暗影在 8-bit 下吞噬彩光。
     let glow_shadows = if focused {
         vec![
-            // ★ 纯粹彩色发光：居中、高亮、向外扩张
+            // ★ 纯粹彩色发光：居中、高亮、大 blur 模拟发散
             BoxShadow {
                 color: Rgba {
                     r: ar,
                     g: ag,
                     b: ab,
-                    a: 0.85, // 拉到 85%，从暗色背景里"炸"出来
+                    a: 0.85,
                 }
                 .into(),
-                offset: point(px(0.), px(0.)), // 居中发光
-                blur_radius: px(10.),
-                spread_radius: px(1.5), // 强制向外扩张，保证光溢出卡片边界
+                offset: point(px(0.), px(0.)),
+                blur_radius: px(14.), // 14px 模糊替代 spread，圆角阴影安全
+                spread_radius: px(0.), // 必须死死锁在 0
             },
             // 仅保留极弱的承重影（压在正下方），不干扰彩光
             BoxShadow {
@@ -276,8 +277,9 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
             .p(px(1.)) // 留出 1px 的光环
             .bg(edge_bg)
             .child(
-                // 强制 inner 填满这 1px 减去后的所有空间
-                inner.w_full().h_full(),
+                // ★ 只保留 w_full()；h_full() 在 intrinsic-height 父容器中
+                // 引发高度计算死锁 → 图层渲染异常
+                inner.w_full(),
             ),
         glow_shadows,
     )
