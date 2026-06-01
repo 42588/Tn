@@ -115,7 +115,6 @@ const BODY_PAD_Y: f32 = 11.0;
 /// Activity rail (mockup `.arail` 本次改动): cap the changed-file cards (the narrow
 /// rail shows a short stack) and the first card's mini-diff preview lines.
 pub(super) const RAIL_MAX_FILES: usize = 6;
-pub(super) const RAIL_PREVIEW_LINES: usize = 3;
 /// Debounce for the working-tree change watcher: coalesce a burst of file events
 /// (a save touches several files, a build churns many) into one `git diff` refresh.
 const RAIL_WATCH_DEBOUNCE_MS: u64 = 450;
@@ -162,6 +161,25 @@ struct CellFade {
 pub(super) const AGENT_EXIT_SENTINEL: &str = "TN::agent-exited";
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Activity-rail「本次改动」state machine — keeps the UI render path a pure
+/// read of an already-resolved state; no git/io inside `render()`. The enum
+/// replaces ad-hoc `Vec` + `bool` flags so the render can distinguish between
+/// "haven't run yet" (Idle), "background is computing" (Loading → skeleton),
+/// and "data is ready" (Ready → real cards).
+#[derive(Debug, Clone)]
+pub enum RailState {
+    /// No agent present (plain shell) → rail not rendered at all.
+    Idle,
+    /// Background git diff is in flight; UI draws a skeleton placeholder.
+    Loading,
+    /// Fresh data has arrived. `root` is the git working directory (paths in
+    /// `files` are relative to it; used to resolve click→QuickLook absolute paths).
+    Ready {
+        files: Vec<crate::gitutil::FileChange>,
+        root: std::path::PathBuf,
+    },
+}
 
 pub struct TerminalView {
     terminal: Arc<Mutex<Terminal>>,
@@ -222,16 +240,17 @@ pub struct TerminalView {
     // snapshot, polled off-thread from the agent's session log.
     agent: Option<AgentKind>,
     usage: Option<AiUsage>,
-    // Activity-rail data (mockup `.arail` 本次改动): real `git diff HEAD` for this
-    // pane's cwd, refreshed by the usage poller off-thread (bounded). HONEST — it
-    // comes from git, never from parsing the agent's terminal TUI. Empty = clean
-    // working tree / not a git repo. `rail_preview` = the first file's mini diff.
-    rail_files: Vec<crate::gitutil::FileChange>,
-    rail_preview: Vec<(bool, String)>,
-    /// Base dir git ran in for the rail (with `--relative`, `rail_files` paths are
-    /// relative to this) — used to resolve a clicked card to an absolute path for
-    /// Quick Look. `None` until the first refresh.
-    rail_root: Option<std::path::PathBuf>,
+    // Activity-rail「本次改动」state machine (mockup `.arail`).
+    // Replaces ad-hoc `Vec` + `Option<PathBuf>` — the render path reads this
+    // pure enum; zero computation inside `render()`. The `files`/`preview`/`root`
+    // live inside `RailState::Ready` so they are always consistent with each other.
+    pub(super) rail_state: RailState,
+    /// Monotonic generation counter: incremented each time a background refresh
+    /// is kicked off. The task captures the generation at spawn; on completion
+    /// it is checked against `rail_generation` — stale results (from a previous
+    /// refresh that finished after a newer one was already dispatched) are
+    /// silently dropped. Wrapping on overflow (32-bit on 64-bit hosts → fine).
+    rail_generation: usize,
     /// The directory the change watcher was started on (app cwd at launch, or
     /// the shell cwd for shell-typed agents). Used as a fallback in
     /// `refresh_changes` when the blocks model has no known cwd (launched
@@ -525,9 +544,8 @@ impl TerminalView {
             scrollbar_drag: None,
             agent,
             usage: None,
-            rail_files: Vec::new(),
-            rail_preview: Vec::new(),
-            rail_root: None,
+            rail_state: RailState::Idle,
+            rail_generation: 0,
             rail_cwd,
             agent_from_shell: false,
             spawn_cwd: launch.cwd.clone(),
@@ -584,9 +602,7 @@ impl TerminalView {
         self.agent = None;
         self.agent_from_shell = false;
         self.usage = None;
-        self.rail_files.clear();
-        self.rail_preview.clear();
-        self.rail_root = None;
+        self.rail_state = RailState::Idle;
         self.rail_cwd = None;
         self.change_watcher = None; // stop watching the working tree
     }
@@ -645,35 +661,47 @@ impl TerminalView {
     /// Refresh the activity-rail「本次改动」from real `git diff HEAD` in the pane's
     /// cwd — off the UI thread, bounded. Triggered by the change watcher (变化即刷新)
     /// and once on agent start. No-op once the agent is gone.
+    ///
+    /// ## Stale-result prevention
+    /// Each call bumps `rail_generation`; the spawned task captures the generation at
+    /// dispatch time. When the task completes (potentially out of order — a slow git
+    /// run can finish AFTER a faster run that was dispatched later), the generation
+    /// is compared: stale results are silently dropped. This guarantees the UI never
+    /// regresses to an earlier diff snapshot.
     pub(super) fn refresh_changes(&mut self, cx: &mut Context<Self>) {
         if self.agent.is_none() {
             return;
         }
-        // Shell-typed agents get their cwd from the blocks model (OSC 7).
-        // Launched agents have no shell integration; fall back to the
-        // directory the change watcher was set up on (app cwd at launch).
         let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else { return };
+
+        // Bump generation + switch to Loading → skeleton renders immediately.
+        self.rail_generation = self.rail_generation.wrapping_add(1);
+        let gen = self.rail_generation;
+        self.rail_state = RailState::Loading;
+        cx.notify();
+
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let (files, preview, root) = exec
+            // ── Background: expensive git ops (may block for >100ms) ──
+            let (files, root) = exec
                 .spawn(async move {
                     let root = std::path::PathBuf::from(&cwd);
                     let mut files = crate::gitutil::changes_for(&root);
                     files.truncate(RAIL_MAX_FILES);
-                    let preview = files
-                        .first()
-                        .map(|f| crate::gitutil::diff_preview(&root, &f.path, RAIL_PREVIEW_LINES))
-                        .unwrap_or_default();
-                    (files, preview, root)
+                    (files, root)
                 })
                 .await;
+            // ── Back on UI thread: only apply if still current ──
             let _ = this.update(cx, |v, cx| {
-                v.rail_files = files;
-                v.rail_preview = preview;
-                v.rail_root = Some(root);
+                if v.rail_generation != gen {
+                    // A newer refresh was dispatched while this one was in flight;
+                    // drop these stale results so the UI doesn't regress.
+                    return;
+                }
+                v.rail_state = RailState::Ready { files, root };
                 cx.emit(UsageUpdated);
                 cx.emit(FilesChanged);
-                cx.notify();
+                cx.notify(); // skeleton exits, real cards render
             });
         })
         .detach();

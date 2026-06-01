@@ -80,43 +80,6 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<FileChange> {
     }
     out
 }
-
-/// A mini unified-diff preview: the first `max` added/removed lines (the `+`/`-`
-/// sign is kept; long lines are clipped). Skips file/hunk headers. Pure → headless
-/// unit-tested.
-pub(crate) fn parse_preview(text: &str, max: usize) -> Vec<(bool, String)> {
-    let mut out = Vec::new();
-    for line in text.lines() {
-        // `+++`/`---` are file headers, not content — skip before the +/- check.
-        if line.starts_with("+++") || line.starts_with("---") {
-            continue;
-        }
-        let is_add = match line.as_bytes().first() {
-            Some(b'+') => true,
-            Some(b'-') => false,
-            _ => continue, // context / @@ / diff / index lines
-        };
-        out.push((is_add, clip(line, PREVIEW_CLIP)));
-        if out.len() >= max {
-            break;
-        }
-    }
-    out
-}
-
-/// Clip a line to `max` chars (ellipsis on overflow) — rail cards are narrow and
-/// gpui has no CSS `text-overflow:ellipsis`.
-const PREVIEW_CLIP: usize = 52;
-fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max).collect();
-        t.push('…');
-        t
-    }
-}
-
 /// Tracked changes vs `HEAD` in `root` (staged + unstaged), **bounded**. Blocking —
 /// call from a background task. Empty when not a repo / no HEAD / no changes.
 /// `--relative` makes the returned paths relative to `root` (not the repo toplevel),
@@ -129,18 +92,6 @@ pub(crate) fn changes_for(root: &Path) -> Vec<FileChange> {
     );
     parse_numstat(out.as_deref().unwrap_or(""))
 }
-
-/// Mini diff preview for one file vs `HEAD` (first `max` +/- lines), **bounded**.
-/// Blocking — background task only.
-pub(crate) fn diff_preview(root: &Path, path: &str, max: usize) -> Vec<(bool, String)> {
-    let out = capture_bounded(
-        root,
-        &["diff", "--no-color", "HEAD", "--", path],
-        Duration::from_millis(1000),
-    );
-    parse_preview(out.as_deref().unwrap_or(""), max)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,23 +116,6 @@ mod tests {
     #[test]
     fn numstat_empty_is_empty() {
         assert!(parse_numstat("").is_empty());
-    }
-
-    #[test]
-    fn preview_keeps_signs_skips_headers_and_caps() {
-        let diff = "diff --git a/x b/x\nindex 1..2 100644\n--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n ctx\n-old line\n+new line\n+second add\n";
-        let p = parse_preview(diff, 2);
-        assert_eq!(p, vec![(false, "-old line".to_string()), (true, "+new line".to_string())]);
-    }
-
-    #[test]
-    fn preview_clips_long_lines() {
-        let long = format!("+{}", "x".repeat(100));
-        let p = parse_preview(&long, 1);
-        assert_eq!(p.len(), 1);
-        assert!(p[0].0);
-        assert!(p[0].1.ends_with('…'));
-        assert_eq!(p[0].1.chars().count(), PREVIEW_CLIP + 1); // 52 chars + ellipsis
     }
 
     #[test]
