@@ -21,12 +21,9 @@ mod welcome;
 mod usage_display;
 mod workspace;
 
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
 
-use futures::channel::mpsc::{self, UnboundedSender};
 use futures::StreamExt;
 use gpui::{
     px, size, App, AppContext, Application, AsyncApp, Bounds, TitlebarOptions,
@@ -36,19 +33,13 @@ use gpui::{
 use quick_terminal::QuickTerminal;
 use workspace::Workspace;
 
-// ── Globals (set once in `run()`, read by workspace / quick_terminal) ──────
+// ── Globals (set once in `run()`, read by workspace) ──────────────────────
 
-/// Stored as a GPUI global so [`workspace::quit_app`] can remove the tray icon
+/// Stored as a GPUI global so the Quit action handler can remove the tray icon
 /// before calling `cx.quit()`.
 pub(crate) struct TrayHwnd(pub(crate) isize);
 
 impl gpui::Global for TrayHwnd {}
-
-/// Stored as a GPUI global so the window-close handler and tray-events handler
-/// can update the QuickTerminal's `main_window_hidden` flag.
-pub(crate) struct QuickTerminalEntity(pub(crate) gpui::Entity<QuickTerminal>);
-
-impl gpui::Global for QuickTerminalEntity {}
 
 // ── App state (shared between `on_window_closed` and the tray event handler) ─
 
@@ -109,21 +100,17 @@ pub fn run() {
         let main_id = main_window.window_id();
 
         // ── Wire up tray (if available) ───────────────────────────────
-        let (tray_hwnd_opt, _tray_rx_opt, show_main_tx) =
-            if let Some((tray_hwnd, tray_rx)) = tray {
-                cx.set_global(TrayHwnd(tray_hwnd));
-                let (tx, rx) = mpsc::unbounded::<()>();
-                // Spawn the GPUI-side handler for tray events + Quick Terminal "show" requests.
-                spawn_tray_events_handler(cx, tray_rx, rx, config.clone(), tray_hwnd);
-                (Some(tray_hwnd), None::<futures::channel::mpsc::UnboundedReceiver<crate::platform::TrayEvent>>, Some(tx))
-            } else {
-                // Tray unavailable — fall back to the old quit-on-close behavior.
-                tracing::warn!("tray listener unavailable; Quick Terminal will not survive main-window close");
-                (None, None, None)
-            };
+        let tray_hwnd_opt = if let Some((tray_hwnd, tray_rx)) = tray {
+            cx.set_global(TrayHwnd(tray_hwnd));
+            spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd);
+            Some(tray_hwnd)
+        } else {
+            tracing::warn!("tray listener unavailable; Quick Terminal will not survive main-window close");
+            None
+        };
 
         // ── Quick Terminal (always-on hidden PopUp) ────────────────────
-        spawn_quick_terminal(cx, config.clone(), show_main_tx);
+        spawn_quick_terminal(cx, config.clone());
 
         // ── Shared state for window-close handling ─────────────────────
         let state = Arc::new(Mutex::new(AppState {
@@ -155,12 +142,6 @@ pub fn run() {
                     if !s.tray_icon_visible {
                         s.tray_icon_visible = platform::create_tray_icon(h);
                     }
-                    // Tell the Quick Terminal launcher to show the
-                    // "Open Main Window" tile.
-                    let qt_entity = cx.try_global::<QuickTerminalEntity>().map(|q| q.0.clone());
-                    if let Some(qt) = qt_entity {
-                        qt.update(cx, |qt, cx| qt.set_main_window_hidden(true, cx));
-                    }
                     // Process stays alive — Quick Terminal's hidden PopUp
                     // window keeps the GPUI event loop running, and the
                     // global hotkey thread continues to listen.
@@ -178,39 +159,19 @@ pub fn run() {
 
 // ── Tray event handler (GPUI side) ─────────────────────────────────────────
 
-/// Receive tray icon selections and Quick Terminal "show main" requests,
-/// forwarding them to the appropriate action on the GPUI main thread.
+/// Receive tray icon selections and dispatch to the appropriate action.
 fn spawn_tray_events_handler(
     cx: &mut App,
     mut tray_rx: futures::channel::mpsc::UnboundedReceiver<platform::TrayEvent>,
-    mut show_main_rx: futures::channel::mpsc::UnboundedReceiver<()>,
     config: Arc<tn_config::Loaded>,
     tray_hwnd: isize,
 ) {
     cx.spawn(async move |cx: &mut AsyncApp| {
-        loop {
-            // Wait for either a tray event or a "show main" request from the
-            // Quick Terminal launcher.
-            let event = futures::select! {
-                ev = tray_rx.next() => match ev {
-                    Some(e) => e,
-                    None => break, // channel closed
-                },
-                _ = show_main_rx.next() => platform::TrayEvent::Show,
-            };
-
+        while let Some(event) = tray_rx.next().await {
             match event {
                 platform::TrayEvent::Show | platform::TrayEvent::ShowFromIpc => {
                     // Re-create the main workspace window if it isn't already open.
                     let _ = recreate_main_window(cx, config.clone());
-                    // Tell the Quick Terminal launcher to hide the
-                    // "Open Main Window" tile.
-                    let _ = cx.update(|cx| {
-                        let qt_entity = cx.try_global::<QuickTerminalEntity>().map(|q| q.0.clone());
-                        if let Some(qt) = qt_entity {
-                            qt.update(cx, |qt, cx| qt.set_main_window_hidden(false, cx));
-                        }
-                    });
                 }
                 platform::TrayEvent::Quit => {
                     platform::QUITTING.store(true, Ordering::Release);
@@ -227,8 +188,8 @@ fn spawn_tray_events_handler(
 // ── Window recreation ──────────────────────────────────────────────────────
 
 /// Open a fresh main workspace window (called when the user clicks "Show Tn"
-/// from the tray or the Quick Terminal launcher). Returns the new window's ID,
-/// or logs an error if creation fails.
+/// from the tray icon context menu). Returns the new window's ID, or logs an
+/// error if creation fails.
 fn recreate_main_window(
     cx: &mut AsyncApp,
     config: Arc<tn_config::Loaded>,
@@ -276,13 +237,7 @@ fn recreate_main_window(
 // ── Quick Terminal ─────────────────────────────────────────────────────────
 
 /// Open the hidden Quick Terminal window and wire its global hotkey toggle.
-/// If `show_main_tx` is provided, the launcher will show a tile to restore the
-/// main workspace window when it's hidden to tray.
-fn spawn_quick_terminal(
-    cx: &mut App,
-    config: Arc<tn_config::Loaded>,
-    show_main_tx: Option<UnboundedSender<()>>,
-) {
+fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
     if std::env::var("TN_AUTOQUIT").is_ok() {
         return;
     }
@@ -296,9 +251,6 @@ fn spawn_quick_terminal(
 
     let bounds = Bounds::centered(None, size(px(1000.), px(420.)), cx);
     let win_cfg = config.clone();
-    // Capture the entity during window creation so we can store it as a global.
-    let qt_entity_cell = Rc::new(RefCell::new(None::<gpui::Entity<QuickTerminal>>));
-    let qt_entity_for_creation = qt_entity_cell.clone();
     let window = match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -312,11 +264,7 @@ fn spawn_quick_terminal(
             window_background: WindowBackgroundAppearance::Transparent,
             ..Default::default()
         },
-        move |_window, cx| {
-            let entity = cx.new(|cx| QuickTerminal::new(cx, win_cfg.clone()));
-            *qt_entity_for_creation.borrow_mut() = Some(entity.clone());
-            entity
-        },
+        move |_window, cx| cx.new(|cx| QuickTerminal::new(cx, win_cfg.clone())),
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -324,20 +272,6 @@ fn spawn_quick_terminal(
             return;
         }
     };
-
-    // Store the QuickTerminal entity as a GPUI global so the window-close
-    // handler and tray-events handler can update its `main_window_hidden` flag.
-    if let Some(entity) = qt_entity_cell.borrow_mut().take() {
-        cx.set_global(QuickTerminalEntity(entity));
-    }
-
-    // Wire the "show main window" channel to the QuickTerminal entity.
-    if let Some(tx) = show_main_tx {
-        let _ = window.update(cx, |qt, _window, cx| {
-            qt.set_show_main_tx(tx);
-            cx.notify();
-        });
-    }
 
     // Listen for the global hotkey on a dedicated thread.
     let Some(mut rx) = platform::spawn_hotkey_listener(&spec) else {
