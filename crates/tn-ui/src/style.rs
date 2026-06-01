@@ -236,7 +236,8 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     );
 
     // 2. 漫反射发光投影 (Ambient Glow)
-    // 放弃死黑的阴影，将 accent 颜色注入阴影中，形成真实的物理光晕
+    // 放弃死黑的阴影，将 accent 颜色注入阴影中，形成真实的物理光晕。
+    // 参数控制在 12px 以内，确保在 overflow_hidden 容器内不被截断。
     let glow_shadows = if focused {
         vec![
             // 基础物理切边，让卡片凸起
@@ -250,12 +251,12 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
                     a: 0.20,
                 }
                 .into(),
-                offset: point(px(0.), px(6.)),
-                blur_radius: px(20.),
-                spread_radius: px(-2.),
+                offset: point(px(0.), px(4.)),
+                blur_radius: px(12.),
+                spread_radius: px(0.),
             },
             // 底部深色结构影，撑起空间感
-            soft_shadow(12.0, 24.0, -12.0, 0.45),
+            soft_shadow(0.0, 12.0, -4.0, 0.45),
         ]
     } else {
         vec![
@@ -266,11 +267,15 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
 
     shadowed(
         div()
-            .size_full()
+            // w_full() 而非 size_full()：在 flex_col 中避免高度坍塌
+            .w_full()
             .rounded(px(R_CARD))
             .p(px(1.)) // 留出 1px 的光环
             .bg(edge_bg)
-            .child(inner),
+            .child(
+                // 强制 inner 填满这 1px 减去后的所有空间
+                inner.w_full().h_full(),
+            ),
         glow_shadows,
     )
 }

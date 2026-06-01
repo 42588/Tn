@@ -315,7 +315,8 @@ impl TerminalView {
                 .flex_col()
                 .gap(px(11.))
                 .pt(px(12.))
-                .px(px(12.))
+                // .px(12) 已移除 → 改为各子元素自行加 px/mx，为 glass_card 光晕
+                // 阴影腾出 12px 的「发光隔离带」，避免被 overflow_hidden 截断
                 .pb(px(14.))
                 .min_h(px(0.))
                 .overflow_hidden()
@@ -329,6 +330,7 @@ impl TerminalView {
         // ── Status row (shared by all states) ──
         let build_status = |summary: &str, add: Option<u32>, del: Option<u32>| -> Div {
             let mut s = div()
+                .px(px(12.))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -363,6 +365,7 @@ impl TerminalView {
             super::RailState::Loading => {
                 let status = build_status("正在分析改动…", None, None);
                 let skeleton = div()
+                    .px(px(12.))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -392,7 +395,7 @@ impl TerminalView {
                     return rail_shell(status, div()
                         .text_size(px(10.5))
                         .text_color(col(self.ui_muted))
-                        .pt(px(2.)).px(px(2.))
+                        .pt(px(2.)).px(px(12.))
                         .child(SharedString::from("agent 改动会实时显示在这里")));
                 }
 
@@ -403,8 +406,9 @@ impl TerminalView {
 
                 scrollable = scrollable.child(
                     div()
+                        .px(px(12.))
                         .text_size(px(10.)).font_weight(FontWeight(680.))
-                        .text_color(col(self.ui_muted)).pt(px(2.)).px(px(2.))
+                        .text_color(col(self.ui_muted)).pt(px(2.))
                         .child(SharedString::from("本次改动")),
                 );
 
@@ -437,6 +441,7 @@ impl TerminalView {
                     // root is from the Ready variant — always consistent with files
                     let abs = root.join(&f.path);
                     let card = glass_card(inner, is_cur, self.agent_accent())
+                        .mx(px(12.)) // 发光隔离带：给光晕阴影腾出空间，不被 overflow_hidden 截断
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -449,7 +454,7 @@ impl TerminalView {
 
                 scrollable = scrollable.child(
                     div()
-                        .text_size(px(10.)).text_color(gpui::rgb(0x474E72)).px(px(2.))
+                        .text_size(px(10.)).text_color(gpui::rgb(0x474E72)).px(px(12.))
                         .child(SharedString::from("点卡片 = 速览全 diff")),
                 );
 
