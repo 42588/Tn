@@ -2477,21 +2477,20 @@ impl Render for Workspace {
         // Each tab labels itself with its focused pane's OSC title, falling back
         // to "Term N", and carries that pane's agent for an identity dot.
         // Precomputed so the click closures below own `cx` freely.
-        let tab_info: Vec<(String, usize, Option<tn_ai::AgentKind>, Option<String>)> = self
+        let tab_info: Vec<(String, usize, Option<tn_ai::AgentKind>)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(_i, tab)| {
                 if tab.welcome {
-                    return ("欢迎".to_string(), 1, None, None); // launchpad tab
+                    return ("欢迎".to_string(), 1, None); // launchpad tab
                 }
                 let pane = self.panes.get(&tab.focused);
                 let label = pane
                     .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
                     .unwrap_or_else(|| "shell".into());
                 let agent = pane.and_then(|v| v.read(cx).agent());
-                let cwd = pane.and_then(|v| v.read(cx).cwd());
-                (label, tab.root.leaf_count(), agent, cwd)
+                (label, tab.root.leaf_count(), agent)
             })
             .collect();
 
@@ -2500,7 +2499,7 @@ impl Render for Workspace {
             .flex_row()
             .items_center()
             .gap_1()
-            .children(tab_info.into_iter().enumerate().map(|(i, (label, panes, agent, cwd))| {
+            .children(tab_info.into_iter().enumerate().map(|(i, (label, panes, agent))| {
                 let is_active = i == active;
                 let dot = self.agent_color(agent);
                 // Accent bar/icon color: agent identity, or UI accent for shells.
@@ -2554,18 +2553,6 @@ impl Render for Workspace {
                         icon("term", 13., ui.accent)
                     })
                     .child(label)
-                    // cwd path badge on the active tab (mockup's "~/proj/tn").
-                    .when(is_active && cwd.is_some(), |d| {
-                        d.child(
-                            // mockup .tab .badge: 11px · faint #474E72 · mono · weight 400
-                            div()
-                                .text_size(px(11.))
-                                .font_family("Cascadia Code")
-                                .font_weight(gpui::FontWeight(400.))
-                                .text_color(gpui::rgb(0x474E72)) // --faint(无主题 token)
-                                .child(SharedString::from(short_cwd(cwd.as_deref().unwrap_or("")))),
-                        )
-                    })
                     .when(panes > 1, |d| {
                         d.child(
                             div()

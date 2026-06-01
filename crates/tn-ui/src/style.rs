@@ -84,10 +84,14 @@ pub(crate) fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShad
     }
 }
 
-/// Attach box shadows to a div — currently a no-op: shadows were removed
-/// because the bloom/glow halo around cards was unwanted.
-pub(crate) fn shadowed(d: Div, _shadows: Vec<BoxShadow>) -> Div {
-    d
+/// Attach the Calm Glass shadow stack to a div. Each layer is a
+/// `soft_shadow` — pure black with varying offsets, blurs, and alphas
+/// to build depth without a glowing/bloom halo (no coloured shadows,
+/// no light halos). The outer wrapper must have explicit size (e.g.
+/// `size_full`) and the parent must NOT clip overflow, otherwise the
+/// shadows will be cropped.
+pub(crate) fn shadowed(d: Div, shadows: Vec<BoxShadow>) -> Div {
+    d.shadow(shadows)
 }
 
 /// Composite a translucent overlay (`0xRRGGBBAA`) over an opaque base → opaque
@@ -156,14 +160,43 @@ pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
 /// accent bottom (+ deeper shadow). Cool-white = glass refraction tint (not a
 /// theme token); accent goes through `cola` so it's never a bare theme hex.
 pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
-    let top = if focused { rgba(0xd2e1ff5c) } else { rgba(0xbed6ff40) }; // 冷白承光 .36 / .25
+    // ── Inner top shadow ──
+    // mockup has `inset 0 -22px 46px rgba(0,0,0,.55)` — a dark recess at the top
+    // of the pane. gpui doesn't support inset box-shadow, so we fake it with a
+    // 4px absolute overlay: black→transparent gradient. The strip is thin enough
+    // that it doesn't meaningfully interfere with clicks on the pane header.
+    // This gives the top edge a subtle "recessed" feel without touching call sites.
+    let top_glaze = div()
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .right(px(0.))
+        .h(px(4.))
+        .rounded_t(px(R_PANEL - 1.)) // match inner rounding — only top corners matter
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(rgba(0x0000002b), 0.), // ~.17 at very top
+            linear_color_stop(rgba(0x00000000), 1.),  // → transparent at 4px
+        ));
+
+    let wrapped = div()
+        .size_full()
+        .relative()
+        .child(inner)
+        .child(top_glaze);
+
+    // ── Gradient edge ring ──
+    // 冷白承光 — 已从 .36/.25 压到 .12/.08: 有投影后,渐变环只需隐约可见,
+    // 提供"玻璃折射"的微弱暗示,而非强硬的彩色边框。
+    let top = if focused { rgba(0xd2e1ff1f) } else { rgba(0xbed6ff14) }; // .12 / .08
     let edge = linear_gradient(
         180.,
         linear_color_stop(top, 0.),
-        linear_color_stop(cola(accent, if focused { 0.20 } else { 0.14 }), 1.), // accent 回光
+        // accent 回光 — 同样压到 .08/.05, 底部只留一丝 accent 色调
+        linear_color_stop(cola(accent, if focused { 0.08 } else { 0.05 }), 1.),
     );
     shadowed(
-        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(inner),
+        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(wrapped),
         pane_shadows(focused),
     )
 }
@@ -197,13 +230,33 @@ pub(crate) fn quicklook_shadows() -> Vec<BoxShadow> {
 /// `rounded(R_PANEL - 1.)` + `overflow_hidden`. Cool-white top → accent bottom
 /// (accent via `cola`, never a bare theme hex).
 pub(crate) fn quicklook_frame(inner: Div, accent: impl Rgb8) -> Div {
+    // Top inner shadow (same technique as glass_pane, see comments there).
+    let top_glaze = div()
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .right(px(0.))
+        .h(px(4.))
+        .rounded_t(px(R_PANEL - 1.))
+        .bg(linear_gradient(
+            180.,
+            linear_color_stop(rgba(0x0000002b), 0.),
+            linear_color_stop(rgba(0x00000000), 1.),
+        ));
+
+    let wrapped = div()
+        .size_full()
+        .relative()
+        .child(inner)
+        .child(top_glaze);
+
     let edge = linear_gradient(
         180.,
-        linear_color_stop(rgba(0xbed6ff3d), 0.), // 冷白承光 .24 = round(.24×255)=61=0x3d
-        linear_color_stop(cola(accent, 0.15), 1.), // accent 回光 .15
+        linear_color_stop(rgba(0xbed6ff14), 0.), // 冷白承光 .08 (原 .24)
+        linear_color_stop(cola(accent, 0.06), 1.), // accent 回光 .06 (原 .15)
     );
     shadowed(
-        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(inner),
+        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(wrapped),
         quicklook_shadows(),
     )
 }
