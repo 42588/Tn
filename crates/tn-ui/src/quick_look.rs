@@ -27,7 +27,7 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::style::{
-    col, cola, icon, quicklook_fill, quicklook_frame, specular_top, HOVER, INSET, R_PANEL, UI_SANS,
+    col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, R_PANEL, UI_SANS,
 };
 
 /// A (row, char-col) position in the edit buffer.
@@ -1994,7 +1994,6 @@ impl Render for QuickLook {
             .bg(quicklook_fill(ui.chrome_bg))
             .font_family(SharedString::from(self.config.font().family.clone()))
             .text_size(px(12.5)) // mockup .code font-size 12.5
-            .child(specular_top()) // 顶部柔光洗(白 .03~.04)
             .child(header)
             .when_some(find_bar, |d, fb| d.child(fb))
             .child(body)

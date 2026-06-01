@@ -19,7 +19,7 @@ use gpui::{
 use tn_config::Loaded;
 
 use crate::gitutil;
-use crate::style::{col, cola, glass_pane, icon, pane_fill, specular_top, INSET, R_PANEL};
+use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, R_PANEL};
 
 /// A small git-status tag chip (e.g. `M` yellow, `U` green).
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
@@ -541,7 +541,6 @@ impl Render for ExplorerView {
             .rounded(px(R_PANEL - 1.))
             // mockup .sidebar 是 .pane:g1 玻璃(baked opaque,防 glass_pane 渐变边透底)
             .bg(pane_fill(ui.chrome_bg))
-            .child(specular_top())
             .child(header)
             .child(
                 uniform_list("explorer-tree", self.rows.len(), move |range, _window, _cx| {

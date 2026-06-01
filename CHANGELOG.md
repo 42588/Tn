@@ -11,6 +11,28 @@
 M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段,**新里程碑在上**),尚未打新 tag。
 **唯一未完成:M2 的 SSH**——已编译 + headless 单测,owner 决定暂停(parked),等有远程登录需求再做端到端。
 
+
+---
+
+## [Unreleased] — 色带根治(渐变→纯色)+ 投影全摘 + QL 左缘柔光(2026-06-01)
+
+> gpui 0.2.2 的 `linear_gradient` 只支持 2 个 color stop,大面积渐变在 8-bit 色深下产生肉眼可见的断层色带。
+> mockup 靠 `feTurbulence` 噪点 dither + `backdrop-filter` 模糊抹平,gpui 两样都不支持。
+> **方案:所有大面积渐变改成纯色中点**,从源头消灭色带。
+
+### 修复 (Fixed)
+- **窗格背景色带**(`pane_fill`):两停渐变 `G1_TOP→G1_BOT` → 纯色 `G1_MID`(rgba(25,31,54,0.52),G1 渐变两端的中点,bake 在窗底 `bg` 上)。
+- **窗格顶部柔光洗色带**(`specular_top`):gradient→solid→multi-strip 均不理想,经 owner 试用后**彻底移除**。
+- **Quick Look 浮层背景色带**(`quicklook_fill`):两停渐变 → 纯色中点(rgba(22,27,46,0.91),bake 在窗底)。
+- **卡片四周投影晕影全部摘除**(`shadowed`→no-op):owner 不喜欢发光/晕影效果;`pane_shadows`/`quicklook_shadows`/内联 shadow vec 均保留代码但不再生效。
+- **Quick Look 左缘 accent 竖线过渡生硬**:从 2px 实色 → 4px 水平渐变(90°:accent 55% → 透明),柔光渐隐无硬边。
+
+### 设计权衡
+- 深度感原由三层提供:g1 渐变 + specular 顶部高光 + 投影。现在只剩 `glass_pane` 的 1px 渐变边框环(太窄不色带)。窗口观感从"玻璃卡悬浮"变为更扁平的纯色卡片——这是 8-bit 色深 + GPUI 无噪点/模糊功能的硬约束下的取舍。
+- 1px 边框环(`glass_pane`/`quicklook_frame`)保留,因其宽度不足以产生可见色带。
+
+**涉及的 crates/files:** `tn-ui/style.rs`, `tn-ui/workspace.rs`, `tn-ui/explorer.rs`, `tn-ui/welcome.rs`, `tn-ui/quick_look.rs`, `tn-ui/quick_terminal.rs`
+
 ---
 
 ## [Unreleased] — 启动卡聚合(WSL 一卡 / SSH 占位)+ 失焦重锚 + 速览相对宽(2026-05-30)

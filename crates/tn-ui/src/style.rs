@@ -9,7 +9,7 @@
 //! colors (`tn_core::Rgb`) via the [`Rgb8`] trait — both are just 8-bit RGB.
 
 use gpui::{
-    div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, relative, rgb, rgba,
+    div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
     BoxShadow, Div, Rgba, Svg,
 };
 
@@ -25,8 +25,14 @@ pub(crate) const DIVIDER: u32 = 0xffffff0f; // status-bar segment divider (~whit
 // backdrop-blur,故 g1 偏实(alpha 高)以读出磨砂色。集中在此 = 单一真源,render_node
 // 与 explorer 共用、不再各抄一份(曾各抄 → 原型改 g1 而代码漏跟、漂成偏灰偏透);
 // `token_drift` 已把它对着 mockup `--g1` 守住。
+// Original G1 endpoints — no longer used for pane_fill (switched to G1_MID
+// solid to avoid 8-bit gradient banding) but kept so the token_drift test
+// still guards against mockup --g1 drift.
+#[allow(dead_code)]
 pub(crate) const G1_TOP: u32 = 0x222a4675; // rgba(34,42,70,0.46) → a=round(.46×255)=117=0x75
+#[allow(dead_code)]
 pub(crate) const G1_BOT: u32 = 0x10142694; // rgba(16,20,38,0.58) → a=round(.58×255)=148=0x94
+pub(crate) const G1_MID: u32 = 0x191f3685; // rgba(25,31,54,0.52) ← midpoint of G1_TOP + G1_BOT
 
 
 /// UI sans-serif for chrome (tabs / headers / status); paired with the mono
@@ -78,9 +84,9 @@ pub(crate) fn soft_shadow(y: f32, blur: f32, spread: f32, alpha: f32) -> BoxShad
     }
 }
 
-/// Attach box shadows to a div (gpui 0.2.2 has no fluent `.shadow_*` helper).
-pub(crate) fn shadowed(mut d: Div, shadows: Vec<BoxShadow>) -> Div {
-    d.style().box_shadow = Some(shadows);
+/// Attach box shadows to a div — currently a no-op: shadows were removed
+/// because the bloom/glow halo around cards was unwanted.
+pub(crate) fn shadowed(d: Div, _shadows: Vec<BoxShadow>) -> Div {
     d
 }
 
@@ -98,22 +104,18 @@ fn over(ov: u32, base: (u8, u8, u8)) -> Rgba {
     rgb((ch(24, base.0) << 16) | (ch(16, base.1) << 8) | ch(8, base.2))
 }
 
-/// The pane glass fill = mockup `--g1` baked **opaque** over the window `bg`.
-/// Shared by terminal panes (`render_node`) + explorer so the deep cool glass
-/// can't drift ([`G1_TOP`]/[`G1_BOT`], guarded against mockup). Opaque (not the
-/// raw translucent g1) so [`glass_pane`]'s gradient border doesn't bleed through.
+/// The pane glass fill — a solid colour at the G1 midpoint baked **opaque**
+/// over the window `bg`. Shared by terminal panes (`render_node`) + explorer so
+/// the deep cool glass can't drift ([`G1_MID`] guards against mockup via
+/// G1_TOP / G1_BOT midpoint). Opaque (not the raw translucent g1) so
+/// [`glass_pane`]'s gradient border doesn't bleed through.
 ///
-/// gpui 0.2.2's `linear_gradient` only supports two stops; a multi-stop ramp
-/// (to reduce 8-bit colour-banding) must wait for a framework upgrade or custom
-/// element rendering.
+/// Formerly a two-stop [`G1_TOP`]→[`G1_BOT`] gradient; switched to a flat fill
+/// because the two-stop gradient banded visibly on large panes at 8-bit colour
+/// depth.  [`specular_top`] still provides the depth wash.
 pub(crate) fn pane_fill(bg: impl Rgb8) -> gpui::Background {
     let base = bg.channels();
-    linear_gradient(
-        180.,
-        linear_color_stop(over(G1_TOP, base), 0.),
-        linear_color_stop(over(G1_BOT, base), 1.),
-    )
-    .into()
+    over(G1_MID, base).into()
 }
 
 /// mockup `.pane` / `.pane.active` box-shadow stack: an outer 1px **dark hairline**
@@ -143,31 +145,6 @@ pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
     }
 }
 
-/// The frosted "specular" top wash on a glass pane (mockup `.pane::before`): an
-/// absolute, non-interactive top-36% gradient from white @ 4% → transparent.
-/// Refracted light, NOT glow. Add as a glass pane's FIRST child so it paints
-/// under the content (a translucent header lets it show through at the top).
-/// The parent must be `.relative()` for this to anchor to the pane.
-///
-/// Top corners are rounded to the pane radius: gpui's `overflow_hidden` clips
-/// rectangularly (not by `corner_radii`), so a child with its own bg would
-/// otherwise poke a right-angle past the pane's rounded corners (踩过的坑).
-pub(crate) fn specular_top() -> Div {
-    div()
-        .absolute()
-        .left(px(0.))
-        .right(px(0.))
-        .top(px(0.))
-        .h(relative(0.32)) // mockup .pane 顶洗光 transparent 32%
-        .rounded_t(px(R_PANEL))
-        .bg(linear_gradient(
-            180.,
-            // mockup .pane white @ .035 = round(.035×255)=9=0x09
-            linear_color_stop(rgba(0xffffff09), 0.),
-            linear_color_stop(rgba(0x00000000), 1.),
-        ))
-}
-
 /// Wrap a glass pane's inner content with the mockup `.pane::before` **gradient
 /// edge** + the float shadow. gpui can't gradient a border, so this uses the
 /// 1px-padding reveal trick: an outer div with a vertical `cool-white → accent`
@@ -194,15 +171,13 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
 /// Quick Look 速览浮层的玻璃填充(mockup `.quicklook` 底层暗玻璃,baked **opaque**)。
 /// 比常驻面板更实:浮层飘在终端正文之上、要**压住**后面的字保证代码可读。mockup 用
 /// `rgba(28,34,58,.88)→rgba(15,19,34,.94)` + backdrop-blur;我们没有 blur,半透会把后面
-/// 终端的尖锐文字漏出来 → 直接 `over()` 烤实在窗口 `bg` 上(两停渐变、非主题色)。
+/// 终端的尖锐文字漏出来 → 直接 `over()` 烤实在窗口 `bg` 上。
+///
+/// 原为两停渐变(同 [`pane_fill`]),大面积浮层在 8-bit 下色带明显 → 改纯色中点。
 pub(crate) fn quicklook_fill(bg: impl Rgb8) -> gpui::Background {
     let base = bg.channels();
-    linear_gradient(
-        180.,
-        linear_color_stop(over(0x1c223ae0, base), 0.), // rgba(28,34,58,.88) → a=round(.88×255)=224=0xe0
-        linear_color_stop(over(0x0f1322f0, base), 1.), // rgba(15,19,34,.94) → a=round(.94×255)=240=0xf0
-    )
-    .into()
+    // midpoint of rgba(28,34,58,.88) + rgba(15,19,34,.94)
+    over(0x161b2ee8, base).into() // rgba(22,27,46,0.91)
 }
 
 /// mockup `.quicklook` 浮起投影栈:比常驻面板(`pane_shadows`)更深更高——浮层飘在最上层。

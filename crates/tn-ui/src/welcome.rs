@@ -21,7 +21,7 @@ use tn_ai::{agent_kind_for_command, AgentKind};
 use tn_config::{Loaded, Profile, ProfileKind};
 
 use crate::style::{
-    col, cola, glass_pane, icon, pane_fill, specular_top, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
+    col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
 };
 
 // ── Shared launch-tile helpers (mockup `.tile` / `.dot`) ────────────────────────
@@ -472,7 +472,6 @@ impl Render for WelcomeView {
             .overflow_hidden()
             .rounded(px(R_PANEL - 1.)) // 1px tighter for the gradient-border ring (see glass_pane)
             .bg(pane_fill(ui.chrome_bg))
-            .child(specular_top())
             .child(welcome);
         glass_pane(inner, false, ui.accent)
     }

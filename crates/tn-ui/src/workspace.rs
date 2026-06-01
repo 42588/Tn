@@ -32,7 +32,7 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, specular_top, DIVIDER, HOVER,
+    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, DIVIDER, HOVER,
     INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
@@ -1300,9 +1300,6 @@ impl Workspace {
                     .rounded(px(R_PANEL - 1.))
                     .overflow_hidden()
                     .bg(pane_fill(self.config.theme.ui.chrome_bg))
-                    // mockup .pane specular 柔光洗(折射,无 glow);先于 view 添加 → 画在
-                    // 内容之下,经半透明 header 透出。
-                    .child(specular_top())
                     .child(view);
                 // mockup .pane::before 竖向渐变描边(顶冷白承光 → 底 accent 回光,跟圆角)
                 // + .pane 浮起投影栈;focused 边更亮、浮得更高(NO 暖橙、NO glow)。
@@ -1631,7 +1628,6 @@ impl Workspace {
                 .border_1()
                 .border_color(rgba(RIM))
                 .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
-                .child(specular_top())
                 .child(mi("spark", "新会话…", Some("⌃⇧N"), false, Box::new(|this, w, cx| this.new_session(&NewSession, w, cx))))
                 .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
                 .child(sep())

@@ -29,7 +29,7 @@ use gpui::{
 use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::platform;
-use crate::style::{col, cola, icon, specular_top, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
+use crate::style::{col, cola, icon, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
 use crate::terminal_view::{LaunchSpec, ProcessExited, TerminalView, UsageUpdated};
 use crate::welcome::{
     launch_agent_of, launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
@@ -563,7 +563,6 @@ impl QuickTerminal {
                 linear_color_stop(rgba(0x151622e6), 0.),
                 linear_color_stop(rgba(0x0f1019f2), 1.),
             ))
-            .child(specular_top())
             .child(
                 // .lhead:13 / 640 / fg-dim;drilled 时整行可点 = 返回
                 div()
