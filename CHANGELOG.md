@@ -31,6 +31,20 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ---
 
+## [Unreleased] — 品牌图标:任务栏 + 托盘复用主窗口 brand mark(2026-06-01)
+
+> 替换默认 Windows 应用图标和 `IDI_APPLICATION` 占位图标,改用 Tn 品牌标识(渐变方块 + 终端 `>_` 符号)。
+
+### 新增 (Added)
+- **应用图标(`tn.ico`)**:Python/PIL 生成脚本 `scripts/gen_icon.py`,复刻标题栏 brand mark——21×21 圆角方块(accent #7AA2F7→accent_alt #BB9AF7 145° 渐变)+ 终端图标(`>_` prompt 符号)。输出 16/32/48/256 px 四档 PNG-in-ICO(14KB),嵌入二进制(`include_bytes!`)。
+- **任务栏图标**:`platform::set_window_icon(hwnd)` → `SendMessageW(WM_SETICON)`,同时设 `ICON_SMALL`(标题栏 16×16)和 `ICON_BIG`(任务栏/Alt-Tab 48×48)。在 `Workspace::render` 首次 reveal 时调用(与 IME keyfix、首次 show 同批)。
+- **托盘图标**:`create_tray_icon` 把 `LoadIconW(IDI_APPLICATION)` 替换为 `load_app_icon_at(32,32)` 的自定 HICON。
+
+### 涉及的 crates/files
+`scripts/gen_icon.py`(图标生成), `crates/tn-ui/assets/tn.ico`(嵌入图标),`tn-ui/platform.rs`(`load_app_icon_at`+`set_window_icon`),`tn-ui/workspace.rs`(reveal 时调用)
+
+---
+
 ## [Unreleased] — 色带根治(渐变→纯色)+ 投影全摘 + QL 左缘柔光(2026-06-01)
 
 > gpui 0.2.2 的 `linear_gradient` 只支持 2 个 color stop,大面积渐变在 8-bit 色深下产生肉眼可见的断层色带。

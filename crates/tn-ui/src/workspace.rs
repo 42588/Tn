@@ -2367,6 +2367,9 @@ impl Render for Workspace {
                     // edits/commits work (退格删拼音 / 回车提交 / 方向键翻候选). Safe to
                     // call inline — it doesn't re-enter the window proc (see platform.rs).
                     crate::platform::install_ime_keyfix(h);
+                    // Set the taskbar / title-bar icon to the Tn brand mark (same icon
+                    // used for the tray). WM_SETICON doesn't re-enter the window proc.
+                    crate::platform::set_window_icon(h);
                     let exec = cx.background_executor().clone();
                     cx.spawn(async move |_this, _cx| {
                         exec.timer(std::time::Duration::from_millis(40)).await;
