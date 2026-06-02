@@ -135,6 +135,14 @@ impl TerminalView {
                         {
                             break; // view dropped
                         }
+                        // (待优化清单 §8.1 / §2.4) Lock Contention Mitigation:
+                        // If we filled the entire 16KiB buffer, we are likely in a high-throughput
+                        // stream (e.g., `cat` on a large file). Force a tiny sleep so the foreground 
+                        // thread (which we just woke) can acquire the `terminal` mutex to paint,
+                        // preventing the UI from freezing until the command finishes.
+                        if n == buf.len() {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
                     }
                     Err(_) => break,
                 }

@@ -21,6 +21,17 @@ raw-window-handle.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 notify.workspace = true # 活动栏「本次改动」文件监听(变化即刷新)
+smol_str = "0.3.2"
+
+# Document Preview Enhancements
+pdfium-render = "0.9.1"
+calamine = "0.35.0"
+dotext = "0.1.1"
+content_inspector = "0.2.4"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+encoding_rs = "0.8.35"
+image = "0.25.9"
+
 
 # Quick Terminal (M5) global hotkey + topmost window glue — Windows only.
 [target.'cfg(target_os = "windows")'.dependencies]

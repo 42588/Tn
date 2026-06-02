@@ -9,7 +9,7 @@ members = [
     "crates/tn-ai",
     "crates/tn-cli",
     "crates/tn-ui",
-    "crates/tn-app",
+    "crates/tn-app", "test_load",
 ]
 
 [workspace.package]
@@ -73,6 +73,6 @@ tracing-appender = "0.2"
 criterion = "0.5"
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = true

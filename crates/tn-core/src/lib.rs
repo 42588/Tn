@@ -204,7 +204,7 @@ pub struct SnapshotCell {
 /// exposed as plain bools so the UI needn't depend on alacritty's `Flags`.
 #[derive(Clone, Debug)]
 pub struct CellRun {
-    pub text: String,
+    pub text: smol_str::SmolStr,
     pub fg: Rgb,
     pub bg: Rgb,
     pub bold: bool,
@@ -355,64 +355,64 @@ impl TerminalSnapshot {
                 grid[cell.row][cell.col] = *cell;
             }
         }
-        grid.into_iter()
-            .map(|row| {
-                let mut runs: Vec<CellRun> = Vec::new();
-                // A wide char is emitted as its **own** run so the renderer can box it
-                // to exactly 2 cols. Batching it with neighbours into one wide run made
-                // the run's forced width (cols×cell_width) exceed the glyphs' real
-                // advance (CJK fallback font ≠ 2×cell_width), pushing all the slack to
-                // the run's end → the cursor sat far past the text ("光标距离很长").
-                // Per-char boxes distribute that tiny slack and keep every cell on the
-                // grid, so the cursor lands right after the last char.
-                let mut last_wide = false;
-                for cell in row {
-                    // A wide char (CJK) occupies two grid columns: the char itself
-                    // (WIDE_CHAR) + a phantom spacer in the next column. **Skip the
-                    // spacer** — rendering it as a blank put a half-width gap after
-                    // every CJK char ("间距那么大" bug).
-                    if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                        || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
-                    {
-                        continue;
-                    }
-                    let ch = if cell.c == '\0' { ' ' } else { cell.c };
-                    let wide = cell.flags.contains(Flags::WIDE_CHAR);
-                    let span = if wide { 2 } else { 1 };
-                    let bold = cell.flags.contains(Flags::BOLD);
-                    let italic = cell.flags.contains(Flags::ITALIC);
-                    let underline = cell.flags.contains(Flags::UNDERLINE);
-                    // Merge into the previous run only for narrow chars whose neighbour
-                    // is also narrow + same style; a wide char always starts (and ends)
-                    // its own run.
-                    let merge = !wide
-                        && !last_wide
-                        && matches!(runs.last(), Some(r)
-                            if r.fg == cell.fg
-                                && r.bg == cell.bg
-                                && r.bold == bold
-                                && r.italic == italic
-                                && r.underline == underline);
-                    if merge {
-                        let r = runs.last_mut().unwrap();
-                        r.text.push(ch);
-                        r.cols += span;
-                    } else {
-                        runs.push(CellRun {
-                            text: ch.to_string(),
-                            fg: cell.fg,
-                            bg: cell.bg,
-                            bold,
-                            italic,
-                            underline,
-                            cols: span,
-                        });
-                    }
-                    last_wide = wide;
+        let mut out = Vec::with_capacity(self.rows);
+        let mut current_text = String::with_capacity(256);
+        for row in grid {
+            let mut runs: Vec<CellRun> = Vec::new();
+            current_text.clear();
+            let mut last_wide = false;
+            for cell in row {
+                if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                    || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                {
+                    continue;
                 }
-                runs
-            })
-            .collect()
+                let ch = if cell.c == '\0' { ' ' } else { cell.c };
+                let wide = cell.flags.contains(Flags::WIDE_CHAR);
+                let span = if wide { 2 } else { 1 };
+                let bold = cell.flags.contains(Flags::BOLD);
+                let italic = cell.flags.contains(Flags::ITALIC);
+                let underline = cell.flags.contains(Flags::UNDERLINE);
+
+                let merge = if let Some(r) = runs.last() {
+                    !wide
+                        && !last_wide
+                        && r.fg == cell.fg
+                        && r.bg == cell.bg
+                        && r.bold == bold
+                        && r.italic == italic
+                        && r.underline == underline
+                } else {
+                    false
+                };
+
+                if merge {
+                    current_text.push(ch);
+                    runs.last_mut().unwrap().cols += span;
+                } else {
+                    if let Some(r) = runs.last_mut() {
+                        r.text = smol_str::SmolStr::new(&current_text);
+                    }
+                    current_text.clear();
+                    current_text.push(ch);
+                    runs.push(CellRun {
+                        text: smol_str::SmolStr::default(),
+                        fg: cell.fg,
+                        bg: cell.bg,
+                        bold,
+                        italic,
+                        underline,
+                        cols: span,
+                    });
+                }
+                last_wide = wide;
+            }
+            if let Some(r) = runs.last_mut() {
+                r.text = smol_str::SmolStr::new(&current_text);
+            }
+            out.push(runs);
+        }
+        out
     }
 }
 
@@ -923,7 +923,17 @@ mod tests {
         // Double-click in the middle of "world" selects the whole word, no drag.
         t.selection_start_kind(0, 8, SelectKind::Word); // 'r' in "world"
         let s = t.selection_text().unwrap_or_default();
-        assert_eq!(s.trim(), "world", "word selection was {s:?}");
+        assert_eq!(s, "world", "semantic selection expands to word edges");
+    }
+
+    #[test]
+    fn word_selection_drag_expands_to_words() {
+        let mut t = Terminal::new(GridSize::new(2, 30));
+        t.advance(b"first second third\r\n");
+        t.selection_start_kind(0, 8, SelectKind::Word); // 'c' in "second"
+        t.selection_update(0, 14); // 'h' in "third"
+        let s = t.selection_text().unwrap_or_default();
+        assert_eq!(s, "second third", "dragging expands to full word boundaries");
     }
 
     #[test]

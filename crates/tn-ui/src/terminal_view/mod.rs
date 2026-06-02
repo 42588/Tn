@@ -112,12 +112,10 @@ const COLS: usize = 110;
 /// sizes to the *inset* area) — all relative to `content_bounds`.
 const BODY_PAD_X: f32 = 15.0;
 const BODY_PAD_Y: f32 = 11.0;
-/// Activity rail (mockup `.arail` 本次改动): cap the changed-file cards (the narrow
-/// rail shows a short stack) and the first card's mini-diff preview lines.
-pub(super) const RAIL_MAX_FILES: usize = 6;
+
 /// Debounce for the working-tree change watcher: coalesce a burst of file events
 /// (a save touches several files, a build churns many) into one `git diff` refresh.
-const RAIL_WATCH_DEBOUNCE_MS: u64 = 450;
+const RAIL_WATCH_DEBOUNCE_MS: u64 = 1000;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
 /// Smooth cursor glide (待优化清单 §3.1): the cursor eases toward its new cell over
@@ -267,6 +265,7 @@ pub struct TerminalView {
     /// the start so the terminal never resizes when sync_shell_agent
     /// promotes a shell to an agent, avoiding input lag and the
     /// stuck-first-character bug.
+    #[allow(dead_code)]
     integrate_pwsh: bool,
     /// Working-tree change watcher for the activity rail (本次改动): fires `git diff`
     /// on file changes (变化即刷新). `Some` only while this pane is an agent; dropping
@@ -674,11 +673,13 @@ impl TerminalView {
         }
         let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else { return };
 
-        // Bump generation + switch to Loading → skeleton renders immediately.
+        // Bump generation. If we don't have any ready data yet, show the Loading skeleton.
         self.rail_generation = self.rail_generation.wrapping_add(1);
         let gen = self.rail_generation;
-        self.rail_state = RailState::Loading;
-        cx.notify();
+        if !matches!(self.rail_state, RailState::Ready { .. }) {
+            self.rail_state = RailState::Loading;
+            cx.notify();
+        }
 
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -686,8 +687,7 @@ impl TerminalView {
             let (files, root) = exec
                 .spawn(async move {
                     let root = std::path::PathBuf::from(&cwd);
-                    let mut files = crate::gitutil::changes_for(&root);
-                    files.truncate(RAIL_MAX_FILES);
+                    let files = crate::gitutil::changes_for(&root);
                     (files, root)
                 })
                 .await;
@@ -722,6 +722,36 @@ impl TerminalView {
         self.change_watcher = Self::spawn_change_watcher(cx, cwd);
         self.refresh_changes(cx);
     }
+    /// Find the index of `path` within the activity rail's file list.
+    /// Used by the workspace to remember which card was clicked so ↑↓ nav
+    /// can stay within the rail's changed-file scope (not the explorer tree).
+    pub fn rail_find_idx(&self, path: &std::path::Path) -> Option<usize> {
+        if let RailState::Ready { files, root } = &self.rail_state {
+            files.iter().position(|f| root.join(&f.path) == path)
+        } else {
+            None
+        }
+    }
+
+    /// Navigate the activity rail by `delta` (-1 = previous, +1 = next) from
+    /// `current_idx`, wrapping around. Returns `(new_index, absolute_path)`.
+    pub fn rail_nav(
+        &self,
+        current_idx: usize,
+        delta: i32,
+    ) -> Option<(usize, std::path::PathBuf)> {
+        if let RailState::Ready { files, root } = &self.rail_state {
+            if files.is_empty() {
+                return None;
+            }
+            let n = files.len() as i32;
+            let new_idx = ((current_idx as i32 + delta).rem_euclid(n)) as usize;
+            Some((new_idx, root.join(&files[new_idx].path)))
+        } else {
+            None
+        }
+    }
+
     pub fn usage(&self) -> Option<&AiUsage> {
         self.usage.as_ref()
     }
@@ -1415,42 +1445,47 @@ impl Render for TerminalView {
         // the focused pane runs this (typing happens focused; a background pane's output
         // would otherwise diff every frame for nothing).
         if focused {
-            let cur_cells = rows_to_cells(&rows, self.size.cols);
-            let now = Instant::now();
-            let mut fresh: Vec<CellFade> = Vec::new();
-            let mut bulk = false;
-            'diff: for (r, line) in cur_cells.iter().enumerate() {
-                let prev_row = self.prev_cells.get(r);
-                for (c, &cur) in line.iter().enumerate() {
-                    if cur == '\u{0}' {
-                        continue; // wide-char trailing filler — handled at its start col
-                    }
-                    let prev = prev_row.and_then(|pr| pr.get(c).copied()).unwrap_or(' ');
-                    if cur == prev {
-                        continue;
-                    }
-                    if cur != ' ' {
-                        // appeared (blank→glyph) or changed (x→y): fade the new glyph in.
-                        let cols = if line.get(c + 1) == Some(&'\u{0}') { 2 } else { 1 };
-                        fresh.push(CellFade { row: r, col: c, ch: cur, cols, fade_in: true, start: now });
-                    } else if prev != '\u{0}' {
-                        // removed (glyph→blank): fade a ghost of the old glyph out.
-                        let cols = if prev_row.and_then(|pr| pr.get(c + 1).copied()) == Some('\u{0}') { 2 } else { 1 };
-                        fresh.push(CellFade { row: r, col: c, ch: prev, cols, fade_in: false, start: now });
-                    }
-                    if fresh.len() > CHAR_FADE_MAX_CELLS {
-                        bulk = true;
-                        break 'diff;
+            let had_prev = !self.prev_cells.is_empty();
+            if !cache_hit || !had_prev {
+                let cur_cells = rows_to_cells(&rows, self.size.cols);
+                let now = Instant::now();
+                let mut fresh: Vec<CellFade> = Vec::new();
+                let mut bulk = false;
+                if had_prev {
+                    'diff: for (r, line) in cur_cells.iter().enumerate() {
+                        let prev_row = self.prev_cells.get(r);
+                        for (c, &cur) in line.iter().enumerate() {
+                            if cur == '\u{0}' {
+                                continue; // wide-char trailing filler — handled at its start col
+                            }
+                            let prev = prev_row.and_then(|pr| pr.get(c).copied()).unwrap_or(' ');
+                            if cur == prev {
+                                continue;
+                            }
+                            if cur != ' ' {
+                                // appeared (blank→glyph) or changed (x→y): fade the new glyph in.
+                                let cols = if line.get(c + 1) == Some(&'\u{0}') { 2 } else { 1 };
+                                fresh.push(CellFade { row: r, col: c, ch: cur, cols, fade_in: true, start: now });
+                            } else if prev != '\u{0}' {
+                                // removed (glyph→blank): fade a ghost of the old glyph out.
+                                let cols = if prev_row.and_then(|pr| pr.get(c + 1).copied()) == Some('\u{0}') { 2 } else { 1 };
+                                fresh.push(CellFade { row: r, col: c, ch: prev, cols, fade_in: false, start: now });
+                            }
+                            if fresh.len() > CHAR_FADE_MAX_CELLS {
+                                bulk = true;
+                                break 'diff;
+                            }
+                        }
                     }
                 }
+                if bulk || !had_prev {
+                    self.cell_fades.clear(); // bulk change → snap; drop in-flight fades
+                } else if !fresh.is_empty() {
+                    self.cell_fades.extend(fresh);
+                    self.spawn_cell_fade(cx);
+                }
+                self.prev_cells = cur_cells;
             }
-            if bulk {
-                self.cell_fades.clear(); // bulk change → snap; drop in-flight fades
-            } else if !fresh.is_empty() {
-                self.cell_fades.extend(fresh);
-                self.spawn_cell_fade(cx);
-            }
-            self.prev_cells = cur_cells;
         } else if !self.prev_cells.is_empty() {
             self.prev_cells.clear(); // returning focus re-snaps — no spurious fades
         }
@@ -1484,11 +1519,13 @@ impl Render for TerminalView {
         let cursor_char = rows.get(cur_row).and_then(|row| {
             let mut c = 0usize;
             for run in row {
+                let is_wide = run.cols == 2 && run.text.chars().count() == 1;
                 for ch in run.text.chars() {
-                    if c == cur_col {
+                    // Match either the leading cell or the trailing phantom cell of a wide char
+                    if c == cur_col || (is_wide && c + 1 == cur_col) {
                         return (!ch.is_whitespace()).then_some(ch);
                     }
-                    c += 1;
+                    c += if is_wide { 2 } else { 1 };
                 }
             }
             None
@@ -1645,7 +1682,7 @@ impl Render for TerminalView {
                                     .when(r.bg != bg, |d| d.bg(col(r.bg)))
                                     .text_color(col(r.fg))
                                     .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
-                                    .child(SharedString::from(r.text.clone()))
+                                    .child(SharedString::from(r.text.to_string()))
                             }))
                     })),
             )

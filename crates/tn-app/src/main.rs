@@ -10,6 +10,9 @@
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::{fmt, EnvFilter};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // Keep the file-writer guard alive for the whole run (drops flush the log).
     let _guard = init_logging();

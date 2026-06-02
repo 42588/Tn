@@ -254,7 +254,11 @@ impl WelcomeView {
             .bg(rgba(INSET)) // .tile bg = g2(.04)
             .border_1()
             .border_color(rgba(RIM)) // .tile border = rim
-            .hover(|s| s.bg(rgba(crate::style::HOVER))) // 轻微提亮(原型 .tile.sel 用 g3)
+            .hover(|s| {
+                // Enhance hover state with dynamic agent color glow
+                s.bg(cola(card.accent, 0.08))
+                 .border_color(cola(card.accent, 0.30))
+            })
             .on_mouse_down(MouseButton::Left, cx.listener(on_down))
             .child(
                 // .ic:30×30 圆角 9,accent@.14 底 + accent 图标

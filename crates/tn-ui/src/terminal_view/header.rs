@@ -5,8 +5,8 @@
 //! the parent (`render`); the rest are header-internal.
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, App, Context, Div, FontWeight,
-    MouseButton, Overflow, SharedString, WeakEntity,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AnyElement, App, Context, Div,
+    FontWeight, MouseButton, Overflow, SharedString, WeakEntity,
 };
 use tn_ai::AgentKind;
 use tn_config::BillingMode;
@@ -307,7 +307,7 @@ impl TerminalView {
         let red = col(self.palette.ansi[1]);
 
         // ── Build the chrome shell (status row + left border) once ──
-        let rail_shell = |status: Div, body: Div| -> Div {
+        let rail_shell = |status: Div, body: AnyElement| -> Div {
             div()
                 .flex_none()
                 .w(px(212.))
@@ -376,7 +376,7 @@ impl TerminalView {
                             .rounded(px(R_CARD))
                             .bg(rgba(INSET))
                     }));
-                rail_shell(status, skeleton)
+                rail_shell(status, skeleton.into_any_element())
             }
 
             // ── Ready: real cards ──
@@ -396,10 +396,12 @@ impl TerminalView {
                         .text_size(px(10.5))
                         .text_color(col(self.ui_muted))
                         .pt(px(2.)).px(px(12.))
-                        .child(SharedString::from("agent 改动会实时显示在这里")));
+                        .child(SharedString::from("agent 改动会实时显示在这里"))
+                        .into_any_element());
                 }
 
                 let mut scrollable = div()
+                    .id("arail-scrollable")
                     .flex_1().min_h(px(0.)).flex().flex_col()
                     .gap(px(11.)).pb(px(14.)).overflow_hidden();
                 scrollable.interactivity().base_style.overflow.y = Some(Overflow::Scroll);
@@ -430,10 +432,11 @@ impl TerminalView {
                     let inner = div()
                         .rounded(px(R_CARD - 1.)) // 留 1px 给光环
                         .overflow_hidden()
-                        .bg(gpui::rgb(0x181A24)) // ★ 死色垫底：阻断光晕从半透 inner_bg 穿透
+                        .bg(gpui::rgb(0x121626)) // ★ 死色垫底：严格对齐当前的主题 pane_fill 色值，使其完美融入背景，消除突兀的灰蓝补丁感
                         .child(
                             div()
                                 .size_full()
+                                .rounded(px(R_CARD - 1.))
                                 .py(px(8.))
                                 .px(px(10.))
                                 .flex()
@@ -471,7 +474,7 @@ impl TerminalView {
                         .child(SharedString::from("点卡片 = 速览全 diff")),
                 );
 
-                rail_shell(status, scrollable)
+                rail_shell(status, scrollable.into_any_element())
             }
 
             // ── Idle: shouldn't render (called only when agent is present) ──

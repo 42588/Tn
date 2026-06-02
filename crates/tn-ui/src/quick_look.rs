@@ -297,26 +297,37 @@ pub enum QuickLookEvent {
     FileSaved(std::path::PathBuf),
 }
 
+#[derive(Clone)]
+enum QuickLookData {
+    None,
+    Text {
+        lines: Arc<Vec<String>>,
+        truncated: bool,
+    },
+    Pdf {
+        pages: Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>,
+        page_count: usize,
+    },
+    Image {
+        img: Arc<gpui::Image>,
+    },
+    Binary {
+        size: u64,
+    },
+}
+
 pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
     path: Option<PathBuf>,
     tab: Tab,
-    // Rc so the `'static` uniform_list closure can capture them cheaply each frame.
-    file_lines: Rc<Vec<String>>,
-    file_truncated: bool,
+    file_data: QuickLookData,
     diff: Rc<Vec<DiffLine>>,
     /// `git diff` is computed **lazily** (only when the Diff tab is shown) — it's a
     /// blocking subprocess and was freezing the UI when run eagerly on every file
     /// open / navigation. `true` = the cached `diff` is stale and must be recomputed
     /// the next time the Diff tab is viewed. (See 踩过的坑 + 架构蓝图 §8 ①.)
     diff_dirty: bool,
-    /// `true` when the file is binary (null bytes) or exceeds `MAX_FILE_SIZE` —
-    /// text preview is unavailable; render shows file info instead.
-    file_binary: bool,
-    /// Byte length of the open file (0 when unknown / no file). Shown in the
-    /// binary-file placeholder.
-    file_size: u64,
     /// Edit state (our own small modeless editor — see §16 / 架构蓝图 §8 ①).
     editing: bool,
     /// Editable buffer (copied from `file_lines` on entering edit; `Rc` so the
@@ -350,6 +361,8 @@ pub struct QuickLook {
     replace_query: String,
     /// Which find field typing goes to (false = find, true = replace).
     find_field_replace: bool,
+    edit_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, (Vec<char>, Vec<Tint>)>>>,
+    file_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, Vec<(String, Tint)>>>>,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
     /// Grab focus in the next render (focusing in an event/open callback doesn't
@@ -383,12 +396,9 @@ impl QuickLook {
             root,
             path: None,
             tab: Tab::File,
-            file_lines: Rc::new(Vec::new()),
-            file_truncated: false,
+            file_data: QuickLookData::None,
             diff: Rc::new(Vec::new()),
             diff_dirty: true,
-            file_binary: false,
-            file_size: 0,
             editing: false,
             buf: Rc::new(Vec::new()),
             cursor: (0, 0),
@@ -405,6 +415,8 @@ impl QuickLook {
             find_query: String::new(),
             replace_query: String::new(),
             find_field_replace: false,
+            edit_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
+            file_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
             focus_handle: cx.focus_handle(),
@@ -422,16 +434,43 @@ impl QuickLook {
         self.path.is_some()
     }
 
+    /// Whether the currently loaded file can be opened in the text editor.
+    /// PDF, image, binary, and Office files (docx/xlsx/ppt/etc.) are view-only
+    /// and should not show the "Enter 编辑" hint in the footer.
+    fn is_editable(&self) -> bool {
+        // Non-text data variants are never editable.
+        match &self.file_data {
+            QuickLookData::Text { .. } => {}
+            _ => return false,
+        }
+        // Office / spreadsheet extensions: we extracted plain text for preview
+        // but writing back would corrupt the binary format — treat as read-only.
+        let ext = self
+            .path
+            .as_ref()
+            .and_then(|p| p.extension())
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        !matches!(
+            ext.as_str(),
+            "docx" | "doc" | "xlsx" | "xls" | "ods"
+            | "pptx" | "ppt" | "odp"
+            | "odt"
+            | "pdf"
+        )
+    }
+
     /// `(filename, language)` for the open file — drives the status bar's
     /// "element.rs · Rust" segment.
     pub fn status(&self) -> Option<(String, &'static str)> {
         let p = self.path.as_ref()?;
         let name = p.file_name()?.to_string_lossy().to_string();
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = if self.file_binary {
-            binary_label(ext)
-        } else {
-            text_label(ext)
+        let lang = match &self.file_data {
+            QuickLookData::Binary { .. } => binary_label(ext),
+            QuickLookData::Pdf { .. } => "PDF",
+            _ => text_label(ext),
         };
         Some((name, lang))
     }
@@ -451,16 +490,15 @@ impl QuickLook {
         self.tab = Tab::File;
         self.editing = false;
         self.dirty = false;
-        self.file_truncated = false;
-        self.file_binary = false;
-        self.file_size = 0;
-        self.file_lines = Rc::new(Vec::new());
+        self.file_data = QuickLookData::None;
         self.diff = Rc::new(Vec::new());
         self.diff_dirty = true;
         self.diff_loading = false;
         self.scroll = UniformListScrollHandle::default();
         self.needs_focus = true;
         self.find_open = false;
+        self.edit_highlight_cache.borrow_mut().clear();
+        self.file_highlight_cache.borrow_mut().clear();
 
         // ── Async: bump generation + switch to Loading → skeleton renders ──
         self.generation = self.generation.wrapping_add(1);
@@ -471,6 +509,123 @@ impl QuickLook {
 
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let path_clone = path.clone();
+            let ext = path_clone.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+            
+            if ext == "pdf" {
+                let (tx, mut rx) = futures::channel::mpsc::unbounded();
+                exec.spawn(async move {
+                    use pdfium_render::prelude::*;
+                    static PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
+                    let pdfium_lock = PDFIUM.get_or_init(|| {
+                        let exe_dir = std::env::current_exe().unwrap();
+                        let workspace_dir = exe_dir.parent().unwrap().parent().unwrap().parent().unwrap();
+                        let pdfium_dll = workspace_dir.join("pdfium.dll");
+                        let bind_result = Pdfium::bind_to_system_library()
+                            .or_else(|_| Pdfium::bind_to_library(&pdfium_dll));
+                        bind_result.ok().map(|bind| Pdfium::new(bind))
+                    });
+
+                    let pdfium = match pdfium_lock {
+                        Some(p) => p,
+                        None => {
+                            let _ = tx.unbounded_send(Err("PDF 引擎初始化失败".to_string()));
+                            return;
+                        }
+                    };
+
+                    match pdfium.load_pdf_from_file(&path_clone, None) {
+                        Ok(document) => {
+                            let page_count = document.pages().len() as usize;
+                            let limit = page_count.min(100); // 宽容到 100 页
+                            let _ = tx.unbounded_send(Ok((limit, None)));
+                            
+                            let render_config = PdfRenderConfig::new().set_target_width(1200);
+                            for (i, page) in document.pages().iter().take(limit).enumerate() {
+                                if let Ok(bitmap) = page.render_with_config(&render_config) {
+                                    if let Ok(img) = bitmap.as_image() {
+                                        let mut cursor = std::io::Cursor::new(Vec::new());
+                                        if img.write_to(&mut cursor, image::ImageFormat::Bmp).is_ok() {
+                                            let gpui_img = gpui::Image::from_bytes(gpui::ImageFormat::Bmp, cursor.into_inner());
+                                            let _ = tx.unbounded_send(Ok((limit, Some((i, Arc::new(gpui_img))))));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            let _ = tx.unbounded_send(Err("无法解析此 PDF 文件".to_string()));
+                        }
+                    }
+                }).detach();
+                
+                use futures::StreamExt;
+                let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>> = None;
+                
+                while let Some(msg) = rx.next().await {
+                    match msg {
+                        Ok((limit, None)) => {
+                            let arc = Arc::new(std::sync::Mutex::new(vec![None; limit]));
+                            pages_arc = Some(arc.clone());
+                            let _ = this.update(cx, |v, cx| {
+                                if v.generation != gen { return; }
+                                v.file_data = QuickLookData::Pdf { pages: arc, page_count: limit };
+                                v.loading_state = LoadingState::Ready;
+                                cx.notify();
+                            });
+                        }
+                        Ok((_, Some((i, img)))) => {
+                            if let Some(arc) = &pages_arc {
+                                if let Ok(mut lock) = arc.lock() {
+                                    lock[i] = Some(img);
+                                }
+                                let _ = this.update(cx, |_, cx| cx.notify());
+                            }
+                        }
+                        Err(e) => {
+                            let _ = this.update(cx, |v, cx| {
+                                if v.generation != gen { return; }
+                                v.file_data = QuickLookData::Text { lines: Arc::new(vec![e]), truncated: false };
+                                v.loading_state = LoadingState::Ready;
+                                cx.notify();
+                            });
+                            break;
+                        }
+                    }
+                }
+                return;
+            }
+
+            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
+                let path_for_bg = path_clone.clone();
+                let bytes_res = cx.background_executor().spawn(async move { std::fs::read(&path_for_bg) }).await;
+                if let Ok(bytes) = bytes_res {
+                    let fmt = match ext.as_str() {
+                        "png" => gpui::ImageFormat::Png,
+                        "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
+                        "webp" => gpui::ImageFormat::Webp,
+                        "gif" => gpui::ImageFormat::Gif,
+                        "bmp" => gpui::ImageFormat::Bmp,
+                        _ => gpui::ImageFormat::Png,
+                    };
+                    let img = gpui::Image::from_bytes(fmt, bytes);
+                    let _ = this.update(cx, |v, cx| {
+                        if v.generation != gen { return; }
+                        v.file_data = QuickLookData::Image { img: Arc::new(img) };
+                        v.loading_state = LoadingState::Ready;
+                        cx.notify();
+                    });
+                    return;
+                }
+                let _ = this.update(cx, |v, cx| {
+                    if v.generation != gen { return; }
+                    v.file_data = QuickLookData::Binary { size: std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0) };
+                    v.loading_state = LoadingState::Ready;
+                    cx.notify();
+                });
+                return;
+            }
+
             let res = exec
                 .spawn(async move {
                     let meta = std::fs::metadata(&path).ok();
@@ -482,20 +637,80 @@ impl QuickLook {
                             .ok()
                             .and_then(|mut f| std::io::Read::read(&mut f, &mut peek_buf).ok())
                             .unwrap_or(0);
-                        peek_buf[..n].contains(&0x00)
+                        content_inspector::inspect(&peek_buf[..n]).is_binary()
                     } else {
                         false
                     };
-
-                    if size > MAX_FILE_SIZE || is_binary {
-                        return (Vec::new(), false, true, size);
+                    
+                    if matches!(ext.as_str(), "docx" | "xlsx" | "xls" | "ods") {
+                        if ext == "docx" {
+                            use dotext::MsDoc;
+                            if let Ok(mut doc) = dotext::Docx::open(&path) {
+                                use std::io::Read;
+                                let mut text = String::new();
+                                let _ = doc.read_to_string(&mut text);
+                                let mut line_iter = text.lines();
+                                let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
+                                for line in (&mut line_iter).take(MAX_LINES) {
+                                    lines.push(line.to_string());
+                                }
+                                let truncated = line_iter.next().is_some();
+                                return QuickLookData::Text { lines: Arc::new(lines), truncated };
+                            }
+                        } else {
+                            use calamine::{Reader, open_workbook_auto, Data};
+                            if let Ok(mut workbook) = open_workbook_auto(&path) {
+                                let mut lines = Vec::new();
+                                let mut truncated = false;
+                                if let Some(Ok(range)) = workbook.worksheet_range_at(0) {
+                                    let mut row_iter = range.rows();
+                                    for row in (&mut row_iter).take(MAX_LINES) {
+                                        let row_str = row.iter().map(|c| match c {
+                                            Data::String(s) => s.to_string(),
+                                            Data::Float(f) => f.to_string(),
+                                            Data::Int(i) => i.to_string(),
+                                            Data::Bool(b) => b.to_string(),
+                                            _ => String::new(),
+                                        }).collect::<Vec<_>>().join(" | ");
+                                        lines.push(row_str);
+                                    }
+                                    truncated = row_iter.next().is_some();
+                                }
+                                return QuickLookData::Text { lines: Arc::new(lines), truncated };
+                            }
+                        }
                     }
 
-                    let text = std::fs::read_to_string(&path).unwrap_or_default();
-                    let all: Vec<String> = text.lines().map(str::to_string).collect();
-                    let truncated = all.len() > MAX_LINES;
-                    let lines: Vec<String> = all.into_iter().take(MAX_LINES).collect();
-                    (lines, truncated, false, size)
+                    if size > MAX_FILE_SIZE || is_binary {
+                        return QuickLookData::Binary { size };
+                    }
+
+                    let mut text = String::new();
+                    if let Ok(bytes) = std::fs::read(&path) {
+                        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                            text = String::from_utf8_lossy(&bytes[3..]).into_owned();
+                        } else if bytes.starts_with(&[0xFF, 0xFE]) {
+                            let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+                            text = cow.into_owned();
+                        } else if bytes.starts_with(&[0xFE, 0xFF]) {
+                            let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+                            text = cow.into_owned();
+                        } else {
+                            if let Ok(utf8_str) = std::str::from_utf8(&bytes) {
+                                text = utf8_str.to_string();
+                            } else {
+                                let (cow, _, _) = encoding_rs::GBK.decode(&bytes);
+                                text = cow.into_owned();
+                            }
+                        }
+                    }
+                    let mut line_iter = text.lines();
+                    let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
+                    for line in (&mut line_iter).take(MAX_LINES) {
+                        lines.push(line.to_string());
+                    }
+                    let truncated = line_iter.next().is_some();
+                    QuickLookData::Text { lines: Arc::new(lines), truncated }
                 })
                 .await;
 
@@ -504,10 +719,7 @@ impl QuickLook {
                 if v.generation != gen {
                     return;
                 }
-                v.file_lines = Rc::new(res.0);
-                v.file_truncated = res.1;
-                v.file_binary = res.2;
-                v.file_size = res.3;
+                v.file_data = res;
                 v.loading_state = LoadingState::Ready;
 
                 // Deferred edit: `open_for_edit` was called while loading.
@@ -601,7 +813,11 @@ impl QuickLook {
 
     /// Enter edit mode: copy the file into the editable buffer, cursor at (0,0).
     fn enter_edit(&mut self) {
-        self.buf = self.file_lines.clone();
+        if let QuickLookData::Text { lines, .. } = &self.file_data {
+            self.buf = Rc::new(lines.as_ref().clone());
+        } else {
+            self.buf = Rc::new(Vec::new());
+        }
         if self.buf.is_empty() {
             Rc::make_mut(&mut self.buf).push(String::new());
         }
@@ -624,7 +840,7 @@ impl QuickLook {
         match std::fs::write(&path, content) {
             Ok(()) => {
                 self.dirty = false;
-                self.file_lines = self.buf.clone();
+                self.file_data = QuickLookData::Text { lines: Arc::new(self.buf.as_ref().clone()), truncated: false };
                 // The diff is now stale; recompute lazily (only if the Diff tab is
                 // currently showing — otherwise just mark it dirty so Ctrl+S stays
                 // fast and never blocks on `git diff`).
@@ -1082,8 +1298,9 @@ impl QuickLook {
                     let next_tab = if self.tab == Tab::File { Tab::Diff } else { Tab::File };
                     self.select_tab(next_tab, cx);
                     cx.stop_propagation();
+                    cx.notify(); // diff 已缓存时 ensure_diff 不会 notify，需显式触发重渲染
                 }
-                "enter" => {
+                "enter" if self.is_editable() => {
                     self.enter_edit();
                     self.scroll.scroll_to_item(0, ScrollStrategy::Top);
                     cx.stop_propagation();
@@ -1370,35 +1587,18 @@ fn selected_text(buf: &[String], s: (usize, usize), e: (usize, usize)) -> String
     out
 }
 
-/// First index ≥ `from` where `query`'s chars occur in `chars` (substring search).
-fn find_in_chars(chars: &[char], query: &[char], from: usize) -> Option<usize> {
-    if query.is_empty() || query.len() > chars.len() {
-        return None;
-    }
-    let mut i = from;
-    while i + query.len() <= chars.len() {
-        if chars[i..i + query.len()] == *query {
-            return Some(i);
-        }
-        i += 1;
-    }
-    None
-}
-
 /// All matches of `query` (single-line) in the buffer, as `(start, end)` char
 /// positions, in document order.
 fn all_matches(buf: &[String], query: &str) -> Vec<((usize, usize), (usize, usize))> {
-    let q: Vec<char> = query.chars().collect();
     let mut out = Vec::new();
-    if q.is_empty() {
+    if query.is_empty() {
         return out;
     }
     for (r, line) in buf.iter().enumerate() {
-        let chars: Vec<char> = line.chars().collect();
-        let mut start = 0;
-        while let Some(col) = find_in_chars(&chars, &q, start) {
-            out.push(((r, col), (r, col + q.len())));
-            start = col + 1;
+        for (byte_idx, matched_str) in line.match_indices(query) {
+            let start_char = line[..byte_idx].chars().count();
+            let len_chars = matched_str.chars().count();
+            out.push(((r, start_char), (r, start_char + len_chars)));
         }
     }
     out
@@ -1437,22 +1637,16 @@ fn tints_per_char(line: &str) -> Vec<Tint> {
     tints
 }
 
-/// Build one edit-mode row `i`: syntax-tinted text + selection background + the
-/// caret, by walking chars and grouping equal (tint, selected) runs (caret splits
-/// a run). `sel` is the normalized document selection (if any).
-fn edit_row(
+fn edit_row_cached(
     config: &Loaded,
-    buf: &[String],
+    chars: &[char],
+    tints: &[Tint],
     i: usize,
     cursor: (usize, usize),
     sel: Option<((usize, usize), (usize, usize))>,
 ) -> gpui::Div {
-    let line = &buf[i];
-    let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
-    // Long line: skip per-char tinting (bounds paint cost); render before/[caret]/
-    // after as plain spans so editing still works.
-    if line.len() > LONG_LINE_BYTES {
+    if chars.len() > LONG_LINE_BYTES {
         let fg = col(config.theme.ui.foreground);
         let cc = if i == cursor.0 { cursor.1.min(n) } else { n + 1 };
         let before: String = chars.iter().take(cc.min(n)).collect();
@@ -1465,14 +1659,13 @@ fn edit_row(
         row = row.child(div().text_color(fg).child(SharedString::from(after)));
         return code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![row]);
     }
-    let tints = tints_per_char(line);
+
     let tint_at = |k: usize| *tints.get(k).unwrap_or(&Tint::Plain);
 
-    // selection columns within this row ([sel_s, sel_e))
     let (sel_s, sel_e) = match sel {
         Some((s, e)) if i >= s.0 && i <= e.0 => {
             let ss = if i == s.0 { s.1 } else { 0 };
-            let ee = if i == e.0 { e.1 } else { n }; // whole line for middle lines
+            let ee = if i == e.0 { e.1 } else { n };
             (ss, ee)
         }
         _ => (0, 0),
@@ -1541,11 +1734,10 @@ fn coalesce_spans(line: &str) -> Vec<(String, Tint)> {
     merged
 }
 
-/// Build one File-tab row `i` (1-based line number + syntax-tinted source).
-fn file_row(config: &Loaded, lines: &[String], i: usize) -> gpui::Div {
-    let spans: Vec<gpui::Div> = coalesce_spans(&lines[i])
-        .into_iter()
-        .map(|(text, tint)| div().text_color(tint_color(config, tint)).child(SharedString::from(text)))
+fn file_row_cached(config: &Loaded, cached_spans: &[(String, Tint)], i: usize) -> gpui::Div {
+    let spans: Vec<gpui::Div> = cached_spans
+        .iter()
+        .map(|(text, tint)| div().text_color(tint_color(config, *tint)).child(SharedString::from(text.clone())))
         .collect();
     code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), spans)
 }
@@ -1623,6 +1815,7 @@ impl EntityInputHandler for QuickLook {
         // cancel. (Backspace is encoded in `on_key`, never routed here.)
         if !text.is_empty() {
             self.type_char(text);
+            self.edit_highlight_cache.borrow_mut().clear();
             self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
         }
         self.ime_marked = None;
@@ -1672,6 +1865,11 @@ impl EntityInputHandler for QuickLook {
 
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let config = self.config.clone();
+        let edit_cache = self.edit_highlight_cache.clone();
+        let file_cache = self.file_highlight_cache.clone();
+        let ui = &config.theme.ui;
+
         // Grab focus on first render after open (focusing in open() doesn't land —
         // the overlay isn't rendered yet; see 踩过的坑).
         if self.needs_focus {
@@ -1777,10 +1975,14 @@ impl Render for QuickLook {
 
         // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不卡)。
         //    编辑态从 buf 渲染(高亮 + 选区 + 光标);预览态从 file_lines / diff 渲染。──
-        let config = self.config.clone(); // Arc clone for the 'static closure
-        let lines = self.file_lines.clone(); // Rc clone (cheap)
-        let diff = self.diff.clone();
+        let (lines, truncated) = match &self.file_data {
+            QuickLookData::Text { lines, truncated } => (lines.clone(), *truncated),
+            _ => (Arc::new(Vec::new()), false),
+        };
+        let line_count = lines.len();
         let buf = self.buf.clone();
+        let config = self.config.clone();
+        let diff = self.diff.clone();
         let editing = self.editing;
         let cursor = self.cursor;
         let sel = self.sel_range();
@@ -1803,9 +2005,9 @@ impl Render for QuickLook {
         let count = if editing {
             buf.len()
         } else if tab == Tab::Diff {
-            diff.len()
+            self.diff.len()
         } else {
-            lines.len()
+            line_count
         };
         // ── Skeleton helper: short "code lines" of varying width ──
         let code_skeleton = |n: usize, ws: &[f32]| {
@@ -1820,70 +2022,111 @@ impl Render for QuickLook {
                 }))
         };
         // ── body condition chain ────────────────────────────────────────────
-        let body = if self.loading_state == LoadingState::Loading {
-            code_skeleton(16, &[220., 130., 310., 180., 260., 140., 330., 160.])
-        } else if self.tab == Tab::Diff && self.diff_loading {
-            code_skeleton(8, &[160., 280., 120., 200., 150., 310., 170.])
-        } else if self.file_binary {
-            let size_str = human_size(self.file_size);
-            let kind = self
-                .path
-                .as_ref()
-                .and_then(|p| p.extension())
-                .and_then(|e| e.to_str())
-                .map(binary_label)
-                .unwrap_or("Binary");
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(8.))
-                .child(icon("file", 32., ui.muted))
-                .child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(col(ui.foreground))
-                        .child(SharedString::from(format!("{kind} — 无法预览"))),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap(px(6.))
-                        .child(
+        let mut body = div()
+            .relative()
+            .flex_1()
+            .min_h(px(0.))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .pt(px(8.));
+
+        if self.loading_state == LoadingState::Loading {
+            body = body.child(code_skeleton(16, &[220., 130., 310., 180., 260., 140., 330., 160.]));
+        } else if let QuickLookData::Binary { size } = &self.file_data {
+            let size_str = human_size(*size);
+            body = body.child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .text_color(col(ui.muted))
+                    .child(icon("file", 48., ui.muted))
+                    .child(div().mt_4().text_size(px(14.)).child("无法预览此文件"))
+                    .child(
+                        div()
+                            .mt_2()
+                            .text_size(px(12.))
+                            .child(format!("二进制文件或超过大小限制 ({size_str})")),
+                    ),
+            );
+        } else if let QuickLookData::Pdf { pages, page_count } = &self.file_data {
+            let pages = pages.clone();
+            let page_count = *page_count;
+            let mut items = Vec::new();
+            if let Ok(pages_lock) = pages.lock() {
+                for i in 0..page_count {
+                    if let Some(img) = &pages_lock[i] {
+                        let img_source = gpui::ImageSource::Image(img.clone());
+                        items.push(
                             div()
-                                .text_size(px(11.))
-                                .text_color(col(ui.muted))
-                                .child(SharedString::from(size_str)),
-                        ),
-                )
-        } else if !editing && tab == Tab::Diff && diff.is_empty() {
-            div()
-                .flex_1()
-                .min_h(px(0.))
-                .px(px(14.))
-                .py(px(8.))
-                .text_color(col(ui.muted))
-                .child("无改动 · git working tree clean")
+                                .w_full()
+                                .min_h(px(1200.)) // 给予基础高度让它能撑开滚动条
+                                .bg(rgba(0xffffffff)) // 纯白背板
+                                .flex()
+                                .justify_center()
+                                .p_4()
+                                .child(gpui::img(img_source).w_full().h_auto())
+                        );
+                    } else {
+                        // 骨架屏 Loading
+                        items.push(
+                            div()
+                                .w_full()
+                                .h(px(1200.))
+                                .bg(rgba(0xffffffff))
+                        );
+                    }
+                }
+            }
+
+            body = body.child(
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .bg(rgba(0x1e1e1e))
+                    .child(
+                        div()
+                            .id("pdf_scroll_container")
+                            .w_full()
+                            .h_full()
+                            .flex_col()
+                            .overflow_y_scroll()
+                            .children(items)
+                    )
+            );
+        } else if let QuickLookData::Image { img } = &self.file_data {
+            let img_source = gpui::ImageSource::Image(img.clone());
+            body = body.child(
+                div()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .bg(rgba(0x1e1e1e)) // 暗色背景
+                    .child(gpui::img(img_source).w_auto().h_auto().max_w_full().max_h_full().object_fit(gpui::ObjectFit::ScaleDown))
+            );
+        } else if self.tab == Tab::Diff && self.diff_loading {
+            body = body.child(code_skeleton(8, &[160., 280., 120., 200., 150., 310., 170.]));
+        } else if !editing && tab == Tab::Diff && self.diff.is_empty() {
+            body = body.child(
+                div()
+                    .flex_1()
+                    .min_h(px(0.))
+                    .px(px(14.))
+                    .py(px(8.))
+                    .text_color(col(ui.muted))
+                    .child("无改动 · git working tree clean")
+            );
         } else {
-            div()
-                .relative() // anchor the bounds-capturing canvas
-                .flex_1()
-                .min_h(px(0.))
-                .flex()
-                .flex_col()
-                .overflow_hidden()
-                .pt(px(8.)) // mockup .code padding 8px 0(顶部留白;余下走列表内滚动)
+            let _sel_anchor = sel.as_ref().map(|s| s.0);
+            body = body
                 .child(
-                    // canvas captures the code area's window-space bounds (left edge
-                    // → column mapping for clicks).
                     canvas(
                         move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
-                        // Register the IME/text input handler for this frame (edit mode
-                        // only) so composed text (中文) reaches `replace_text_in_range`.
                         move |bounds, _s, window, cx| {
                             if ime_active {
                                 window.handle_input(
@@ -1899,11 +2142,16 @@ impl Render for QuickLook {
                 )
                 .child(
                     uniform_list("ql-code", count, move |range, _window, _cx| {
+                        let mut e_cache = edit_cache.borrow_mut();
+                        let mut f_cache = file_cache.borrow_mut();
                         range
                             .map(|i| {
                                 if editing {
-                                    let row = edit_row(&config, &buf, i, cursor, sel);
-                                    // click-to-place (Shift extends): map x → column.
+                                    let line = &buf[i];
+                                    let (chars, tints) = e_cache.entry(i).or_insert_with(|| {
+                                        (line.chars().collect(), tints_per_char(line))
+                                    });
+                                    let row = edit_row_cached(&config, chars, tints, i, cursor, sel);
                                     let entity = entity.clone();
                                     let bounds = row_bounds.clone();
                                     row.on_mouse_down(
@@ -1917,14 +2165,13 @@ impl Render for QuickLook {
                                                 this.place_cursor(i, col, shift);
                                                 cx.notify();
                                             });
-                                            // Don't let the click bubble to the workspace scrim /
-                                            // a terminal pane (would steal focus to the shell — the
-                                            // "焦点漏到底层 shell" bug).
                                             app.stop_propagation();
                                         },
                                     )
                                 } else if tab == Tab::File {
-                                    file_row(&config, &lines, i)
+                                    let line = &lines[i];
+                                    let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
+                                    file_row_cached(&config, spans, i)
                                 } else {
                                     diff_row(&config, &diff, i)
                                 }
@@ -1935,7 +2182,7 @@ impl Render for QuickLook {
                     .min_h(px(0.))
                     .track_scroll(self.scroll.clone()),
                 )
-                .when(!editing && self.file_truncated && tab == Tab::File, |d| {
+                .when(!editing && truncated && tab == Tab::File, |d| {
                     d.child(
                         div()
                             .flex_none()
@@ -1988,8 +2235,8 @@ impl Render for QuickLook {
                 .child("复制粘贴 ·")
                 .child(kcap("Ctrl+Z"))
                 .child("撤销")
-        } else {
-            // 预览态:↑↓ 换文件 · ⇥ 切 File · Enter 编辑 [sp] Diff 只读审阅 · Esc 关闭
+        } else if self.is_editable() {
+            // 预览态(可编辑文本文件):↑↓ 换文件 · ⇥ 切 File · Enter 编辑 · Esc 关闭
             footer_base
                 .child(kcap("↑↓"))
                 .child("换文件 ·")
@@ -1999,6 +2246,17 @@ impl Render for QuickLook {
                 .child("编辑")
                 .child(div().flex_1())
                 .child("Diff 只读审阅 ·")
+                .child(kcap("Esc"))
+                .child("关闭")
+        } else {
+            // 预览态(PDF / 图片 / Office / 二进制 — 只读):↑↓ 换文件 · ⇥ 切 File · Esc 关闭
+            footer_base
+                .child(kcap("↑↓"))
+                .child("换文件 ·")
+                .child(kcap("⇥"))
+                .child("切 File ·")
+                .child(div().flex_1())
+                .child("只读预览 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
         };

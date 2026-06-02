@@ -115,9 +115,9 @@ pub struct ExplorerView {
     git_stale: bool,
     /// Keeps the background git task alive until completion.
     _git_task: Option<gpui::Task<()>>,
-    /// Scroll controller for the virtualised tree list.
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
+    _change_watcher: Option<notify::RecommendedWatcher>,
 }
 
 /// One tree row (`.tnode`): indent guide + chevron + icon + name + optional git
@@ -193,7 +193,7 @@ impl ExplorerView {
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let mut me = Self {
             config,
-            root,
+            root: root.clone(),
             expanded: HashSet::new(),
             selected: None,
             rows: Vec::new(),
@@ -202,9 +202,44 @@ impl ExplorerView {
             _git_task: None,
             scroll_handle: UniformListScrollHandle::default(),
             focus_handle: cx.focus_handle(),
+            _change_watcher: None,
         };
-        me.rebuild();
+        me._change_watcher = Self::spawn_change_watcher(&root, cx);
+        me.rebuild(cx);
         me
+    }
+
+    fn spawn_change_watcher(root: &std::path::Path, cx: &mut Context<Self>) -> Option<notify::RecommendedWatcher> {
+        use notify::Watcher;
+        use futures::StreamExt;
+        let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                if ev.paths.iter().any(|p| {
+                    p.components().any(|c| {
+                        matches!(
+                            c.as_os_str().to_str(),
+                            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
+                        )
+                    })
+                }) {
+                    return;
+                }
+                let _ = tx.unbounded_send(());
+            }
+        }).ok()?;
+        if watcher.watch(root, notify::RecursiveMode::Recursive).is_err() {
+            return None;
+        }
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            while rx.next().await.is_some() {
+                exec.timer(std::time::Duration::from_millis(500)).await;
+                while rx.try_recv().is_ok() {}
+                let _ = this.update(cx, |this, cx| this.rebuild(cx));
+            }
+        }).detach();
+        Some(watcher)
     }
 
     /// The tree's focus handle — the workspace returns focus here after Quick Look
@@ -216,11 +251,11 @@ impl ExplorerView {
     /// Re-root the tree at `root` (app menu「打开文件夹」): reset expansion +
     /// selection, then rebuild from the new folder (refreshing git status for it).
     pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        self.root = root;
+        self.root = root.clone();
         self.expanded.clear();
         self.selected = None;
-        self.rebuild();
-        cx.notify();
+        self._change_watcher = Self::spawn_change_watcher(&root, cx);
+        self.rebuild(cx);
     }
 
     /// Re-root the tree to follow a shell `cd` (render-driven, not the explicit
@@ -235,10 +270,10 @@ impl ExplorerView {
         if self.root == root {
             return;
         }
-        self.root = root;
-        self.selected = selection_under_root(&self.selected, &self.root);
-        self.rebuild();
-        cx.notify();
+        self.root = root.clone();
+        self._change_watcher = Self::spawn_change_watcher(&root, cx);
+        self.selected = selection_under_root(&self.selected, &root);
+        self.rebuild(cx);
     }
 
     /// The current tree root — the single source of truth for the working
@@ -326,28 +361,37 @@ impl ExplorerView {
         out
     }
 
-    fn walk(&self, dir: &Path, depth: usize, out: &mut Vec<Row>) {
+    fn walk(dir: &Path, depth: usize, expanded: &HashSet<PathBuf>, out: &mut Vec<Row>) {
         for (path, name, is_dir) in Self::read_dir_sorted(dir) {
             if out.len() >= MAX_ROWS {
                 return;
             }
-            let expanded = is_dir && self.expanded.contains(&path);
-            out.push(Row { path: path.clone(), name, depth, is_dir, expanded });
-            if expanded {
-                self.walk(&path, depth + 1, out);
+            let is_expanded = is_dir && expanded.contains(&path);
+            out.push(Row { path: path.clone(), name, depth, is_dir, expanded: is_expanded });
+            if is_expanded {
+                Self::walk(&path, depth + 1, expanded, out);
             }
         }
     }
 
     /// Rebuild the cached row list from the filesystem + current expansion.
-    /// Git status is refreshed asynchronously (spawned on next render) to avoid
-    /// blocking the UI thread on a slow/locked git repository.
-    fn rebuild(&mut self) {
-        let mut rows = Vec::new();
+    /// Runs off-thread to prevent blocking the UI on huge projects or slow disks.
+    /// Git status is refreshed asynchronously on the next render cycle.
+    pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         let root = self.root.clone();
-        self.walk(&root, 0, &mut rows);
-        self.rows = rows;
-        self.git_stale = true;
+        let expanded = self.expanded.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let rows = cx.background_executor().spawn(async move {
+                let mut out = Vec::new();
+                Self::walk(&root, 0, &expanded, &mut out);
+                out
+            }).await;
+            let _ = this.update(cx, |this, cx| {
+                this.rows = rows;
+                this.git_stale = true;
+                cx.notify();
+            });
+        }).detach();
     }
 
     /// Kick off an async git-status refresh. Safe to call from any context;
@@ -378,7 +422,7 @@ impl ExplorerView {
             if !self.expanded.remove(&path) {
                 self.expanded.insert(path);
             }
-            self.rebuild();
+            self.rebuild(cx);
         } else {
             // Opening a FILE: do NOT focus the tree — the Quick Look overlay grabs
             // focus (its `needs_focus`) so its own keys (↑↓ 换文件 / Esc 关 / Enter
@@ -485,7 +529,7 @@ impl ExplorerView {
 impl gpui::EventEmitter<OpenFile> for ExplorerView {}
 
 impl Render for ExplorerView {
-    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // If the file tree was rebuilt (or first shown), kick off async git refresh.
         if self.git_stale {
             self.git_stale = false;
@@ -529,6 +573,7 @@ impl Render for ExplorerView {
 
         // Inner content, rounded 1px tighter so the gradient-border ring shows
         // (see style::glass_pane); g1 glass + specular + header + tree.
+        let is_focused = self.focus_handle.is_focused(window);
         let inner = div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -541,6 +586,7 @@ impl Render for ExplorerView {
             .rounded(px(R_PANEL - 1.))
             // mockup .sidebar 是 .pane:g1 玻璃(baked opaque,防 glass_pane 渐变边透底)
             .bg(pane_fill(ui.chrome_bg))
+            .child(crate::style::specular_wash(is_focused, ui.accent))
             .child(header)
             .child(
                 uniform_list("explorer-tree", self.rows.len(), move |range, _window, _cx| {
@@ -585,7 +631,7 @@ impl Render for ExplorerView {
                                         if !this.expanded.remove(&path) {
                                             this.expanded.insert(path.clone());
                                         }
-                                        this.rebuild();
+                                        this.rebuild(cx);
                                     } else {
                                         let p = path.clone();
                                         this.selected = Some(path);

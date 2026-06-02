@@ -24,16 +24,16 @@ bright_white   = "#C0CAF5"
 
 # 终端绘制区
 [terminal]
-background    = "#1A1B26"
+background    = "#111424"
 foreground    = "#C0CAF5"
 cursor        = "#C0CAF5"
-cursor_text   = "#1A1B26"
+cursor_text   = "#111424"
 selection_bg  = "#283457"
 selection_fg  = "#C0CAF5"
 
 # UI chrome(窗口/标签/面板/分屏/命令面板等)
 [ui]
-chrome_bg        = "#0E0F19"   # 标题栏 / 最外层(= mockup .app over desktop 合成色:深冷,gap 不洗白面板)
+chrome_bg        = "#0B0D16"   # 标题栏 / 最外层(= mockup .app over desktop 合成色:深冷,gap 不洗白面板)
 surface_1        = "#1F2335"   # 面板 / 卡片
 surface_2        = "#24283B"   # 抬升层 / block 卡片
 foreground       = "#C6D0F5"   # = mockup --fg(chrome 文字)
@@ -41,7 +41,7 @@ muted            = "#6E76A0"   # 次要文字 / 注释 = mockup --muted
 border           = "#2A2E42"
 accent           = "#7AA2F7"   # 品牌强调(蓝)
 accent_alt       = "#BB9AF7"   # 次强调(紫)
-tab_active_bg    = "#1A1B26"
+tab_active_bg    = "#111424"
 tab_inactive_fg  = "#6E76A0"   # = ui.muted(mockup 用 --muted 画非激活标签)
 block_border     = "#2A2E42"
 block_success    = "#9ECE6A"   # 退出码 0 的左条

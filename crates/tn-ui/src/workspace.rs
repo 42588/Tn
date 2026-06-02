@@ -583,6 +583,14 @@ pub struct Workspace {
     /// entities, so terminal output frames don't trigger this — only the
     /// workspace's own notifies (usage updates, tab/split/focus, palette) do.
     perf: PerfStats,
+    /// Tracks whether QuickLook was opened from an agent activity-rail card.
+    /// `None`  → opened from the explorer (↑↓ nav uses `explorer.select_adjacent_file`).
+    /// `Some(id)` → opened from pane `id`'s rail (↑↓ nav stays within that rail's
+    ///              changed-file list using `TerminalView::rail_nav`).
+    ql_rail_pane: Option<PaneId>,
+    /// Index of the currently-previewed file within the rail's file list.  Only
+    /// meaningful when `ql_rail_pane.is_some()`.
+    ql_rail_idx: usize,
 }
 
 impl Workspace {
@@ -593,6 +601,7 @@ impl Workspace {
         // for it (open() also flags the overlay to grab focus on its next render).
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
             let path = ev.0.clone();
+            ws.ql_rail_pane = None; // navigator returns to explorer scope
             ws.quick_look.update(cx, |v, cx| {
                 v.open(path, cx);
             });
@@ -605,15 +614,32 @@ impl Workspace {
         cx.subscribe(&quick_look, |ws, _ql, ev: &QuickLookEvent, cx| {
             match ev {
                 QuickLookEvent::Nav(delta) => {
-                    let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
-                    if let Some(path) = next {
-                        ws.quick_look.update(cx, |v, cx| {
-                            v.open(path, cx);
+                    if let Some(pane_id) = ws.ql_rail_pane {
+                        // QuickLook was opened from an agent rail card → navigate
+                        // within that pane's changed-file list only.
+                        let result = ws.panes.get(&pane_id).and_then(|v| {
+                            v.read(cx).rail_nav(ws.ql_rail_idx, *delta)
                         });
+                        if let Some((new_idx, path)) = result {
+                            ws.ql_rail_idx = new_idx;
+                            ws.quick_look.update(cx, |v, cx| {
+                                v.open_diff(path, cx); // stay on Diff tab
+                            });
+                        }
+                    } else {
+                        // QuickLook was opened from the explorer → use the old
+                        // tree-wide navigation (selects the adjacent file in the tree).
+                        let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
+                        if let Some(path) = next {
+                            ws.quick_look.update(cx, |v, cx| {
+                                v.open(path, cx);
+                            });
+                        }
                     }
                 }
                 QuickLookEvent::Close => {
                     ws.quick_look_open = false;
+                    ws.ql_rail_pane = None; // reset on close
                     ws.ql_refocus_pane = true; // refocus the pane in next render
                     cx.notify();
                 }
@@ -683,6 +709,8 @@ impl Workspace {
             split_extents: Rc::new(RefCell::new(HashMap::new())),
             palette_needs_focus: false,
             perf: PerfStats::new("workspace.render"),
+            ql_rail_pane: None,
+            ql_rail_idx: 0,
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -915,15 +943,28 @@ impl Workspace {
         // rather than relying on plain `notify`).
         cx.subscribe(&view, |_ws, _view, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
-        // File watcher fired → refresh explorer git tags too.
+        // File watcher fired → refresh explorer tree and git tags.
         cx.subscribe(&view, |ws, _view, _ev: &FilesChanged, cx| {
-            ws.explorer.update(cx, |explorer, _cx| explorer.mark_stale());
+            ws.explorer.update(cx, |explorer, cx| explorer.rebuild(cx));
         })
         .detach();
-        // Agent activity-rail card click → open that file in Quick Look (Diff tab).
-        // The rail emits an absolute path; Quick Look reads it + shows its git diff.
-        cx.subscribe(&view, |ws, _view, ev: &OpenInQuickLook, cx| {
+        // Assign the pane id BEFORE setting up subscriptions so the
+        // OpenInQuickLook handler can capture it (needed for rail nav context).
+        let id = self.next_id;
+        self.next_id += 1;
+        // Agent activity-rail card click → open that file in Quick Look (Diff tab)
+        // and record which pane + which file-index was clicked so ↑↓ nav stays
+        // scoped to that rail's changed-file list.
+        cx.subscribe(&view, move |ws, _view, ev: &OpenInQuickLook, cx| {
             let path = ev.0.clone();
+            // Find the file index within this pane's rail for nav context.
+            let file_idx = ws
+                .panes
+                .get(&id)
+                .and_then(|v| v.read(cx).rail_find_idx(&path))
+                .unwrap_or(0);
+            ws.ql_rail_pane = Some(id);
+            ws.ql_rail_idx = file_idx;
             ws.quick_look.update(cx, |v, cx| {
                 v.open_diff(path, cx);
             });
@@ -931,8 +972,6 @@ impl Workspace {
             cx.notify();
         })
         .detach();
-        let id = self.next_id;
-        self.next_id += 1;
         self.panes.insert(id, view);
         self.pane_specs.insert(id, launch);
         id
@@ -1291,16 +1330,18 @@ impl Workspace {
                 // the 1px gradient-border ring shows through (see `glass_pane`).
                 // The TerminalView fills it + rounds its own corners to match; gpui
                 // clips rectangularly so inner surfaces round themselves.
+                let accent = self.agent_color(view.read(cx).agent());
                 let inner = div()
                     .size_full()
                     .relative() // anchor the absolute specular layer
                     .rounded(px(R_PANEL - 1.))
                     .overflow_hidden()
                     .bg(pane_fill(self.config.theme.ui.chrome_bg))
+                    .child(crate::style::specular_wash(is_focused, accent))
                     .child(view);
                 // mockup .pane::before 竖向渐变描边(顶冷白承光 → 底 accent 回光,跟圆角)
                 // + .pane 浮起投影栈;focused 边更亮、浮得更高(NO 暖橙、NO glow)。
-                glass_pane(inner, is_focused, self.config.theme.ui.accent)
+                glass_pane(inner, is_focused, accent)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _ev, window, cx| {
@@ -2514,14 +2555,9 @@ impl Render for Workspace {
                     // agent-color accent bar at the top. Inactive sits flat and
                     // lifts a touch on hover. No glow.
                     .when(is_active, |d| {
-                        // mockup .tab.active:白色微渐变 .055→.01 + agent 强调条。无 rim 边、无投影。
-                        // (mockup 还有 0 1px 0 sheen inset 顶高光,按 owner 要求去掉。)
+                        // Use the theme's tab_active_bg to match the card pane background
                         d.text_color(col(ui.foreground))
-                            .bg(linear_gradient(
-                                180.,
-                                linear_color_stop(rgba(0xffffff0e), 0.), // .055 → round(.055×255)=14=0x0e
-                                linear_color_stop(rgba(0xffffff03), 1.), // .01  → round(.01×255)=3=0x03
-                            ))
+                            .bg(col(ui.tab_active_bg))
                             // ::after 强调色条(agent 色),left/right 13,top 0,2px
                             .child(
                                 div()

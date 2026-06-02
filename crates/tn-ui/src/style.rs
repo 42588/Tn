@@ -122,16 +122,58 @@ pub(crate) fn pane_fill(bg: impl Rgb8) -> gpui::Background {
     over(G1_MID, base).into()
 }
 
+/// Specular top glare + diagonal energy wash (Calm Glass specular wash).
+/// Gives depth and ambient lighting to panes so they read as glass sheets.
+pub(crate) fn specular_wash(focused: bool, accent: impl Rgb8) -> Div {
+    // ── 宽幅两阶段渐变 (Wide-span Two-stop Gradient) ──
+    // GPUI 0.2.2 的 linear_gradient 仅支持 2 个 color stops。
+    // 我们将消隐点拉长到 0.85，让渐变在整个卡片高度内极其缓慢地羽化过渡，彻底消除生硬的分界线。
+    let base_glow = linear_gradient(
+        180.,
+        linear_color_stop(rgba(0xffffff03), 0.), // 顶端极弱高光
+        linear_color_stop(rgba(0x00000000), 0.85), // 在 85% 高度处羽化消隐完毕
+    );
+    let d = div()
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .size_full();
+    if focused {
+        d.child(
+            div()
+                .absolute()
+                .size_full()
+                .bg(base_glow)
+        )
+        .child(
+            // ── 宽幅对角线氛围光 (Wide-span Diagonal Glow) ──
+            // 将对角线氛围光从 0% 延伸到 100% 满幅，使色彩过渡丝滑、极其柔和
+            div()
+                .absolute()
+                .size_full()
+                .bg(linear_gradient(
+                    135.,
+                    linear_color_stop(cola(accent, 0.03), 0.), // 稍微弱化起始强度
+                    linear_color_stop(rgba(0x00000000), 1.0), // 在对角线终点 100% 处完全羽化
+                ))
+        )
+    } else {
+        d.bg(base_glow)
+    }
+}
+
+
 /// mockup `.pane` / `.pane.active` box-shadow stack: an outer 1px **dark hairline**
 /// (`0 0 0 1px rgba(0,0,0,.28)`) that crisply *cuts* the pane out of the backdrop,
 /// plus layered soft drops for float — depth, not glow. (gpui 0.2.2 has no inset
 /// box-shadow, so the mockup's inset bottom shadow is omitted.) Shared by panes +
 /// explorer so the lift stays identical.
+#[allow(dead_code)]
 pub(crate) fn pane_shadows(focused: bool) -> Vec<BoxShadow> {
     // 软暗晕,代替 mockup 的硬 1px 暗线:硬线紧贴亮渐变描边 → 暗-亮并置显「接缝」(mockup
     // 靠 backdrop-blur 抹平,我们没有)。改 3px 模糊、0 spread 的暗晕 → 仍「切出背景」,
     // 但边过渡丝滑、无硬缝。
-    let edge_cut = soft_shadow(0.0, 3.0, 0.0, 0.34);
+    let edge_cut = soft_shadow(0.0, 3.0, 0.0, 0.15); // reduced from 0.34
     if focused {
         vec![
             edge_cut,
@@ -185,12 +227,12 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
         .child(top_glaze);
 
     // ── Gradient edge ring ──
-    // 冷白承光 .12/.08 + accent 回光 .08/.05 — 仅提供"玻璃折射"的微弱暗示。
-    let top = if focused { rgba(0xd2e1ff1f) } else { rgba(0xbed6ff14) }; // .12 / .08
+    // 顶端冷白高亮 (32% / 17%) + 底端强调色回光 (28% / 15%) — 强化边缘折射与品质感
+    let top = if focused { rgba(0xffffff24) } else { rgba(0xffffff0f) }; // .14 / .06 (softer highlights)
     let edge = linear_gradient(
         180.,
         linear_color_stop(top, 0.),
-        linear_color_stop(cola(accent, if focused { 0.08 } else { 0.05 }), 1.),
+        linear_color_stop(cola(accent, if focused { 0.20 } else { 0.08 }), 1.), // .20 / .08 (softer accent edge)
     );
     // ★ 平铺分屏禁止 box-shadow：紧密贴合时阴影会向下侵入邻居窗格，
     // 透过半透玻璃填充形成黑色色带。只保留 1px 导光边缘。
@@ -219,15 +261,15 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
     // 1. 边缘导光环 (Gradient Ring)
     // 顶部迎接环境冷白光，底部汇聚强调色（发光感来源）
     let top_edge = if focused {
-        rgba(0xffffff3d) // 白 .24
+        cola(accent, 0.30) // 白 .32 -> 彩色高亮 .30 (消除生硬白边)
     } else {
-        rgba(0xffffff1a) // 白 .10
+        rgba(0xffffff0d) // 白 .14 -> .05 (极柔和)
     };
     let bot_edge = Rgba {
         r: ar,
         g: ag,
         b: ab,
-        a: if focused { 0.45 } else { 0.10 },
+        a: if focused { 0.15 } else { 0.06 }, // .30 -> .15 (focus), .15 -> .06 (unfocused)
     };
 
     let edge_bg = linear_gradient(
@@ -236,38 +278,27 @@ pub(crate) fn glass_card(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
         linear_color_stop(bot_edge, 1.),
     );
 
-    // 2. 漫反射发光投影 (Ambient Glow)
-    // ★ 绝对不能用正数 spread_radius — GPUI 的 SDF 着色器遇到正 spread
-    // 会静默丢弃整层阴影。用更大 blur(14px) 代替 spread 的发散感。
-    // 黑色结构影极度削弱，避免暗影在 8-bit 下吞噬彩光。
+    // 2. 发光投影 (Glow) -> 彻底去除黑色阴影 (避免暗色主题下显得脏乱)
+    // 现代暗黑设计中，实体黑影容易让 UI 显得沉闷。我们只保留边缘渐变环，
+    // 并在 focus 时增加一层极其干净、微弱的同色背光，彻底告别黑色 drop-shadow。
     let glow_shadows = if focused {
         vec![
-            // ★ 纯粹彩色发光：居中、高亮、大 blur 模拟发散
+            // 纯粹的微弱彩色背光，无任何黑色成分
             BoxShadow {
                 color: Rgba {
                     r: ar,
                     g: ag,
                     b: ab,
-                    a: 0.85,
+                    a: 0.18, // 柔和的透明度
                 }
                 .into(),
                 offset: point(px(0.), px(0.)),
-                blur_radius: px(14.), // 14px 模糊替代 spread，圆角阴影安全
-                spread_radius: px(0.), // 必须死死锁在 0
-            },
-            // 仅保留极弱的承重影（压在正下方），不干扰彩光
-            BoxShadow {
-                color: rgba(0x00000044).into(),
-                offset: point(px(0.), px(4.)),
-                blur_radius: px(4.),
+                blur_radius: px(12.), // 足够散开，形成高级的弥散背光
                 spread_radius: px(0.),
             },
         ]
     } else {
-        vec![
-            soft_shadow(0.0, 2.0, 0.0, 0.2),
-            soft_shadow(4.0, 8.0, -2.0, 0.3),
-        ]
+        vec![] // 未激活时完全无阴影，极致干净
     };
 
     shadowed(
@@ -302,7 +333,7 @@ pub(crate) fn quicklook_fill(bg: impl Rgb8) -> gpui::Background {
 /// 同样把硬 1px 暗线换成 3px 软暗晕(避接缝,见 `pane_shadows`),再叠多层柔投影。
 pub(crate) fn quicklook_shadows() -> Vec<BoxShadow> {
     vec![
-        soft_shadow(0.0, 3.0, 0.0, 0.36),    // 软暗晕切出背景(代 mockup 0 0 0 1px rgba(0,0,0,.36))
+        soft_shadow(0.0, 3.0, 0.0, 0.16),    // 软暗晕切出背景(代 mockup 0 0 0 1px rgba(0,0,0,.36), reduced to .16)
         soft_shadow(2.0, 6.0, -2.0, 0.6),    // mockup 0 2px 6px -2px rgba(0,0,0,.6)
         soft_shadow(30.0, 72.0, -24.0, 0.86), // mockup 0 30px 72px -24px rgba(0,0,0,.86)
         soft_shadow(72.0, 132.0, -50.0, 0.96), // mockup 0 72px 132px -50px rgba(0,0,0,.96)
@@ -337,8 +368,8 @@ pub(crate) fn quicklook_frame(inner: Div, accent: impl Rgb8) -> Div {
 
     let edge = linear_gradient(
         180.,
-        linear_color_stop(rgba(0xbed6ff14), 0.), // 冷白承光 .08 (原 .24)
-        linear_color_stop(cola(accent, 0.06), 1.), // accent 回光 .06 (原 .15)
+        linear_color_stop(rgba(0xffffff18), 0.), // 顶端冷白高亮 .095 (原 .20)
+        linear_color_stop(cola(accent, 0.15), 1.), // bottom accent .15 (原 .06)
     );
     shadowed(
         div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(wrapped),

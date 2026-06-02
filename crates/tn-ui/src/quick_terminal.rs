@@ -29,7 +29,7 @@ use gpui::{
 use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::platform;
-use crate::style::{col, cola, icon, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
+use crate::style::{col, cola, icon, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
 use crate::terminal_view::{LaunchSpec, ProcessExited, TerminalView, UsageUpdated};
 use crate::welcome::{
     launch_agent_of, launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
@@ -563,6 +563,7 @@ impl QuickTerminal {
                 linear_color_stop(rgba(0x151622e6), 0.),
                 linear_color_stop(rgba(0x0f1019f2), 1.),
             ))
+            .child(crate::style::specular_wash(true, ui.accent))
             .child(
                 // .lhead:13 / 640 / fg-dim;drilled 时整行可点 = 返回
                 div()
@@ -635,9 +636,13 @@ impl QuickTerminal {
             .rounded(px(R_CARD)) // --r-card
             .bg(rgba(INSET)) // .tile bg = g2(.04)
             .border_1()
-            // .tile.sel:border claude@.4 + bg --g3;否则 rim 边 + hover 提亮
-            .when(is_sel, |d| d.border_color(cola(t.agents.claude, 0.4)).bg(rgba(HOVER)))
-            .when(!is_sel, |d| d.border_color(rgba(RIM)).hover(|s| s.bg(rgba(HOVER))))
+            // .tile.sel: dynamic agent color border + bg; 否则 rim 边 + 动态 agent color hover 提亮
+            .when(is_sel, |d| d.border_color(cola(accent, 0.4)).bg(cola(accent, 0.12)))
+            .when(!is_sel, |d| {
+                d.border_color(rgba(RIM)).hover(|s| {
+                    s.bg(cola(accent, 0.08)).border_color(cola(accent, 0.30))
+                })
+            })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, _w, cx| {
