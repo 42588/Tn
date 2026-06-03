@@ -414,59 +414,56 @@ impl TerminalView {
                         .child(SharedString::from("本次改动")),
                 );
 
-                for (i, f) in files.iter().enumerate() {
-                    let is_cur = i == 0;
+                let mut list_inner = div()
+                    .w_full()
+                    .rounded(px(R_CARD - 1.))
+                    .overflow_hidden()
+                    .bg(gpui::rgb(0x121626)); // ★ 死色垫底
+
+                let mut rows_container = div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .p(px(4.)) // 增加内边距，让内部 hover 形成舒适的胶囊感
+                    .gap(px(2.)) // 行与行之间留极小间隙
+                    .bg(rgba(INSET));
+
+                for f in files.iter() {
                     let plus = format!("+{}", f.add);
                     let minus = (f.del > 0).then(|| format!("−{}", f.del));
-                    // 内层卡片:纯色背景防色带 + 圆角裁切
-                    let inner_bg = if is_cur {
-                        cola(self.ui_accent, 0.06)
-                    } else {
-                        rgba(INSET)
-                    };
-                    let inner_hover = if is_cur {
-                        cola(self.ui_accent, 0.12)
-                    } else {
-                        rgba(HOVER)
-                    };
-                    let inner = div()
-                        .rounded(px(R_CARD - 1.)) // 留 1px 给光环
-                        .overflow_hidden()
-                        .bg(gpui::rgb(0x121626)) // ★ 死色垫底：严格对齐当前的主题 pane_fill 色值，使其完美融入背景，消除突兀的灰蓝补丁感
-                        .child(
-                            div()
-                                .size_full()
-                                .rounded(px(R_CARD - 1.))
-                                .py(px(8.))
-                                .px(px(10.))
-                                .flex()
-                                .flex_col()
-                                .gap(px(6.))
-                                .bg(inner_bg)
-                                .hover(|s| s.bg(inner_hover))
-                                .child(self.arail_file(f.name(), &plus, minus.as_deref()))
-                        );
-                    // root is from the Ready variant — always consistent with files
+
                     let abs = root.join(&f.path);
-                    let card = glass_card(inner, is_cur, self.agent_accent())
+                    let row = div()
+                        .w_full()
+                        .rounded(px(6.)) // 内部胶囊圆角
+                        .py(px(6.))
+                        .px(px(8.))
+                        .hover(|s| s.bg(rgba(HOVER))) // 极简胶囊 hover
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |_this, _e, _w, cx| {
                                 cx.emit(super::OpenInQuickLook(abs.clone()));
                             }),
-                        );
-                    // ★ 外层 div 物理隔离：px(12) 左右安全区 + py(6) 上下舒展空间。
-                    // flex_none() 禁止 scrollable 的 flex 容器挤压卡片高度，
-                    // 否则上下光晕被压扁、发散空间不足。
-                    scrollable = scrollable.child(
-                        div()
-                            .flex_none()
-                            .px(px(12.))
-                            .py(px(6.))
-                            .child(card),
-                    );
+                        )
+                        .child(self.arail_file(f.name(), &plus, minus.as_deref()));
+
+                    rows_container = rows_container.child(row);
                 }
+
+                list_inner = list_inner.child(rows_container);
+                let single_card = glass_card(list_inner, true, self.agent_accent());
+
+                // ★ 外层 div 物理隔离：px(12) 左右安全区 + py(6) 上下舒展空间。
+                // flex_none() 禁止 scrollable 的 flex 容器挤压卡片高度，
+                // 否则上下光晕被压扁、发散空间不足。
+                scrollable = scrollable.child(
+                    div()
+                        .flex_none()
+                        .px(px(12.))
+                        .py(px(6.))
+                        .child(single_card),
+                );
 
                 scrollable = scrollable.child(
                     div()
