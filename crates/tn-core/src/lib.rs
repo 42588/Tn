@@ -12,9 +12,10 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
-use alacritty_terminal::term::color::Colors;
+pub use alacritty_terminal::term::color::Colors;
+pub use alacritty_terminal::vte::ansi::CursorShape;
 use alacritty_terminal::term::{viewport_to_point, Config, Term, TermMode};
-use alacritty_terminal::vte::ansi::{Color, CursorShape, Processor};
+use alacritty_terminal::vte::ansi::{Color, Processor};
 
 /// Re-export so consumers can match on terminal events without depending on
 /// alacritty_terminal directly.
@@ -226,6 +227,8 @@ pub struct TerminalSnapshot {
     pub cols: usize,
     /// Cursor position within the viewport as (row, col).
     pub cursor: (usize, usize),
+    /// The shape of the cursor (Block, Underline, Beam).
+    pub cursor_shape: CursorShape,
     /// Whether the cursor should be drawn (false when an app hides it, e.g. vim).
     pub cursor_visible: bool,
     /// Rows scrolled up from the live bottom (0 = at the bottom). For a scrollbar.
@@ -793,7 +796,8 @@ impl Terminal {
             rows: self.size.rows,
             cols: self.size.cols,
             cursor: (cursor_row, cur.column.0),
-            cursor_visible: content.cursor.shape != CursorShape::Hidden,
+            cursor_shape: content.cursor.shape,
+            cursor_visible: self.term.mode().contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden,
             scroll_offset: content.display_offset,
             scroll_history: self.term.grid().history_size(),
             fg: self.palette.fg,

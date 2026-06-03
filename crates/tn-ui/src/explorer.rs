@@ -382,9 +382,13 @@ impl ExplorerView {
         let expanded = self.expanded.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let rows = cx.background_executor().spawn(async move {
-                let mut out = Vec::new();
-                Self::walk(&root, 0, &expanded, &mut out);
-                out
+                let (tx, rx) = futures::channel::oneshot::channel();
+                std::thread::spawn(move || {
+                    let mut out = Vec::new();
+                    Self::walk(&root, 0, &expanded, &mut out);
+                    let _ = tx.send(out);
+                });
+                rx.await.unwrap_or_default()
             }).await;
             let _ = this.update(cx, |this, cx| {
                 this.rows = rows;

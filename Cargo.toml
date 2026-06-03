@@ -77,23 +77,16 @@ lto = "fat"
 codegen-units = 1
 strip = true
 
-[profile.dev.package.image]
-opt-level = 3
+# ── Debug-build 运行性能(开发期跑高频重绘 TUI 如 Claude Code 的关键)──────
+# 默认 dev profile 全 opt-level=0。Claude Code(Ink)每秒数十次整屏重绘,热路径在
+# alacritty VT `advance`、tn-core `snapshot`/`row_runs`、gpui 布局/paint —— 这些在
+# opt0 下慢几十倍,直接表现为输入卡顿 + 面板拉起慢,并把零分配/channel/增量解析等
+# 逻辑优化(优化 5·6·29·31·41)的收益完全淹没(它们只省常数因子)。
+# 配方(Bevy 同款「optimize deps, debug your code」):自己的 crate 轻度优化
+# (opt1,增量编译仅略慢、断点仍可用),所有第三方依赖重度优化(opt3,仅首次编译慢
+# 一次)。`*` 已覆盖原先单列的 image/png/calamine 等解码库(优化 24),故不再单列。
+[profile.dev]
+opt-level = 1
 
-[profile.dev.package.jpeg-decoder]
-opt-level = 3
-
-[profile.dev.package.png]
-opt-level = 3
-
-[profile.dev.package.calamine]
-opt-level = 3
-
-[profile.dev.package.quick-xml]
-opt-level = 3
-
-[profile.dev.package.zune-jpeg]
-opt-level = 3
-
-[profile.dev.package.zune-inflate]
+[profile.dev.package."*"]
 opt-level = 3

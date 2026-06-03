@@ -34,6 +34,33 @@ impl LocalPty {
             cmd.env(k, v);
         }
 
+        // Tn 是独立终端,但开发期常从 VS Code/Cursor 的集成终端启动(`cargo run`),会继承
+        // `TERM_PROGRAM=vscode` + 一串 `VSCODE_*`。CommandBuilder 默认继承本进程环境
+        // (get_base_env → std::env::vars_os),这些会原样传给子进程 → **Claude Code 据此
+        // 误判「我在 VS Code 里」,反复尝试连接那个并不存在的 IDE 后端 → 右下角「IDE
+        // extension install failed」+ 高频重试刷新 → 卡顿**(真机实证)。剥离这些 IDE 标记、
+        // 并把 TERM_PROGRAM 声明为 Tn,让子进程(尤其 agent)以纯终端模式运行。env_remove
+        // 作用于继承来的 base env(见 portable-pty 自带测试),故能真正阻断传递;对普通 shell
+        // 同样适用(Tn 的 shell 也不该假装在 VS Code 里)。
+        for k in [
+            "TERM_PROGRAM_VERSION",
+            "VSCODE_IPC_HOOK_CLI",
+            "VSCODE_GIT_IPC_HANDLE",
+            "VSCODE_GIT_ASKPASS_MAIN",
+            "VSCODE_GIT_ASKPASS_NODE",
+            "VSCODE_GIT_ASKPASS_EXTRA_ARGS",
+            "VSCODE_INJECTION",
+            "VSCODE_NONCE",
+            "VSCODE_CWD",
+            "VSCODE_PID",
+            "VSCODE_L10N_BUNDLE_LOCATION",
+            "ELECTRON_RUN_AS_NODE",
+            "CURSOR_TRACE_ID",
+        ] {
+            cmd.env_remove(k);
+        }
+        cmd.env("TERM_PROGRAM", "Tn");
+
         let child = pair
             .slave
             .spawn_command(cmd)

@@ -73,8 +73,9 @@ pub use launch::ShellIntegration;
 struct RenderCache {
     generation: u64,
     rows: Rc<Vec<Vec<CellRun>>>,
-    cursor: (usize, usize),
-    cursor_visible: bool,
+    pub cursor: (usize, usize),
+    pub cursor_shape: tn_core::CursorShape,
+    pub cursor_visible: bool,
     scroll_offset: usize,
     scroll_history: usize,
     fg: Rgb,
@@ -126,32 +127,9 @@ const CURSOR_GLIDE_MS: u64 = 90;
 /// (line wrap, prompt redraw, screen clear, vertical nav) snap — a long swoosh
 /// across the grid looks worse than an honest jump.
 const CURSOR_GLIDE_MAX_COLS: i64 = 12;
-/// Character fade (待优化清单 §3.1): a freshly-shown glyph fades in and a removed
-/// glyph fades out over this window, so 增删 feels soft instead of snapping.
-const CHAR_FADE_MS: u64 = 75;
-/// Per-frame cap on fading cells. A change touching more cells than this is a bulk
-/// update (paste / clear / scroll / program output), which **snaps** (no fade) — this
-/// is the perf guard that keeps the fade overlay count tiny (CLAUDE.md: no per-cell
-/// div explosion). Normal typing changes 1–few cells, well under the cap.
-const CHAR_FADE_MAX_CELLS: usize = 24;
 /// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
 /// without being a distraction. ~180ms ≈ a quick blink.
 const BELL_FLASH_MS: u64 = 180;
-
-/// One in-flight character fade (待优化清单 §3.1). `fade_in` = a glyph just appeared
-/// (we draw a bg-colored cover over its cell that ramps to transparent, revealing
-/// the glyph underneath); `!fade_in` = a glyph was removed (we draw a ghost of the
-/// old glyph that ramps away over the now-blank cell). `cols` = 1, or 2 for a CJK
-/// wide char. Expired (`start.elapsed() >= CHAR_FADE_MS`) entries are dropped.
-#[derive(Clone, Copy)]
-struct CellFade {
-    row: usize,
-    col: usize,
-    ch: char,
-    cols: usize,
-    fade_in: bool,
-    start: Instant,
-}
 /// Sentinel window title a hosted **agent** pane emits *after* the agent exits
 /// (the `-NoExit` pwsh runs it on return). The reader sees this OSC, flags the
 /// pane, and we clear the agent identity — so the header/tab stop pretending the
@@ -182,6 +160,7 @@ pub enum RailState {
 pub struct TerminalView {
     terminal: Arc<Mutex<Terminal>>,
     writer: SharedWriter,
+    writer_tx: std::sync::mpsc::Sender<Vec<u8>>,
     // The pane's PTY backend (local ConPTY or remote SSH); used for resize +
     // exit detection, and kept alive (drop kills the child / disconnects).
     pty: Arc<Mutex<Box<dyn PtyBackend>>>,
@@ -221,16 +200,9 @@ pub struct TerminalView {
     // `cursor_cell` to a sentinel so the first frame snaps (no glide-from-origin).
     cursor_px: (f32, f32),
     cursor_cell: (usize, usize),
-    cursor_glide_from: (f32, f32),
-    cursor_glide_start: Option<Instant>,
+    cursor_anim_start: Option<Instant>,
+    cursor_action_forward: bool,
     cursor_gliding: bool,
-    // Character fade (待优化清单 §3.1): `prev_cells` is last frame's visible glyph grid
-    // (per-column chars), diffed each frame to spot appeared/removed cells → `cell_fades`
-    // (capped at CHAR_FADE_MAX_CELLS; a bulk change snaps). `cell_fading` guards the
-    // per-frame driver task. See `CellFade`.
-    prev_cells: Vec<Vec<char>>,
-    cell_fades: Vec<CellFade>,
-    cell_fading: bool,
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
@@ -418,6 +390,16 @@ impl TerminalView {
         };
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
+        let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let w_thread_writer = writer.clone();
+        std::thread::spawn(move || {
+            while let Ok(bytes) = writer_rx.recv() {
+                if let Ok(mut w) = w_thread_writer.lock() {
+                    let _ = w.write_all(&bytes);
+                    let _ = w.flush();
+                }
+            }
+        });
         let pty = Arc::new(Mutex::new(pty));
 
         // Build the engine with the configured scrollback + theme palette.
@@ -450,7 +432,7 @@ impl TerminalView {
         Self::spawn_reader(
             reader,
             terminal.clone(),
-            writer.clone(),
+            writer_tx.clone(),
             dirty.clone(),
             wake_tx,
             title.clone(),
@@ -520,6 +502,7 @@ impl TerminalView {
         Self {
             terminal,
             writer,
+            writer_tx,
             pty,
             focus_handle: cx.focus_handle(),
             size,
@@ -537,12 +520,9 @@ impl TerminalView {
             focused: false,
             cursor_px: (0.0, 0.0),
             cursor_cell: (usize::MAX, usize::MAX), // sentinel → first frame snaps
-            cursor_glide_from: (0.0, 0.0),
-            cursor_glide_start: None,
+            cursor_anim_start: None,
+            cursor_action_forward: true,
             cursor_gliding: false,
-            prev_cells: Vec::new(),
-            cell_fades: Vec::new(),
-            cell_fading: false,
             scrollbar_drag: None,
             agent,
             usage: None,
@@ -590,11 +570,6 @@ impl TerminalView {
     pub fn clear_render_cache(&mut self, cx: &mut Context<Self>) {
         if self.render_cache.is_some() {
             self.render_cache = None;
-            for row in &mut self.prev_cells {
-                row.shrink_to_fit();
-            }
-            self.prev_cells.shrink_to_fit();
-            self.cell_fades.shrink_to_fit();
 
             // M1: Swap out Alacritty Grid memory!
             let id = cx.entity_id().as_u64();
@@ -712,9 +687,13 @@ impl TerminalView {
             // ── Background: expensive git ops (may block for >100ms) ──
             let (files, root) = exec
                 .spawn(async move {
-                    let root = std::path::PathBuf::from(&cwd);
-                    let files = crate::gitutil::changes_for(&root);
-                    (files, root)
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let root = std::path::PathBuf::from(&cwd);
+                        let files = crate::gitutil::changes_for(&root);
+                        let _ = tx.send((files, root));
+                    });
+                    rx.await.unwrap_or_else(|_| (Vec::new(), std::path::PathBuf::new()))
                 })
                 .await;
             // ── Back on UI thread: only apply if still current ──
@@ -827,9 +806,7 @@ impl TerminalView {
     /// Write raw bytes to the PTY (the shell's stdin), as if typed. Used by the
     /// scripted demo driver.
     pub fn send_bytes(&self, bytes: &[u8]) {
-        let mut w = self.writer.lock().unwrap();
-        let _ = w.write_all(bytes);
-        let _ = w.flush();
+        let _ = self.writer_tx.send(bytes.to_vec());
     }
 
     /// Demo: scroll the viewport by `lines` (positive = back into history).
@@ -1103,10 +1080,29 @@ impl TerminalView {
         // keys (Enter/Tab/Escape/arrows/Home/End/PageUp·Down/F*): they have no WM_CHAR to
         // fall back on, so they must be encoded. (Cost: those keys can't reach the IME
         // mid-composition — a gpui IMM32 limitation, see CLAUDE.md / WT-uses-TSF note.)
+        // Exception: if the IME is active and not empty, we previously deferred backspace.
+        // However, this caused backspace to permanently break if IME composition got stuck.
+        // We now ALWAYS let Backspace pass through to the PTY if it reaches `on_key_down`.
         let is_text_input =
             !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
         if is_text_input {
             return;
+        }
+
+        // ── IME preedit 残留兜底(修复「偶尔有个删不掉的符号」)─────────────────
+        // 能走到这里的都是命名键/带修饰键 —— 真正合成中的键会被 VK_PROCESSKEY 窗口子类
+        // (platform::install_ime_keyfix)在抵达 gpui 前路由给 IME,根本不进 on_key。所以
+        // 此刻 `ime_marked` 若仍非空,它是微软拼音等 IME 状态机卡死遗留的「幽灵 preedit」
+        // (replace_and_mark 设了 preedit 却没等到 commit/unmark 清掉)—— render 会把它画
+        // 成停在光标处、删不掉的字符框(见 ime_preedit)。在此清掉。退格优先用来清它:屏幕
+        // 上那个删不掉的字符正是这个 preedit,清掉即满足删除意图,并消费这次退格(不再误把
+        // 退格发给 PTY 删一个真实字符);其余命名键(回车/方向等)清掉残留后继续正常编码。
+        if self.ime_marked.take().is_some() {
+            cx.notify();
+            if key == "backspace" {
+                cx.stop_propagation();
+                return;
+            }
         }
 
         // Encode against the engine's live modes (DECCKM, LNM, ...). Sending
@@ -1295,48 +1291,6 @@ impl EntityInputHandler for TerminalView {
     }
 }
 
-/// Ease-out cubic (`1-(1-t)³`): fast start, gentle settle — the natural curve for a
-/// cursor catching up to where you typed. `t` is clamped 0..1 by the caller.
-fn ease_out_cubic(t: f32) -> f32 {
-    let u = 1.0 - t;
-    1.0 - u * u * u
-}
-
-/// Flatten visible runs into a per-column glyph grid for the character-fade diff:
-/// `[row][col] = glyph` (`' '` blank, `'\0'` = a CJK wide char's trailing cell, so the
-/// diff handles it once at the start col). `row_runs` splits wide chars into their own
-/// 2-col runs, so a run is either narrow (1 col/char) or a single wide char.
-fn rows_to_cells(rows: &[Vec<CellRun>], cols: usize) -> Vec<Vec<char>> {
-    rows.iter()
-        .map(|runs| {
-            let mut line = vec![' '; cols];
-            let mut c = 0usize;
-            for run in runs {
-                let mut chars = run.text.chars();
-                if run.cols == 2 && run.text.chars().count() == 1 {
-                    if let Some(ch) = chars.next() {
-                        if c < cols {
-                            line[c] = ch;
-                        }
-                        if c + 1 < cols {
-                            line[c + 1] = '\u{0}';
-                        }
-                    }
-                    c += 2;
-                } else {
-                    for ch in chars {
-                        if c < cols {
-                            line[c] = ch;
-                        }
-                        c += 1;
-                    }
-                }
-            }
-            line
-        })
-        .collect()
-}
-
 impl Render for TerminalView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.focused_once {
@@ -1390,6 +1344,7 @@ impl Render for TerminalView {
                 generation,
                 rows,
                 cursor: snap.cursor,
+                cursor_shape: snap.cursor_shape,
                 cursor_visible: snap.cursor_visible,
                 scroll_offset: snap.scroll_offset,
                 scroll_history: snap.scroll_history,
@@ -1399,9 +1354,9 @@ impl Render for TerminalView {
             t0.map(|t| t.elapsed())
         };
         self.perf.record(cache_hit, rebuild);
-        let (rows, (cur_row, cur_col), cursor_visible, scroll_offset, scroll_history, fg, bg) = {
+        let (rows, (cur_row, cur_col), cursor_shape, cursor_visible, scroll_offset, scroll_history, fg, bg) = {
             let c = self.render_cache.as_ref().unwrap();
-            (c.rows.clone(), c.cursor, c.cursor_visible, c.scroll_offset, c.scroll_history, c.fg, c.bg)
+            (c.rows.clone(), c.cursor, c.cursor_shape, c.cursor_visible, c.scroll_offset, c.scroll_history, c.fg, c.bg)
         };
         let bounds_cell = self.content_bounds.clone();
         // Captured into the canvas paint closure to register the IME input handler
@@ -1419,9 +1374,18 @@ impl Render for TerminalView {
         // Hidden when the app hides it (vim) or the viewport is scrolled off the row.
         let focused = self.focus_handle.is_focused(window);
         self.focused = focused; // cache for the blink task (only blinks when focused)
+        // 失焦不可能在合成中:顺手清掉可能残留的 IME preedit,避免它跨焦点切换时卡在
+        // 光标处删不掉(与 on_key 的残留兜底互为双保险;修「偶尔删不掉的符号」)。
+        if !focused {
+            self.ime_marked = None;
+        }
         // Focused: solid block on the "on" half of the blink; nothing on the "off"
         // half. Unfocused: a steady slim outline (no blink).
         let draw_solid = focused && self.cursor_on;
+        // Claude Code(Ink)自绘虚拟光标 + ConPTY 常丢 `\e[?25l` → 我们强制隐藏物理光标
+        // (见下 cursor_el)。既然 Claude 态根本不画光标,glide/Q弹动画毫无意义,别 spawn
+        // 那个每 16ms notify 的驱动任务(否则 Claude 每移一次光标就白拉起一轮重绘循环)。
+        let force_hide_cursor = self.agent == Some(tn_ai::AgentKind::ClaudeCode);
 
         // ── Smooth cursor glide (待优化清单 §3.1) ──────────────────────────────
         // Ease the drawn block toward the target cell instead of teleporting. Only
@@ -1439,105 +1403,60 @@ impl Render for TerminalView {
             let first = self.cursor_cell == (usize::MAX, usize::MAX);
             let small = same_row && dcol.abs() <= CURSOR_GLIDE_MAX_COLS;
             self.cursor_cell = (cur_row, cur_col);
-            if focused && small && !first {
-                self.cursor_glide_from = self.cursor_px; // glide from where it is now
-                self.cursor_glide_start = Some(Instant::now());
+            if focused && small && !first && !force_hide_cursor {
+                self.cursor_anim_start = Some(Instant::now());
+                self.cursor_action_forward = dcol > 0;
                 self.spawn_cursor_glide(cx);
             } else {
-                self.cursor_glide_start = None; // snap
+                self.cursor_anim_start = None; // snap
                 self.cursor_px = target_px;
             }
         }
-        let (cur_x, cur_y) = if let Some(start) = self.cursor_glide_start {
-            let t = (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
-            let e = ease_out_cubic(t);
-            if t >= 1.0 {
-                self.cursor_glide_start = None;
-            }
-            (
-                self.cursor_glide_from.0 + (target_px.0 - self.cursor_glide_from.0) * e,
-                self.cursor_glide_from.1 + (target_px.1 - self.cursor_glide_from.1) * e,
-            )
+        
+        // Exponential decay for smooth chasing (replaces fixed duration ease_out)
+        let (mut cur_x, mut cur_y) = self.cursor_px;
+        let dx = target_px.0 - cur_x;
+        let dy = target_px.1 - cur_y;
+        
+        if dx.abs() > 0.5 || dy.abs() > 0.5 {
+            // Lerp by a factor per frame. At 60fps, 0.4 is a nice fast ease.
+            cur_x += dx * 0.4;
+            cur_y += dy * 0.4;
+            // When close enough, snap to target
+            if (cur_x - target_px.0).abs() < 0.5 { cur_x = target_px.0; }
+            if (cur_y - target_px.1).abs() < 0.5 { cur_y = target_px.1; }
         } else {
-            target_px
-        };
+            cur_x = target_px.0;
+            cur_y = target_px.1;
+        }
         self.cursor_px = (cur_x, cur_y);
 
-        // ── Character fade-in / fade-out (待优化清单 §3.1) ─────────────────────
-        // Diff this frame's visible glyph grid against the last to spot appeared /
-        // removed cells, then fade them (overlay only — no run-splitting, so the perf
-        // budget is safe). A change touching more than CHAR_FADE_MAX_CELLS cells is a
-        // bulk update (paste / clear / scroll / program output) → snap (no fade). Only
-        // the focused pane runs this (typing happens focused; a background pane's output
-        // would otherwise diff every frame for nothing).
-        if focused {
-            let had_prev = !self.prev_cells.is_empty();
-            if !cache_hit || !had_prev {
-                let cur_cells = rows_to_cells(&rows, self.size.cols);
-                let now = Instant::now();
-                let mut fresh: Vec<CellFade> = Vec::new();
-                let mut bulk = false;
-                if had_prev {
-                    'diff: for (r, line) in cur_cells.iter().enumerate() {
-                        let prev_row = self.prev_cells.get(r);
-                        for (c, &cur) in line.iter().enumerate() {
-                            if cur == '\u{0}' {
-                                continue; // wide-char trailing filler — handled at its start col
-                            }
-                            let prev = prev_row.and_then(|pr| pr.get(c).copied()).unwrap_or(' ');
-                            if cur == prev {
-                                continue;
-                            }
-                            if cur != ' ' {
-                                // appeared (blank→glyph) or changed (x→y): fade the new glyph in.
-                                let cols = if line.get(c + 1) == Some(&'\u{0}') { 2 } else { 1 };
-                                fresh.push(CellFade { row: r, col: c, ch: cur, cols, fade_in: true, start: now });
-                            } else if prev != '\u{0}' {
-                                // removed (glyph→blank): fade a ghost of the old glyph out.
-                                let cols = if prev_row.and_then(|pr| pr.get(c + 1).copied()) == Some('\u{0}') { 2 } else { 1 };
-                                fresh.push(CellFade { row: r, col: c, ch: prev, cols, fade_in: false, start: now });
-                            }
-                            if fresh.len() > CHAR_FADE_MAX_CELLS {
-                                bulk = true;
-                                break 'diff;
-                            }
-                        }
-                    }
-                }
-                if bulk || !had_prev {
-                    self.cell_fades.clear(); // bulk change → snap; drop in-flight fades
-                } else if !fresh.is_empty() {
-                    self.cell_fades.extend(fresh);
-                    self.spawn_cell_fade(cx);
-                }
-                self.prev_cells = cur_cells;
-            }
-        } else if !self.prev_cells.is_empty() {
-            self.prev_cells.clear(); // returning focus re-snaps — no spurious fades
-        }
-        self.cell_fades.retain(|f| f.start.elapsed().as_millis() < CHAR_FADE_MS as u128);
-        // Build the fade overlays: fade-in = a bg-colored cover ramping to transparent
-        // (reveals the glyph drawn in the grid underneath); fade-out = the old glyph as
-        // a ghost ramping away over the now-blank cell.
-        let fade_overlays: Vec<_> = self
-            .cell_fades
-            .iter()
-            .map(|f| {
-                let t = (f.start.elapsed().as_secs_f32() / (CHAR_FADE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
-                let d = div()
-                    .absolute()
-                    .left(px(BODY_PAD_X + f.col as f32 * self.cell_width))
-                    .top(px(BODY_PAD_Y + f.row as f32 * self.line_height))
-                    .w(px(f.cols as f32 * self.cell_width))
-                    .h(px(self.line_height))
-                    .overflow_hidden();
-                if f.fade_in {
-                    d.bg(cola(bg, 1.0 - t)) // cover ramps away → glyph emerges
+        // Calculate pop/squish animation offsets
+        let mut width_offset = 0.0;
+        let mut height_offset = 0.0;
+        if let Some(start) = self.cursor_anim_start {
+            let t = (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+            if t >= 1.0 {
+                self.cursor_anim_start = None;
+            } else {
+                // Parabola: 4 * t * (1 - t) goes 0 -> 1 -> 0
+                let pop = 4.0 * t * (1.0 - t);
+                if self.cursor_action_forward {
+                    // Typing: widen obviously, shrink height obviously
+                    width_offset = self.cell_width * 0.7 * pop;
+                    height_offset = -self.line_height * 0.3 * pop;
                 } else {
-                    d.text_color(cola(fg, 1.0 - t)).child(SharedString::from(f.ch.to_string()))
+                    // Deleting: squeeze width obviously, stretch height obviously
+                    width_offset = -self.cell_width * 0.45 * pop;
+                    height_offset = self.line_height * 0.45 * pop;
                 }
-            })
-            .collect();
+            }
+        }
+
+        // 字符淡入淡出(原 §3.1)已删:fade-in 在快速打字 / Claude spinner 下像多光标
+        // 残块、fade-out 像删除延迟残影 —— 产品上已禁用(push 早被注释)。连同每帧
+        // cache-miss 时对全网格的 rows_to_cells + 逐格 diff 一并删去:Claude 高频整屏
+        // 重绘时那是纯 CPU 浪费,debug 下 opt-level=0 更会放大成可感卡顿。
 
         // The glyph under the cursor (≈1 col/char; cursor-on-wide-char is rare) so the
         // focused block can redraw it in the background color = a crisp **inverse**
@@ -1556,30 +1475,54 @@ impl Render for TerminalView {
             }
             None
         });
-        let cursor_el = (cursor_visible
+        // (force_hide_cursor 已在上方光标动画前算出:ConPTY 常丢 `\e[?25l`,Claude/Ink
+        // 自绘虚拟光标,这里据此剔除物理光标,避免"双光标"重影。)
+        let cursor_el = (cursor_visible && !force_hide_cursor
             && (draw_solid || !focused)
             && cur_row < self.size.rows
             && cur_col < self.size.cols)
             .then(|| {
+                let is_block = cursor_shape == tn_core::CursorShape::Block;
+                let is_underline = cursor_shape == tn_core::CursorShape::Underline;
+                
+                let anim_w = (if is_block || is_underline { self.cell_width } else { 2.0 }) + width_offset;
+                let anim_h = self.line_height + height_offset;
+                let anim_x = cur_x - width_offset / 2.0;
+                let anim_y = cur_y - height_offset / 2.0;
+
                 let base = div()
                     .absolute()
                     // Glided position (eases toward the target cell; see above). Already
                     // includes BODY_PAD — the grid is inset from the content edge.
-                    .left(px(cur_x))
-                    .top(px(cur_y))
-                    .w(px(self.cell_width))
-                    .h(px(self.line_height))
-                    .rounded(px(2.));
+                    .left(px(anim_x))
+                    .top(px(anim_y))
+                    .w(px(anim_w))
+                    .h(px(anim_h))
+                    .rounded(px(1.));
                 if draw_solid {
-                    // Opaque block in the cursor color + the glyph redrawn in the bg
-                    // color on top = sharp inverse cursor (the char stays crisp, not
-                    // dimmed). The block sits over the grid glyph and hides it.
-                    base.bg(col(self.palette.cursor))
-                        .text_color(col(bg))
-                        .when_some(cursor_char, |d, ch| d.child(SharedString::from(ch.to_string())))
+                    if is_block {
+                        // Opaque block in the cursor color + the glyph redrawn in the bg
+                        // color on top = sharp inverse cursor (the char stays crisp, not
+                        // dimmed). The block sits over the grid glyph and hides it.
+                        base.bg(col(self.palette.cursor))
+                            .text_color(col(bg))
+                            .when_some(cursor_char, |d, ch| d.child(SharedString::from(ch.to_string())))
+                    } else if is_underline {
+                        // Underline cursor: a thin bar at the bottom
+                        div().absolute().left(px(anim_x)).top(px(anim_y + anim_h - 2.0)).w(px(anim_w)).h(px(2.0)).bg(col(self.palette.cursor))
+                    } else {
+                        // Beam cursor: a thin bar on the left
+                        base.bg(col(self.palette.cursor))
+                    }
                 } else {
                     // Unfocused: a slim, calmer outline (thinner presence than a full block).
-                    base.border_1().border_color(cola(self.palette.cursor, 0.55))
+                    if is_block {
+                        base.border_1().border_color(cola(self.palette.cursor, 0.55))
+                    } else if is_underline {
+                        div().absolute().left(px(anim_x)).top(px(anim_y + anim_h - 2.0)).w(px(anim_w)).h(px(2.0)).bg(cola(self.palette.cursor, 0.55))
+                    } else {
+                        base.bg(cola(self.palette.cursor, 0.55))
+                    }
                 }
             });
 
@@ -1712,9 +1655,6 @@ impl Render for TerminalView {
                             }))
                     })),
             )
-            // Character fades (待优化清单 §3.1): above the grid (fade-in covers / fade-out
-            // ghosts), below the cursor so the block stays on top.
-            .children(fade_overlays)
             .when_some(cursor_el, |this, c| this.child(c))
             .when_some(ime_preedit, |this, p| this.child(p))
             .when_some(scrollbar, |this, s| this.child(s))
@@ -1769,39 +1709,6 @@ mod tests {
             .expect("a profile")
     }
 
-    fn cellrun(text: &str, cols: usize) -> CellRun {
-        CellRun {
-            text: text.to_string(),
-            fg: Rgb::new(0, 0, 0),
-            bg: Rgb::new(0, 0, 0),
-            bold: false,
-            italic: false,
-            underline: false,
-            cols,
-        }
-    }
-
-    #[test]
-    fn rows_to_cells_maps_narrow_wide_and_blanks() {
-        // "ab" (narrow, 2 cols) + "中" (wide, 2 cols) then padding to 6 cols.
-        let rows = vec![vec![cellrun("ab", 2), cellrun("中", 2)]];
-        let cells = rows_to_cells(&rows, 6);
-        assert_eq!(cells.len(), 1);
-        let line = &cells[0];
-        assert_eq!(line[0], 'a');
-        assert_eq!(line[1], 'b');
-        assert_eq!(line[2], '中'); // wide glyph sits at its start col
-        assert_eq!(line[3], '\u{0}'); // wide trailing filler (diff skips it)
-        assert_eq!(line[4], ' '); // padded blank
-        assert_eq!(line[5], ' ');
-    }
-
-    #[test]
-    fn ease_out_cubic_endpoints_and_shape() {
-        assert!((ease_out_cubic(0.0)).abs() < 1e-6);
-        assert!((ease_out_cubic(1.0) - 1.0).abs() < 1e-6);
-        assert!(ease_out_cubic(0.5) > 0.5); // ease-out: most distance covered early
-    }
 
     #[test]
     fn wsl_profile_launches_wsl_exe_with_distro() {

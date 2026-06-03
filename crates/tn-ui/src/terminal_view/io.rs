@@ -24,7 +24,7 @@ use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
 use super::{
-    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CHAR_FADE_MS,
+    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS,
     CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
@@ -34,7 +34,7 @@ impl TerminalView {
     pub(super) fn spawn_reader(
         mut reader: Box<dyn Read + Send>,
         terminal: Arc<Mutex<Terminal>>,
-        writer: SharedWriter,
+        writer_tx: std::sync::mpsc::Sender<Vec<u8>>,
         dirty: Arc<AtomicBool>,
         wake_tx: mpsc::UnboundedSender<()>,
         title: Arc<Mutex<Option<String>>>,
@@ -115,11 +115,11 @@ impl TerminalView {
                             }
                         };
                         if !replies.is_empty() {
-                            let mut w = writer.lock().unwrap();
+                            let mut combined = Vec::new();
                             for r in &replies {
-                                let _ = w.write_all(r.as_bytes());
+                                combined.extend_from_slice(r.as_bytes());
                             }
-                            let _ = w.flush();
+                            let _ = writer_tx.send(combined);
                         }
                         if !events.is_empty() {
                             let at_ms = start.elapsed().as_millis() as u64;
@@ -136,12 +136,16 @@ impl TerminalView {
                         {
                             break; // view dropped
                         }
-                        // (待优化清单 §8.1 / §2.4) Lock Contention Mitigation:
-                        // If we filled the entire 16KiB buffer, we are likely in a high-throughput
-                        // stream (e.g., `cat` on a large file). Force a tiny sleep so the foreground 
-                        // thread (which we just woke) can acquire the `terminal` mutex to paint,
-                        // preventing the UI from freezing until the command finishes.
-                        if n == buf.len() {
+                        // (待优化清单 §8.1 / §2.4) Terminal-lock 争用缓解。reader 持
+                        // `terminal` 锁跑 `advance()`,前台 render/on_key 要同一把锁;
+                        // Claude Code(Ink)每秒数十次整屏重绘 → reader 连续抢锁会饿死
+                        // 前台(输入卡顿)。刚释放锁、也唤醒了前台,这里主动让出一次调度:
+                        //  • yield_now:近零成本(无其他就绪线程时立即返回),给正在等锁的
+                        //    UI 线程一个被调度+抢锁的窗口 —— 覆盖 Claude 这类高频小批量;
+                        //  • 缓冲过半(≥8KiB)= 大吞吐(cat 大文件),额外硬让 1ms,确保前台
+                        //    能插进去刷帧、不被刷屏饿死。
+                        std::thread::yield_now();
+                        if n >= buf.len() / 2 {
                             std::thread::sleep(Duration::from_millis(1));
                         }
                     }
@@ -281,41 +285,11 @@ impl TerminalView {
                 exec.timer(Duration::from_millis(16)).await;
                 let again = this.update(cx, |v, cx| {
                     let active = v
-                        .cursor_glide_start
+                        .cursor_anim_start
                         .map(|t| t.elapsed() < Duration::from_millis(CURSOR_GLIDE_MS))
                         .unwrap_or(false);
                     if !active {
                         v.cursor_gliding = false;
-                    }
-                    cx.notify();
-                    active
-                });
-                if !matches!(again, Ok(true)) {
-                    break; // done, or view dropped
-                }
-            }
-        })
-        .detach();
-    }
-
-    /// Drive the character fade (待优化清单 §3.1): notify every frame, pruning expired
-    /// fades, until none remain. `cell_fading` guards against spawning more than one.
-    pub(super) fn spawn_cell_fade(&mut self, cx: &mut Context<Self>) {
-        if self.cell_fading {
-            return;
-        }
-        self.cell_fading = true;
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            loop {
-                exec.timer(Duration::from_millis(16)).await;
-                let again = this.update(cx, |v, cx| {
-                    v.cell_fades
-                        .retain(|f| f.start.elapsed() < Duration::from_millis(CHAR_FADE_MS));
-                    let active = !v.cell_fades.is_empty();
-                    if !active {
-                        v.cell_fades.shrink_to_fit(); // M1: force-release capacity when idle
-                        v.cell_fading = false;
                     }
                     cx.notify();
                     active
@@ -394,7 +368,13 @@ impl TerminalView {
             // Baseline mtimes at launch: any session already fresh now is a
             // concurrent (someone else's) one; ours flips stale→fresh later.
             let baseline = std::sync::Arc::new(
-                exec.spawn(async move { tn_ai::session_mtimes(kind) }).await,
+                exec.spawn(async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(tn_ai::session_mtimes(kind));
+                    });
+                    rx.await.unwrap_or_default()
+                }).await,
             );
             let mut pinned: Option<PathBuf> = None; // this pane's session, once found
             let mut last_mtime: Option<SystemTime> = None;
@@ -413,44 +393,51 @@ impl TerminalView {
                 let prev_usage_clone = current_usage.clone();
                 let res = exec
                     .spawn(async move {
-                        // Lock onto this pane's session once; afterward just follow
-                        // that exact file (a later session can't steal it).
-                        let path = match pinned2 {
-                            Some(p) => p,
-                            None => {
-                                tn_ai::resolve_session_for_pane(kind, launched_at, &baseline2)?.path
-                            }
-                        };
-                        let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
-                        if prev == Some(mtime) {
-                            return Some((path, mtime, None, prev_offset)); // pinned, unchanged
-                        }
-                        let mut f = std::fs::File::open(&path).ok()?;
-                        let len = f.metadata().ok()?.len();
-                        use std::io::{Read, Seek, SeekFrom};
-                        let (next_offset, usage) = if prev_offset > 0 && prev_offset <= len && prev_usage_clone.is_some() {
-                            f.seek(SeekFrom::Start(prev_offset)).ok()?;
-                            let mut delta = String::new();
-                            f.read_to_string(&mut delta).ok()?;
-                            let valid_bytes = delta.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                            let valid_delta = &delta[..valid_bytes];
-                            let new_offset = prev_offset + valid_bytes as u64;
-                            let new_usage = if valid_bytes > 0 {
-                                tn_ai::update_session(kind, valid_delta, prev_usage_clone.unwrap())
-                            } else {
-                                prev_usage_clone.unwrap()
-                            };
-                            (new_offset, new_usage)
-                        } else {
-                            let mut text = String::new();
-                            f.read_to_string(&mut text).ok()?;
-                            let valid_bytes = text.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                            let valid_text = &text[..valid_bytes];
-                            let new_offset = valid_bytes as u64;
-                            let u = tn_ai::parse_session(kind, valid_text)?;
-                            (new_offset, u)
-                        };
-                        Some((path, mtime, Some(usage), next_offset))
+                        let (tx, rx) = futures::channel::oneshot::channel();
+                        std::thread::spawn(move || {
+                            let result = (|| {
+                                // Lock onto this pane's session once; afterward just follow
+                                // that exact file (a later session can't steal it).
+                                let path = match pinned2 {
+                                    Some(p) => p,
+                                    None => {
+                                        tn_ai::resolve_session_for_pane(kind, launched_at, &baseline2)?.path
+                                    }
+                                };
+                                let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+                                if prev == Some(mtime) {
+                                    return Some((path, mtime, None, prev_offset)); // pinned, unchanged
+                                }
+                                let mut f = std::fs::File::open(&path).ok()?;
+                                let len = f.metadata().ok()?.len();
+                                use std::io::{Read, Seek, SeekFrom};
+                                let (next_offset, usage) = if prev_offset > 0 && prev_offset <= len && prev_usage_clone.is_some() {
+                                    f.seek(SeekFrom::Start(prev_offset)).ok()?;
+                                    let mut delta = String::new();
+                                    f.read_to_string(&mut delta).ok()?;
+                                    let valid_bytes = delta.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                                    let valid_delta = &delta[..valid_bytes];
+                                    let new_offset = prev_offset + valid_bytes as u64;
+                                    let new_usage = if valid_bytes > 0 {
+                                        tn_ai::update_session(kind, valid_delta, prev_usage_clone.unwrap())
+                                    } else {
+                                        prev_usage_clone.unwrap()
+                                    };
+                                    (new_offset, new_usage)
+                                } else {
+                                    let mut text = String::new();
+                                    f.read_to_string(&mut text).ok()?;
+                                    let valid_bytes = text.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                                    let valid_text = &text[..valid_bytes];
+                                    let new_offset = valid_bytes as u64;
+                                    let u = tn_ai::parse_session(kind, valid_text)?;
+                                    (new_offset, u)
+                                };
+                                Some((path, mtime, Some(usage), next_offset))
+                            })();
+                            let _ = tx.send(result);
+                        });
+                        rx.await.unwrap_or(None)
                     })
                     .await;
                 if let Some((path, mtime, usage_opt, next_offset)) = res {

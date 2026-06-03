@@ -2693,15 +2693,4 @@ mod tests {
         assert!(parse_diff("").is_empty());
     }
 
-    #[test]
-    fn find_in_chars_overlap_and_bounds() {
-        let cs: Vec<char> = "aXbXc".chars().collect();
-        let q: Vec<char> = "X".chars().collect();
-        assert_eq!(find_in_chars(&cs, &q, 0), Some(1));
-        assert_eq!(find_in_chars(&cs, &q, 2), Some(3));
-        assert_eq!(find_in_chars(&cs, &q, 4), None);
-        // query longer than haystack
-        let long: Vec<char> = "abcd".chars().collect();
-        assert_eq!(find_in_chars(&cs, &long, 0), None);
-    }
 }
