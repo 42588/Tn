@@ -41,6 +41,24 @@ pub(crate) struct TrayHwnd(pub(crate) isize);
 
 impl gpui::Global for TrayHwnd {}
 
+// ── PTY 活动信号(供 tn-app 的 mimalloc GC 判空闲)──────────────────────────
+// 进程级单调计数:任一 pane 的 reader 收到 PTY 输出就 +1。tn-app 的内存回收线程
+// (mi_collect)据此判空闲 —— 繁忙(计数在变)时绝不 collect,只在持续无输出时归还内存
+// 一次,避免 Claude 狂输出时被周期性强制 GC 微卡(审查优化① 发现的隐患)。纯 relaxed
+// atomic add,对 reader 热路径几乎零成本(远轻于读时钟)。
+static PTY_ACTIVITY_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Mark PTY activity — called by each pane's reader on output. Cheap: one relaxed add.
+pub fn note_pty_activity() {
+    PTY_ACTIVITY_SEQ.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Current PTY-activity counter; tn-app's GC compares it across intervals to detect idle
+/// (unchanged across a window ⇒ no PTY output happened, so it's safe to reclaim memory).
+pub fn pty_activity_seq() -> u64 {
+    PTY_ACTIVITY_SEQ.load(Ordering::Relaxed)
+}
+
 // ── App state (shared between `on_window_closed` and the tray event handler) ─
 
 struct AppState {

@@ -60,6 +60,9 @@ impl TerminalView {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        // Mark PTY activity for the idle-aware mimalloc GC (tn-app): any
+                        // output ⇒ not idle ⇒ don't run a forced collect now (优化①).
+                        crate::note_pty_activity();
                         // The bypass parser is independent of the terminal lock;
                         // run it first so we know whether this batch produced any
                         let events = shell.advance(&buf[..n]);
