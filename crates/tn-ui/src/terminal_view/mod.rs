@@ -114,9 +114,13 @@ const COLS: usize = 110;
 const BODY_PAD_X: f32 = 15.0;
 const BODY_PAD_Y: f32 = 11.0;
 
-/// Debounce for the working-tree change watcher: coalesce a burst of file events
-/// (a save touches several files, a build churns many) into one `git diff` refresh.
-const RAIL_WATCH_DEBOUNCE_MS: u64 = 1000;
+/// Trailing-edge debounce(静默窗口) for the working-tree change watcher: refresh the
+/// rail `git diff` only after file events have been quiet this long. A single save fires
+/// ~one window later (responsive); a long build's continuous event stream keeps pushing
+/// it back, so the rail refreshes once after the build settles instead of every window.
+/// 300ms balances responsiveness with coalescing (was 1000ms 固定窗口 — 审查③: 1000ms
+/// 钝化手动编辑响应, 且固定窗口在长构建时每窗口刷一次).
+const RAIL_WATCH_DEBOUNCE_MS: u64 = 300;
 /// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
 /// Smooth cursor glide (待优化清单 §3.1): the cursor eases toward its new cell over

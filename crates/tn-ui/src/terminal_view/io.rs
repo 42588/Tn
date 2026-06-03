@@ -15,6 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use futures::channel::mpsc;
+use futures::future::{select, Either};
 use futures::StreamExt;
 use gpui::{AsyncApp, Context, WeakEntity};
 use tn_ai::AgentKind;
@@ -508,9 +509,23 @@ impl TerminalView {
                 return;
             }
             while rx.next().await.is_some() {
-                // Debounce: a save / build touches many files — coalesce to one diff.
-                exec.timer(Duration::from_millis(RAIL_WATCH_DEBOUNCE_MS)).await;
-                while rx.try_recv().is_ok() {} // drain the burst
+                // Trailing-edge debounce(优化③):收到一个事件后持续吸收后续事件,直到静默
+                // RAIL_WATCH_DEBOUNCE_MS 才刷一次。单次保存 ~该窗口后即刷(响应快);长构建
+                // 产生的持续事件流被每个新事件不断推后 → 构建期间不刷、只在真正停下后刷一次
+                // (旧的固定窗口会每窗口都刷)。配合 is_noise_path 已过滤 target/node_modules,
+                // 源码区不会有"持续不断"的事件流,故无需 max-wait 上限。
+                loop {
+                    match select(
+                        rx.next(),
+                        std::pin::pin!(exec.timer(Duration::from_millis(RAIL_WATCH_DEBOUNCE_MS))),
+                    )
+                    .await
+                    {
+                        Either::Left((Some(_), _)) => continue, // 又来事件 → 重置静默窗口
+                        Either::Left((None, _)) => return,      // 通道关闭(view dropped)
+                        Either::Right(((), _)) => break,        // 静默期满 → 去刷新
+                    }
+                }
                 // Stop once the pane is no longer an agent (rail gone) / view dropped.
                 let go_on = this
                     .update(cx, |v, cx| {
