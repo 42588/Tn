@@ -52,6 +52,7 @@ impl TerminalView {
             // UI thread on keystrokes (input stutter). Heap-boxed to keep the
             // thread stack small.
             let mut buf = vec![0u8; 16384];
+            let mut replies = Vec::new();
             // Outer guard (待优化清单 §8.1): a panic anywhere in the reader loop is
             // logged with context instead of the thread dying silently (which
             // would leave the pane frozen with no clue why).
@@ -61,8 +62,11 @@ impl TerminalView {
                     Ok(n) => {
                         // The bypass parser is independent of the terminal lock;
                         // run it first so we know whether this batch produced any
-                        // block events (and thus whether the anchor line is needed).
                         let events = shell.advance(&buf[..n]);
+                        if replies.capacity() > 1024 {
+                            replies.shrink_to_fit();
+                        }
+                        replies.clear();
                         // Inner guard: catch an alacritty panic *while still holding
                         // the lock* so the stack unwinds only to here and the guard
                         // drops normally — the Mutex is never poisoned, so the
@@ -73,7 +77,6 @@ impl TerminalView {
                             let mut t = terminal.lock().unwrap();
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 t.advance(&buf[..n]);
-                                let mut replies = Vec::new();
                                 for e in t.drain_events() {
                                     match e {
                                         TermEvent::PtyWrite(s) => replies.push(s),
@@ -97,14 +100,12 @@ impl TerminalView {
                                 // The cursor anchor is only used when this batch
                                 // produced block events — the common case is none,
                                 // so skip the extra grid borrow (待优化清单 §2.4).
-                                let abs_line =
-                                    if events.is_empty() { 0 } else { t.cursor_abs_line() };
-                                (replies, abs_line)
+                                if events.is_empty() { 0 } else { t.cursor_abs_line() }
                             }))
                             // `t` drops here, normally, even on the Err path.
                         };
-                        let (replies, abs_line) = match processed {
-                            Ok(v) => v,
+                        let abs_line = match processed {
+                            Ok(line) => line,
                             Err(_) => {
                                 tracing::error!(
                                     "terminal reader: alacritty panicked on output; \
@@ -115,7 +116,7 @@ impl TerminalView {
                         };
                         if !replies.is_empty() {
                             let mut w = writer.lock().unwrap();
-                            for r in replies {
+                            for r in &replies {
                                 let _ = w.write_all(r.as_bytes());
                             }
                             let _ = w.flush();
@@ -313,6 +314,7 @@ impl TerminalView {
                         .retain(|f| f.start.elapsed() < Duration::from_millis(CHAR_FADE_MS));
                     let active = !v.cell_fades.is_empty();
                     if !active {
+                        v.cell_fades.shrink_to_fit(); // M1: force-release capacity when idle
                         v.cell_fading = false;
                     }
                     cx.notify();
@@ -396,6 +398,8 @@ impl TerminalView {
             );
             let mut pinned: Option<PathBuf> = None; // this pane's session, once found
             let mut last_mtime: Option<SystemTime> = None;
+            let mut file_offset = 0u64;
+            let mut current_usage: Option<tn_ai::AiUsage> = None;
             loop {
                 // Stop once the agent identity is gone (it exited → pane is now a
                 // plain shell) or the view dropped — no point polling a dead agent.
@@ -405,6 +409,8 @@ impl TerminalView {
                 let pinned2 = pinned.clone();
                 let prev = last_mtime;
                 let baseline2 = baseline.clone();
+                let prev_offset = file_offset;
+                let prev_usage_clone = current_usage.clone();
                 let res = exec
                     .spawn(async move {
                         // Lock onto this pane's session once; afterward just follow
@@ -417,20 +423,46 @@ impl TerminalView {
                         };
                         let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
                         if prev == Some(mtime) {
-                            return Some((path, mtime, None)); // pinned, unchanged
+                            return Some((path, mtime, None, prev_offset)); // pinned, unchanged
                         }
-                        let usage = tn_ai::parse_session(kind, &std::fs::read_to_string(&path).ok()?);
-                        Some((path, mtime, usage))
+                        let mut f = std::fs::File::open(&path).ok()?;
+                        let len = f.metadata().ok()?.len();
+                        use std::io::{Read, Seek, SeekFrom};
+                        let (next_offset, usage) = if prev_offset > 0 && prev_offset <= len && prev_usage_clone.is_some() {
+                            f.seek(SeekFrom::Start(prev_offset)).ok()?;
+                            let mut delta = String::new();
+                            f.read_to_string(&mut delta).ok()?;
+                            let valid_bytes = delta.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                            let valid_delta = &delta[..valid_bytes];
+                            let new_offset = prev_offset + valid_bytes as u64;
+                            let new_usage = if valid_bytes > 0 {
+                                tn_ai::update_session(kind, valid_delta, prev_usage_clone.unwrap())
+                            } else {
+                                prev_usage_clone.unwrap()
+                            };
+                            (new_offset, new_usage)
+                        } else {
+                            let mut text = String::new();
+                            f.read_to_string(&mut text).ok()?;
+                            let valid_bytes = text.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                            let valid_text = &text[..valid_bytes];
+                            let new_offset = valid_bytes as u64;
+                            let u = tn_ai::parse_session(kind, valid_text)?;
+                            (new_offset, u)
+                        };
+                        Some((path, mtime, Some(usage), next_offset))
                     })
                     .await;
-                if let Some((path, mtime, usage)) = res {
+                if let Some((path, mtime, usage_opt, next_offset)) = res {
                     pinned = Some(path); // bound from now on
                     last_mtime = Some(mtime);
+                    file_offset = next_offset;
                     // `agent` is fixed from launch intent; the poller only updates
                     // the usage snapshot (never relabels the pane). The activity-rail
                     // git data is refreshed separately by the change watcher
                     // (`spawn_change_watcher` → `refresh_changes`, 变化即刷新).
-                    if let Some(usage) = usage {
+                    if let Some(usage) = usage_opt {
+                        current_usage = Some(usage.clone());
                         if this
                             .update(cx, |v, cx| {
                                 v.usage = Some(usage);

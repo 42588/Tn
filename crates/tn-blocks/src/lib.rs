@@ -34,9 +34,9 @@ pub struct Block {
     pub id: u64,
     pub state: BlockState,
     /// Command line text, if the shell reported it (OSC 633 `E`).
-    pub command: Option<String>,
+    pub command: Option<smol_str::SmolStr>,
     /// Working directory at prompt time, if known.
-    pub cwd: Option<String>,
+    pub cwd: Option<smol_str::SmolStr>,
     /// Line where the prompt started (`A`).
     pub prompt_line: u64,
     /// Line where command input started (`B`).
@@ -54,7 +54,7 @@ pub struct Block {
 }
 
 impl Block {
-    fn new(id: u64, prompt_line: u64, cwd: Option<String>) -> Self {
+    fn new(id: u64, prompt_line: u64, cwd: Option<smol_str::SmolStr>) -> Self {
         Self {
             id,
             state: BlockState::Prompt,
@@ -92,7 +92,7 @@ impl Block {
 pub struct BlockModel {
     finished: Vec<Block>,
     current: Option<Block>,
-    cwd: Option<String>,
+    cwd: Option<smol_str::SmolStr>,
     next_id: u64,
 }
 
@@ -143,13 +143,14 @@ impl BlockModel {
             }
             BlockEvent::CommandLine(cmd) => {
                 if let Some(b) = &mut self.current {
-                    b.command = Some(cmd);
+                    b.command = Some(smol_str::SmolStr::new(cmd));
                 }
             }
             BlockEvent::Cwd(path) => {
-                self.cwd = Some(path.clone());
+                let p = smol_str::SmolStr::new(path);
+                self.cwd = Some(p.clone());
                 if let Some(b) = &mut self.current {
-                    b.cwd = Some(path);
+                    b.cwd = Some(p);
                 }
             }
         }

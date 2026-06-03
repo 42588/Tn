@@ -192,7 +192,7 @@ fn binary_label(ext: &str) -> &'static str {
 /// Tokenize one line into (text, tint) runs. A tiny hand scanner: line comments,
 /// double-quoted strings, words (keyword / type / call / ident), numbers, and
 /// runs of punctuation. Not a real parser — just enough to read like code.
-fn highlight(line: &str) -> Vec<(String, Tint)> {
+fn highlight(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     let chars: Vec<char> = line.chars().collect();
     let n = chars.len();
     let mut out = Vec::new();
@@ -201,7 +201,8 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
         let c = chars[i];
         // line comment to end
         if c == '/' && i + 1 < n && chars[i + 1] == '/' {
-            out.push((chars[i..].iter().collect(), Tint::Comment));
+            let s: String = chars[i..].iter().collect();
+            out.push((smol_str::SmolStr::new(s), Tint::Comment));
             break;
         }
         // string literal
@@ -219,7 +220,8 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
                 j += 1;
             }
             let end = j.min(n);
-            out.push((chars[i..end].iter().collect(), Tint::Str));
+            let s: String = chars[i..end].iter().collect();
+            out.push((smol_str::SmolStr::new(s), Tint::Str));
             i = end;
             continue;
         }
@@ -232,7 +234,7 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
             let w: String = chars[i..j].iter().collect();
             let is_call = j < n && chars[j] == '(';
             let t = classify(&w, is_call);
-            out.push((w, t));
+            out.push((smol_str::SmolStr::new(w), t));
             i = j;
             continue;
         }
@@ -242,7 +244,8 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
             while j < n && (chars[j].is_ascii_digit() || chars[j] == '.' || chars[j] == '_') {
                 j += 1;
             }
-            out.push((chars[i..j].iter().collect(), Tint::Num));
+            let s: String = chars[i..j].iter().collect();
+            out.push((smol_str::SmolStr::new(s), Tint::Num));
             i = j;
             continue;
         }
@@ -264,7 +267,8 @@ fn highlight(line: &str) -> Vec<(String, Tint)> {
         if j == i {
             j = i + 1;
         }
-        out.push((chars[i..j].iter().collect(), Tint::Plain));
+        let s: String = chars[i..j].iter().collect();
+        out.push((smol_str::SmolStr::new(s), Tint::Plain));
         i = j;
     }
     out
@@ -362,7 +366,7 @@ pub struct QuickLook {
     /// Which find field typing goes to (false = find, true = replace).
     find_field_replace: bool,
     edit_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, (Vec<char>, Vec<Tint>)>>>,
-    file_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, Vec<(String, Tint)>>>>,
+    file_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, Vec<(smol_str::SmolStr, Tint)>>>>,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
     /// Grab focus in the next render (focusing in an event/open callback doesn't
@@ -378,6 +382,8 @@ pub struct QuickLook {
     /// Independent loading track for the `git diff` path (separate from file I/O).
     diff_loading: bool,
     diff_generation: usize,
+    /// Token used to cancel background tasks (e.g. image decoding, pdf parsing) when a new file is opened.
+    cancel_token: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl QuickLook {
@@ -425,6 +431,7 @@ impl QuickLook {
             edit_on_ready: false,
             diff_loading: false,
             diff_generation: 0,
+            cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -475,6 +482,43 @@ impl QuickLook {
         Some((name, lang))
     }
 
+    /// Explicitly close QuickLook, evicting any GPUI caches and freeing memory capacity
+    /// for HashMaps and large vectors to prevent "ghost" memory leaks when hidden.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        // --- EXPLICIT GPUI CACHE EVICTION ---
+        match &self.file_data {
+            QuickLookData::Image { img } => {
+                img.clone().remove_asset(cx);
+            }
+            QuickLookData::Pdf { pages, .. } => {
+                if let Ok(lock) = pages.lock() {
+                    for page in lock.iter().flatten() {
+                        page.clone().remove_asset(cx);
+                    }
+                }
+            }
+            _ => {}
+        }
+        
+        // --- MEMORY CAPACITY RELEASE ---
+        self.path = None;
+        self.file_data = QuickLookData::None;
+        self.buf = Rc::new(Vec::new());
+        self.diff = Rc::new(Vec::new());
+        self.undo = Vec::new();
+        self.redo = Vec::new();
+        self.ime_marked = None;
+        
+        // Replace HashMaps entirely to return their capacity to the OS!
+        self.edit_highlight_cache = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        self.file_highlight_cache = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        
+        // Cancel any pending async tasks.
+        self.cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
+        
+        cx.notify();
+    }
+
     /// Open `path`: read its text off the **background** thread, default to the File
     /// tab (preview). Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`]
     /// are detected early — instead of garbled/empty content, the overlay shows file
@@ -486,6 +530,28 @@ impl QuickLook {
     /// A monotonic `generation` counter prevents out-of-order completion from
     /// overwriting a newer open that was triggered while this one was in flight.
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.path.as_ref() == Some(&path) && self.loading_state == LoadingState::Ready {
+            return; // unchanged, don't re-trigger async loading
+        }
+
+        // --- EXPLICIT GPUI CACHE EVICTION ---
+        // GPUI caches textures and images globally. If we don't manually remove the old
+        // image asset, switching between many large images will cause memory to grow
+        // unboundedly (e.g. hitting 1GB+).
+        match &self.file_data {
+            QuickLookData::Image { img } => {
+                img.clone().remove_asset(cx);
+            }
+            QuickLookData::Pdf { pages, .. } => {
+                if let Ok(lock) = pages.lock() {
+                    for page in lock.iter().flatten() {
+                        page.clone().remove_asset(cx);
+                    }
+                }
+            }
+            _ => {}
+        }
+
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
@@ -499,6 +565,10 @@ impl QuickLook {
         self.find_open = false;
         self.edit_highlight_cache.borrow_mut().clear();
         self.file_highlight_cache.borrow_mut().clear();
+
+        self.cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel_token = self.cancel_token.clone();
 
         // ── Async: bump generation + switch to Loading → skeleton renders ──
         self.generation = self.generation.wrapping_add(1);
@@ -514,6 +584,7 @@ impl QuickLook {
             
             if ext == "pdf" {
                 let (tx, mut rx) = futures::channel::mpsc::unbounded();
+                let pdf_cancel = cancel_token.clone();
                 exec.spawn(async move {
                     use pdfium_render::prelude::*;
                     static PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
@@ -534,6 +605,10 @@ impl QuickLook {
                         }
                     };
 
+                    if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+
                     match pdfium.load_pdf_from_file(&path_clone, None) {
                         Ok(document) => {
                             let page_count = document.pages().len() as usize;
@@ -542,11 +617,15 @@ impl QuickLook {
                             
                             let render_config = PdfRenderConfig::new().set_target_width(1200);
                             for (i, page) in document.pages().iter().take(limit).enumerate() {
+                                if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                    break;
+                                }
                                 if let Ok(bitmap) = page.render_with_config(&render_config) {
                                     if let Ok(img) = bitmap.as_image() {
                                         let mut cursor = std::io::Cursor::new(Vec::new());
-                                        if img.write_to(&mut cursor, image::ImageFormat::Bmp).is_ok() {
-                                            let gpui_img = gpui::Image::from_bytes(gpui::ImageFormat::Bmp, cursor.into_inner());
+                                        let rgb_img = image::DynamicImage::ImageRgb8(img.into_rgb8());
+                                        if rgb_img.write_to(&mut cursor, image::ImageFormat::Jpeg).is_ok() {
+                                            let gpui_img = gpui::Image::from_bytes(gpui::ImageFormat::Jpeg, cursor.into_inner());
                                             let _ = tx.unbounded_send(Ok((limit, Some((i, Arc::new(gpui_img))))));
                                         }
                                     }
@@ -577,9 +656,15 @@ impl QuickLook {
                         Ok((_, Some((i, img)))) => {
                             if let Some(arc) = &pages_arc {
                                 if let Ok(mut lock) = arc.lock() {
-                                    lock[i] = Some(img);
+                                    lock[i] = Some(img.clone());
                                 }
-                                let _ = this.update(cx, |_, cx| cx.notify());
+                                let _ = this.update(cx, |v, cx| {
+                                    if v.generation != gen {
+                                        img.clone().remove_asset(cx);
+                                    } else {
+                                        cx.notify();
+                                    }
+                                });
                             }
                         }
                         Err(e) => {
@@ -598,8 +683,15 @@ impl QuickLook {
 
             if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
                 let path_for_bg = path_clone.clone();
-                let bytes_res = cx.background_executor().spawn(async move { std::fs::read(&path_for_bg) }).await;
-                if let Ok(bytes) = bytes_res {
+                let img_cancel = cancel_token.clone();
+                let bytes_res = cx.background_executor().spawn(async move {
+                    if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Cancelled"));
+                    }
+                    let bytes = std::fs::read(&path_for_bg)?;
+                    if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Cancelled"));
+                    }
                     let fmt = match ext.as_str() {
                         "png" => gpui::ImageFormat::Png,
                         "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
@@ -608,15 +700,26 @@ impl QuickLook {
                         "bmp" => gpui::ImageFormat::Bmp,
                         _ => gpui::ImageFormat::Png,
                     };
-                    let img = gpui::Image::from_bytes(fmt, bytes);
+                    Ok(gpui::Image::from_bytes(fmt, bytes))
+                }).await;
+                
+                if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+
+                if let Ok(img) = bytes_res {
                     let _ = this.update(cx, |v, cx| {
-                        if v.generation != gen { return; }
+                        if v.generation != gen {
+                            Arc::new(img).remove_asset(cx);
+                            return;
+                        }
                         v.file_data = QuickLookData::Image { img: Arc::new(img) };
                         v.loading_state = LoadingState::Ready;
                         cx.notify();
                     });
                     return;
                 }
+                
                 let _ = this.update(cx, |v, cx| {
                     if v.generation != gen { return; }
                     v.file_data = QuickLookData::Binary { size: std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0) };
@@ -626,8 +729,12 @@ impl QuickLook {
                 return;
             }
 
+            let txt_cancel = cancel_token.clone();
             let res = exec
                 .spawn(async move {
+                    if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return QuickLookData::None;
+                    }
                     let meta = std::fs::metadata(&path).ok();
                     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
 
@@ -652,6 +759,9 @@ impl QuickLook {
                                 let mut line_iter = text.lines();
                                 let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
                                 for line in (&mut line_iter).take(MAX_LINES) {
+                                    if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                        return QuickLookData::None;
+                                    }
                                     lines.push(line.to_string());
                                 }
                                 let truncated = line_iter.next().is_some();
@@ -665,6 +775,9 @@ impl QuickLook {
                                 if let Some(Ok(range)) = workbook.worksheet_range_at(0) {
                                     let mut row_iter = range.rows();
                                     for row in (&mut row_iter).take(MAX_LINES) {
+                                        if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                                            return QuickLookData::None;
+                                        }
                                         let row_str = row.iter().map(|c| match c {
                                             Data::String(s) => s.to_string(),
                                             Data::Float(f) => f.to_string(),
@@ -683,6 +796,10 @@ impl QuickLook {
 
                     if size > MAX_FILE_SIZE || is_binary {
                         return QuickLookData::Binary { size };
+                    }
+
+                    if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return QuickLookData::None;
                     }
 
                     let mut text = String::new();
@@ -713,6 +830,10 @@ impl QuickLook {
                     QuickLookData::Text { lines: Arc::new(lines), truncated }
                 })
                 .await;
+
+            if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
 
             let _ = this.update(cx, |v, cx| {
                 // ── Stale guard: drop if a newer open() was dispatched ──
@@ -774,9 +895,13 @@ impl QuickLook {
 
         let exec = cx.background_executor().clone();
         let root = self.root.clone();
+        let diff_cancel = self.cancel_token.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let diff_lines = exec
                 .spawn(async move {
+                    if diff_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return vec![];
+                    }
                     let rel = path
                         .strip_prefix(&root)
                         .unwrap_or(&path)
@@ -787,6 +912,9 @@ impl QuickLook {
                         &["diff", "--no-color", "--", &rel],
                         std::time::Duration::from_millis(1500),
                     );
+                    if diff_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return vec![];
+                    }
                     parse_diff(text.as_deref().unwrap_or(""))
                 })
                 .await;
@@ -1716,28 +1844,36 @@ const MAX_SPANS: usize = 48;
 /// handful) and capped at [`MAX_SPANS`] (tail collapsed, nothing dropped). Fewer
 /// runs → fewer `div`s/shaped text runs per row → paint stays cheap (the HTML-
 /// preview freeze was paint-time shaping of many small spans, see 踩过的坑).
-fn coalesce_spans(line: &str) -> Vec<(String, Tint)> {
+fn coalesce_spans(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     if line.len() > LONG_LINE_BYTES {
-        return vec![(line.to_string(), Tint::Plain)];
+        return vec![(smol_str::SmolStr::new(line), Tint::Plain)];
     }
     let mut merged: Vec<(String, Tint)> = Vec::new();
     for (text, tint) in highlight(line) {
         match merged.last_mut() {
             Some((s, lt)) if *lt == tint => s.push_str(&text),
-            _ => merged.push((text, tint)),
+            _ => merged.push((text.to_string(), tint)),
         }
     }
+    let mut out = Vec::with_capacity(merged.len().min(MAX_SPANS));
     if merged.len() > MAX_SPANS {
-        let tail: String = merged.drain(MAX_SPANS - 1..).map(|(s, _)| s).collect();
-        merged.push((tail, Tint::Plain));
+        for (s, t) in merged.drain(..MAX_SPANS - 1) {
+            out.push((smol_str::SmolStr::new(s), t));
+        }
+        let tail: String = merged.into_iter().map(|(s, _)| s).collect();
+        out.push((smol_str::SmolStr::new(tail), Tint::Plain));
+    } else {
+        for (s, t) in merged {
+            out.push((smol_str::SmolStr::new(s), t));
+        }
     }
-    merged
+    out
 }
 
-fn file_row_cached(config: &Loaded, cached_spans: &[(String, Tint)], i: usize) -> gpui::Div {
+fn file_row_cached(config: &Loaded, cached_spans: &[(smol_str::SmolStr, Tint)], i: usize) -> gpui::Div {
     let spans: Vec<gpui::Div> = cached_spans
         .iter()
-        .map(|(text, tint)| div().text_color(tint_color(config, *tint)).child(SharedString::from(text.clone())))
+        .map(|(text, tint)| div().text_color(tint_color(config, *tint)).child(SharedString::from(text.to_string())))
         .collect();
     code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), spans)
 }
@@ -1868,7 +2004,7 @@ impl Render for QuickLook {
         let config = self.config.clone();
         let edit_cache = self.edit_highlight_cache.clone();
         let file_cache = self.file_highlight_cache.clone();
-        let ui = &config.theme.ui;
+        let _ui = &config.theme.ui;
 
         // Grab focus on first render after open (focusing in open() doesn't land —
         // the overlay isn't rendered yet; see 踩过的坑).
@@ -1982,6 +2118,7 @@ impl Render for QuickLook {
         let line_count = lines.len();
         let buf = self.buf.clone();
         let config = self.config.clone();
+        let _ui = &config.theme.ui;
         let diff = self.diff.clone();
         let editing = self.editing;
         let cursor = self.cursor;
@@ -2009,18 +2146,6 @@ impl Render for QuickLook {
         } else {
             line_count
         };
-        // ── Skeleton helper: short "code lines" of varying width ──
-        let code_skeleton = |n: usize, ws: &[f32]| {
-            div()
-                .flex_1().min_h(px(0.)).flex().flex_col().gap(px(6.))
-                .pt(px(8.)).px(px(14.))
-                .children((0..n).map(|i| {
-                    let w_px = ws[i % ws.len()];
-                    div().flex().flex_row().items_center().h(px(ROW_H))
-                        .child(div().w(px(38.)).mr(px(28.))) // gutter: ln + mr
-                        .child(div().w(px(w_px)).h(px(10.)).rounded(px(3.)).bg(rgba(INSET)))
-                }))
-        };
         // ── body condition chain ────────────────────────────────────────────
         let mut body = div()
             .relative()
@@ -2032,7 +2157,7 @@ impl Render for QuickLook {
             .pt(px(8.));
 
         if self.loading_state == LoadingState::Loading {
-            body = body.child(code_skeleton(16, &[220., 130., 310., 180., 260., 140., 330., 160.]));
+            // 不渲染占位符
         } else if let QuickLookData::Binary { size } = &self.file_data {
             let size_str = human_size(*size);
             body = body.child(
@@ -2055,46 +2180,37 @@ impl Render for QuickLook {
         } else if let QuickLookData::Pdf { pages, page_count } = &self.file_data {
             let pages = pages.clone();
             let page_count = *page_count;
-            let mut items = Vec::new();
-            if let Ok(pages_lock) = pages.lock() {
-                for i in 0..page_count {
-                    if let Some(img) = &pages_lock[i] {
-                        let img_source = gpui::ImageSource::Image(img.clone());
-                        items.push(
-                            div()
-                                .w_full()
-                                .min_h(px(1200.)) // 给予基础高度让它能撑开滚动条
-                                .bg(rgba(0xffffffff)) // 纯白背板
-                                .flex()
-                                .justify_center()
-                                .p_4()
-                                .child(gpui::img(img_source).w_full().h_auto())
-                        );
-                    } else {
-                        // 骨架屏 Loading
-                        items.push(
-                            div()
-                                .w_full()
-                                .h(px(1200.))
-                                .bg(rgba(0xffffffff))
-                        );
-                    }
-                }
-            }
-
             body = body.child(
                 div()
                     .flex_1()
                     .overflow_hidden()
                     .bg(rgba(0x1e1e1e))
                     .child(
-                        div()
-                            .id("pdf_scroll_container")
-                            .w_full()
-                            .h_full()
-                            .flex_col()
-                            .overflow_y_scroll()
-                            .children(items)
+                        uniform_list("pdf_scroll_container", page_count, move |range, _window, _cx| {
+                            let pages_lock = pages.lock().ok();
+                            range.map(|i| {
+                                if let Some(lock) = &pages_lock {
+                                    if let Some(img) = &lock[i] {
+                                        let img_source = gpui::ImageSource::Image(img.clone());
+                                        return div()
+                                            .w_full()
+                                            .h(px(1400.)) // 固定高度让 uniform_list 计算
+                                            .bg(rgba(0xffffffff)) // 纯白背板
+                                            .flex()
+                                            .justify_center()
+                                            .p_4()
+                                            .child(gpui::img(img_source).w_full().h_full().object_fit(gpui::ObjectFit::ScaleDown));
+                                    }
+                                }
+                                div()
+                                    .w_full()
+                                    .h(px(1400.))
+                                    .bg(rgba(0xffffffff))
+                            }).collect::<Vec<_>>()
+                        })
+                        .track_scroll(self.scroll.clone())
+                        .w_full()
+                        .h_full()
                     )
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
@@ -2110,7 +2226,7 @@ impl Render for QuickLook {
                     .child(gpui::img(img_source).w_auto().h_auto().max_w_full().max_h_full().object_fit(gpui::ObjectFit::ScaleDown))
             );
         } else if self.tab == Tab::Diff && self.diff_loading {
-            body = body.child(code_skeleton(8, &[160., 280., 120., 200., 150., 310., 170.]));
+            // 不渲染占位符
         } else if !editing && tab == Tab::Diff && self.diff.is_empty() {
             body = body.child(
                 div()

@@ -176,6 +176,7 @@ impl Palette {
 
 /// Event sink that forwards alacritty terminal events into an mpsc channel so
 /// the owning thread can drain them (title changes, bells, PTY write-backs...).
+#[derive(Clone)]
 struct ChannelListener(Sender<Event>);
 
 impl EventListener for ChannelListener {
@@ -441,13 +442,14 @@ pub struct Terminal {
     size: GridSize,
     palette: Palette,
     events: Receiver<Event>,
-    /// Monotonic counter bumped on every grid-affecting mutation (output,
-    /// scroll, resize, selection, palette). A renderer can compare it to skip
-    /// rebuilding its [`snapshot`](Self::snapshot)/[`row_runs`] when nothing
-    /// changed (e.g. a cursor-blink-only repaint) — see 待优化清单 §2.1.
+    /// Mark the grid as changed for cache-invalidation purposes.
     /// **Any new `&mut self` method that changes what the grid renders MUST call
     /// [`bump`](Self::bump)**, or the cache will show stale content.
     generation: u64,
+    tx: Sender<Event>,
+    scrollback_limit: usize,
+    swapped_snapshot: Option<Box<TerminalSnapshot>>,
+    pub swapped_path: Option<std::path::PathBuf>,
 }
 
 impl Terminal {
@@ -464,7 +466,7 @@ impl Terminal {
             scrolling_history: scrollback,
             ..Config::default()
         };
-        let term = Term::new(config, &size, ChannelListener(tx));
+        let term = Term::new(config, &size, ChannelListener(tx.clone()));
         Self {
             term,
             parser: Processor::new(),
@@ -472,6 +474,10 @@ impl Terminal {
             palette: Palette::default(),
             events: rx,
             generation: 0,
+            tx,
+            scrollback_limit: scrollback,
+            swapped_snapshot: None,
+            swapped_path: None,
         }
     }
 
@@ -487,14 +493,54 @@ impl Terminal {
         self.generation = self.generation.wrapping_add(1);
     }
 
+    /// Restore the terminal grid from disk if it was swapped out.
+    pub fn restore_if_swapped(&mut self) {
+        if let Some(path) = self.swapped_path.take() {
+            self.swapped_snapshot = None;
+            if let Ok(f) = std::fs::File::open(&path) {
+                let reader = std::io::BufReader::new(f);
+                if let Ok(mut old_grid) = bincode::deserialize_from(reader) {
+                    std::mem::swap(self.term.grid_mut(), &mut old_grid);
+                }
+            }
+            let _ = std::fs::remove_file(path);
+            self.bump();
+        }
+    }
+
+    /// Swap the terminal grid out to disk to free memory.
+    pub fn swap_out(&mut self, path: std::path::PathBuf) -> std::io::Result<()> {
+        if self.swapped_path.is_some() {
+            return Ok(());
+        }
+        self.swapped_snapshot = Some(Box::new(self.snapshot()));
+
+        let f = std::fs::File::create(&path)?;
+        let writer = std::io::BufWriter::new(f);
+        bincode::serialize_into(writer, self.term.grid_mut())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+
+        let config = Config {
+            scrolling_history: self.scrollback_limit,
+            ..Config::default()
+        };
+        let mut empty_term = Term::new(config, &self.size, ChannelListener(self.tx.clone()));
+        std::mem::swap(self.term.grid_mut(), empty_term.grid_mut());
+
+        self.swapped_path = Some(path);
+        Ok(())
+    }
+
     /// Replace the color palette (e.g. from the user's theme).
     pub fn set_palette(&mut self, palette: Palette) {
+        self.restore_if_swapped();
         self.palette = palette;
         self.bump();
     }
 
     /// Feed raw PTY output bytes into the parser and grid.
     pub fn advance(&mut self, bytes: &[u8]) {
+        self.restore_if_swapped();
         // Disjoint field borrows: `parser` (receiver) and `term` (argument).
         self.parser.advance(&mut self.term, bytes);
         self.bump();
@@ -507,6 +553,7 @@ impl Terminal {
     /// ConPTY-backed pane prefer [`resize_conpty`], which avoids losing those
     /// rows to ConPTY's resize-repaint.
     pub fn resize(&mut self, size: GridSize) {
+        self.restore_if_swapped();
         self.size = size;
         self.term.resize(size);
         self.bump();
@@ -529,6 +576,7 @@ impl Terminal {
     /// scrollback. (This also matches how native Windows consoles grow — content
     /// stays put, blank space opens below — rather than Unix's reveal-history.)
     pub fn resize_conpty(&mut self, size: GridSize) {
+        self.restore_if_swapped();
         let old_rows = self.size.rows;
         // History present *before* the grow == the pool grow_lines pulls from.
         let history_before = self.term.grid().history_size();
@@ -579,12 +627,14 @@ impl Terminal {
     /// Scroll the viewport through scrollback by `lines` (positive = back toward
     /// older output). Clamped to the history bounds by the engine.
     pub fn scroll(&mut self, lines: i32) {
+        self.restore_if_swapped();
         self.term.scroll_display(Scroll::Delta(lines));
         self.bump();
     }
 
     /// Jump the viewport back to the live bottom (latest output).
     pub fn scroll_to_bottom(&mut self) {
+        self.restore_if_swapped();
         self.term.scroll_display(Scroll::Bottom);
         self.bump();
     }
@@ -598,6 +648,7 @@ impl Terminal {
     /// Scroll so the display offset becomes `offset` (0 = bottom; clamped to the
     /// retained history). Used by scrollbar drag.
     pub fn scroll_to_offset(&mut self, offset: usize) {
+        self.restore_if_swapped();
         let cur = self.term.grid().display_offset() as i32;
         let target = offset.min(self.term.grid().history_size()) as i32;
         if target != cur {
@@ -642,6 +693,7 @@ impl Terminal {
     /// Begin a simple (cell-granularity) text selection at viewport cell
     /// `(row, col)` (0 = top/left).
     pub fn selection_start(&mut self, row: usize, col: usize) {
+        self.restore_if_swapped();
         self.selection_start_kind(row, col, SelectKind::Cell);
     }
 
@@ -650,6 +702,7 @@ impl Terminal {
     /// the click point; a subsequent [`selection_update`] drag extends it by the
     /// same granularity.
     pub fn selection_start_kind(&mut self, row: usize, col: usize, kind: SelectKind) {
+        self.restore_if_swapped();
         let offset = self.term.grid().display_offset();
         let point = viewport_to_point(offset, Point::new(row, Column(col)));
         let ty = match kind {
@@ -663,6 +716,7 @@ impl Terminal {
 
     /// Extend the active selection to viewport cell `(row, col)`.
     pub fn selection_update(&mut self, row: usize, col: usize) {
+        self.restore_if_swapped();
         let offset = self.term.grid().display_offset();
         let point = viewport_to_point(offset, Point::new(row, Column(col)));
         if let Some(sel) = self.term.selection.as_mut() {
@@ -673,6 +727,7 @@ impl Terminal {
 
     /// Clear any active selection.
     pub fn clear_selection(&mut self) {
+        self.restore_if_swapped();
         self.term.selection = None;
         self.bump();
     }
@@ -694,6 +749,10 @@ impl Terminal {
 
     /// Build an immutable snapshot of the visible grid.
     pub fn snapshot(&self) -> TerminalSnapshot {
+        if let Some(snap) = &self.swapped_snapshot {
+            return *snap.clone();
+        }
+
         let content = self.term.renderable_content();
         let offset = content.display_offset as i32;
         let colors = content.colors;

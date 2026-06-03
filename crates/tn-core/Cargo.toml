@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 alacritty_terminal.workspace = true
 anyhow.workspace = true
+bincode = "1.3.3"
 parking_lot.workspace = true
 smol_str = "0.3.2"
 tracing.workspace = true

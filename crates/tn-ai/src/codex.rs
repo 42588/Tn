@@ -136,6 +136,25 @@ pub fn parse_codex_session(jsonl: &str) -> Option<AiUsage> {
     })
 }
 
+/// Incrementally update an existing `AiUsage` with new lines appended to the session.
+pub fn update_codex_session(jsonl: &str, mut prev: AiUsage) -> AiUsage {
+    let Some(delta) = parse_codex_session(jsonl) else {
+        return prev;
+    };
+    prev.input = delta.input;
+    prev.output = delta.output;
+    prev.cache_create = delta.cache_create;
+    prev.cache_read = delta.cache_read;
+    prev.turns += delta.turns;
+    prev.context_used = delta.context_used;
+    prev.context_max = delta.context_max;
+    if !delta.model.is_empty() {
+        prev.model = delta.model;
+    }
+    prev.cost_usd = delta.cost_usd;
+    prev
+}
+
 /// `$CODEX_HOME/sessions` (default `~/.codex/sessions`), if it exists.
 pub fn codex_sessions_dir() -> Option<PathBuf> {
     let base = match std::env::var_os("CODEX_HOME") {

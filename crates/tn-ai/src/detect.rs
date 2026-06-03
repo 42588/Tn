@@ -128,6 +128,14 @@ pub fn parse_session(kind: AgentKind, text: &str) -> Option<AiUsage> {
     }
 }
 
+/// Incrementally update an existing `AiUsage` with new lines appended to the session.
+pub fn update_session(kind: AgentKind, text: &str, prev: AiUsage) -> AiUsage {
+    match kind {
+        AgentKind::ClaudeCode => claude::update_claude_session(text, prev),
+        AgentKind::Codex => codex::update_codex_session(text, prev),
+    }
+}
+
 /// Read + parse usage for `cwd`, returning which agent it belongs to. `hint`
 /// is the launch-intent agent (or `None` to auto-detect by freshness).
 pub fn usage_for_cwd(cwd: &str, hint: Option<AgentKind>) -> Option<(AgentKind, AiUsage)> {

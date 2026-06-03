@@ -638,6 +638,7 @@ impl Workspace {
                     }
                 }
                 QuickLookEvent::Close => {
+                    ws.quick_look.update(cx, |v, cx| v.close(cx));
                     ws.quick_look_open = false;
                     ws.ql_rail_pane = None; // reset on close
                     ws.ql_refocus_pane = true; // refocus the pane in next render
@@ -1166,6 +1167,7 @@ impl Workspace {
             return;
         }
         self.active = (self.active + 1) % self.tabs.len();
+        self.evict_background_caches(cx);
         let fid = self.tabs[self.active].focused;
         self.focus_pane(fid, window, cx);
     }
@@ -1173,8 +1175,31 @@ impl Workspace {
     fn activate_tab(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
         if i < self.tabs.len() {
             self.active = i;
+            self.evict_background_caches(cx);
             let fid = self.tabs[i].focused;
             self.focus_pane(fid, window, cx);
+        }
+    }
+
+    /// Explicitly clear the GPUI render caches of all terminal panes in inactive tabs.
+    /// This prevents massive GPUI `Div` trees from leaking linearly as the user
+    /// opens more tabs and leaves them in the background.
+    fn evict_background_caches(&mut self, cx: &mut Context<Self>) {
+        let active_idx = self.active;
+        for (i, tab) in self.tabs.iter().enumerate() {
+            if i == active_idx {
+                continue;
+            }
+            if tab.welcome {
+                continue;
+            }
+            let mut leaves = Vec::new();
+            collect_leaves(&tab.root, &mut leaves);
+            for id in leaves {
+                if let Some(view) = self.panes.get(&id) {
+                    view.update(cx, |v, cx| v.clear_render_cache(cx));
+                }
+            }
         }
     }
 

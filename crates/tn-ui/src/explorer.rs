@@ -260,17 +260,17 @@ impl ExplorerView {
 
     /// Re-root the tree to follow a shell `cd` (render-driven, not the explicit
     /// 「打开文件夹」). Unlike [`set_root`](Self::set_root), this **keeps the
-    /// expansion state**: `expanded` holds absolute paths, so entries under the
-    /// new root stay open and the tree does not collapse when you `cd` into a
-    /// subdirectory — or back out (the parent's previously-open children are
-    /// still remembered, so the tree re-expands exactly as it was). The selection
-    /// is kept only while it still points inside the new root. No-op (no rebuild,
-    /// no notify) when the root is unchanged.
+    /// expansion state** for the direct ancestry: `expanded` holds absolute paths,
+    /// so entries under the new root stay open and the tree does not collapse when
+    /// you `cd` into a subdirectory. When backing out, direct ancestors remain
+    /// expanded, though distant siblings are pruned to prevent memory leaks (待优化清单 §7).
+    /// The selection is kept only while it still points inside the new root.
     pub fn follow_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
         if self.root == root {
             return;
         }
         self.root = root.clone();
+        self.expanded.retain(|p| p.starts_with(&root) || root.starts_with(p));
         self._change_watcher = Self::spawn_change_watcher(&root, cx);
         self.selected = selection_under_root(&self.selected, &root);
         self.rebuild(cx);

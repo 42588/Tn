@@ -13,6 +13,21 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+extern "C" {
+    fn mi_collect(force: bool);
+}
+
+fn spawn_mimalloc_gc() {
+    std::thread::spawn(|| {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            unsafe {
+                mi_collect(true);
+            }
+        }
+    });
+}
+
 fn main() {
     // Keep the file-writer guard alive for the whole run (drops flush the log).
     let _guard = init_logging();
@@ -22,6 +37,8 @@ fn main() {
     // groups, and switches independently — not lumped with other GPUI/Zed apps.
     #[cfg(windows)]
     set_app_user_model_id();
+
+    spawn_mimalloc_gc();
 
     tn_ui::run();
 }

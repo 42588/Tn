@@ -478,10 +478,13 @@ impl TerminalView {
             }
             None => tn_config::BillingMode::default(),
         };
-        // For launched agents: stash the app cwd so refresh_changes has a fallback
+        // For launched agents: stash the launch cwd so refresh_changes has a fallback
         // when the blocks model returns no cwd (no shell integration -> no OSC 7).
-        let rail_cwd =
-            std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_string));
+        let rail_cwd = launch
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .and_then(|p| p.to_str().map(str::to_string));
         let mut change_watcher = None;
         if let Some(kind) = agent {
             // Usage binds to the session THIS pane launches (newest log created
@@ -580,6 +583,29 @@ impl TerminalView {
     /// This pane's agent (from launch intent, or detected from session logs).
     pub fn agent(&self) -> Option<AgentKind> {
         self.agent
+    }
+
+    /// Explicitly clear the GPUI render cache to free the massive `gpui::Div` trees
+    /// and row states when this terminal tab goes into the background (inactive).
+    pub fn clear_render_cache(&mut self, cx: &mut Context<Self>) {
+        if self.render_cache.is_some() {
+            self.render_cache = None;
+            for row in &mut self.prev_cells {
+                row.shrink_to_fit();
+            }
+            self.prev_cells.shrink_to_fit();
+            self.cell_fades.shrink_to_fit();
+
+            // M1: Swap out Alacritty Grid memory!
+            let id = cx.entity_id().as_u64();
+            let mut path = std::env::temp_dir();
+            path.push("tn");
+            let _ = std::fs::create_dir_all(&path);
+            path.push(format!("scrollback_{id}.bin"));
+            let _ = self.terminal.lock().unwrap().swap_out(path);
+
+            cx.notify();
+        }
     }
 
     /// If a hosted agent has signalled its exit (via [`AGENT_EXIT_SENTINEL`]),
@@ -761,8 +787,8 @@ impl TerminalView {
     pub fn cwd(&self) -> Option<String> {
         let m = self.blocks.lock().unwrap();
         m.current()
-            .and_then(|b| b.cwd.clone())
-            .or_else(|| m.last_finished().and_then(|b| b.cwd.clone()))
+            .and_then(|b| b.cwd.as_ref().map(|s| s.to_string()))
+            .or_else(|| m.last_finished().and_then(|b| b.cwd.as_ref().map(|s| s.to_string())))
     }
 
     /// This pane's effective working directory: OSC 7 cwd first,

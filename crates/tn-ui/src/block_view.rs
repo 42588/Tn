@@ -66,8 +66,8 @@ impl BlockBar {
         };
         let b: &Block = chosen?;
         Some(Self {
-            command: b.command.clone().unwrap_or_default(),
-            cwd: b.cwd.clone(),
+            command: b.command.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+            cwd: b.cwd.as_ref().map(|s| s.to_string()),
             state: b.state,
             exit: b.exit,
             duration_ms: b.duration_ms(),

@@ -76,3 +76,24 @@ criterion = "0.5"
 lto = "fat"
 codegen-units = 1
 strip = true
+
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.jpeg-decoder]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.calamine]
+opt-level = 3
+
+[profile.dev.package.quick-xml]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.zune-inflate]
+opt-level = 3

@@ -89,6 +89,26 @@ pub fn parse_claude_session(jsonl: &str) -> Option<AiUsage> {
     })
 }
 
+/// Incrementally update an existing `AiUsage` with new lines appended to the session.
+pub fn update_claude_session(jsonl: &str, mut prev: AiUsage) -> AiUsage {
+    let Some(delta) = parse_claude_session(jsonl) else {
+        return prev;
+    };
+    prev.input += delta.input;
+    prev.output += delta.output;
+    prev.cache_create += delta.cache_create;
+    prev.cache_read += delta.cache_read;
+    prev.turns += delta.turns;
+    prev.context_used = delta.context_used;
+    prev.context_max = delta.context_max;
+    if !delta.model.is_empty() {
+        prev.model = delta.model;
+    }
+    let p = pricing::pricing_for(&prev.model);
+    prev.cost_usd = p.cost(prev.input, prev.output, prev.cache_create, prev.cache_read);
+    prev
+}
+
 /// `~/.claude/projects`, if it exists.
 pub fn claude_projects_dir() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
