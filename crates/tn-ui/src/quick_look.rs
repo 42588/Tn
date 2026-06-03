@@ -42,7 +42,8 @@ const MAX_LINES: usize = 4000;
 /// instead — reading them would spike memory and blocking-IO time.
 const MAX_FILE_SIZE: u64 = 2 * 1024 * 1024;
 
-/// Peek at the first N bytes of a file to decide binary vs text (null-byte test).
+/// Peek at the first N bytes of a file to decide binary vs text (via content_inspector,
+/// not a null-byte test — that wrongly flagged UTF-16/BOM text; 优化 10).
 const PEEK_SIZE: usize = 8192;
 
 /// Format a byte count as a short human-readable string ("1.2 KB", "3.4 MB").

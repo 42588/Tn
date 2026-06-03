@@ -38,6 +38,20 @@ pub(crate) fn capture_bounded(root: &Path, args: &[&str], timeout: Duration) -> 
     }
 }
 
+/// Working-tree change-watcher noise filter: paths under these dirs don't affect a
+/// `git diff` / `git status` (or churn constantly — `.git` ticks on every git op,
+/// including our own), so a change there must not trigger a refresh. Shared by the
+/// agent rail watcher (terminal_view/io.rs) and the explorer tree watcher (explorer.rs)
+/// so the two stay in sync (审查⑨: was copy-pasted in both).
+pub(crate) fn is_noise_path(p: &Path) -> bool {
+    p.components().any(|c| {
+        matches!(
+            c.as_os_str().to_str(),
+            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
+        )
+    })
+}
+
 /// One changed file from `git diff --numstat`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileChange {
@@ -87,7 +101,7 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<FileChange> {
 pub(crate) fn changes_for(root: &Path) -> Vec<FileChange> {
     let out = capture_bounded(
         root,
-        &["diff", "--no-color", "HEAD", "--numstat", "--relative"],
+        &["-c", "core.quotePath=false", "diff", "--no-color", "HEAD", "--numstat", "--relative"],
         Duration::from_millis(1200),
     );
     parse_numstat(out.as_deref().unwrap_or(""))

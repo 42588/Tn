@@ -211,18 +211,14 @@ impl ExplorerView {
 
     fn spawn_change_watcher(root: &std::path::Path, cx: &mut Context<Self>) -> Option<notify::RecommendedWatcher> {
         use notify::Watcher;
+        use futures::future::{select, Either};
         use futures::StreamExt;
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res {
-                if ev.paths.iter().any(|p| {
-                    p.components().any(|c| {
-                        matches!(
-                            c.as_os_str().to_str(),
-                            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
-                        )
-                    })
-                }) {
+                // 噪声目录(.git 每次 git op 都抖、build/dep 巨大且无关)不触发重建;
+                // 与 agent rail watcher 共用 gitutil::is_noise_path(审查⑨ 去重)。
+                if ev.paths.iter().any(|p| gitutil::is_noise_path(p)) {
                     return;
                 }
                 let _ = tx.unbounded_send(());
@@ -233,10 +229,21 @@ impl ExplorerView {
         }
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+            // Trailing-edge debounce(同 rail watcher,审查⑨):收到事件后持续吸收、每个新
+            // 事件重置静默计时,静默 500ms 才 rebuild 一次。单次文件操作 ~500ms 后即刷;
+            // 长构建的持续事件流被不断推后 → 只在停下后扫一次目录(旧固定窗口每 500ms 扫
+            // 一次)。is_noise_path 已挡构建产物,源码区无持续事件流,无需 max-wait 上限。
             while rx.next().await.is_some() {
-                exec.timer(std::time::Duration::from_millis(500)).await;
-                while rx.try_recv().is_ok() {}
-                let _ = this.update(cx, |this, cx| this.rebuild(cx));
+                loop {
+                    match select(rx.next(), std::pin::pin!(exec.timer(Duration::from_millis(500)))).await {
+                        Either::Left((Some(_), _)) => continue,
+                        Either::Left((None, _)) => return,
+                        Either::Right(((), _)) => break,
+                    }
+                }
+                if this.update(cx, |this, cx| this.rebuild(cx)).is_err() {
+                    return;
+                }
             }
         }).detach();
         Some(watcher)
@@ -402,8 +409,21 @@ impl ExplorerView {
     /// only one task runs at a time (the flag is cleared immediately).
     fn start_git_refresh(&mut self, cx: &mut Context<Self>) {
         let root = self.root.clone();
+        let exec = cx.background_executor().clone();
         let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let status = Self::compute_git_status(&root);
+            // compute_git_status 内部走 gitutil::capture_bounded,会**同步阻塞调用线程**
+            // 直到 git 返回(最坏 1.5s)。必须在后台线程跑,否则阻塞 GPUI 前台(审查⑦: 原先
+            // 直接在 cx.spawn 前台同步调用,大仓库 / .git 被锁时卡 UI,与 quick_look 老坑同
+            // 源)。同 rebuild / refresh_changes:丢一次性 OS 线程 + oneshot 回传,前台只 await。
+            let status = exec
+                .spawn(async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(Self::compute_git_status(&root));
+                    });
+                    rx.await.unwrap_or_default()
+                })
+                .await;
             this.update(cx, |this, cx| {
                 this.git_status = status;
                 cx.notify();

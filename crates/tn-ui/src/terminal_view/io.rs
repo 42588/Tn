@@ -492,7 +492,7 @@ impl TerminalView {
         let mut watcher =
             notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                 if let Ok(ev) = res {
-                    if ev.paths.iter().any(|p| is_noise_path(p)) {
+                    if ev.paths.iter().any(|p| crate::gitutil::is_noise_path(p)) {
                         return;
                     }
                     let _ = tx.unbounded_send(());
@@ -546,14 +546,4 @@ impl TerminalView {
     }
 }
 
-/// Working-tree change-watcher noise filter: paths under these dirs don't affect
-/// `git diff HEAD` (or churn constantly — `.git` ticks on every git op, including
-/// our own diff), so a change there must not trigger a rail refresh.
-fn is_noise_path(p: &std::path::Path) -> bool {
-    p.components().any(|c| {
-        matches!(
-            c.as_os_str().to_str(),
-            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
-        )
-    })
-}
+// is_noise_path 已移至 crate::gitutil(与 explorer 的树监听共用,审查⑨ 去重)。
