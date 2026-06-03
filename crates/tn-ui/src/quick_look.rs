@@ -366,7 +366,8 @@ pub struct QuickLook {
     replace_query: String,
     /// Which find field typing goes to (false = find, true = replace).
     find_field_replace: bool,
-    edit_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, (Vec<char>, Vec<Tint>)>>>,
+    // 编辑态高亮**不缓存**:可见行仅 ~30,每帧直接算够快;按行号缓存会在删除/撤销后
+    // 显示陈旧内容(审查⑫)。仅预览态(只读、内容不变)缓存,行号 key 安全。
     file_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, Vec<(smol_str::SmolStr, Tint)>>>>,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
@@ -422,7 +423,6 @@ impl QuickLook {
             find_query: String::new(),
             replace_query: String::new(),
             find_field_replace: false,
-            edit_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
             file_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
@@ -448,6 +448,9 @@ impl QuickLook {
     fn is_editable(&self) -> bool {
         // Non-text data variants are never editable.
         match &self.file_data {
+            // 截断的大文件(>MAX_LINES)不可编辑:buf 只含已加载的前若干行,进编辑→保存会用
+            // 它覆盖整个文件、永久丢失其余内容(审查⑮ 确证的数据丢失)。截断文件只读看。
+            QuickLookData::Text { truncated: true, .. } => return false,
             QuickLookData::Text { .. } => {}
             _ => return false,
         }
@@ -511,7 +514,6 @@ impl QuickLook {
         self.ime_marked = None;
         
         // Replace HashMaps entirely to return their capacity to the OS!
-        self.edit_highlight_cache = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
         self.file_highlight_cache = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
         
         // Cancel any pending async tasks.
@@ -564,7 +566,6 @@ impl QuickLook {
         self.scroll = UniformListScrollHandle::default();
         self.needs_focus = true;
         self.find_open = false;
-        self.edit_highlight_cache.borrow_mut().clear();
         self.file_highlight_cache.borrow_mut().clear();
 
         self.cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -616,7 +617,8 @@ impl QuickLook {
                             let limit = page_count.min(100); // 宽容到 100 页
                             let _ = tx.unbounded_send(Ok((limit, None)));
                             
-                            let render_config = PdfRenderConfig::new().set_target_width(1200);
+                            // 1000px 对速览足够清晰,比 1200 省 ~30% JPEG 字节/页内存(审查⑪)。
+                            let render_config = PdfRenderConfig::new().set_target_width(1000);
                             for (i, page) in document.pages().iter().take(limit).enumerate() {
                                 if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                                     break;
@@ -1724,10 +1726,14 @@ fn all_matches(buf: &[String], query: &str) -> Vec<((usize, usize), (usize, usiz
         return out;
     }
     for (r, line) in buf.iter().enumerate() {
+        // 增量累加 byte→char 偏移(从上个匹配处续数,而非每次从行首重数),使一行内多次
+        // 命中总体 O(line) 而非 O(line×命中数)(审查⑬)。match_indices 按字节升序返回。
+        let (mut last_byte, mut last_char) = (0usize, 0usize);
         for (byte_idx, matched_str) in line.match_indices(query) {
-            let start_char = line[..byte_idx].chars().count();
+            last_char += line[last_byte..byte_idx].chars().count();
+            last_byte = byte_idx;
             let len_chars = matched_str.chars().count();
-            out.push(((r, start_char), (r, start_char + len_chars)));
+            out.push(((r, last_char), (r, last_char + len_chars)));
         }
     }
     out
@@ -1952,7 +1958,6 @@ impl EntityInputHandler for QuickLook {
         // cancel. (Backspace is encoded in `on_key`, never routed here.)
         if !text.is_empty() {
             self.type_char(text);
-            self.edit_highlight_cache.borrow_mut().clear();
             self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
         }
         self.ime_marked = None;
@@ -2003,7 +2008,6 @@ impl EntityInputHandler for QuickLook {
 impl Render for QuickLook {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let config = self.config.clone();
-        let edit_cache = self.edit_highlight_cache.clone();
         let file_cache = self.file_highlight_cache.clone();
         let _ui = &config.theme.ui;
 
@@ -2259,16 +2263,16 @@ impl Render for QuickLook {
                 )
                 .child(
                     uniform_list("ql-code", count, move |range, _window, _cx| {
-                        let mut e_cache = edit_cache.borrow_mut();
                         let mut f_cache = file_cache.borrow_mut();
                         range
                             .map(|i| {
                                 if editing {
+                                    // 编辑态不缓存高亮:可见行仅 ~30,每帧直接算够快;按行号缓存
+                                    // 会在删除/撤销后显示陈旧内容(审查⑫)。直接从 buf[i] 算最稳。
                                     let line = &buf[i];
-                                    let (chars, tints) = e_cache.entry(i).or_insert_with(|| {
-                                        (line.chars().collect(), tints_per_char(line))
-                                    });
-                                    let row = edit_row_cached(&config, chars, tints, i, cursor, sel);
+                                    let chars: Vec<char> = line.chars().collect();
+                                    let tints = tints_per_char(line);
+                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel);
                                     let entity = entity.clone();
                                     let bounds = row_bounds.clone();
                                     row.on_mouse_down(
