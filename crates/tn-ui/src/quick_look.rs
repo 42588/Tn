@@ -773,7 +773,10 @@ impl QuickLook {
                         } else {
                             use calamine::{Reader, open_workbook_auto, Data};
                             if let Ok(mut workbook) = open_workbook_auto(&path) {
-                                let mut lines = Vec::new();
+                                // Two-pass alignment (审查㉑): collect cells first, then
+                                // `align_table` pads each column to its widest cell so the
+                                // text table reads cleanly (was a ragged `join(" | ")`).
+                                let mut cells: Vec<Vec<String>> = Vec::new();
                                 let mut truncated = false;
                                 if let Some(Ok(range)) = workbook.worksheet_range_at(0) {
                                     let mut row_iter = range.rows();
@@ -781,18 +784,17 @@ impl QuickLook {
                                         if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                                             return QuickLookData::None;
                                         }
-                                        let row_str = row.iter().map(|c| match c {
+                                        cells.push(row.iter().map(|c| match c {
                                             Data::String(s) => s.to_string(),
                                             Data::Float(f) => f.to_string(),
                                             Data::Int(i) => i.to_string(),
                                             Data::Bool(b) => b.to_string(),
                                             _ => String::new(),
-                                        }).collect::<Vec<_>>().join(" | ");
-                                        lines.push(row_str);
+                                        }).collect::<Vec<_>>());
                                     }
                                     truncated = row_iter.next().is_some();
                                 }
-                                return QuickLookData::Text { lines: Arc::new(lines), truncated };
+                                return QuickLookData::Text { lines: Arc::new(align_table(&cells)), truncated };
                             }
                         }
                     }
@@ -1446,6 +1448,52 @@ impl QuickLook {
         }
     }
 
+}
+
+/// Display width of `s` in monospace columns: ASCII = 1, others (CJK etc.) ≈ 2.
+/// Approximate — the code area's CJK fallback font isn't exactly 2× the ASCII
+/// advance (踩过的坑: CJK 步进 ≠ cell_width), so alignment is exact for ASCII
+/// data and near-aligned when cells contain wide chars. Pure → headless tested.
+fn disp_width(s: &str) -> usize {
+    s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
+
+/// Render spreadsheet cells (`.xlsx`/`.xls`/`.ods`) as a left-aligned monospace
+/// table: each column padded to its widest cell's [`disp_width`], joined with
+/// ` | `. The row's last cell isn't padded (no trailing-space churn). Rows may
+/// have differing column counts. Pure → headless unit-tested. (审查㉑: replaced a
+/// naive `join(" | ")` that left columns ragged — the two-pass alignment the log
+/// claimed but that never actually landed in code.)
+fn align_table(rows: &[Vec<String>]) -> Vec<String> {
+    // Pass 1: per-column max display width.
+    let mut widths: Vec<usize> = Vec::new();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            let w = disp_width(cell);
+            match widths.get_mut(i) {
+                Some(cur) => *cur = (*cur).max(w),
+                None => widths.push(w),
+            }
+        }
+    }
+    // Pass 2: pad every cell but the row's last to its column width, then join.
+    rows.iter()
+        .map(|row| {
+            let last = row.len().saturating_sub(1);
+            row.iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    if i == last {
+                        cell.clone()
+                    } else {
+                        let pad = widths[i].saturating_sub(disp_width(cell));
+                        format!("{}{}", cell, " ".repeat(pad))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" | ")
+        })
+        .collect()
 }
 
 /// Parse `git diff --no-color` output into renderable lines (tracking new-file line
@@ -2696,6 +2744,35 @@ mod tests {
         assert_eq!(d[4].new_no, Some(12));
         // empty input → no lines
         assert!(parse_diff("").is_empty());
+    }
+
+    #[test]
+    fn align_table_pads_columns_to_widest_cell() {
+        // Ragged input: row 2 has the widest first column ("ccc").
+        let rows = vec![
+            vec!["a".to_string(), "11".to_string()],
+            vec!["ccc".to_string(), "2".to_string()],
+        ];
+        let out = align_table(&rows);
+        assert_eq!(out, vec!["a   | 11".to_string(), "ccc | 2".to_string()]);
+        // The last cell is never padded → no trailing whitespace.
+        assert!(out.iter().all(|l| !l.ends_with(' ')));
+        // Empty input → empty output.
+        assert!(align_table(&[]).is_empty());
+    }
+
+    #[test]
+    fn align_table_handles_cjk_and_uneven_rows() {
+        // CJK counts as display-width 2; a short row must not panic on a missing column.
+        let rows = vec![
+            vec!["名字".to_string(), "x".to_string()],
+            vec!["ab".to_string()],
+        ];
+        let out = align_table(&rows);
+        // col0 width = max(disp("名字")=4, disp("ab")=2) = 4. row0 col0 is widest → no pad.
+        assert_eq!(out[0], "名字 | x");
+        // row1's only cell is its last → not padded.
+        assert_eq!(out[1], "ab");
     }
 
 }
