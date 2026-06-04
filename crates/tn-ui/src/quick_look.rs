@@ -398,14 +398,6 @@ pub struct QuickLook {
     hscroll_px: f32,
     hscroll_drag: Option<f32>,
     hscroll_content_w: f32,
-    /// 编辑态平滑光标(Q弹):反相块光标以绝对叠层绘制,每帧用弹簧朝目标位(由可读的
-    /// uniform_list scroll offset + 列像素算)逼近。`caret_px` = 当前动画位(相对代码区
-    /// 容器左上,None=未放置/不动画);`caret_vel` = 弹簧速度;`caret_tick` = 上帧时刻(算
-    /// dt);`caret_anim_pending` = 帧泵在途(防叠定时器)。收敛即停 → idle 零开销。
-    caret_px: Option<(f32, f32)>,
-    caret_vel: (f32, f32),
-    caret_tick: Option<std::time::Instant>,
-    caret_anim_pending: bool,
 }
 
 impl QuickLook {
@@ -457,10 +449,6 @@ impl QuickLook {
             hscroll_px: 0.0,
             hscroll_drag: None,
             hscroll_content_w: 0.0,
-            caret_px: None,
-            caret_vel: (0.0, 0.0),
-            caret_tick: None,
-            caret_anim_pending: false,
         }
     }
 
@@ -590,8 +578,6 @@ impl QuickLook {
         self.cursor = (0, 0);
         self.edit_drag = false;
         self.hscroll_px = 0.0; // 新文件从最左开始
-        self.caret_px = None; // 重开文件:光标不从旧位滑入
-        self.caret_vel = (0.0, 0.0);
         self.dirty = false;
         self.file_data = QuickLookData::None;
         self.diff = Rc::new(Vec::new());
@@ -1604,19 +1590,6 @@ fn caret_col_at_x(line: &str, rel_x: f32, char_w: f32) -> usize {
     line.chars().count()
 }
 
-/// One explicit-Euler spring step of a 1-D value toward `target` (smooth-caret
-/// animation). Slightly **underdamped** (ζ≈0.7) → a small Q弹 overshoot before
-/// settling, like terminal/VS-Code smooth carets. `dt` is seconds (caller clamps
-/// it so a long idle gap can't explode the integrator). Returns `(pos, vel)`.
-/// Pure → headless tested (converges, overshoots, stable at the clamp).
-fn spring_step(pos: f32, vel: f32, target: f32, dt: f32) -> (f32, f32) {
-    const STIFFNESS: f32 = 320.0;
-    const DAMPING: f32 = 26.0; // ζ = DAMPING / (2√STIFFNESS) ≈ 0.73
-    let accel = (target - pos) * STIFFNESS - vel * DAMPING;
-    let v = vel + accel * dt;
-    let p = pos + v * dt;
-    (p, v)
-}
 
 /// Render spreadsheet cells (`.xlsx`/`.xls`/`.ods`) as a left-aligned monospace
 /// table: each column padded to its widest cell's [`disp_width`], joined with
@@ -1990,7 +1963,6 @@ fn edit_row_cached(
     i: usize,
     cursor: (usize, usize),
     sel: Option<((usize, usize), (usize, usize))>,
-    overlay_caret: bool,
     char_w: f32,
 ) -> gpui::Div {
     let n = chars.len();
@@ -2001,7 +1973,7 @@ fn edit_row_cached(
         let after: String = chars.iter().skip(cc.min(n)).collect();
         let mut row = div().flex().flex_row().items_center()
             .child(div().text_color(fg).child(SharedString::from(before)));
-        if i == cursor.0 && !overlay_caret {
+        if i == cursor.0 {
             row = row.child(cursor_block(config));
         }
         row = row.child(div().text_color(fg).child(SharedString::from(after)));
@@ -2027,9 +1999,8 @@ fn edit_row_cached(
     // 严格等于 `disp_width×char_w` —— 光标 x / 鼠标 hit-test / 选区 / 横向内容宽全部精确对齐,
     // 不再因 CJK 实际字形步进 ≠ 2×char_w 而漂移(中文行光标乱飘/选区不跟手的根因)。
     //
-    // 反相块光标:`overlay_caret` 态由动画叠层(render 里绝对定位、x=disp_width×char_w)绘制,
-    // 此处光标格只渲**透明占位**(占住定宽,叠层块正好覆盖它),行尾光标位什么都不画(叠层画空块);
-    // 非叠层态(预览选区行 caret=MAX,永不命中)用就地反相块。
+    // 反相块光标(终端式):光标处字符以光标色为底、面板底色为字 → 就地反色成实心块,
+    // 瞬时、精确(固定单元格下块 = 该字符格)、随字符列宽(中文 2 列宽、英文 1 列细)。
     let caret_bg = col(config.theme.ui.foreground);
     let caret_fg = col(config.theme.ui.chrome_bg);
     let cell = |text: String, cols: f32| {
@@ -2041,13 +2012,7 @@ fn edit_row_cached(
         if caret_col == Some(k) {
             let c = chars[k];
             let cols = if c.is_ascii() { 1.0 } else { 2.0 };
-            let mut sp = cell(c.to_string(), cols);
-            sp = if overlay_caret {
-                sp.text_color(cola(config.theme.ui.foreground, 0.0)) // 透明占位(叠层画块)
-            } else {
-                sp.bg(caret_bg).text_color(caret_fg) // 就地反相块
-            };
-            spans.push(sp);
+            spans.push(cell(c.to_string(), cols).bg(caret_bg).text_color(caret_fg));
             k += 1;
             continue;
         }
@@ -2082,7 +2047,7 @@ fn edit_row_cached(
             k += 1;
         }
     }
-    if caret_col == Some(n) && !overlay_caret {
+    if caret_col == Some(n) {
         spans.push(cursor_block(config));
     }
     let content = div().flex().flex_row().items_center().children(spans);
@@ -2540,23 +2505,17 @@ impl Render for QuickLook {
             } else {
                 lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
             };
-            // Caret geometry within content space (editing only), computed here while
-            // `buf` is still available (the list closure below moves it):
-            //  · `caret_content_x` — x of the caret column (drives horizontal follow +
-            //    the animated overlay's target x).
-            //  · `caret_char` — glyph under the caret (drawn inverse inside the overlay
-            //    block; `None` at end-of-line → empty block).
-            //  · `caret_w` — overlay block width (CJK 双宽 → 2×).
-            let (caret_content_x, caret_char, caret_w) = if editing {
-                let line = buf.get(cursor.0);
-                let pre = line
+            // Caret x within content space (editing only), computed here while `buf` is
+            // still available (the list closure below moves it). 固定单元格下精确 =
+            // GUTTER + disp_width(前缀)×char_w;驱动横向 caret-follow(打字到右缘自动滚)。
+            let caret_content_x = if editing {
+                let pre = buf
+                    .get(cursor.0)
                     .map(|l| disp_width(&l.chars().take(cursor.1).collect::<String>()))
                     .unwrap_or(0);
-                let ch = line.and_then(|l| l.chars().nth(cursor.1));
-                let w = if matches!(ch, Some(c) if !c.is_ascii()) { char_w * 2.0 } else { char_w };
-                (GUTTER + pre as f32 * char_w, ch, w)
+                GUTTER + pre as f32 * char_w
             } else {
-                (0.0, None, char_w)
+                0.0
             };
             let list = uniform_list("ql-code", count, move |range, _window, _cx| {
                         let mut f_cache = file_cache.borrow_mut();
@@ -2568,7 +2527,7 @@ impl Render for QuickLook {
                                     let line = &buf[i];
                                     let chars: Vec<char> = line.chars().collect();
                                     let tints = tints_per_char(line);
-                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel, true, char_w);
+                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel, char_w);
                                     let entity = entity.clone();
                                     let entity_mv = entity.clone();
                                     let bounds = row_bounds.clone();
@@ -2628,7 +2587,7 @@ impl Render for QuickLook {
                                     let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
                                         let chars: Vec<char> = line.chars().collect();
                                         let tints = tints_per_char(line);
-                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel, false, char_w)
+                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel, char_w)
                                     } else {
                                         let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
                                         file_row_cached(&config, spans, i, char_w)
@@ -2711,29 +2670,12 @@ impl Render for QuickLook {
                 }
                 let h_off = self.hscroll_px.clamp(0.0, max_off);
 
-                // ── 编辑态平滑光标(Q弹):目标位 → 弹簧步进 → 未收敛则泵下一帧 ──────
-                // 反相块以**绝对叠层**画在代码区上(uniform_list 行内只留透明占位),位置由
-                // 可读的 scroll offset(纵)+ 列像素(横)算,弹簧逼近 → 打字/移动时块平滑滑动。
-                let mut caret_overlay: Option<gpui::Div> = None;
+                // 纵向跟随光标:光标行滚出视口 → scroll_to_item 拉回,使其始终可见。
+                // (光标本身是 edit_row_cached 里的**就地内联反相块**,瞬时、精确、随字符列宽;
+                // 平滑滑动叠层已移除——帧泵高频重绘是卡顿主因,owner 取流畅。)
                 if editing {
                     let viewport_h = f32::from(self.code_bounds.borrow().size.height);
-                    // 目标位:行的**精确 Y** 用 uniform_list 实测的行 bounds(`bounds_for_item` 的
-                    // origin.y − 容器 top),行未绘出(离屏/首帧)才回退 `offset_y + 行×ROW_H`。
-                    // **块高与 fallback 一律用 ROW_H**(= code_row 的设定行高):`last_item_size.item`
-                    // 在单行/Auto 布局下会返回被撑大的异常高(≈整个编辑区)→ 拿来当块高就是「超长竖条」,
-                    // 拿来当 fallback 行距就是随行号巨偏。只信 `bounds_for_item` 的 origin、不信它的 height。
-                    let (offset_y, tx, ty) = {
-                        let sh = self.scroll.0.borrow();
-                        let bh = &sh.base_handle;
-                        let offset_y = f32::from(bh.offset().y);
-                        let cont_top = f32::from(bh.bounds().origin.y);
-                        let ty = bh
-                            .bounds_for_item(cursor.0)
-                            .map(|b| f32::from(b.origin.y) - cont_top)
-                            .unwrap_or(offset_y + cursor.0 as f32 * ROW_H);
-                        (offset_y, caret_content_x - h_off, ty)
-                    };
-                    // 纵向跟随:光标行滚出视口 → scroll_to_item 拉回(下帧 bounds/offset 更新、再跟随)。
+                    let offset_y = f32::from(self.scroll.0.borrow().base_handle.offset().y);
                     if viewport_h > 0.0 {
                         let first = (-offset_y / ROW_H).floor().max(0.0) as usize;
                         let rows = (viewport_h / ROW_H).floor() as usize;
@@ -2742,76 +2684,6 @@ impl Render for QuickLook {
                             self.scroll.scroll_to_item(cursor.0, gpui::ScrollStrategy::Center);
                         }
                     }
-                    let target = (tx, ty);
-                    let now = std::time::Instant::now();
-                    let dt = self
-                        .caret_tick
-                        .map(|t| (now - t).as_secs_f32())
-                        .unwrap_or(0.0)
-                        .clamp(0.0, 0.05);
-                    self.caret_tick = Some(now);
-                    let (pos, converged) = match self.caret_px {
-                        None => (target, true), // 首次放置:直接落位、不从(0,0)滑入
-                        Some(mut p) => {
-                            // 弹簧**固定子步进**(≈8ms/步)——与渲染节奏解耦,故 dt 不规则
-                            // (鼠标移动等密集重绘)也不会让积分忽快忽慢而抖动/乱飘。
-                            let mut v = self.caret_vel;
-                            let mut rem = dt;
-                            const SUB: f32 = 1.0 / 120.0;
-                            while rem > 0.0 {
-                                let h = rem.min(SUB);
-                                let (nx, vx) = spring_step(p.0, v.0, tx, h);
-                                let (ny, vy) = spring_step(p.1, v.1, ty, h);
-                                p = (nx, ny);
-                                v = (vx, vy);
-                                rem -= h;
-                            }
-                            self.caret_vel = v;
-                            let near = (p.0 - tx).abs() < 0.5
-                                && (p.1 - ty).abs() < 0.5
-                                && v.0.abs() < 8.0
-                                && v.1.abs() < 8.0;
-                            if near { (target, true) } else { (p, false) }
-                        }
-                    };
-                    if converged {
-                        self.caret_vel = (0.0, 0.0);
-                    }
-                    self.caret_px = Some(pos);
-                    // 帧泵:未收敛则 16ms 后重绘;收敛即停 → idle 零开销(同 reader wake 模式)。
-                    if !converged && !self.caret_anim_pending {
-                        self.caret_anim_pending = true;
-                        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(16))
-                                .await;
-                            let _ = this.update(cx, |v, cx| {
-                                v.caret_anim_pending = false;
-                                cx.notify();
-                            });
-                        })
-                        .detach();
-                    }
-                    // 反相块:块(光标色)+ 块内字符(面板底色)= 反色;随弹簧滑动。行尾无字符 → 空块。
-                    let blk = div()
-                        .absolute()
-                        .left(px(pos.0))
-                        .top(px(pos.1))
-                        .w(px(caret_w))
-                        .h(px(ROW_H))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .rounded(px(2.))
-                        .bg(col(self.config.theme.ui.foreground));
-                    caret_overlay = Some(match caret_char {
-                        Some(c) => blk.child(
-                            div()
-                                .text_color(col(self.config.theme.ui.chrome_bg))
-                                .child(SharedString::from(c.to_string())),
-                        ),
-                        None => blk,
-                    });
                 }
 
                 let mut area = div()
@@ -2820,9 +2692,6 @@ impl Render for QuickLook {
                     .relative()
                     .overflow_hidden()
                     .child(list.w(px(content_w)).h_full().absolute().top_0().left(px(-h_off)));
-                if let Some(c) = caret_overlay {
-                    area = area.child(c);
-                }
                 if max_off > 1.0 && viewport_w > 0.0 {
                     let thumb_w = (viewport_w / content_w * viewport_w).clamp(28.0, viewport_w);
                     let thumb_x = h_off / max_off * (viewport_w - thumb_w);
@@ -3121,37 +2990,6 @@ mod tests {
         assert_eq!(hover_char_at_x("a中b", -3.0, 10.0), 0);
         assert_eq!(hover_char_at_x("a中b", 999.0, 10.0), 3);
         assert_eq!(caret_col_at_x("a中b", 999.0, 10.0), 3);
-    }
-
-    #[test]
-    fn spring_settles_at_target_with_overshoot() {
-        // Integrate the spring from 0 → 100 at 16ms steps; it should overshoot once
-        // (underdamped Q弹) then converge to the target.
-        let target = 100.0f32;
-        let (mut pos, mut vel) = (0.0f32, 0.0f32);
-        let mut max_pos = 0.0f32;
-        for _ in 0..600 {
-            let (p, v) = spring_step(pos, vel, target, 0.016);
-            pos = p;
-            vel = v;
-            max_pos = max_pos.max(pos);
-        }
-        assert!(max_pos > target, "underdamped → 应越过目标一次 (got {max_pos})");
-        assert!((pos - target).abs() < 0.5, "应收敛到目标 (got {pos})");
-        assert!(vel.abs() < 1.0, "速度应趋零 (got {vel})");
-    }
-
-    #[test]
-    fn spring_is_stable_at_dt_clamp() {
-        // At the 50ms dt clamp the integrator must not diverge (explosive Euler).
-        let (mut pos, mut vel) = (0.0f32, 0.0f32);
-        for _ in 0..400 {
-            let (p, v) = spring_step(pos, vel, 100.0, 0.05);
-            pos = p;
-            vel = v;
-            assert!(pos.is_finite() && pos.abs() < 1000.0, "不应发散 (pos {pos})");
-        }
-        assert!((pos - 100.0).abs() < 2.0, "仍应收敛 (got {pos})");
     }
 
     #[test]
