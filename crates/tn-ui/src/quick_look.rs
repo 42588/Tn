@@ -2668,29 +2668,26 @@ impl Render for QuickLook {
                 let mut caret_overlay: Option<gpui::Div> = None;
                 if editing {
                     let viewport_h = f32::from(self.code_bounds.borrow().size.height);
-                    // 目标位 + 实测行高:**优先用 uniform_list 实测的行 bounds**(`bounds_for_item`,
-                    // 精确像素,免去「行高=ROW_H」假设——之前据此算 y 致光标随行号累积偏移、看着乱飘),
-                    // 行未绘出(离屏/首帧)才回退「实测行高 × 行号」。x = 列像素 − 横向滚动。
-                    let (offset_y, item_h, tx, ty) = {
+                    // 目标位:行的**精确 Y** 用 uniform_list 实测的行 bounds(`bounds_for_item` 的
+                    // origin.y − 容器 top),行未绘出(离屏/首帧)才回退 `offset_y + 行×ROW_H`。
+                    // **块高与 fallback 一律用 ROW_H**(= code_row 的设定行高):`last_item_size.item`
+                    // 在单行/Auto 布局下会返回被撑大的异常高(≈整个编辑区)→ 拿来当块高就是「超长竖条」,
+                    // 拿来当 fallback 行距就是随行号巨偏。只信 `bounds_for_item` 的 origin、不信它的 height。
+                    let (offset_y, tx, ty) = {
                         let sh = self.scroll.0.borrow();
                         let bh = &sh.base_handle;
                         let offset_y = f32::from(bh.offset().y);
-                        let item_h = sh
-                            .last_item_size
-                            .map(|s| f32::from(s.item.height))
-                            .filter(|h| *h > 1.0)
-                            .unwrap_or(ROW_H);
                         let cont_top = f32::from(bh.bounds().origin.y);
                         let ty = bh
                             .bounds_for_item(cursor.0)
                             .map(|b| f32::from(b.origin.y) - cont_top)
-                            .unwrap_or(offset_y + cursor.0 as f32 * item_h);
-                        (offset_y, item_h, caret_content_x - h_off, ty)
+                            .unwrap_or(offset_y + cursor.0 as f32 * ROW_H);
+                        (offset_y, caret_content_x - h_off, ty)
                     };
                     // 纵向跟随:光标行滚出视口 → scroll_to_item 拉回(下帧 bounds/offset 更新、再跟随)。
                     if viewport_h > 0.0 {
-                        let first = (-offset_y / item_h).floor().max(0.0) as usize;
-                        let rows = (viewport_h / item_h).floor() as usize;
+                        let first = (-offset_y / ROW_H).floor().max(0.0) as usize;
+                        let rows = (viewport_h / ROW_H).floor() as usize;
                         let last = first + rows.saturating_sub(1);
                         if cursor.0 < first || cursor.0 > last {
                             self.scroll.scroll_to_item(cursor.0, gpui::ScrollStrategy::Center);
@@ -2752,7 +2749,7 @@ impl Render for QuickLook {
                         .left(px(pos.0))
                         .top(px(pos.1))
                         .w(px(caret_w))
-                        .h(px(item_h))
+                        .h(px(ROW_H))
                         .flex()
                         .flex_row()
                         .items_center()
