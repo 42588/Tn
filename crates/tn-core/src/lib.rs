@@ -516,13 +516,22 @@ impl Terminal {
         if self.swapped_path.is_some() {
             return Ok(());
         }
-        self.swapped_snapshot = Some(Box::new(self.snapshot()));
+        // Compute the static frame first, but commit NOTHING until the grid is
+        // safely serialized to disk. If File::create / serialize fails (e.g. disk
+        // full), the early `?` must leave the terminal exactly as it was —
+        // otherwise `swapped_snapshot` would be set without an actual swap, wedging
+        // snapshot() on the static frame forever while live output stays invisible
+        // (`restore_if_swapped` never fires because `swapped_path` is None). (审查缺陷②)
+        let snap = Box::new(self.snapshot());
 
         let f = std::fs::File::create(&path)?;
         let writer = std::io::BufWriter::new(f);
         bincode::serialize_into(writer, self.term.grid_mut())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
+        // Serialized OK → only now commit: stash the static frame, blank the live
+        // grid (this is what actually frees the memory), and record the swap path.
+        self.swapped_snapshot = Some(snap);
         let config = Config {
             scrolling_history: self.scrollback_limit,
             ..Config::default()
@@ -863,6 +872,45 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "line1");
         assert_eq!(lines[1], "line2");
+    }
+
+    #[test]
+    fn swap_out_then_restore_round_trips_grid_content() {
+        // 项 34 缺陷③: the bincode grid round-trip had zero tests. Verify content
+        // survives the disk swap + the swap file is cleaned up on restore.
+        let mut t = Terminal::with_scrollback(GridSize::new(4, 20), 1000);
+        t.advance(b"line1\r\nline2\r\nline3");
+        let before = t.snapshot().to_text();
+
+        let path = std::env::temp_dir().join(format!("tn_swap_rt_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path); // drop any stale file from a prior run
+
+        t.swap_out(path.clone()).expect("swap_out serializes the grid to disk");
+        assert!(t.swapped_path.is_some(), "grid is parked on disk after swap_out");
+        assert!(path.exists(), "swap file was written");
+
+        t.restore_if_swapped();
+        assert!(t.swapped_path.is_none(), "restore clears the swapped state");
+        assert!(!path.exists(), "restore deletes the swap file");
+
+        assert_eq!(t.snapshot().to_text(), before, "content survives the round-trip");
+    }
+
+    #[test]
+    fn snapshot_returns_static_frame_while_swapped() {
+        // While swapped, the live grid is blanked to free memory, so snapshot()
+        // must return the cached static frame (UI keeps showing the pre-swap view).
+        let mut t = Terminal::new(GridSize::new(3, 20));
+        t.advance(b"parked-content");
+        let path = std::env::temp_dir().join(format!("tn_swap_static_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        t.swap_out(path.clone()).unwrap();
+        assert!(t.snapshot().to_text().contains("parked-content"), "static frame shown while swapped");
+
+        t.restore_if_swapped();
+        assert!(t.snapshot().to_text().contains("parked-content"), "content restored from disk");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
