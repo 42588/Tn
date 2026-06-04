@@ -2678,11 +2678,14 @@ impl Render for QuickLook {
                 let content_w = (GUTTER + (max_cols as f32 + 1.0) * char_w).max(viewport_w);
                 self.hscroll_content_w = content_w; // for the drag handler (no lines there)
                 let max_off = (content_w - viewport_w).max(0.0);
-                // 编辑态:横向跟随光标 —— 打字越右缘/左移出左缘时滚动让 caret 可见。
-                // **只在光标变化时跟随一次**(去抖):否则每帧都跑 → 手动拖横滚条立即被拉回
-                // (=「光标固定后拖不动」)。手动拖时 cursor 不变 → 不 follow → 保留拖动结果。
+                // 编辑态 caret-follow(横向滚 + 纵向 scroll_to_item)——**只在光标变化时
+                // 各跟随一次**(去抖 `last_follow_cursor`)。否则每帧都跑会把用户的手动滚动
+                // 立刻拉回:横向 = 横滚条「拖不动」、纵向 = **鼠标滚轮失效**(滚出视口就被
+                // scroll_to_item 拽回光标行)。手动滚动时 cursor 不变 → 不 follow → 保留。
+                // 打字/移动光标时 cursor 变 → 横纵各跟随一次,保证光标可见。
                 if editing && viewport_w > 0.0 && self.last_follow_cursor != Some(cursor) {
                     self.last_follow_cursor = Some(cursor);
+                    // 横向
                     let margin = char_w * 4.0;
                     let mut off = self.hscroll_px;
                     if caret_content_x < off + margin {
@@ -2691,13 +2694,7 @@ impl Render for QuickLook {
                         off = caret_content_x - viewport_w + margin;
                     }
                     self.hscroll_px = off.clamp(0.0, max_off);
-                }
-                let h_off = self.hscroll_px.clamp(0.0, max_off);
-
-                // 纵向跟随光标:光标行滚出视口 → scroll_to_item 拉回,使其始终可见。
-                // (光标本身是 edit_row_cached 里的**就地内联反相块**,瞬时、精确、随字符列宽;
-                // 平滑滑动叠层已移除——帧泵高频重绘是卡顿主因,owner 取流畅。)
-                if editing {
+                    // 纵向:光标行滚出视口才拉回(此刻是因光标移动,非用户滚轮)
                     let viewport_h = f32::from(self.code_bounds.borrow().size.height);
                     let offset_y = f32::from(self.scroll.0.borrow().base_handle.offset().y);
                     if viewport_h > 0.0 {
@@ -2709,6 +2706,7 @@ impl Render for QuickLook {
                         }
                     }
                 }
+                let h_off = self.hscroll_px.clamp(0.0, max_off);
 
                 let mut area = div()
                     .flex_1()
