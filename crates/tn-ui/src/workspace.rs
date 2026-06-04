@@ -597,6 +597,9 @@ pub struct Workspace {
     ssh_prompt_focus: FocusHandle,
     ssh_prompt_needs_focus: bool,
     ssh_prompt_intent: Option<SshPromptIntent>,
+    /// Tracks whether we have currently disabled IME for the SSH prompt (to
+    /// avoid redundant `ImmAssociateContextEx` calls on every render frame).
+    ssh_ime_disabled: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -738,6 +741,7 @@ impl Workspace {
             ssh_prompt_focus: cx.focus_handle(),
             ssh_prompt_needs_focus: false,
             ssh_prompt_intent: None,
+            ssh_ime_disabled: false,
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -1883,7 +1887,12 @@ impl Workspace {
             self.ssh_prompt_input.pop();
             cx.notify();
         } else if let Some(c) = &ev.keystroke.key_char {
-            if !ev.keystroke.modifiers.control && !ev.keystroke.modifiers.alt && !ev.keystroke.modifiers.platform {
+            if !ev.keystroke.modifiers.control
+                && !ev.keystroke.modifiers.alt
+                && !ev.keystroke.modifiers.platform
+                // Only accept printable ASCII — no Chinese/emoji/etc. from IME slip-through.
+                && c.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+            {
                 self.ssh_prompt_input.push_str(c);
                 cx.notify();
             }
@@ -1898,7 +1907,7 @@ impl Workspace {
         let t = &self.config.theme;
         let ui = &t.ui;
         let mono = SharedString::from(self.config.font().family.clone());
-        let placeholder = "user@host:port (例如 root@192.168.1.1)";
+        let placeholder = "user@host:port  (例: root@192.168.1.1:22)";
         
         let input = div()
             .flex()
@@ -2671,6 +2680,15 @@ impl Render for Workspace {
         {
             self.ssh_prompt_needs_focus = false;
             self.ssh_prompt_focus.focus(window);
+        }
+        // IME control: disable IME while the SSH prompt is open so the user can
+        // type ASCII host/user/port without having to switch input methods.
+        // Re-enable when the prompt closes. Only call the API on transitions.
+        if self.ssh_prompt_open != self.ssh_ime_disabled {
+            if let Some(hwnd) = crate::platform::hwnd_of(window) {
+                crate::platform::set_ime_enabled(hwnd, !self.ssh_prompt_open);
+            }
+            self.ssh_ime_disabled = self.ssh_prompt_open;
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // file list (or active pane) now (the event callback had no `window`).

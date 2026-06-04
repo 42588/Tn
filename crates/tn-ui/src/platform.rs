@@ -397,6 +397,25 @@ mod imp {
         }
     }
 
+    // ── IME enable / disable for ASCII-only input fields ─────────────────
+    //
+    // SSH Quick Connect 和类似只接受 ASCII 的输入框，打开时禁用 IME 合成，避免：
+    //   ① 用户需要手动切英文才能输入；
+    //   ② VK_PROCESSKEY 子类把 IME 合成键路由给 replace_text_in_range，
+    //      而该输入框没有 EntityInputHandler，导致字符丢失。
+    // `ImmAssociateContextEx(hwnd, NULL, 0)` = 解除窗口 IME 关联(禁用合成)；
+    // `ImmAssociateContextEx(hwnd, NULL, IACE_DEFAULT)` = 恢复默认上下文。
+    // 两者均作用于整个窗口，但在模态 overlay(scrim + 提示框)期间无副作用——
+    // 底层终端已被 scrim 拦截。关闭 overlay 后立即恢复。
+
+    pub fn set_ime_enabled(h: isize, enabled: bool) {
+        use windows::Win32::UI::Input::Ime::{ImmAssociateContextEx, HIMC, IACE_DEFAULT};
+        unsafe {
+            let flags = if enabled { IACE_DEFAULT } else { 0 };
+            let _ = ImmAssociateContextEx(as_hwnd(h), HIMC::default(), flags);
+        }
+    }
+
     // ── System tray + single-instance ──────────────────────────────────────
     //
     // When the main workspace window closes, the process stays alive (kept
@@ -686,6 +705,7 @@ mod stub {
     }
     pub fn system_beep() {}
     pub fn install_ime_keyfix(_h: isize) {}
+    pub fn set_ime_enabled(_h: isize, _enabled: bool) {}
 
     // Tray + single-instance stubs.
     #[derive(Clone, Copy, Debug)]
