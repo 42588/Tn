@@ -2392,19 +2392,27 @@ impl Render for QuickLook {
                                         },
                                     )
                                     .on_mouse_move(move |ev: &MouseMoveEvent, _w, app| {
-                                        // 左键拖动 → 扩选到 (行 i, col)。每行各自的 move(行号 i
-                                        // 已知)绕开 uniform_list 不可读的纵向 scroll offset。
+                                        // 左键拖动 → 扩选。每行各自的 move(行号 i 已知)绕开
+                                        // uniform_list 不可读的纵向 scroll offset。
                                         if ev.pressed_button != Some(MouseButton::Left) {
                                             return;
                                         }
                                         let left = f32::from(bounds_mv.borrow().origin.x);
                                         let rel = f32::from(ev.position.x) - left - GUTTER;
-                                        let col = (rel / char_w).round().max(0.0) as usize;
+                                        // 鼠标悬停的字符索引(floor)。拖选要**包含**它,使「实心块
+                                        // 拖到哪、选区就到哪(含该字符)」——相对锚点向右拖让 caret
+                                        // 落该字符右侧(+1)、向左拖落其左侧。(选区是半开 [a,c),向右
+                                        // 不 +1 会漏掉光标处那个字符 = 你看到的「选到块之前」。)
+                                        let hover = (rel / char_w).max(0.0) as usize;
                                         let _ = entity_mv.update(app, |this, cx| {
-                                            if this.edit_drag {
-                                                this.place_cursor(i, col, true);
-                                                cx.notify();
+                                            if !this.edit_drag {
+                                                return;
                                             }
+                                            let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                                            let col =
+                                                if (i, hover) >= anchor { hover + 1 } else { hover };
+                                            this.place_cursor(i, col, true);
+                                            cx.notify();
                                         });
                                     })
                                 } else if tab == Tab::File {
