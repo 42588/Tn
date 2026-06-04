@@ -2668,46 +2668,69 @@ impl Render for QuickLook {
                 let mut caret_overlay: Option<gpui::Div> = None;
                 if editing {
                     let viewport_h = f32::from(self.code_bounds.borrow().size.height);
-                    let offset_y = f32::from(self.scroll.0.borrow().base_handle.offset().y);
-                    // 纵向跟随:光标行滚出视口 → scroll_to_item 拉回(下帧 offset_y 更新、再跟随)。
+                    // 目标位 + 实测行高:**优先用 uniform_list 实测的行 bounds**(`bounds_for_item`,
+                    // 精确像素,免去「行高=ROW_H」假设——之前据此算 y 致光标随行号累积偏移、看着乱飘),
+                    // 行未绘出(离屏/首帧)才回退「实测行高 × 行号」。x = 列像素 − 横向滚动。
+                    let (offset_y, item_h, tx, ty) = {
+                        let sh = self.scroll.0.borrow();
+                        let bh = &sh.base_handle;
+                        let offset_y = f32::from(bh.offset().y);
+                        let item_h = sh
+                            .last_item_size
+                            .map(|s| f32::from(s.item.height))
+                            .filter(|h| *h > 1.0)
+                            .unwrap_or(ROW_H);
+                        let cont_top = f32::from(bh.bounds().origin.y);
+                        let ty = bh
+                            .bounds_for_item(cursor.0)
+                            .map(|b| f32::from(b.origin.y) - cont_top)
+                            .unwrap_or(offset_y + cursor.0 as f32 * item_h);
+                        (offset_y, item_h, caret_content_x - h_off, ty)
+                    };
+                    // 纵向跟随:光标行滚出视口 → scroll_to_item 拉回(下帧 bounds/offset 更新、再跟随)。
                     if viewport_h > 0.0 {
-                        let first = (-offset_y / ROW_H).floor().max(0.0) as usize;
-                        let rows = (viewport_h / ROW_H).floor() as usize;
+                        let first = (-offset_y / item_h).floor().max(0.0) as usize;
+                        let rows = (viewport_h / item_h).floor() as usize;
                         let last = first + rows.saturating_sub(1);
                         if cursor.0 < first || cursor.0 > last {
                             self.scroll.scroll_to_item(cursor.0, gpui::ScrollStrategy::Center);
                         }
                     }
-                    // 目标位(相对 area 容器左上):x = 列像素 − 横向滚动;y = 纵向 offset + 行×ROW_H。
-                    let tx = caret_content_x - h_off;
-                    let ty = offset_y + cursor.0 as f32 * ROW_H;
+                    let target = (tx, ty);
                     let now = std::time::Instant::now();
                     let dt = self
                         .caret_tick
                         .map(|t| (now - t).as_secs_f32())
                         .unwrap_or(0.0)
-                        .min(0.05);
+                        .clamp(0.0, 0.05);
                     self.caret_tick = Some(now);
                     let (pos, converged) = match self.caret_px {
-                        None => ((tx, ty), true), // 首次放置:不从旧位滑入
-                        Some(p) if dt <= 0.0 => (p, false),
-                        Some(p) => {
-                            let (nx, vx) = spring_step(p.0, self.caret_vel.0, tx, dt);
-                            let (ny, vy) = spring_step(p.1, self.caret_vel.1, ty, dt);
-                            self.caret_vel = (vx, vy);
-                            let conv = (nx - tx).abs() < 0.5
-                                && (ny - ty).abs() < 0.5
-                                && vx.abs() < 6.0
-                                && vy.abs() < 6.0;
-                            ((nx, ny), conv)
+                        None => (target, true), // 首次放置:直接落位、不从(0,0)滑入
+                        Some(mut p) => {
+                            // 弹簧**固定子步进**(≈8ms/步)——与渲染节奏解耦,故 dt 不规则
+                            // (鼠标移动等密集重绘)也不会让积分忽快忽慢而抖动/乱飘。
+                            let mut v = self.caret_vel;
+                            let mut rem = dt;
+                            const SUB: f32 = 1.0 / 120.0;
+                            while rem > 0.0 {
+                                let h = rem.min(SUB);
+                                let (nx, vx) = spring_step(p.0, v.0, tx, h);
+                                let (ny, vy) = spring_step(p.1, v.1, ty, h);
+                                p = (nx, ny);
+                                v = (vx, vy);
+                                rem -= h;
+                            }
+                            self.caret_vel = v;
+                            let near = (p.0 - tx).abs() < 0.5
+                                && (p.1 - ty).abs() < 0.5
+                                && v.0.abs() < 8.0
+                                && v.1.abs() < 8.0;
+                            if near { (target, true) } else { (p, false) }
                         }
                     };
-                    let pos = if converged {
+                    if converged {
                         self.caret_vel = (0.0, 0.0);
-                        (tx, ty)
-                    } else {
-                        pos
-                    };
+                    }
                     self.caret_px = Some(pos);
                     // 帧泵:未收敛则 16ms 后重绘;收敛即停 → idle 零开销(同 reader wake 模式)。
                     if !converged && !self.caret_anim_pending {
@@ -2729,7 +2752,7 @@ impl Render for QuickLook {
                         .left(px(pos.0))
                         .top(px(pos.1))
                         .w(px(caret_w))
-                        .h(px(ROW_H))
+                        .h(px(item_h))
                         .flex()
                         .flex_row()
                         .items_center()
