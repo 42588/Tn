@@ -1991,6 +1991,7 @@ fn edit_row_cached(
     cursor: (usize, usize),
     sel: Option<((usize, usize), (usize, usize))>,
     overlay_caret: bool,
+    char_w: f32,
 ) -> gpui::Div {
     let n = chars.len();
     if chars.len() > LONG_LINE_BYTES {
@@ -2021,53 +2022,68 @@ fn edit_row_cached(
     let caret_col = (i == cursor.0).then(|| cursor.1.min(n));
     let sel_bg = cola(config.theme.ui.accent, 0.22);
 
-    // Inverse-block caret (terminal-style): the glyph under the caret is repainted
-    // with the cursor color as background + the panel bg as foreground (反色) → reads
-    // as a solid block over the char, **no width shift**. End-of-line (no glyph) → a
-    // standalone `cursor_block`.
+    // **固定单元格渲染**(同终端 row_runs):每个 ASCII 串成一个 `w(列数×char_w)` 定宽格、
+    // 每个 CJK 字各成 `w(2×char_w)` 定宽格(`.overflow_hidden()` 裁字形到格内)。这样列↔像素
+    // 严格等于 `disp_width×char_w` —— 光标 x / 鼠标 hit-test / 选区 / 横向内容宽全部精确对齐,
+    // 不再因 CJK 实际字形步进 ≠ 2×char_w 而漂移(中文行光标乱飘/选区不跟手的根因)。
     //
-    // `overlay_caret`(平滑光标态):反相块由动画叠层(render 里绝对定位)绘制,故此处
-    // **不画**内联块——光标处字符渲染成透明占位(保留宽度,layout 不变,叠层块与后续
-    // 字符仍对齐),行尾光标位则什么都不画(叠层画空块)。避免「行内块 + 叠层块」双重光标。
+    // 反相块光标:`overlay_caret` 态由动画叠层(render 里绝对定位、x=disp_width×char_w)绘制,
+    // 此处光标格只渲**透明占位**(占住定宽,叠层块正好覆盖它),行尾光标位什么都不画(叠层画空块);
+    // 非叠层态(预览选区行 caret=MAX,永不命中)用就地反相块。
     let caret_bg = col(config.theme.ui.foreground);
     let caret_fg = col(config.theme.ui.chrome_bg);
+    let cell = |text: String, cols: f32| {
+        div().flex_none().w(px(cols * char_w)).overflow_hidden().child(SharedString::from(text))
+    };
     let mut spans: Vec<gpui::Div> = Vec::new();
     let mut k = 0;
-    while k <= n {
+    while k < n {
         if caret_col == Some(k) {
-            if k < n {
-                let c: String = chars[k..=k].iter().collect();
-                let mut sp = div().flex_none().child(SharedString::from(c));
-                sp = if overlay_caret {
-                    sp.text_color(cola(config.theme.ui.foreground, 0.0)) // 透明占位
-                } else {
-                    sp.bg(caret_bg).text_color(caret_fg) // 内联反相块
-                };
-                spans.push(sp);
-                k += 1;
-                continue;
-            }
-            if !overlay_caret {
-                spans.push(cursor_block(config));
-            }
-            break;
+            let c = chars[k];
+            let cols = if c.is_ascii() { 1.0 } else { 2.0 };
+            let mut sp = cell(c.to_string(), cols);
+            sp = if overlay_caret {
+                sp.text_color(cola(config.theme.ui.foreground, 0.0)) // 透明占位(叠层画块)
+            } else {
+                sp.bg(caret_bg).text_color(caret_fg) // 就地反相块
+            };
+            spans.push(sp);
+            k += 1;
+            continue;
         }
-        if k >= n {
-            break;
-        }
-        let t0 = tint_at(k);
+        let c = chars[k];
         let s0 = selected(k);
-        let mut j = k + 1;
-        while j < n && tint_at(j) == t0 && selected(j) == s0 && caret_col != Some(j) {
-            j += 1;
+        if c.is_ascii() {
+            // ASCII 同 tint·同选区·非光标 连续合并成一个定宽格
+            let t0 = tint_at(k);
+            let mut j = k + 1;
+            while j < n
+                && chars[j].is_ascii()
+                && caret_col != Some(j)
+                && tint_at(j) == t0
+                && selected(j) == s0
+            {
+                j += 1;
+            }
+            let text: String = chars[k..j].iter().collect();
+            let mut sp = cell(text, (j - k) as f32).text_color(tint_color(config, t0));
+            if s0 {
+                sp = sp.bg(sel_bg);
+            }
+            spans.push(sp);
+            k = j;
+        } else {
+            // CJK / 宽字符:独立 2 列定宽格
+            let mut sp = cell(c.to_string(), 2.0).text_color(tint_color(config, tint_at(k)));
+            if s0 {
+                sp = sp.bg(sel_bg);
+            }
+            spans.push(sp);
+            k += 1;
         }
-        let text: String = chars[k..j].iter().collect();
-        let mut span = div().text_color(tint_color(config, t0)).child(SharedString::from(text));
-        if s0 {
-            span = span.bg(sel_bg);
-        }
-        spans.push(span);
-        k = j;
+    }
+    if caret_col == Some(n) && !overlay_caret {
+        spans.push(cursor_block(config));
     }
     let content = div().flex().flex_row().items_center().children(spans);
     code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![content])
@@ -2114,11 +2130,44 @@ fn coalesce_spans(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     out
 }
 
-fn file_row_cached(config: &Loaded, cached_spans: &[(smol_str::SmolStr, Tint)], i: usize) -> gpui::Div {
-    let spans: Vec<gpui::Div> = cached_spans
-        .iter()
-        .map(|(text, tint)| div().text_color(tint_color(config, *tint)).child(SharedString::from(text.to_string())))
-        .collect();
+fn file_row_cached(config: &Loaded, cached_spans: &[(smol_str::SmolStr, Tint)], i: usize, char_w: f32) -> gpui::Div {
+    // 同 edit_row_cached:固定单元格(ASCII 串定宽 / CJK 单字 2 列定宽),使列↔像素精确 →
+    // 预览态拖选 hit-test / 横向滚动内容宽一致(否则 CJK 行选区/横滚也会漂)。
+    let mut spans: Vec<gpui::Div> = Vec::new();
+    for (text, tint) in cached_spans {
+        let color = tint_color(config, *tint);
+        let chars: Vec<char> = text.chars().collect();
+        let n = chars.len();
+        let mut k = 0;
+        while k < n {
+            if chars[k].is_ascii() {
+                let mut j = k + 1;
+                while j < n && chars[j].is_ascii() {
+                    j += 1;
+                }
+                let t: String = chars[k..j].iter().collect();
+                spans.push(
+                    div()
+                        .flex_none()
+                        .w(px((j - k) as f32 * char_w))
+                        .overflow_hidden()
+                        .text_color(color)
+                        .child(SharedString::from(t)),
+                );
+                k = j;
+            } else {
+                spans.push(
+                    div()
+                        .flex_none()
+                        .w(px(2.0 * char_w))
+                        .overflow_hidden()
+                        .text_color(color)
+                        .child(SharedString::from(chars[k].to_string())),
+                );
+                k += 1;
+            }
+        }
+    }
     code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), spans)
 }
 
@@ -2519,7 +2568,7 @@ impl Render for QuickLook {
                                     let line = &buf[i];
                                     let chars: Vec<char> = line.chars().collect();
                                     let tints = tints_per_char(line);
-                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel, true);
+                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel, true, char_w);
                                     let entity = entity.clone();
                                     let entity_mv = entity.clone();
                                     let bounds = row_bounds.clone();
@@ -2579,10 +2628,10 @@ impl Render for QuickLook {
                                     let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
                                         let chars: Vec<char> = line.chars().collect();
                                         let tints = tints_per_char(line);
-                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel, false)
+                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel, false, char_w)
                                     } else {
                                         let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
-                                        file_row_cached(&config, spans, i)
+                                        file_row_cached(&config, spans, i, char_w)
                                     };
                                     let entity = entity.clone();
                                     let entity_mv = entity.clone();
