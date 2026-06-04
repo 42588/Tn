@@ -343,6 +343,11 @@ pub struct QuickLook {
     cursor: Pos,
     /// Selection anchor (head = `cursor`); `None` = no selection.
     sel_anchor: Option<Pos>,
+    /// True while a left-drag text selection is in progress in the editor (mouse down
+    /// on a row starts it, per-row mouse move extends it). Cleared on mouse up / when
+    /// the button is found released (drag can end outside the panel — same bounds
+    /// caveat as the horizontal scrollbar).
+    edit_drag: bool,
     /// Undo / redo stacks of (buffer, cursor) snapshots (`Rc` → cheap to keep).
     undo: Vec<(Rc<Vec<String>>, Pos)>,
     redo: Vec<(Rc<Vec<String>>, Pos)>,
@@ -418,6 +423,7 @@ impl QuickLook {
             buf: Rc::new(Vec::new()),
             cursor: (0, 0),
             sel_anchor: None,
+            edit_drag: false,
             undo: Vec::new(),
             redo: Vec::new(),
             coalesce_insert: false,
@@ -1836,8 +1842,11 @@ fn replace_all_in(buf: &mut Vec<String>, query: &str, repl: &str) -> usize {
 
 /// The edit caret: a thin insertion bar (style pass can switch to the prototype's
 /// 7px block). Sits inline at the cursor column.
+/// The edit caret as a terminal-style **solid block**. On a glyph it's drawn as an
+/// inverse block inline in `edit_row_cached` (block bg + glyph repainted in the panel
+/// bg color); at end-of-line (no glyph) this standalone block is pushed instead.
 fn cursor_block(config: &Loaded) -> gpui::Div {
-    div().w(px(2.)).h(px(15.)).flex_none().bg(col(config.theme.ui.foreground))
+    div().w(px(7.5)).h(px(16.)).flex_none().bg(col(config.theme.ui.foreground))
 }
 
 /// Per-char tint for `line` (expands `highlight()` runs to one tint per char).
@@ -1888,11 +1897,30 @@ fn edit_row_cached(
     let caret_col = (i == cursor.0).then(|| cursor.1.min(n));
     let sel_bg = cola(config.theme.ui.accent, 0.22);
 
+    // Inverse-block caret (terminal-style): the glyph under the caret is repainted
+    // with the cursor color as background + the panel bg as foreground (反色) → reads
+    // as a solid block over the char, **no width shift**. End-of-line (no glyph) → a
+    // standalone `cursor_block`.
+    let caret_bg = col(config.theme.ui.foreground);
+    let caret_fg = col(config.theme.ui.chrome_bg);
     let mut spans: Vec<gpui::Div> = Vec::new();
     let mut k = 0;
-    loop {
+    while k <= n {
         if caret_col == Some(k) {
+            if k < n {
+                let c: String = chars[k..=k].iter().collect();
+                spans.push(
+                    div()
+                        .flex_none()
+                        .bg(caret_bg)
+                        .text_color(caret_fg)
+                        .child(SharedString::from(c)),
+                );
+                k += 1;
+                continue;
+            }
             spans.push(cursor_block(config));
+            break;
         }
         if k >= n {
             break;
@@ -2345,7 +2373,9 @@ impl Render for QuickLook {
                                     let tints = tints_per_char(line);
                                     let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel);
                                     let entity = entity.clone();
+                                    let entity_mv = entity.clone();
                                     let bounds = row_bounds.clone();
+                                    let bounds_mv = row_bounds.clone();
                                     row.on_mouse_down(
                                         MouseButton::Left,
                                         move |ev: &MouseDownEvent, _w, app| {
@@ -2355,11 +2385,28 @@ impl Render for QuickLook {
                                             let shift = ev.modifiers.shift;
                                             let _ = entity.update(app, |this, cx| {
                                                 this.place_cursor(i, col, shift);
+                                                this.edit_drag = true; // 进入拖选
                                                 cx.notify();
                                             });
                                             app.stop_propagation();
                                         },
                                     )
+                                    .on_mouse_move(move |ev: &MouseMoveEvent, _w, app| {
+                                        // 左键拖动 → 扩选到 (行 i, col)。每行各自的 move(行号 i
+                                        // 已知)绕开 uniform_list 不可读的纵向 scroll offset。
+                                        if ev.pressed_button != Some(MouseButton::Left) {
+                                            return;
+                                        }
+                                        let left = f32::from(bounds_mv.borrow().origin.x);
+                                        let rel = f32::from(ev.position.x) - left - GUTTER;
+                                        let col = (rel / char_w).round().max(0.0) as usize;
+                                        let _ = entity_mv.update(app, |this, cx| {
+                                            if this.edit_drag {
+                                                this.place_cursor(i, col, true);
+                                                cx.notify();
+                                            }
+                                        });
+                                    })
                                 } else if tab == Tab::File {
                                     let line = &lines[i];
                                     let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
@@ -2626,12 +2673,21 @@ impl Render for QuickLook {
                         this.hscroll_drag = None;
                         cx.notify();
                     }
+                } else if this.edit_drag && ev.pressed_button != Some(MouseButton::Left) {
+                    // 文本拖选时鼠标移出行/浮层后松开,行 move 收不到 → 这里兜底结束拖选。
+                    this.edit_drag = false;
+                    cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
-                    if this.hscroll_drag.take().is_some() {
+                    let mut changed = this.hscroll_drag.take().is_some();
+                    if this.edit_drag {
+                        this.edit_drag = false; // end text drag-selection
+                        changed = true;
+                    }
+                    if changed {
                         cx.notify();
                     }
                 }),
