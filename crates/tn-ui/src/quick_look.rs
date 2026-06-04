@@ -398,6 +398,9 @@ pub struct QuickLook {
     hscroll_px: f32,
     hscroll_drag: Option<f32>,
     hscroll_content_w: f32,
+    /// 编辑态横向 caret-follow 的去抖:只在光标**变化**时跟随一次,否则手动拖横滚条会被
+    /// 每帧的 follow 立刻拉回(=「光标固定后拖不动」)。`None` ⇒ 下一帧无条件跟随一次。
+    last_follow_cursor: Option<(usize, usize)>,
 }
 
 impl QuickLook {
@@ -449,6 +452,7 @@ impl QuickLook {
             hscroll_px: 0.0,
             hscroll_drag: None,
             hscroll_content_w: 0.0,
+            last_follow_cursor: None,
         }
     }
 
@@ -578,6 +582,7 @@ impl QuickLook {
         self.cursor = (0, 0);
         self.edit_drag = false;
         self.hscroll_px = 0.0; // 新文件从最左开始
+        self.last_follow_cursor = None;
         self.dirty = false;
         self.file_data = QuickLookData::None;
         self.diff = Rc::new(Vec::new());
@@ -959,6 +964,7 @@ impl QuickLook {
     /// Switch tabs; computing the diff lazily (async) when entering the Diff tab.
     fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.hscroll_px = 0.0; // File↔Diff 内容宽不同,切换从最左开始,不残留横滚
         if tab == Tab::Diff {
             self.ensure_diff(cx);
         }
@@ -979,6 +985,8 @@ impl QuickLook {
         self.undo.clear();
         self.redo.clear();
         self.coalesce_insert = false;
+        self.hscroll_px = 0.0; // 进编辑从最左开始
+        self.last_follow_cursor = None;
         self.editing = true;
         self.dirty = false;
     }
@@ -1465,6 +1473,8 @@ impl QuickLook {
                 "escape" => {
                     self.sel_anchor = None;
                     self.editing = false; // exit edit → preview (stay focused)
+                    self.hscroll_px = 0.0; // 预览不继承编辑态的横滚位置(否则停在很右=大片留白)
+                    self.last_follow_cursor = None;
                 }
                 "backspace" => self.backspace(),
                 "delete" => self.delete_forward(),
@@ -2668,9 +2678,11 @@ impl Render for QuickLook {
                 let content_w = (GUTTER + (max_cols as f32 + 1.0) * char_w).max(viewport_w);
                 self.hscroll_content_w = content_w; // for the drag handler (no lines there)
                 let max_off = (content_w - viewport_w).max(0.0);
-                // 编辑态:横向跟随光标 —— 打字越过右缘(或左移出左缘)时滚动让 caret 始终可见。
-                // 手动拖 thumb 设 hscroll_px;下次光标移动若仍在视口内则不动,出视口才纠正。
-                if editing && viewport_w > 0.0 {
+                // 编辑态:横向跟随光标 —— 打字越右缘/左移出左缘时滚动让 caret 可见。
+                // **只在光标变化时跟随一次**(去抖):否则每帧都跑 → 手动拖横滚条立即被拉回
+                // (=「光标固定后拖不动」)。手动拖时 cursor 不变 → 不 follow → 保留拖动结果。
+                if editing && viewport_w > 0.0 && self.last_follow_cursor != Some(cursor) {
+                    self.last_follow_cursor = Some(cursor);
                     let margin = char_w * 4.0;
                     let mut off = self.hscroll_px;
                     if caret_content_x < off + margin {
