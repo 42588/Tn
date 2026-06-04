@@ -2292,25 +2292,17 @@ impl Render for QuickLook {
             );
         } else {
             let _sel_anchor = sel.as_ref().map(|s| s.0);
-            body = body
-                .child(
-                    canvas(
-                        move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
-                        move |bounds, _s, window, cx| {
-                            if ime_active {
-                                window.handle_input(
-                                    &ime_focus,
-                                    ElementInputHandler::new(bounds, ime_entity.clone()),
-                                    cx,
-                                );
-                            }
-                        },
-                    )
-                    .absolute()
-                    .size_full(),
-                )
-                .child(
-                    uniform_list("ql-code", count, move |range, _window, _cx| {
+            // Longest line's display width (cols), computed BEFORE the list closure
+            // moves `lines`/`diff`. Drives the horizontal-scroll content width below.
+            // `disp_width` counts CJK as 2 cols so wide-char lines aren't under-sized.
+            let max_cols = if editing {
+                0
+            } else if tab == Tab::Diff {
+                diff.iter().map(|d| disp_width(&d.text)).max().unwrap_or(0)
+            } else {
+                lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
+            };
+            let list = uniform_list("ql-code", count, move |range, _window, _cx| {
                         let mut f_cache = file_cache.borrow_mut();
                         range
                             .map(|i| {
@@ -2347,10 +2339,45 @@ impl Render for QuickLook {
                             })
                             .collect::<Vec<_>>()
                     })
+                    .track_scroll(self.scroll.clone());
+            // 横向滚动(修复:预览长行被截断、看不全)。预览/Diff 把列表撑到「最长行宽」
+            // (gutter + 列数×char_w + 余量)并套 overflow_x_scroll → 长行可左右滚、不再被
+            // overflow_hidden 裁;uniform_list 虚拟化(大文件流畅)保留。编辑态暂不横向滚 ——
+            // 它的 mouse hit-test 未算横向偏移,横向滚后点击会错位,留待下轮随「编辑态拖选 +
+            // 光标对齐终端」一并处理。
+            let code_area = if editing {
+                list.flex_1().min_h(px(0.)).into_any_element()
+            } else {
+                let content_w = GUTTER + (max_cols as f32 + 2.0) * char_w;
+                // gpui::Div has no `overflow_x_scroll()`; set the style flag directly
+                // (mirrors explorer.rs's vertical scrollable). Needs an `.id` so the
+                // horizontal scroll offset persists across frames.
+                let mut hscroll = div()
+                    .id("ql-hscroll")
                     .flex_1()
                     .min_h(px(0.))
-                    .track_scroll(self.scroll.clone()),
+                    .child(list.w(px(content_w)).h_full());
+                hscroll.interactivity().base_style.overflow.x = Some(gpui::Overflow::Scroll);
+                hscroll.into_any_element()
+            };
+            body = body
+                .child(
+                    canvas(
+                        move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
+                        move |bounds, _s, window, cx| {
+                            if ime_active {
+                                window.handle_input(
+                                    &ime_focus,
+                                    ElementInputHandler::new(bounds, ime_entity.clone()),
+                                    cx,
+                                );
+                            }
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
                 )
+                .child(code_area)
                 .when(!editing && truncated && tab == Tab::File, |d| {
                     d.child(
                         div()
