@@ -997,6 +997,13 @@ impl TerminalView {
 
     fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.scrollbar_drag.is_some() {
+            // 防粘连:鼠标在元素外松开时 on_mouse_up 收不到 → 拖动态残留、滚动条跟着鼠标走。
+            // 兜底——左键一旦已松(pressed_button != Left)即清除拖动、不再跟随(同 Quick Look)。
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.scrollbar_drag = None;
+                cx.notify();
+                return;
+            }
             self.drag_scrollbar(event.position.y.into(), cx);
             return;
         }
