@@ -1626,19 +1626,30 @@ impl Render for TerminalView {
             let top = ((scroll_history.saturating_sub(scroll_offset)) as f32 / total)
                 .clamp(0.0, 1.0 - thumb_h);
             let scrolled = scroll_offset > 0 || self.scrollbar_drag.is_some();
+            // 命中区比可见条宽得多(14px),透明、贴右缘、承接拖拽;里头一条细 5px 可见 bar
+            // 靠右显示 → 视觉仍纤细、但好抓(修「滚动条可交互区域太小」)。
             div()
                 .absolute()
                 .top(relative(top))
-                .right(px(2.))
-                .w(px(5.))
+                .right(px(0.))
+                .w(px(14.))
                 .h(relative(thumb_h))
-                .rounded(px(2.))
-                .bg(rgba(if scrolled { 0xffffff66 } else { HOVER }))
+                .flex()
+                .justify_end()
+                .items_center()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
                         this.begin_scrollbar_drag(ev.position.y.into(), cx);
                     }),
+                )
+                .child(
+                    div()
+                        .w(px(5.))
+                        .h_full()
+                        .mr(px(2.))
+                        .rounded(px(2.))
+                        .bg(rgba(if scrolled { 0xffffff66 } else { HOVER })),
                 )
         });
 
@@ -1750,39 +1761,60 @@ impl Render for TerminalView {
         };
 
         let ssh_prompt = self.ssh_password_prompt.as_ref().map(|(prompt, _)| {
-            div()
-                .absolute()
-                .top(px(40.))
-                .right(px(20.))
-                .w(px(320.))
-                .p(px(16.))
-                .rounded_lg()
-                .bg(cola(self.ui_accent, 0.95))
-                .shadow_lg()
-                .flex()
-                .flex_col()
-                .gap_3()
+            let mono = self.font_family.clone();
+
+            // 输入区域：遮罩密码 + 光标
+            let input_row = div()
+                .flex().flex_row().items_center()
+                .gap(px(10.)).px(px(16.)).py(px(13.))
+                .text_size(px(14.))
+                .child(div().child(crate::style::icon("lock", 16., self.ui_muted)))
                 .child(
-                    div().text_sm().text_color(gpui::white()).font_weight(FontWeight::BOLD).child(SharedString::from(prompt.clone())),
-                )
-                .child(
-                    div()
-                        .w_full()
-                        .h(px(32.))
-                        .rounded_md()
-                        .bg(gpui::black().opacity(0.4))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .child(
-                            div().text_color(gpui::white()).child(SharedString::from(
-                                "•".repeat(self.ssh_password_input.len())
-                            )),
-                        )
-                )
-                .child(
-                    div().text_xs().text_color(gpui::white().opacity(0.7)).child("Press Enter to submit, Esc to cancel")
-                )
+                    div().flex().flex_row().items_center()
+                        .font_family(mono.clone())
+                        .when(!self.ssh_password_input.is_empty(), |d| {
+                            d.child(div().text_color(col(self.ui_fg))
+                                .child(SharedString::from("•".repeat(self.ssh_password_input.len()))))
+                        })
+                        .child(div().text_color(col(self.ui_muted)).child("▏"))
+                        .when(self.ssh_password_input.is_empty(), |d| {
+                            d.child(div().ml(px(2.)).text_color(col(self.ui_muted)).child("输入密码"))
+                        })
+                );
+
+            // 面板：Calm Glass 材质
+            let panel = crate::style::shadowed(
+                div().flex().flex_col()
+                    .w(px(400.))
+                    .rounded(px(crate::style::R_PANEL))
+                    .overflow_hidden()
+                    .border_1().border_color(rgba(crate::style::RIM))
+                    .bg(gpui::linear_gradient(180.,
+                        gpui::linear_color_stop(cola(self.palette.bg, 0.92), 0.),
+                        gpui::linear_color_stop(rgba(0x161826eb), 1.),
+                    ))
+                    .child(
+                        div().p(px(12.)).text_size(px(12.5))
+                            .text_color(col(self.ui_fg))
+                            .font_weight(FontWeight(560.))
+                            .child(SharedString::from(prompt.clone()))
+                    )
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(input_row)
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(
+                        div().p(px(12.)).text_size(px(12.))
+                            .text_color(col(self.ui_muted))
+                            .child("Enter 提交 · Esc 取消")
+                    ),
+                vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
+            );
+
+            // 全屏遮罩 + 居中
+            div().absolute().size_full()
+                .flex().items_center().justify_center()
+                .bg(rgba(0x0a0b118c))  // scrim
+                .child(panel)
         });
 
         div()

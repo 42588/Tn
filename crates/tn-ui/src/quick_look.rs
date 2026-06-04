@@ -2714,8 +2714,9 @@ impl Render for QuickLook {
                     .relative()
                     .overflow_hidden()
                     .child(list.w(px(content_w)).h_full().absolute().top_0().left(px(-h_off)));
-                // 横向滚动条:仅当**确有**超视口内容(>8px)才显;细(3px thumb)、暗(muted .45)、
-                // 左右内缘各留 GUTTER/6px,不贴边、不抢视线(修「影响视线 + 不贴合」)。
+                // 横向滚动条:仅当**确有**超视口内容(>8px)才显;可见条细(3px)、暗(muted .45)、
+                // 左右内缘各留 6px,不贴边、不抢视线。命中区做**高 14px**(透明、承接拖拽),里头细
+                // bar 靠底显示 → 视觉仍纤细、但好抓(修「可交互区域太小」)。
                 if max_off > 8.0 && viewport_w > 0.0 {
                     let inset = 6.0_f32;
                     let track_w = (viewport_w - inset * 2.0).max(1.0);
@@ -2725,31 +2726,31 @@ impl Render for QuickLook {
                     area = area.child(
                         div()
                             .absolute()
-                            .bottom(px(2.))
-                            .left_0()
-                            .w(px(viewport_w))
-                            .h(px(5.))
+                            .bottom_0()
+                            .left(px(thumb_x))
+                            .w(px(thumb_w))
+                            .h(px(14.)) // 加高的透明命中区
+                            .flex()
+                            .items_end()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |ev: &MouseDownEvent, _w, app| {
+                                    let grab =
+                                        f32::from(ev.position.x) - (track_left + thumb_x);
+                                    let _ = ent.update(app, |this, cx| {
+                                        this.hscroll_drag = Some(grab);
+                                        cx.notify();
+                                    });
+                                    app.stop_propagation();
+                                },
+                            )
                             .child(
                                 div()
-                                    .absolute()
-                                    .top_0()
-                                    .left(px(thumb_x))
-                                    .w(px(thumb_w))
+                                    .w_full()
                                     .h(px(3.))
+                                    .mb(px(2.))
                                     .rounded(px(2.))
-                                    .bg(thumb_bg)
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        move |ev: &MouseDownEvent, _w, app| {
-                                            let grab =
-                                                f32::from(ev.position.x) - (track_left + thumb_x);
-                                            let _ = ent.update(app, |this, cx| {
-                                                this.hscroll_drag = Some(grab);
-                                                cx.notify();
-                                            });
-                                            app.stop_propagation();
-                                        },
-                                    ),
+                                    .bg(thumb_bg), // 细可见 bar,贴底
                             ),
                     );
                 }
