@@ -1,0 +1,9 @@
+schema_version: 1
+module_path: crates
+title: Tn GPUI 前端与窗口管理
+scope:
+    - crates/
+source_files: []
+depends_on: []
+related_to:
+    - path: design

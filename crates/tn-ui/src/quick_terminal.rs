@@ -82,8 +82,8 @@ enum PickerItem {
     Pwsh,
     /// The aggregated WSL card: drill into the distro sub-picker (or launch the lone one).
     DrillWsl,
-    /// SSH placeholder (parked) — activating is a no-op.
-    SshSoon,
+    /// Interactive SSH prompt launcher.
+    SshPrompt,
 }
 
 impl QuickTerminal {
@@ -133,11 +133,11 @@ impl QuickTerminal {
                     }
                 }
                 LaunchEntry::Wsl(_) => others.push(PickerItem::DrillWsl), // WSL → bottom
-                LaunchEntry::SshSoon => others.push(PickerItem::SshSoon), // SSH → bottom
+                LaunchEntry::SshPrompt => others.push(PickerItem::SshPrompt), // SSH → bottom
             }
         }
         // Defensive: nothing launchable (only the SSH placeholder) → offer pwsh.
-        if agents.is_empty() && others.iter().all(|it| matches!(it, PickerItem::SshSoon)) {
+        if agents.is_empty() && others.iter().all(|it| matches!(it, PickerItem::SshPrompt)) {
             others.insert(0, PickerItem::Pwsh);
         }
         let mut rows = Vec::new();
@@ -167,7 +167,7 @@ impl QuickTerminal {
                 accent: t.ui.accent,
             },
             PickerItem::DrillWsl => wsl_card(t, self.wsl_indices().len()),
-            PickerItem::SshSoon => ssh_card(t),
+            PickerItem::SshPrompt => ssh_card(t),
         }
     }
 
@@ -228,7 +228,7 @@ impl QuickTerminal {
                     cx.notify();
                 }
             }
-            PickerItem::SshSoon => {} // parked placeholder — no-op
+            PickerItem::SshPrompt => {} // parked placeholder — no-op
         }
     }
 

@@ -591,6 +591,19 @@ pub struct Workspace {
     /// Index of the currently-previewed file within the rail's file list.  Only
     /// meaningful when `ql_rail_pane.is_some()`.
     ql_rail_idx: usize,
+    ssh_prompt_open: bool,
+    /// The input string in the SSH prompt.
+    ssh_prompt_input: String,
+    ssh_prompt_focus: FocusHandle,
+    ssh_prompt_needs_focus: bool,
+    ssh_prompt_intent: Option<SshPromptIntent>,
+}
+
+#[derive(Clone, Copy)]
+pub enum SshPromptIntent {
+    Welcome,
+    Palette,
+    Split(SplitDir),
 }
 
 impl Workspace {
@@ -668,6 +681,14 @@ impl Workspace {
             cx.notify();
         })
         .detach();
+        cx.subscribe(&welcome, |ws, _welcome, _ev: &crate::welcome::SshPromptRequested, cx| {
+            ws.ssh_prompt_open = true;
+            ws.ssh_prompt_needs_focus = true;
+            ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
+            ws.ssh_prompt_input.clear();
+            cx.notify();
+        })
+        .detach();
         let mut ws = Self {
             tabs: Vec::new(),
             active: 0,
@@ -712,6 +733,11 @@ impl Workspace {
             perf: PerfStats::new("workspace.render"),
             ql_rail_pane: None,
             ql_rail_idx: 0,
+            ssh_prompt_open: false,
+            ssh_prompt_input: String::new(),
+            ssh_prompt_focus: cx.focus_handle(),
+            ssh_prompt_needs_focus: false,
+            ssh_prompt_intent: None,
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -1137,7 +1163,14 @@ impl Workspace {
                     cx.notify();
                 }
             }
-            LaunchRow::SshSoon => {} // parked placeholder — no-op
+            LaunchRow::SshPrompt => {
+                self.palette_open = false;
+                self.ssh_prompt_open = true;
+                self.ssh_prompt_needs_focus = true;
+                self.ssh_prompt_intent = Some(SshPromptIntent::Palette);
+                self.ssh_prompt_input.clear();
+                cx.notify();
+            }
         }
     }
 
@@ -1671,6 +1704,7 @@ impl Workspace {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, window, cx| {
+                        cx.stop_propagation();
                         this.app_menu_open = false;
                         act(this, window, cx);
                         cx.notify();
@@ -1691,6 +1725,7 @@ impl Workspace {
                 .border_1()
                 .border_color(rgba(RIM))
                 .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
+                .on_mouse_down(MouseButton::Left, cx.listener(|_this, _e, _w, cx| cx.stop_propagation()))
                 .child(mi("spark", "新会话…", Some("⌃⇧N"), false, Box::new(|this, w, cx| this.new_session(&NewSession, w, cx))))
                 .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
                 .child(sep())
@@ -1794,6 +1829,166 @@ impl Workspace {
             }
         }
         self.reload_config(&ReloadConfig, window, cx);
+    }
+    fn on_ssh_prompt_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        if key == "escape" {
+            self.ssh_prompt_open = false;
+            self.refocus_active(window, cx);
+            cx.notify();
+        } else if key == "enter" {
+            let input = self.ssh_prompt_input.trim().to_string();
+            self.ssh_prompt_open = false;
+            self.ssh_prompt_input.clear();
+            cx.notify();
+            
+            if !input.is_empty() {
+                let cfg = tn_pty::SshConfig::parse(&input, None);
+                let mut program = cfg.host.clone();
+                if cfg.user != "root" && !cfg.user.is_empty() {
+                    program = format!("{}@{}", cfg.user, cfg.host);
+                }
+                let spec = LaunchSpec {
+                    program,
+                    args: vec![],
+                    integrate_pwsh: false,
+                    shell_integration: None,
+                    agent: None,
+                    ssh: Some(cfg),
+                    cwd: None,
+                };
+                
+                match self.ssh_prompt_intent.take() {
+                    Some(SshPromptIntent::Welcome) => {
+                        let id = self.spawn_pane_with(cx, spec);
+                        if let Some(tab) = self.tabs.get_mut(self.active) {
+                            tab.root = Node::Leaf(id);
+                            tab.focused = id;
+                            tab.welcome = false;
+                        }
+                    }
+                    Some(SshPromptIntent::Palette) => {
+                        let id = self.spawn_pane_with(cx, spec);
+                        self.tabs.push(Tab::panes(Node::Leaf(id), id));
+                        self.active = self.tabs.len() - 1;
+                        self.focus_pane(id, window, cx);
+                    }
+                    Some(SshPromptIntent::Split(dir)) => {
+                        self.split_session(dir, spec, window, cx);
+                    }
+                    None => {}
+                }
+            }
+        } else if key == "backspace" {
+            self.ssh_prompt_input.pop();
+            cx.notify();
+        } else if let Some(c) = &ev.keystroke.key_char {
+            if !ev.keystroke.modifiers.control && !ev.keystroke.modifiers.alt && !ev.keystroke.modifiers.platform {
+                self.ssh_prompt_input.push_str(c);
+                cx.notify();
+            }
+        }
+        cx.stop_propagation();
+    }
+
+    fn render_ssh_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.ssh_prompt_open {
+            return None;
+        }
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+        let placeholder = "user@host:port (例如 root@192.168.1.1)";
+        
+        let input = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(16.))
+            .py(px(13.))
+            .text_size(px(14.))
+            .child(div().child(icon("external", 16., ui.muted)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .font_family(mono.clone())
+                    .when(!self.ssh_prompt_input.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(self.ssh_prompt_input.clone())),
+                        )
+                    })
+                    .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
+                    .when(self.ssh_prompt_input.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .ml(px(2.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(placeholder)),
+                        )
+                    }),
+            );
+
+        let panel = crate::style::shadowed(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(560.))
+                .rounded(px(R_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
+                    linear_color_stop(rgba(0x161826eb), 1.),
+                ))
+                .child(input)
+                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                .child(
+                    div()
+                        .p(px(12.))
+                        .text_size(px(12.))
+                        .text_color(col(ui.muted))
+                        .child("输入 SSH 目标地址并按 Enter 连接 · Esc 取消"),
+                ),
+            vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
+        );
+
+        let pl = if self.explorer_open { self.explorer_width + 23. } else { 12. };
+        
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center() // Center vertically
+                .pl(px(pl)) // Account for explorer width + body padding/gap
+                .pr(px(12.)) // Account for right body padding
+                .bg(rgba(0x0a0b118c))
+                .track_focus(&self.ssh_prompt_focus)
+                .on_key_down(cx.listener(Self::on_ssh_prompt_key))
+                .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, w, cx| {
+                    this.ssh_prompt_open = false;
+                    this.refocus_active(w, cx);
+                    cx.notify();
+                }))
+                .child(
+                    div()
+                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, w, cx| {
+                            cx.stop_propagation();
+                            this.ssh_prompt_focus.focus(w);
+                            cx.notify();
+                        }))
+                        .child(panel)
+                ),
+        )
     }
 
     /// The command-palette overlay (M4), or `None` when closed: a dim scrim +
@@ -2044,7 +2239,15 @@ impl Workspace {
                     cx.notify();
                 }
             }
-            LaunchRow::SshSoon => {} // parked placeholder — no-op
+            LaunchRow::SshPrompt => {
+                self.split_launcher_open = false;
+                self.split_wsl = false;
+                self.ssh_prompt_open = true;
+                self.ssh_prompt_needs_focus = true;
+                self.ssh_prompt_intent = Some(SshPromptIntent::Split(dir));
+                self.ssh_prompt_input.clear();
+                cx.notify();
+            }
         }
     }
 
@@ -2463,6 +2666,12 @@ impl Render for Workspace {
             self.layout_needs_focus = false;
             self.layout_focus.focus(window);
         }
+        if self.ssh_prompt_open
+            && (self.ssh_prompt_needs_focus || !self.ssh_prompt_focus.is_focused(window))
+        {
+            self.ssh_prompt_needs_focus = false;
+            self.ssh_prompt_focus.focus(window);
+        }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // file list (or active pane) now (the event callback had no `window`).
         if self.ql_refocus_pane {
@@ -2490,7 +2699,8 @@ impl Render for Workspace {
         let overlay_focused = self.palette_open
             || self.split_launcher_open
             || self.layout_manager_open
-            || self.quick_look_open;
+            || self.quick_look_open
+            || self.ssh_prompt_open;
         if !overlay_focused && !self.tabs[active].welcome {
             let mut leaves = Vec::new();
             collect_leaves(&self.tabs[active].root, &mut leaves);
@@ -2894,6 +3104,7 @@ impl Render for Workspace {
         let split_launcher = self.render_split_launcher(cx);
         let layout_manager = self.render_layout_manager(cx);
         let app_menu = self.render_app_menu(cx);
+        let ssh_prompt = self.render_ssh_prompt(cx);
 
         let root = div()
             // Full-window focus anchor: clicking anywhere (except the panes + the
@@ -2952,7 +3163,8 @@ impl Render for Workspace {
             .when_some(palette, |d, p| d.child(p))
             .when_some(split_launcher, |d, s| d.child(s))
             .when_some(layout_manager, |d, l| d.child(l))
-            .when_some(app_menu, |d, m| d.child(m));
+            .when_some(app_menu, |d, m| d.child(m))
+            .when_some(ssh_prompt, |d, s| d.child(s));
 
         // No render-data cache here (tab labels/cwd live in the child panes and
         // change without signalling the workspace, so a cache would risk stale

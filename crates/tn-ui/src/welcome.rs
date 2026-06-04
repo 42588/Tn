@@ -110,9 +110,9 @@ pub(crate) fn wsl_card(t: &tn_config::Theme, n: usize) -> CardId {
     CardId { name: "WSL".into(), sub: format!("{n} 个发行版"), glyph: "term", accent: t.ui.accent_alt }
 }
 
-/// The SSH placeholder card (parked — a visible entry point, not launchable yet).
+/// The SSH prompt card (user@host input modal).
 pub(crate) fn ssh_card(t: &tn_config::Theme) -> CardId {
-    CardId { name: "SSH".into(), sub: "即将支持".into(), glyph: "external", accent: t.ui.muted }
+    CardId { name: "SSH".into(), sub: "快速连接".into(), glyph: "external", accent: t.ui.accent }
 }
 
 /// One launch-surface card after aggregation. Indices are into the surface's
@@ -123,8 +123,8 @@ pub(crate) enum LaunchEntry {
     /// All discovered WSL distros, collapsed to one card (drill in, or auto-launch
     /// if there's only one).
     Wsl(Vec<usize>),
-    /// SSH placeholder (parked); selecting it is a no-op for now.
-    SshSoon,
+    /// Interactive SSH prompt launcher.
+    SshPrompt,
 }
 
 /// Collapse a discovered-profile list into launch cards: each shell/agent profile
@@ -141,7 +141,7 @@ pub(crate) fn launch_entries(profiles: &[Profile]) -> Vec<LaunchEntry> {
         }
         match p.kind {
             ProfileKind::Wsl => wsl.push(i),
-            ProfileKind::Ssh => {} // folded into the SSH placeholder (parked)
+            ProfileKind::Ssh => {} // folded into the SSH prompt launcher
             // Agents (Claude / Codex) lead, then plain shells — the headline use case
             // first, so welcome/launcher read agents-on-top (用户要的排版).
             _ if launch_agent_of(p).is_some() => agents.push(LaunchEntry::Profile(i)),
@@ -153,7 +153,7 @@ pub(crate) fn launch_entries(profiles: &[Profile]) -> Vec<LaunchEntry> {
     if !wsl.is_empty() {
         out.push(LaunchEntry::Wsl(wsl));
     }
-    out.push(LaunchEntry::SshSoon);
+    out.push(LaunchEntry::SshPrompt);
     out
 }
 
@@ -173,7 +173,7 @@ pub(crate) fn wsl_distros(profiles: &[Profile]) -> Vec<usize> {
 pub(crate) enum LaunchRow {
     Profile(usize),
     DrillWsl,
-    SshSoon,
+    SshPrompt,
 }
 
 /// The rows to show at the current level, filtered by `query` (case-insensitive
@@ -199,7 +199,7 @@ pub(crate) fn launch_rows(profiles: &[Profile], wsl_drill: bool, query: &str) ->
             LaunchEntry::Wsl(d) => {
                 (m("WSL") || d.iter().any(|&i| m(&profiles[i].name))).then_some(LaunchRow::DrillWsl)
             }
-            LaunchEntry::SshSoon => m("SSH").then_some(LaunchRow::SshSoon),
+            LaunchEntry::SshPrompt => m("SSH").then_some(LaunchRow::SshPrompt),
         })
         .collect()
 }
@@ -209,13 +209,16 @@ pub(crate) fn row_card(t: &tn_config::Theme, profiles: &[Profile], row: &LaunchR
     match row {
         LaunchRow::Profile(i) => profile_card(t, &profiles[*i]),
         LaunchRow::DrillWsl => wsl_card(t, wsl_distros(profiles).len()),
-        LaunchRow::SshSoon => ssh_card(t),
+        LaunchRow::SshPrompt => ssh_card(t),
     }
 }
 
 /// Emitted when a launch tile is clicked; carries the index into the profile list
 /// the view was constructed with (the workspace's discovered profiles).
 pub struct LaunchRequested(pub usize);
+
+/// Emitted when the SSH tile is clicked to request the interactive SSH connector prompt.
+pub struct SshPromptRequested;
 
 pub struct WelcomeView {
     config: Arc<Loaded>,
@@ -311,9 +314,9 @@ impl WelcomeView {
         )
     }
 
-    /// The SSH placeholder tile (parked) — click is a no-op for now.
+    /// The SSH interactive connector tile.
     fn ssh_tile(&self, cx: &mut Context<Self>) -> Div {
-        self.card_tile(ssh_card(&self.config.theme), |_this, _e, _w, _cx| {}, cx)
+        self.card_tile(ssh_card(&self.config.theme), |_this, _e, _w, cx| cx.emit(SshPromptRequested), cx)
     }
 
     /// Back tile shown in the WSL sub-grid → return to the root launchpad.
@@ -364,6 +367,7 @@ impl WelcomeView {
 }
 
 impl gpui::EventEmitter<LaunchRequested> for WelcomeView {}
+impl gpui::EventEmitter<SshPromptRequested> for WelcomeView {}
 
 impl Render for WelcomeView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -395,7 +399,7 @@ impl Render for WelcomeView {
                         }
                     }
                     LaunchEntry::Wsl(d) => others.push(self.wsl_tile(d, cx)), // WSL → bottom
-                    LaunchEntry::SshSoon => others.push(self.ssh_tile(cx)),   // SSH → bottom
+                    LaunchEntry::SshPrompt => others.push(self.ssh_tile(cx)), // SSH → bottom
                 }
             }
             div()
@@ -524,7 +528,7 @@ mod tests {
             LaunchEntry::Wsl(v) => assert_eq!(v, &vec![1, 2]),
             _ => panic!("expected a collapsed WSL group at [1]"),
         }
-        assert!(matches!(e[2], LaunchEntry::SshSoon));
+        assert!(matches!(e[2], LaunchEntry::SshPrompt));
     }
 
     #[test]
@@ -533,7 +537,7 @@ mod tests {
         let e = launch_entries(&profiles);
         assert_eq!(e.len(), 2); // pwsh + SSH placeholder, no WSL card
         assert!(matches!(e[0], LaunchEntry::Profile(0)));
-        assert!(matches!(e[1], LaunchEntry::SshSoon));
+        assert!(matches!(e[1], LaunchEntry::SshPrompt));
     }
 
     #[test]
@@ -548,6 +552,6 @@ mod tests {
         assert!(matches!(e[0], LaunchEntry::Profile(1)));
         assert!(matches!(e[1], LaunchEntry::Profile(2)));
         assert!(matches!(e[2], LaunchEntry::Profile(0)));
-        assert!(matches!(e[3], LaunchEntry::SshSoon));
+        assert!(matches!(e[3], LaunchEntry::SshPrompt));
     }
 }

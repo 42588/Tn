@@ -62,17 +62,22 @@ impl SshConfig {
         }
     }
 
-    /// Parse a `host` or `host:port` target, merging with `~/.ssh/config`. `user`
+    /// Parse a `[user@]host[:port]` target, merging with `~/.ssh/config`. `user`
     /// falls back to the ssh config, then `$USERNAME` / `$USER`, else `"root"`.
     pub fn parse(target: &str, user: Option<&str>) -> Self {
-        let (mut host, mut port) = match target.rsplit_once(':') {
+        let (target_no_user, inline_user) = match target.split_once('@') {
+            Some((u, rest)) if !u.is_empty() => (rest, Some(u)),
+            _ => (target, None),
+        };
+
+        let (mut host, mut port) = match target_no_user.rsplit_once(':') {
             Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
                 (h.to_string(), p.parse().unwrap())
             }
-            _ => (target.to_string(), 22),
+            _ => (target_no_user.to_string(), 22),
         };
 
-        let mut user = user.map(str::to_string);
+        let mut user = inline_user.or(user).map(str::to_string);
         let mut key_path = None;
 
         if let Some(home) = home_dir() {
@@ -277,13 +282,28 @@ async fn run_session(
         let handler = ClientHandler {
             host: cfg.host.clone(),
             port: cfg.port,
+            in_tx: in_tx.clone(),
         };
         
-        let connect_res = client::connect(config.clone(), (cfg.host.as_str(), cfg.port), handler).await;
+        let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n", cfg.user, cfg.host, cfg.port).into_bytes());
+
+        let connect_res = tokio::time::timeout(
+            Duration::from_secs(15),
+            client::connect(config.clone(), (cfg.host.as_str(), cfg.port), handler)
+        ).await;
+
         let mut handle = match connect_res {
-            Ok(h) => h,
-            Err(e) => {
-                let msg = format!("\r\n[SSH] Connect failed: {}\r\nReconnecting in 5s...\r\n", e);
+            Ok(Ok(h)) => h,
+            Ok(Err(e)) => {
+                let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
+                let _ = in_tx.send(msg.into_bytes());
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = kill_rx.recv() => return Ok(()),
+                }
+            }
+            Err(_) => {
+                let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s)\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", cfg.host, cfg.port);
                 let _ = in_tx.send(msg.into_bytes());
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
@@ -292,11 +312,13 @@ async fn run_session(
             }
         };
 
-        if let Err(e) = authenticate(&mut handle, &cfg, &event_tx, &waker).await {
-            let msg = format!("\r\n[SSH] Auth failed: {}\r\n", e);
+        if let Err(e) = authenticate(&mut handle, &cfg, &event_tx, &waker, &in_tx).await {
+            let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 认证失败: {}\r\n", e);
             let _ = in_tx.send(msg.into_bytes());
             return Err(e);
         }
+
+        let _ = in_tx.send("\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n".as_bytes().to_vec());
 
         let mut channel = handle.channel_open_session().await.context("open session")?;
         channel
@@ -341,7 +363,7 @@ async fn run_session(
         if explicit_exit {
             return Ok(());
         } else {
-            let _ = in_tx.send(b"\r\n[SSH] Connection lost. Reconnecting in 5s...\r\n".to_vec());
+            let _ = in_tx.send("\r\n\x1b[33m[SSH]\x1b[0m 连接已断开。5 秒后自动重连... (Ctrl+D 取消)\r\n".as_bytes().to_vec());
             if event_tx.send(crate::PtyEvent::Disconnected).is_ok() {
                 if let Some(w) = waker.lock().unwrap().as_ref() {
                     w();
@@ -362,9 +384,11 @@ async fn authenticate(
     cfg: &SshConfig,
     event_tx: &StdSender<crate::PtyEvent>,
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    in_tx: &StdSender<Vec<u8>>,
 ) -> anyhow::Result<()> {
     let keys = cfg.key_candidates();
     for path in &keys {
+        let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 尝试密钥认证 ({})...", path.display()).into_bytes());
         let key = match load_secret_key(path, None) {
             Ok(k) => k,
             Err(_) => continue,
@@ -379,11 +403,13 @@ async fn authenticate(
     }
 
     if let Some(pw) = &cfg.password {
+        let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 尝试配置密码认证...".as_bytes().to_vec());
         let res = handle.authenticate_password(cfg.user.as_str(), pw.as_str()).await?;
         if res.success() {
             return Ok(());
         }
     } else {
+        let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码...".as_bytes().to_vec());
         let (tx, rx) = std::sync::mpsc::channel();
         if event_tx.send(crate::PtyEvent::NeedPassword {
             prompt: format!("Password for {}@{}:", cfg.user, cfg.host),
@@ -412,6 +438,7 @@ async fn authenticate(
 struct ClientHandler {
     host: String,
     port: u16,
+    in_tx: StdSender<Vec<u8>>,
 }
 
 impl client::Handler for ClientHandler {
@@ -422,27 +449,48 @@ impl client::Handler for ClientHandler {
             .map(|h| h.join(".ssh").join("known_hosts"))
             .unwrap_or_else(|| PathBuf::from("known_hosts"));
 
-        // If the file doesn't exist, we could fail or create it.
-        // For now, we use russh::keys::check_known_hosts_path which requires the file.
-        // It returns false if the host is not found or key doesn't match.
-        // In a full implementation, if it returns false we should prompt the user
-        // and optionally append it to the file.
-        // As a baseline (M2b strict mode), we reject unknown keys.
-        let is_known = russh::keys::check_known_hosts_path(
-            &self.host,
-            self.port,
-            key,
-            &known_hosts_path,
-        )
-        .unwrap_or(false);
-
-        if !is_known {
-            tracing::warn!("SSH Host key for {}:{} not found in known_hosts or mismatched. Rejecting connection.", self.host, self.port);
-            // Ideally we'd throw an error or prompt the user. For now, return false.
-            return Ok(false);
+        if !known_hosts_path.exists() {
+            tracing::info!("SSH: known_hosts not found, accepting key (TOFU)");
+            append_known_host(&known_hosts_path, &self.host, self.port, key);
+            return Ok(true);
         }
 
-        Ok(true)
+        match russh::keys::check_known_hosts_path(&self.host, self.port, key, &known_hosts_path) {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                tracing::info!("SSH: Host {}:{} not in known_hosts, accepting (TOFU)", self.host, self.port);
+                append_known_host(&known_hosts_path, &self.host, self.port, key);
+                Ok(true)
+            }
+            Err(_) => {
+                let warning = format!(
+                    "\r\n\x1b[31;1m@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n\
+                     @ 警告: 远程主机标识已更改!     @\r\n\
+                     @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\x1b[0m\r\n\
+                     可能存在中间人攻击或主机已重装。\r\n\
+                     主机: {}:{}\r\n\
+                     请手动验证或删除 ~/.ssh/known_hosts 中对应条目。\r\n\
+                     连接已中止。\r\n",
+                    self.host, self.port
+                );
+                let _ = self.in_tx.send(warning.into_bytes());
+                tracing::warn!("SSH: HOST KEY MISMATCH for {}:{}!", self.host, self.port);
+                Ok(false)
+            }
+        }
+    }
+}
+
+fn append_known_host(path: &Path, host: &str, port: u16, key: &ssh_key::PublicKey) {
+    if let Ok(key_str) = key.to_openssh() {
+        let entry = if port == 22 {
+            format!("{} {}\n", host, key_str)
+        } else {
+            format!("[{}]:{} {}\n", host, port, key_str)
+        };
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = file.write_all(entry.as_bytes());
+        }
     }
 }
 
@@ -522,6 +570,14 @@ mod tests {
         let c = SshConfig::parse("host:notaport", Some("u"));
         assert_eq!(c.host, "host:notaport");
         assert_eq!(c.port, 22);
+    }
+
+    #[test]
+    fn parse_user_at_host_with_port() {
+        let c = SshConfig::parse("admin@192.168.1.1:2222", Some("ignored"));
+        assert_eq!(c.user, "admin");
+        assert_eq!(c.host, "192.168.1.1");
+        assert_eq!(c.port, 2222);
     }
 
     #[test]
