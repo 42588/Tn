@@ -18,11 +18,17 @@
 //! - **wait / try_wait**: a `Mutex<Option<i32>>` + `Condvar`, set on `ExitStatus`
 //!   or channel close.
 //!
-//! > **Status:** compiles + unit-tested (headless config/parsing). The live
-//! > connect/auth/shell path is **unverified end-to-end** (no real test host yet —
-//! > see CLAUDE.md M2 "parked"). Auth chain: key-file → UI-prompted password;
-//! > `check_server_key` verifies against `~/.ssh/known_hosts` with TOFU on first
-//! > connect. **ssh-agent is TODO** (see `authenticate` TODO comment).
+//! > **Status:** compiles + unit-tested (headless config/parsing). **Verified
+//! > end-to-end on a real host (2026-06-05): publickey auth (`id_ed25519`) +
+//! > interactive shell against AlmaLinux 9.7 sshd over WSL, through Tn itself.**
+//! > Still *not* exercised live: the password-*prompt* UI path, the
+//! > `keyboard-interactive` method (test server didn't offer it), reconnect, and
+//! > TOFU first-connect (the host was already in `known_hosts`). Auth chain: probe
+//! > offered methods (`none`) → key-file → password (tried via *both* the
+//! > `password` method and `keyboard-interactive`, since many PAM/Linux servers
+//! > only accept the latter); `check_server_key` verifies against
+//! > `~/.ssh/known_hosts` with TOFU on first connect. **ssh-agent is TODO** (see
+//! > `authenticate` TODO comment).
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
@@ -386,7 +392,14 @@ async fn run_session(
     }
 }
 
-/// Try key-file auth (each `~/.ssh/id_*` or the explicit key), then password.
+/// Authenticate the session, mirroring what OpenSSH's client effectively does:
+/// probe the offered methods (`none`) → public-key → password.
+///
+/// **The password is tried via *both* the `password` method and
+/// `keyboard-interactive`** with the same secret. Many Linux/PAM servers (incl. a
+/// stock WSL sshd, esp. for `root`) only accept `keyboard-interactive`; sending
+/// the `password` method alone fails even with the *correct* password — the usual
+/// cause of "密码正确却认证失败" (OpenSSH masks the difference by auto-falling back).
 /// TODO(M2): SSH agent (`russh::keys::agent`) before key files.
 async fn authenticate(
     handle: &mut Handle<ClientHandler>,
@@ -395,52 +408,175 @@ async fn authenticate(
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     in_tx: &StdSender<Vec<u8>>,
 ) -> anyhow::Result<()> {
-    let keys = cfg.key_candidates();
-    for path in &keys {
-        let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 尝试密钥认证 ({})...", path.display()).into_bytes());
-        let key = match load_secret_key(path, None) {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
-        let hash = handle.best_supported_rsa_hash().await?.flatten();
-        let res = handle
-            .authenticate_publickey(cfg.user.as_str(), PrivateKeyWithHashAlg::new(Arc::new(key), hash))
-            .await?;
-        if res.success() {
-            return Ok(());
+    // Probe offered methods via `none` (like `ssh -v`'s "Authentications that can
+    // continue"). The failure reply carries the list — invaluable for diagnosing
+    // blind. An empty list (probe errored) ⇒ assume every method is on offer and
+    // just try them all.
+    let mut methods: Vec<russh::MethodKind> = Vec::new();
+    match handle.authenticate_none(cfg.user.as_str()).await {
+        Ok(client::AuthResult::Success) => return Ok(()), // passwordless (rare)
+        Ok(client::AuthResult::Failure { remaining_methods, .. }) => {
+            methods = remaining_methods.iter().copied().collect();
+            let _ = in_tx.send(
+                format!(
+                    "\r\n\x1b[36m[SSH]\x1b[0m 服务器支持的认证方式: {}\r\n",
+                    methods_str(&methods)
+                )
+                .into_bytes(),
+            );
+        }
+        Err(e) => tracing::debug!("ssh: `none` auth probe failed: {e}"),
+    }
+
+    // 1) Public-key (explicit key or ~/.ssh/id_*).
+    if server_offers(&methods, russh::MethodKind::PublicKey) {
+        for path in &cfg.key_candidates() {
+            let _ = in_tx.send(
+                format!("\r\n\x1b[36m[SSH]\x1b[0m 尝试密钥认证 ({})...", path.display()).into_bytes(),
+            );
+            let key = match load_secret_key(path, None) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            let hash = handle.best_supported_rsa_hash().await?.flatten();
+            let res = handle
+                .authenticate_publickey(
+                    cfg.user.as_str(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                )
+                .await?;
+            if res.success() {
+                return Ok(());
+            }
         }
     }
 
-    if let Some(pw) = &cfg.password {
-        let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 尝试配置密码认证...".as_bytes().to_vec());
-        let res = handle.authenticate_password(cfg.user.as_str(), pw.as_str()).await?;
-        if res.success() {
-            return Ok(());
+    // 2) Password — fetch once (config or UI prompt), then try BOTH password
+    //    methods with it. Skip prompting if the server offers no password-style
+    //    method at all (don't ask the user for a secret it would never accept).
+    let wants_pw = server_offers(&methods, russh::MethodKind::Password)
+        || server_offers(&methods, russh::MethodKind::KeyboardInteractive);
+    let password = if wants_pw {
+        match &cfg.password {
+            Some(pw) => Some(pw.clone()),
+            None => prompt_password(cfg, event_tx, waker, in_tx).await,
         }
     } else {
-        let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码...".as_bytes().to_vec());
-        let (tx, rx) = std::sync::mpsc::channel();
-        if event_tx.send(crate::PtyEvent::NeedPassword {
-            prompt: format!("Password for {}@{}:", cfg.user, cfg.host),
-            reply: tx,
-        }).is_ok() {
-            if let Some(w) = waker.lock().unwrap().as_ref() {
-                w();
+        None
+    };
+
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        if server_offers(&methods, russh::MethodKind::Password) {
+            let _ = in_tx
+                .send("\r\n\x1b[36m[SSH]\x1b[0m 尝试密码认证 (password)...".as_bytes().to_vec());
+            if handle
+                .authenticate_password(cfg.user.as_str(), pw.as_str())
+                .await?
+                .success()
+            {
+                return Ok(());
             }
-            if let Ok(Some(pw)) = tokio::task::spawn_blocking(move || rx.recv().ok()).await {
-                let res = handle.authenticate_password(cfg.user.as_str(), pw).await?;
-                if res.success() {
-                    return Ok(());
-                }
+        }
+        if server_offers(&methods, russh::MethodKind::KeyboardInteractive) {
+            let _ = in_tx.send(
+                "\r\n\x1b[36m[SSH]\x1b[0m 尝试键盘交互认证 (keyboard-interactive)..."
+                    .as_bytes()
+                    .to_vec(),
+            );
+            if try_keyboard_interactive(handle, cfg.user.as_str(), &pw).await? {
+                return Ok(());
             }
         }
     }
 
+    // If the server never offered a password-style method, the secret the user
+    // typed was never going to be accepted — point at the server config instead
+    // of leaving them puzzled over a "correct" password.
+    let no_pw_method = !methods.contains(&russh::MethodKind::Password)
+        && !methods.contains(&russh::MethodKind::KeyboardInteractive);
+    let hint = if !methods.is_empty() && no_pw_method {
+        format!(
+            " (服务器未开放密码登录, 仅支持 {}; 请检查 sshd_config 的 PasswordAuthentication / PermitRootLogin)",
+            methods_str(&methods)
+        )
+    } else {
+        String::new()
+    };
     Err(anyhow!(
-        "ssh authentication failed for {}@{}",
+        "ssh authentication failed for {}@{}{}",
         cfg.user,
         cfg.host,
+        hint
     ))
+}
+
+/// Whether the server offered method `m` — or the offered set is unknown (probe
+/// failed), in which case we optimistically assume it might and try anyway.
+fn server_offers(methods: &[russh::MethodKind], m: russh::MethodKind) -> bool {
+    methods.is_empty() || methods.contains(&m)
+}
+
+/// Human-readable method list (e.g. `publickey, keyboard-interactive`).
+fn methods_str(methods: &[russh::MethodKind]) -> String {
+    if methods.is_empty() {
+        return "(未知)".to_string();
+    }
+    methods.iter().map(String::from).collect::<Vec<_>>().join(", ")
+}
+
+/// Prompt the UI for a password and block (off-runtime) on the reply.
+async fn prompt_password(
+    cfg: &SshConfig,
+    event_tx: &StdSender<crate::PtyEvent>,
+    waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    in_tx: &StdSender<Vec<u8>>,
+) -> Option<String> {
+    let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码...".as_bytes().to_vec());
+    let (tx, rx) = std::sync::mpsc::channel();
+    if event_tx
+        .send(crate::PtyEvent::NeedPassword {
+            prompt: format!("Password for {}@{}:", cfg.user, cfg.host),
+            reply: tx,
+        })
+        .is_err()
+    {
+        return None;
+    }
+    if let Some(w) = waker.lock().unwrap().as_ref() {
+        w();
+    }
+    tokio::task::spawn_blocking(move || rx.recv().ok())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Drive the `keyboard-interactive` exchange, answering every server prompt with
+/// `password` (the PAM password-prompt case; an empty prompt list ⇒ no answers).
+/// `Ok(true)` on success. Capped to avoid a misbehaving server looping
+/// `InfoRequest`s forever.
+async fn try_keyboard_interactive(
+    handle: &mut Handle<ClientHandler>,
+    user: &str,
+    password: &str,
+) -> anyhow::Result<bool> {
+    use client::KeyboardInteractiveAuthResponse as Kir;
+    let mut resp = handle
+        .authenticate_keyboard_interactive_start(user.to_string(), None)
+        .await?;
+    for _ in 0..16 {
+        match resp {
+            Kir::Success => return Ok(true),
+            Kir::Failure { .. } => return Ok(false),
+            Kir::InfoRequest { prompts, .. } => {
+                let answers = vec![password.to_string(); prompts.len()];
+                resp = handle
+                    .authenticate_keyboard_interactive_respond(answers)
+                    .await?;
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// russh client event handler. Verifies the host key against `~/.ssh/known_hosts`.
