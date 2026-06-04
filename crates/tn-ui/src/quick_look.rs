@@ -2617,7 +2617,15 @@ impl Render for QuickLook {
             // Drag the preview's bottom horizontal scrollbar thumb (set in `body`).
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
                 if this.hscroll_drag.is_some() {
-                    this.on_hscroll_move(f32::from(ev.position.x), cx);
+                    // 只有左键仍按着才跟随;一旦松开就立即结束拖动。`on_mouse_up` 只在浮层
+                    // bounds 内释放才触发 —— 鼠标拖出浮层外松开时收不到 up,若不在这里兜底
+                    // 清掉,thumb 会"粘"在鼠标上随移动(用户实测的 bug)。
+                    if ev.pressed_button == Some(MouseButton::Left) {
+                        this.on_hscroll_move(f32::from(ev.position.x), cx);
+                    } else {
+                        this.hscroll_drag = None;
+                        cx.notify();
+                    }
                 }
             }))
             .on_mouse_up(
