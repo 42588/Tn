@@ -21,7 +21,8 @@ use std::sync::Arc;
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
     uniform_list, AsyncApp, Bounds, ClipboardItem, Context, ElementInputHandler,
-    EntityInputHandler, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Point,
+    EntityInputHandler, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point,
     Rgba, ScrollStrategy, SharedString, UniformListScrollHandle, UTF16Selection, WeakEntity,
     Window,
 };
@@ -386,6 +387,12 @@ pub struct QuickLook {
     diff_generation: usize,
     /// Token used to cancel background tasks (e.g. image decoding, pdf parsing) when a new file is opened.
     cancel_token: Arc<std::sync::atomic::AtomicBool>,
+    /// Preview 横向滚动(px)。自绘底部滚动条,**不用** `overflow.x = Scroll`(那会让滚轮
+    /// 横纵同滚 → 整页斜移,owner 实测否)。`hscroll_drag` = 拖 thumb 时光标相对 thumb 左缘
+    /// 的偏移;`hscroll_content_w` = render 缓存的内容宽(拖动回调里没有行列表,靠它算可滚范围)。
+    hscroll_px: f32,
+    hscroll_drag: Option<f32>,
+    hscroll_content_w: f32,
 }
 
 impl QuickLook {
@@ -433,6 +440,9 @@ impl QuickLook {
             diff_loading: false,
             diff_generation: 0,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hscroll_px: 0.0,
+            hscroll_drag: None,
+            hscroll_content_w: 0.0,
         }
     }
 
@@ -1167,6 +1177,27 @@ impl QuickLook {
             self.sel_anchor = None;
         }
         self.cursor = (r, c);
+    }
+
+    /// Drag the bottom horizontal scrollbar thumb → update `hscroll_px`. `cursor_x`
+    /// is the absolute mouse X; `hscroll_content_w` (cached in render) gives the
+    /// scrollable width without needing the line list here.
+    fn on_hscroll_move(&mut self, cursor_x: f32, cx: &mut Context<Self>) {
+        let Some(grab) = self.hscroll_drag else { return };
+        let (viewport_w, track_left) = {
+            let b = self.code_bounds.borrow();
+            (f32::from(b.size.width), f32::from(b.origin.x))
+        };
+        let content_w = self.hscroll_content_w;
+        let max_off = (content_w - viewport_w).max(0.0);
+        if max_off <= 0.0 || viewport_w <= 0.0 {
+            return;
+        }
+        let thumb_w = (viewport_w / content_w * viewport_w).clamp(28.0, viewport_w);
+        let usable = (viewport_w - thumb_w).max(1.0);
+        let thumb_left = (cursor_x - track_left - grab).clamp(0.0, usable);
+        self.hscroll_px = thumb_left / usable * max_off;
+        cx.notify();
     }
 
     // ── clipboard ──
@@ -2348,17 +2379,60 @@ impl Render for QuickLook {
             let code_area = if editing {
                 list.flex_1().min_h(px(0.)).into_any_element()
             } else {
+                // 自绘底部横向滚动条:内容(撑到最长行宽)放裁剪窗、`.absolute().left(-h_off)` 平移,
+                // 底部一条可拖 thumb 改 `hscroll_px`。**不用** overflow.x scroll(会让滚轮横纵同滚
+                // =斜移) → 滚轮于是只到 uniform_list 纵向,横向只靠拖 thumb。
+                let thumb_bg = col(self.config.theme.ui.muted);
                 let content_w = GUTTER + (max_cols as f32 + 2.0) * char_w;
-                // gpui::Div has no `overflow_x_scroll()`; set the style flag directly
-                // (mirrors explorer.rs's vertical scrollable). Needs an `.id` so the
-                // horizontal scroll offset persists across frames.
-                let mut hscroll = div()
-                    .id("ql-hscroll")
+                let (viewport_w, track_left) = {
+                    let b = self.code_bounds.borrow();
+                    (f32::from(b.size.width), f32::from(b.origin.x))
+                };
+                self.hscroll_content_w = content_w; // for the drag handler (no lines there)
+                let max_off = (content_w - viewport_w).max(0.0);
+                let h_off = self.hscroll_px.clamp(0.0, max_off);
+                let mut area = div()
                     .flex_1()
                     .min_h(px(0.))
-                    .child(list.w(px(content_w)).h_full());
-                hscroll.interactivity().base_style.overflow.x = Some(gpui::Overflow::Scroll);
-                hscroll.into_any_element()
+                    .relative()
+                    .overflow_hidden()
+                    .child(list.w(px(content_w)).h_full().absolute().top_0().left(px(-h_off)));
+                if max_off > 1.0 && viewport_w > 0.0 {
+                    let thumb_w = (viewport_w / content_w * viewport_w).clamp(28.0, viewport_w);
+                    let thumb_x = h_off / max_off * (viewport_w - thumb_w);
+                    let ent = cx.entity().downgrade();
+                    area = area.child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .w(px(viewport_w))
+                            .h(px(9.))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(2.))
+                                    .left(px(thumb_x))
+                                    .w(px(thumb_w))
+                                    .h(px(5.))
+                                    .rounded(px(3.))
+                                    .bg(thumb_bg)
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        move |ev: &MouseDownEvent, _w, app| {
+                                            let grab =
+                                                f32::from(ev.position.x) - (track_left + thumb_x);
+                                            let _ = ent.update(app, |this, cx| {
+                                                this.hscroll_drag = Some(grab);
+                                                cx.notify();
+                                            });
+                                            app.stop_propagation();
+                                        },
+                                    ),
+                            ),
+                    );
+                }
+                area.into_any_element()
             };
             body = body
                 .child(
@@ -2540,6 +2614,20 @@ impl Render for QuickLook {
             // (which would steal focus to the shell). Clicking the panel keeps focus
             // here (track_focus). 修「面板穿透事件 / 焦点漏到底层 shell」。
             .on_mouse_down(MouseButton::Left, cx.listener(|_, _ev, _w, cx| cx.stop_propagation()))
+            // Drag the preview's bottom horizontal scrollbar thumb (set in `body`).
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
+                if this.hscroll_drag.is_some() {
+                    this.on_hscroll_move(f32::from(ev.position.x), cx);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
+                    if this.hscroll_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .size_full()
             .relative() // anchor specular / seam absolute layers
             .flex()
