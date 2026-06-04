@@ -578,16 +578,25 @@ impl TerminalView {
     /// Explicitly clear the GPUI render cache to free the massive `gpui::Div` trees
     /// and row states when this terminal tab goes into the background (inactive).
     pub fn clear_render_cache(&mut self, cx: &mut Context<Self>) {
+        // First reap any prior async swap: if the off-thread serialize finished and
+        // no new output arrived since the clone, this blanks the live grid to finally
+        // free it. Unconditional — `render_cache` may already be None from an earlier
+        // eviction, so it can't sit inside the `is_some()` guard below. (项34 缺陷①)
+        self.terminal.lock().unwrap().try_finish_swap();
         if self.render_cache.is_some() {
             self.render_cache = None;
 
-            // M1: Swap out Alacritty Grid memory!
+            // Kick off an async grid swap: clone under the lock (~ms memcpy), then
+            // serialize + write off-thread (the slow part leaves the UI thread, so
+            // switching tabs no longer stalls on a big grid). The grid is actually
+            // freed by the next eviction's `try_finish_swap` above; until then it
+            // stays live, so restore/advance never see a half-swapped state.
             let id = cx.entity_id().as_u64();
             let mut path = std::env::temp_dir();
             path.push("tn");
             let _ = std::fs::create_dir_all(&path);
             path.push(format!("scrollback_{id}.bin"));
-            let _ = self.terminal.lock().unwrap().swap_out(path);
+            self.terminal.lock().unwrap().swap_out_async(path);
 
             cx.notify();
         }

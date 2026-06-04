@@ -453,6 +453,15 @@ pub struct Terminal {
     scrollback_limit: usize,
     swapped_snapshot: Option<Box<TerminalSnapshot>>,
     pub swapped_path: Option<std::path::PathBuf>,
+    /// Async-swap plumbing (项34 缺陷①: serialize off the UI thread). `swap_out_async`
+    /// clones the grid and serializes the clone on a throwaway OS thread; the live
+    /// grid stays valid until `try_finish_swap` reaps the result, so there is **no**
+    /// window where advance/restore could lose data. `swap_gen` snapshots the
+    /// generation at clone time — if output arrives before the reap, the on-disk copy
+    /// is stale and is discarded (the live grid is kept).
+    swap_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    swap_result: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
+    swap_gen: u64,
 }
 
 impl Terminal {
@@ -481,6 +490,9 @@ impl Terminal {
             scrollback_limit: scrollback,
             swapped_snapshot: None,
             swapped_path: None,
+            swap_in_flight: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            swap_result: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            swap_gen: 0,
         }
     }
 
@@ -541,6 +553,62 @@ impl Terminal {
 
         self.swapped_path = Some(path);
         Ok(())
+    }
+
+    /// Like [`swap_out`] but moves the slow part (bincode serialize + disk write)
+    /// **off the UI thread** (项34 缺陷①). Under the caller's lock it only *clones*
+    /// the grid (a memcpy, ~ms — vs ~tens of ms to serialize), then serializes that
+    /// clone on a throwaway OS thread. The live grid is left fully usable; nothing
+    /// is freed until [`try_finish_swap`] reaps the result, so there is no data-loss
+    /// window (restore/advance never see a half-swapped state). No-op if already
+    /// swapped, a swap is in flight, or a finished swap is still awaiting reap.
+    pub fn swap_out_async(&mut self, path: std::path::PathBuf) {
+        if self.swapped_path.is_some()
+            || self.swap_in_flight.load(std::sync::atomic::Ordering::Relaxed)
+            || self.swap_result.lock().unwrap().is_some()
+        {
+            return;
+        }
+        let grid_clone = self.term.grid().clone();
+        self.swap_gen = self.generation;
+        self.swap_in_flight.store(true, std::sync::atomic::Ordering::Relaxed);
+        let in_flight = self.swap_in_flight.clone();
+        let result = self.swap_result.clone();
+        std::thread::spawn(move || {
+            let ok = std::fs::File::create(&path)
+                .ok()
+                .and_then(|f| bincode::serialize_into(std::io::BufWriter::new(f), &grid_clone).ok())
+                .is_some();
+            if ok {
+                *result.lock().unwrap() = Some(path);
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+            in_flight.store(false, std::sync::atomic::Ordering::Relaxed);
+        });
+    }
+
+    /// Reap a completed [`swap_out_async`]: if the background serialize finished and
+    /// the grid is unchanged since the clone (no new output → `generation` matches
+    /// `swap_gen`), blank the live grid to actually free the memory. If output
+    /// arrived after the clone, the on-disk copy is stale → discard it and keep the
+    /// live grid. Cheap no-op when nothing is pending. Call from the render/idle path
+    /// (ideally under the same lock as `snapshot`, so the freed-grid frame is atomic).
+    pub fn try_finish_swap(&mut self) {
+        let done = self.swap_result.lock().unwrap().take();
+        let Some(path) = done else { return };
+        if self.generation == self.swap_gen {
+            self.swapped_snapshot = Some(Box::new(self.snapshot()));
+            let config = Config {
+                scrolling_history: self.scrollback_limit,
+                ..Config::default()
+            };
+            let mut empty_term = Term::new(config, &self.size, ChannelListener(self.tx.clone()));
+            std::mem::swap(self.term.grid_mut(), empty_term.grid_mut());
+            self.swapped_path = Some(path);
+        } else {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     /// Replace the color palette (e.g. from the user's theme).
@@ -910,6 +978,63 @@ mod tests {
 
         t.restore_if_swapped();
         assert!(t.snapshot().to_text().contains("parked-content"), "content restored from disk");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn swap_out_async_then_finish_round_trips() {
+        // 项34 缺陷①: async swap clones the grid + serializes off-thread. Verify the
+        // grid stays live until reaped, then survives finish → restore round-trip.
+        let mut t = Terminal::with_scrollback(GridSize::new(4, 20), 1000);
+        t.advance(b"async1\r\nasync2\r\nasync3");
+        let before = t.snapshot().to_text();
+
+        let path = std::env::temp_dir().join(format!("tn_swap_async_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        t.swap_out_async(path.clone());
+        // Wait for the background serialize thread to finish (in_flight → false).
+        for _ in 0..1000 {
+            if !t.swap_in_flight.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Clone-based: the live grid is untouched until we reap, so content is intact.
+        assert_eq!(t.snapshot().to_text(), before, "grid stays live until reaped");
+
+        // No output since the clone → reap blanks the live grid + parks it on disk.
+        t.try_finish_swap();
+        assert!(t.swapped_path.is_some(), "reap parked the grid on disk");
+
+        t.restore_if_swapped();
+        assert!(t.swapped_path.is_none(), "restore clears the swapped state");
+        assert_eq!(t.snapshot().to_text(), before, "content survives async swap round-trip");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn try_finish_swap_discards_stale_disk_copy_after_output() {
+        // If output arrives after the clone, the on-disk copy is stale: try_finish_swap
+        // must discard it and KEEP the live (newer) grid — never blank it. (项34 缺陷①)
+        let mut t = Terminal::with_scrollback(GridSize::new(4, 20), 1000);
+        t.advance(b"before");
+        let path = std::env::temp_dir().join(format!("tn_swap_stale_{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        t.swap_out_async(path.clone());
+        for _ in 0..1000 {
+            if !t.swap_in_flight.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // New output bumps generation past swap_gen → the disk copy is now stale.
+        // (Kept short — "before-after" is 12 cols, no wrapping in a 20-col grid.)
+        t.advance(b"-after");
+        t.try_finish_swap();
+        assert!(t.swapped_path.is_none(), "stale disk copy discarded, grid not swapped");
+        assert!(t.snapshot().to_text().contains("before-after"), "live grid kept (newer), not blanked");
         let _ = std::fs::remove_file(&path);
     }
 
