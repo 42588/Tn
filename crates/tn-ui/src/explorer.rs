@@ -42,7 +42,9 @@ fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
 /// path → one-letter tag (`U`ntracked / `A`dded / `D`eleted / `R`enamed /
 /// `M`odified). Pure (no IO) so it's unit-testable (待优化清单 §7.4); the priority
 /// order matches how a combined index+worktree status (`MM`, `AM`, …) collapses
-/// to a single chip.
+/// to a single chip. Assumes the caller ran git with `core.quotePath=false`, so
+/// non-ASCII paths arrive as raw UTF-8 (the `\`→`/` normalization below would
+/// otherwise corrupt octal-escaped CJK paths into unmatchable keys).
 fn parse_porcelain(stdout: &str) -> HashMap<String, char> {
     let mut map = HashMap::new();
     for line in stdout.lines() {
@@ -298,7 +300,16 @@ impl ExplorerView {
     /// show an aggregated git indicator.
     fn compute_git_status(root: &Path) -> HashMap<String, char> {
         let mut map = HashMap::new();
-        let out = match gitutil::capture_bounded(root, &["status", "--porcelain"], Duration::from_millis(1500)) {
+        // `-c core.quotePath=false` makes git emit raw UTF-8 paths instead of quoting
+        // + octal-escaping non-ASCII (e.g. ` M "docs/\344\274\230..."`). Without it,
+        // `parse_porcelain`'s `\`→`/` step mangled those escapes, so CJK-named files
+        // never matched a tree row's real path — only their ASCII ancestor dir got an
+        // aggregated tag (symptom: 文件夹有 M、中文文件无标识). Same flag as `changes_for`.
+        let out = match gitutil::capture_bounded(
+            root,
+            &["-c", "core.quotePath=false", "status", "--porcelain"],
+            Duration::from_millis(1500),
+        ) {
             Some(s) => s,
             None => return map,
         };
@@ -709,6 +720,19 @@ mod tests {
         // A quoted path (git quotes names with spaces) is unquoted.
         assert_eq!(m.get("with space.txt"), Some(&'U'));
         assert_eq!(m.len(), 8);
+    }
+
+    #[test]
+    fn porcelain_matches_utf8_paths_when_quotepath_off() {
+        // With core.quotePath=false git emits raw UTF-8 (no quotes / octal escapes),
+        // so the parsed key equals the tree row's real path. Regression for: CJK-named
+        // files (优化日志.md, 未修复.md …) showed no git tag while their ASCII ancestor
+        // dir (docs) did — octal-escaped quoted paths produced unmatchable keys after
+        // the `\`→`/` step (symptom: 文件夹有 M、中文文件无标识).
+        let m = parse_porcelain(" M docs/优化日志.md\n?? 新增模块.md\n");
+        assert_eq!(m.get("docs/优化日志.md"), Some(&'M'), "CJK file path matches its real key");
+        assert_eq!(m.get("新增模块.md"), Some(&'U'));
+        // (Ancestor-dir aggregation lives in `compute_git_status`, not here.)
     }
 
     #[test]
