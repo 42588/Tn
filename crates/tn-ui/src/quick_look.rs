@@ -1231,9 +1231,12 @@ impl QuickLook {
         if max_off <= 0.0 || viewport_w <= 0.0 {
             return;
         }
-        let thumb_w = (viewport_w / content_w * viewport_w).clamp(28.0, viewport_w);
-        let usable = (viewport_w - thumb_w).max(1.0);
-        let thumb_left = (cursor_x - track_left - grab).clamp(0.0, usable);
+        // 与 render 的 thumb 几何一致(左右内缘 6px、thumb 最小 36px)。
+        let inset = 6.0_f32;
+        let track_w = (viewport_w - inset * 2.0).max(1.0);
+        let thumb_w = (track_w / content_w * track_w).clamp(36.0, track_w);
+        let usable = (track_w - thumb_w).max(1.0);
+        let thumb_left = (cursor_x - track_left - inset - grab).clamp(0.0, usable);
         self.hscroll_px = thumb_left / usable * max_off;
         cx.notify();
     }
@@ -2445,23 +2448,26 @@ impl Render for QuickLook {
                         uniform_list("pdf_scroll_container", page_count, move |range, _window, _cx| {
                             let pages_lock = pages.lock().ok();
                             range.map(|i| {
+                                // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
+                                // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
+                                // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
                                 if let Some(lock) = &pages_lock {
                                     if let Some(img) = &lock[i] {
                                         let img_source = gpui::ImageSource::Image(img.clone());
                                         return div()
                                             .w_full()
-                                            .h(px(1400.)) // 固定高度让 uniform_list 计算
-                                            .bg(rgba(0xffffffff)) // 纯白背板
+                                            .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
+                                            .bg(rgba(0x1e1e1e))
                                             .flex()
                                             .justify_center()
-                                            .p_4()
-                                            .child(gpui::img(img_source).w_full().h_full().object_fit(gpui::ObjectFit::ScaleDown));
+                                            .items_center()
+                                            .child(gpui::img(img_source).max_w_full().max_h_full().w_auto().h_auto().object_fit(gpui::ObjectFit::ScaleDown));
                                     }
                                 }
                                 div()
                                     .w_full()
                                     .h(px(1400.))
-                                    .bg(rgba(0xffffffff))
+                                    .bg(rgba(0x1e1e1e))
                             }).collect::<Vec<_>>()
                         })
                         .track_scroll(self.scroll.clone())
@@ -2479,7 +2485,10 @@ impl Render for QuickLook {
                     .justify_center()
                     .items_center()
                     .bg(rgba(0x1e1e1e)) // 暗色背景
-                    .child(gpui::img(img_source).w_auto().h_auto().max_w_full().max_h_full().object_fit(gpui::ObjectFit::ScaleDown))
+                    // Contain + 适度内边距:图片按比例**铺满**预览区(只在一轴留暗边),不再
+                    // 自然小尺寸居中留大片空白(修「四周留白很多」)。
+                    .p(px(10.))
+                    .child(gpui::img(img_source).size_full().object_fit(gpui::ObjectFit::Contain))
             );
         } else if self.tab == Tab::Diff && self.diff_loading {
             // 不渲染占位符
@@ -2648,12 +2657,15 @@ impl Render for QuickLook {
             // =斜移) → 滚轮于是只到 uniform_list 纵向,横向只靠拖 thumb。编辑/预览同走此路:
             // hit-test 已 `rel + hscroll_px` 补偏移(CJK 双宽感知),编辑态再叠 caret-follow。
             let code_area = {
-                let thumb_bg = col(self.config.theme.ui.muted);
-                let content_w = GUTTER + (max_cols as f32 + 2.0) * char_w;
+                let thumb_bg = cola(self.config.theme.ui.muted, 0.45);
                 let (viewport_w, track_left) = {
                     let b = self.code_bounds.borrow();
                     (f32::from(b.size.width), f32::from(b.origin.x))
                 };
+                // 内容宽 = 最长行宽(gutter + 列×char_w + 1 列留给行尾光标),但**至少撑满视口**:
+                // 短内容时正好填满、右侧不留白;只有确有超视口长行才 > 视口 → 才可横向滚(否则
+                // max_off=0、无滚动条)。修「太宽留白 + 短内容也出横条」。
+                let content_w = (GUTTER + (max_cols as f32 + 1.0) * char_w).max(viewport_w);
                 self.hscroll_content_w = content_w; // for the drag handler (no lines there)
                 let max_off = (content_w - viewport_w).max(0.0);
                 // 编辑态:横向跟随光标 —— 打字越过右缘(或左移出左缘)时滚动让 caret 始终可见。
@@ -2692,25 +2704,29 @@ impl Render for QuickLook {
                     .relative()
                     .overflow_hidden()
                     .child(list.w(px(content_w)).h_full().absolute().top_0().left(px(-h_off)));
-                if max_off > 1.0 && viewport_w > 0.0 {
-                    let thumb_w = (viewport_w / content_w * viewport_w).clamp(28.0, viewport_w);
-                    let thumb_x = h_off / max_off * (viewport_w - thumb_w);
+                // 横向滚动条:仅当**确有**超视口内容(>8px)才显;细(3px thumb)、暗(muted .45)、
+                // 左右内缘各留 GUTTER/6px,不贴边、不抢视线(修「影响视线 + 不贴合」)。
+                if max_off > 8.0 && viewport_w > 0.0 {
+                    let inset = 6.0_f32;
+                    let track_w = (viewport_w - inset * 2.0).max(1.0);
+                    let thumb_w = (track_w / content_w * track_w).clamp(36.0, track_w);
+                    let thumb_x = inset + h_off / max_off * (track_w - thumb_w);
                     let ent = cx.entity().downgrade();
                     area = area.child(
                         div()
                             .absolute()
-                            .bottom_0()
+                            .bottom(px(2.))
                             .left_0()
                             .w(px(viewport_w))
-                            .h(px(9.))
+                            .h(px(5.))
                             .child(
                                 div()
                                     .absolute()
-                                    .top(px(2.))
+                                    .top_0()
                                     .left(px(thumb_x))
                                     .w(px(thumb_w))
-                                    .h(px(5.))
-                                    .rounded(px(3.))
+                                    .h(px(3.))
+                                    .rounded(px(2.))
                                     .bg(thumb_bg)
                                     .on_mouse_down(
                                         MouseButton::Left,
