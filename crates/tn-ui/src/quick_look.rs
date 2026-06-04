@@ -574,6 +574,10 @@ impl QuickLook {
         self.path = Some(path.clone());
         self.tab = Tab::File;
         self.editing = false;
+        self.sel_anchor = None; // 清上个文件残留的(预览)选区
+        self.cursor = (0, 0);
+        self.edit_drag = false;
+        self.hscroll_px = 0.0; // 新文件从最左开始
         self.dirty = false;
         self.file_data = QuickLookData::None;
         self.diff = Rc::new(Vec::new());
@@ -1165,16 +1169,32 @@ impl QuickLook {
 
     fn select_all(&mut self) {
         self.coalesce_insert = false;
-        let last = self.buf.len().saturating_sub(1);
+        let (last, last_len) = if self.editing {
+            let last = self.buf.len().saturating_sub(1);
+            (last, line_chars(&self.buf, last))
+        } else if let QuickLookData::Text { lines, .. } = &self.file_data {
+            let last = lines.len().saturating_sub(1);
+            (last, lines.get(last).map(|l| l.chars().count()).unwrap_or(0))
+        } else {
+            return;
+        };
         self.sel_anchor = Some((0, 0));
-        self.cursor = (last, line_chars(&self.buf, last));
+        self.cursor = (last, last_len);
     }
 
     /// Place the cursor at (row, col) on click; `extend` = Shift-click selects.
     fn place_cursor(&mut self, row: usize, col: usize, extend: bool) {
         self.coalesce_insert = false;
-        let r = row.min(self.buf.len().saturating_sub(1));
-        let c = col.min(line_chars(&self.buf, r));
+        // 行/列 clamp 的来源:编辑态是 `buf`,预览态(只读拖选)是 file_data 的 lines。
+        let (r, c) = if self.editing {
+            let r = row.min(self.buf.len().saturating_sub(1));
+            (r, col.min(line_chars(&self.buf, r)))
+        } else if let QuickLookData::Text { lines, .. } = &self.file_data {
+            let r = row.min(lines.len().saturating_sub(1));
+            (r, col.min(lines.get(r).map(|l| l.chars().count()).unwrap_or(0)))
+        } else {
+            return; // 非文本预览(图片 / PDF)不可选
+        };
         if extend {
             if self.sel_anchor.is_none() {
                 self.sel_anchor = Some(self.cursor);
@@ -1209,11 +1229,18 @@ impl QuickLook {
     // ── clipboard ──
 
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let text = match self.sel_range() {
-            Some((s, e)) => selected_text(&self.buf, s, e),
-            None => format!("{}\n", self.buf.get(self.cursor.0).cloned().unwrap_or_default()),
-        };
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        if self.editing {
+            let text = match self.sel_range() {
+                Some((s, e)) => selected_text(&self.buf, s, e),
+                None => format!("{}\n", self.buf.get(self.cursor.0).cloned().unwrap_or_default()),
+            };
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        } else if let QuickLookData::Text { lines, .. } = &self.file_data {
+            // 预览态(只读):仅在有选区时复制选中文本(基于 lines,不碰 buf)。
+            if let Some((s, e)) = self.sel_range() {
+                cx.write_to_clipboard(ClipboardItem::new_string(selected_text(lines, s, e)));
+            }
+        }
     }
 
     fn cut(&mut self, cx: &mut Context<Self>) {
@@ -1453,6 +1480,21 @@ impl QuickLook {
             }
         } else {
             if m.control || m.alt || m.platform {
+                // 预览态只读:放行 Ctrl+C(复制选中) / Ctrl+A(全选),其余控制键忽略。
+                if m.control && !m.alt && !m.platform {
+                    match key {
+                        "c" => {
+                            self.copy(cx);
+                            cx.stop_propagation();
+                        }
+                        "a" => {
+                            self.select_all();
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }
                 return;
             }
             match key {
@@ -2417,8 +2459,54 @@ impl Render for QuickLook {
                                     })
                                 } else if tab == Tab::File {
                                     let line = &lines[i];
-                                    let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
-                                    file_row_cached(&config, spans, i)
+                                    // 选区触及本行 → 按 char 渲染(复用 edit_row_cached,caret=(MAX,MAX)
+                                    // 永不命中任何行 = 预览态不画光标)以显选区底色;否则用缓存的 tint
+                                    // spans(快)。预览态拖选 + Ctrl+C 复制,只读不改。
+                                    let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
+                                        let chars: Vec<char> = line.chars().collect();
+                                        let tints = tints_per_char(line);
+                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel)
+                                    } else {
+                                        let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
+                                        file_row_cached(&config, spans, i)
+                                    };
+                                    let entity = entity.clone();
+                                    let entity_mv = entity.clone();
+                                    let bounds = row_bounds.clone();
+                                    let bounds_mv = row_bounds.clone();
+                                    row.on_mouse_down(
+                                        MouseButton::Left,
+                                        move |ev: &MouseDownEvent, _w, app| {
+                                            let left = f32::from(bounds.borrow().origin.x);
+                                            let rel = f32::from(ev.position.x) - left - GUTTER;
+                                            let col = (rel / char_w).round().max(0.0) as usize;
+                                            let shift = ev.modifiers.shift;
+                                            let _ = entity.update(app, |this, cx| {
+                                                this.place_cursor(i, col, shift);
+                                                this.edit_drag = true;
+                                                cx.notify();
+                                            });
+                                            app.stop_propagation();
+                                        },
+                                    )
+                                    .on_mouse_move(move |ev: &MouseMoveEvent, _w, app| {
+                                        if ev.pressed_button != Some(MouseButton::Left) {
+                                            return;
+                                        }
+                                        let left = f32::from(bounds_mv.borrow().origin.x);
+                                        let rel = f32::from(ev.position.x) - left - GUTTER;
+                                        let hover = (rel / char_w).max(0.0) as usize;
+                                        let _ = entity_mv.update(app, |this, cx| {
+                                            if !this.edit_drag {
+                                                return;
+                                            }
+                                            let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                                            let col =
+                                                if (i, hover) >= anchor { hover + 1 } else { hover };
+                                            this.place_cursor(i, col, true);
+                                            cx.notify();
+                                        });
+                                    })
                                 } else {
                                     diff_row(&config, &diff, i)
                                 }
