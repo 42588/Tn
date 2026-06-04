@@ -92,6 +92,19 @@ pub trait Killer: Send {
     fn kill(&mut self) -> anyhow::Result<()>;
 }
 
+/// An event emitted by a PTY backend that requires UI interaction.
+pub enum PtyEvent {
+    /// The backend needs a password to continue authentication.
+    NeedPassword {
+        /// The prompt to display to the user.
+        prompt: String,
+        /// A channel to send the password back. If dropped without sending, auth fails.
+        reply: std::sync::mpsc::Sender<String>,
+    },
+    /// The connection was lost. The UI can choose to reconnect.
+    Disconnected,
+}
+
 /// A pseudo-terminal session: a synchronous byte source/sink plus resize and
 /// lifecycle. Implemented by every backend (local, WSL, SSH).
 pub trait PtyBackend: Send {
@@ -107,4 +120,11 @@ pub trait PtyBackend: Send {
     fn wait(&mut self) -> anyhow::Result<i32>;
     /// Poll whether the child has exited yet, without blocking.
     fn try_wait(&mut self) -> anyhow::Result<Option<i32>>;
+    
+    /// Try to receive an asynchronous event from the backend (e.g. password prompt).
+    fn try_recv_event(&mut self) -> Option<PtyEvent> {
+        None
+    }
+    /// Provide a waker callback that the backend can call when a new event is available.
+    fn set_waker(&mut self, _waker: Box<dyn Fn() + Send + Sync>) {}
 }

@@ -62,21 +62,51 @@ impl SshConfig {
         }
     }
 
-    /// Parse a `host` or `host:port` target. `user` falls back to `$USERNAME` /
-    /// `$USER`, else `"root"`.
+    /// Parse a `host` or `host:port` target, merging with `~/.ssh/config`. `user`
+    /// falls back to the ssh config, then `$USERNAME` / `$USER`, else `"root"`.
     pub fn parse(target: &str, user: Option<&str>) -> Self {
-        let (host, port) = match target.rsplit_once(':') {
+        let (mut host, mut port) = match target.rsplit_once(':') {
             Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
                 (h.to_string(), p.parse().unwrap())
             }
             _ => (target.to_string(), 22),
         };
+
+        let mut user = user.map(str::to_string);
+        let mut key_path = None;
+
+        if let Some(home) = home_dir() {
+            let config_path = home.join(".ssh").join("config");
+            if let Ok(file) = std::fs::File::open(&config_path) {
+                let mut reader = std::io::BufReader::new(file);
+                if let Ok(ssh_cfg) = ssh2_config::SshConfig::default().parse(&mut reader, ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS) {
+                    let params = ssh_cfg.query(&host);
+                    if let Some(cfg_host) = params.host_name {
+                        host = cfg_host;
+                    }
+                    if let Some(cfg_port) = params.port {
+                        port = cfg_port;
+                    }
+                    if let Some(cfg_user) = params.user {
+                        user = Some(cfg_user);
+                    }
+                    if let Some(keys) = params.identity_file {
+                        if !keys.is_empty() {
+                            // The path might contain ~ which needs expansion, but ssh2-config
+                            // already expands it to absolute path based on home_dir.
+                            key_path = Some(keys[0].clone());
+                        }
+                    }
+                }
+            }
+        }
+
         let user = user
-            .map(str::to_string)
             .or_else(|| std::env::var("USERNAME").ok())
             .or_else(|| std::env::var("USER").ok())
             .unwrap_or_else(|| "root".to_string());
-        Self { host, port, user, key_path: None, password: None }
+            
+        Self { host, port, user, key_path, password: None }
     }
 
     /// Candidate private keys: the explicit path if set, else the usual
@@ -127,6 +157,8 @@ pub struct SshBackend {
     out_tx: UnboundedSender<Vec<u8>>,
     resize_tx: UnboundedSender<(u32, u32)>,
     kill_tx: UnboundedSender<()>,
+    event_rx: std::sync::mpsc::Receiver<crate::PtyEvent>,
+    waker: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     exit: ExitState,
 }
 
@@ -139,8 +171,11 @@ impl SshBackend {
         let (resize_tx, resize_rx) = unbounded_channel::<(u32, u32)>();
         let (kill_tx, kill_rx) = unbounded_channel::<()>();
         let (in_tx, in_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let (event_tx, event_rx) = std::sync::mpsc::channel::<crate::PtyEvent>();
+        let waker: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>> = Arc::new(Mutex::new(None));
         let exit: ExitState = Arc::new((Mutex::new(None), Condvar::new()));
         let exit_thread = exit.clone();
+        let waker_clone = waker.clone();
 
         std::thread::Builder::new()
             .name("tn-ssh".into())
@@ -156,7 +191,7 @@ impl SshBackend {
                 let exit_run = exit_thread.clone();
                 rt.block_on(async move {
                     if let Err(e) =
-                        run_session(cfg, size, out_rx, resize_rx, kill_rx, in_tx, &exit_run).await
+                        run_session(cfg, size, out_rx, resize_rx, kill_rx, in_tx, event_tx, waker_clone, &exit_run).await
                     {
                         tracing::error!("ssh session: {e:#}");
                     }
@@ -170,6 +205,8 @@ impl SshBackend {
             out_tx,
             resize_tx,
             kill_tx,
+            event_rx,
+            waker,
             exit,
         })
     }
@@ -206,9 +243,16 @@ impl PtyBackend for SshBackend {
     fn try_wait(&mut self) -> anyhow::Result<Option<i32>> {
         Ok(*self.exit.0.lock().unwrap())
     }
+
+    fn try_recv_event(&mut self) -> Option<crate::PtyEvent> {
+        self.event_rx.try_recv().ok()
+    }
+
+    fn set_waker(&mut self, waker: Box<dyn Fn() + Send + Sync>) {
+        *self.waker.lock().unwrap() = Some(waker);
+    }
 }
 
-/// Connect, authenticate, open a PTY shell, and pump bytes until close/kill.
 async fn run_session(
     cfg: SshConfig,
     size: PtySize,
@@ -216,65 +260,109 @@ async fn run_session(
     mut resize_rx: UnboundedReceiver<(u32, u32)>,
     mut kill_rx: UnboundedReceiver<()>,
     in_tx: StdSender<Vec<u8>>,
+    event_tx: StdSender<crate::PtyEvent>,
+    waker: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     exit: &ExitState,
 ) -> anyhow::Result<()> {
     let config = Arc::new(client::Config {
-        // Keep idle sessions alive (exit standard: "SSH 空闲不掉线").
         inactivity_timeout: None,
         keepalive_interval: Some(Duration::from_secs(30)),
         keepalive_max: 3,
         ..Default::default()
     });
 
-    let mut handle = client::connect(config, (cfg.host.as_str(), cfg.port), ClientHandler)
-        .await
-        .with_context(|| format!("connect {}:{}", cfg.host, cfg.port))?;
-
-    authenticate(&mut handle, &cfg).await?;
-
-    let mut channel = handle.channel_open_session().await.context("open session")?;
-    channel
-        .request_pty(false, "xterm-256color", size.cols as u32, size.rows as u32, 0, 0, &[])
-        .await
-        .context("request pty")?;
-    channel.request_shell(true).await.context("request shell")?;
+    let mut current_size = size;
 
     loop {
-        tokio::select! {
-            // Sync side wrote input -> forward to the remote shell.
-            out = out_rx.recv() => match out {
-                Some(bytes) => { let _ = channel.data_bytes(bytes).await; }
-                None => break, // backend dropped
-            },
-            // Window resized -> tell the remote PTY.
-            rz = resize_rx.recv() => {
-                if let Some((cols, rows)) = rz {
-                    let _ = channel.window_change(cols, rows, 0, 0).await;
+        let handler = ClientHandler {
+            host: cfg.host.clone(),
+            port: cfg.port,
+        };
+        
+        let connect_res = client::connect(config.clone(), (cfg.host.as_str(), cfg.port), handler).await;
+        let mut handle = match connect_res {
+            Ok(h) => h,
+            Err(e) => {
+                let msg = format!("\r\n[SSH] Connect failed: {}\r\nReconnecting in 5s...\r\n", e);
+                let _ = in_tx.send(msg.into_bytes());
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                    _ = kill_rx.recv() => return Ok(()),
                 }
-            },
-            // Explicit kill (or sender dropped).
-            _ = kill_rx.recv() => break,
-            // Remote produced output / status.
-            msg = channel.wait() => match msg {
-                Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
-                    if in_tx.send(data.to_vec()).is_err() {
-                        break; // reader dropped
+            }
+        };
+
+        if let Err(e) = authenticate(&mut handle, &cfg, &event_tx, &waker).await {
+            let msg = format!("\r\n[SSH] Auth failed: {}\r\n", e);
+            let _ = in_tx.send(msg.into_bytes());
+            return Err(e);
+        }
+
+        let mut channel = handle.channel_open_session().await.context("open session")?;
+        channel
+            .request_pty(false, "xterm-256color", current_size.cols as u32, current_size.rows as u32, 0, 0, &[])
+            .await
+            .context("request pty")?;
+        channel.request_shell(true).await.context("request shell")?;
+
+        let mut explicit_exit = false;
+
+        loop {
+            tokio::select! {
+                out = out_rx.recv() => match out {
+                    Some(bytes) => { let _ = channel.data_bytes(bytes).await; }
+                    None => return Ok(()),
+                },
+                rz = resize_rx.recv() => {
+                    if let Some((cols, rows)) = rz {
+                        current_size = PtySize::new(rows as u16, cols as u16);
+                        let _ = channel.window_change(cols, rows, 0, 0).await;
                     }
+                },
+                _ = kill_rx.recv() => return Ok(()),
+                msg = channel.wait() => match msg {
+                    Some(ChannelMsg::Data { data }) | Some(ChannelMsg::ExtendedData { data, .. }) => {
+                        if in_tx.send(data.to_vec()).is_err() {
+                            return Ok(());
+                        }
+                    }
+                    Some(ChannelMsg::ExitStatus { exit_status }) => {
+                        set_exit(exit, exit_status as i32);
+                        explicit_exit = true;
+                    }
+                    Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
+                    _ => {}
+                },
+            }
+        }
+
+        let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+
+        if explicit_exit {
+            return Ok(());
+        } else {
+            let _ = in_tx.send(b"\r\n[SSH] Connection lost. Reconnecting in 5s...\r\n".to_vec());
+            if event_tx.send(crate::PtyEvent::Disconnected).is_ok() {
+                if let Some(w) = waker.lock().unwrap().as_ref() {
+                    w();
                 }
-                Some(ChannelMsg::ExitStatus { exit_status }) => set_exit(exit, exit_status as i32),
-                Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) | None => break,
-                _ => {}
-            },
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
+                _ = kill_rx.recv() => return Ok(()),
+            }
         }
     }
-
-    let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
-    Ok(())
 }
 
 /// Try key-file auth (each `~/.ssh/id_*` or the explicit key), then password.
 /// TODO(M2): SSH agent (`russh::keys::agent`) before key files.
-async fn authenticate(handle: &mut Handle<ClientHandler>, cfg: &SshConfig) -> anyhow::Result<()> {
+async fn authenticate(
+    handle: &mut Handle<ClientHandler>,
+    cfg: &SshConfig,
+    event_tx: &StdSender<crate::PtyEvent>,
+    waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+) -> anyhow::Result<()> {
     let keys = cfg.key_candidates();
     for path in &keys {
         let key = match load_secret_key(path, None) {
@@ -295,25 +383,65 @@ async fn authenticate(handle: &mut Handle<ClientHandler>, cfg: &SshConfig) -> an
         if res.success() {
             return Ok(());
         }
+    } else {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if event_tx.send(crate::PtyEvent::NeedPassword {
+            prompt: format!("Password for {}@{}:", cfg.user, cfg.host),
+            reply: tx,
+        }).is_ok() {
+            if let Some(w) = waker.lock().unwrap().as_ref() {
+                w();
+            }
+            if let Ok(Some(pw)) = tokio::task::spawn_blocking(move || rx.recv().ok()).await {
+                let res = handle.authenticate_password(cfg.user.as_str(), pw).await?;
+                if res.success() {
+                    return Ok(());
+                }
+            }
+        }
     }
 
     Err(anyhow!(
-        "ssh authentication failed for {}@{} (tried {} key(s){})",
+        "ssh authentication failed for {}@{}",
         cfg.user,
         cfg.host,
-        keys.len(),
-        if cfg.password.is_some() { " + password" } else { "" }
     ))
 }
 
-/// russh client event handler. TODO(M2): verify the host key against
-/// `~/.ssh/known_hosts` instead of trusting any key.
-struct ClientHandler;
+/// russh client event handler. Verifies the host key against `~/.ssh/known_hosts`.
+struct ClientHandler {
+    host: String,
+    port: u16,
+}
 
 impl client::Handler for ClientHandler {
     type Error = russh::Error;
 
-    async fn check_server_key(&mut self, _key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(&mut self, key: &ssh_key::PublicKey) -> Result<bool, Self::Error> {
+        let known_hosts_path = home_dir()
+            .map(|h| h.join(".ssh").join("known_hosts"))
+            .unwrap_or_else(|| PathBuf::from("known_hosts"));
+
+        // If the file doesn't exist, we could fail or create it.
+        // For now, we use russh::keys::check_known_hosts_path which requires the file.
+        // It returns false if the host is not found or key doesn't match.
+        // In a full implementation, if it returns false we should prompt the user
+        // and optionally append it to the file.
+        // As a baseline (M2b strict mode), we reject unknown keys.
+        let is_known = russh::keys::check_known_hosts_path(
+            &self.host,
+            self.port,
+            key,
+            &known_hosts_path,
+        )
+        .unwrap_or(false);
+
+        if !is_known {
+            tracing::warn!("SSH Host key for {}:{} not found in known_hosts or mismatched. Rejecting connection.", self.host, self.port);
+            // Ideally we'd throw an error or prompt the user. For now, return false.
+            return Ok(false);
+        }
+
         Ok(true)
     }
 }

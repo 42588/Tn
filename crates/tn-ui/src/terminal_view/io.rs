@@ -177,6 +177,15 @@ impl TerminalView {
                 dirty.store(false, Ordering::Relaxed);
                 let alive = this
                     .update(cx, |view, cx| {
+                        let mut events = Vec::new();
+                        if let Ok(mut pty) = view.pty.lock() {
+                            while let Some(ev) = pty.try_recv_event() {
+                                events.push(ev);
+                            }
+                        }
+                        for ev in events {
+                            view.handle_pty_event(ev, cx);
+                        }
                         // A hosted agent that just exited reverts the pane to a
                         // plain shell; emit so the workspace relabels the tab.
                         if view.clear_agent_if_exited() {

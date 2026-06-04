@@ -297,6 +297,10 @@ pub struct TerminalView {
     // Opt-in render instrumentation (TN_PERF): render rate + cache hit-rate +
     // rebuild timing, logged to `tn::perf` ~1/s.
     perf: PerfStats,
+    // SSH password prompt state (M2b). When present, the UI renders a GPUI
+    // floating input above the terminal, routing keystrokes to `ssh_password_input`.
+    ssh_password_prompt: Option<(String, std::sync::mpsc::Sender<String>)>,
+    ssh_password_input: String,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -556,6 +560,8 @@ impl TerminalView {
             ime_marked: None,
             render_cache: None,
             perf: PerfStats::new("pane.render"),
+            ssh_password_prompt: None,
+            ssh_password_input: String::new(),
         }
     }
 
@@ -597,6 +603,20 @@ impl TerminalView {
             true
         } else {
             false
+        }
+    }
+
+    /// Process a background event from the PTY backend.
+    pub(super) fn handle_pty_event(&mut self, ev: tn_pty::PtyEvent, cx: &mut Context<Self>) {
+        match ev {
+            tn_pty::PtyEvent::NeedPassword { prompt, reply } => {
+                self.ssh_password_prompt = Some((prompt, reply));
+                self.ssh_password_input.clear();
+                cx.notify();
+            }
+            tn_pty::PtyEvent::Disconnected => {
+                // TODO: Auto reconnect
+            }
         }
     }
 
@@ -1031,6 +1051,47 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Handle SSH password prompt input intercept
+        if let Some((_, reply)) = self.ssh_password_prompt.as_ref() {
+            let keystroke = &event.keystroke;
+            let key = keystroke.key.as_str();
+            if key == "escape" {
+                let _ = reply.send(String::new());
+                self.ssh_password_prompt = None;
+                self.ssh_password_input.clear();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            } else if key == "enter" {
+                let _ = reply.send(self.ssh_password_input.clone());
+                self.ssh_password_prompt = None;
+                self.ssh_password_input.clear();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            } else if key == "backspace" {
+                self.ssh_password_input.pop();
+                cx.notify();
+                cx.stop_propagation();
+                return;
+            } else if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+                if let Some(c) = &keystroke.key_char {
+                    if !c.is_empty() && c.chars().count() == 1 {
+                        self.ssh_password_input.push_str(c);
+                        cx.notify();
+                    }
+                } else if key.chars().count() == 1 {
+                    self.ssh_password_input.push_str(key);
+                    cx.notify();
+                }
+                cx.stop_propagation();
+                return;
+            }
+            // Swallow other keys while prompt is active
+            cx.stop_propagation();
+            return;
+        }
+
         // Keep the cursor solid right as the user types (don't blink mid-keystroke).
         self.cursor_on = true;
         let m = &event.keystroke.modifiers;
@@ -1679,6 +1740,42 @@ impl Render for TerminalView {
             term_area
         };
 
+        let ssh_prompt = self.ssh_password_prompt.as_ref().map(|(prompt, _)| {
+            div()
+                .absolute()
+                .top(px(40.))
+                .right(px(20.))
+                .w(px(320.))
+                .p(px(16.))
+                .rounded_lg()
+                .bg(cola(self.ui_accent, 0.95))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .child(
+                    div().text_sm().text_color(gpui::white()).font_weight(FontWeight::BOLD).child(SharedString::from(prompt.clone())),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(32.))
+                        .rounded_md()
+                        .bg(gpui::black().opacity(0.4))
+                        .px(px(8.))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div().text_color(gpui::white()).child(SharedString::from(
+                                "•".repeat(self.ssh_password_input.len())
+                            )),
+                        )
+                )
+                .child(
+                    div().text_xs().text_color(gpui::white().opacity(0.7)).child("Press Enter to submit, Esc to cancel")
+                )
+        });
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -1695,6 +1792,7 @@ impl Render for TerminalView {
             .when_some(header, |this, h| this.child(h))
             .child(body_region)
             .when_some(block_bar, |this, bar| this.child(bar))
+            .when_some(ssh_prompt, |this, p| this.child(p))
     }
 }
 

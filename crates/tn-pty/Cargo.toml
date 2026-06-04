@@ -12,3 +12,4 @@ anyhow.workspace = true
 tracing.workspace = true
 russh.workspace = true
 tokio.workspace = true
+ssh2-config = "0.6.0"
