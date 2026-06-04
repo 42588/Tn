@@ -1205,6 +1205,18 @@ impl QuickLook {
         self.cursor = (r, c);
     }
 
+    /// Text of display row `row` for mouse hit-testing: editing → live `buf`,
+    /// read-only preview → the `Text` file lines. `None` for non-text previews.
+    fn row_text(&self, row: usize) -> Option<&str> {
+        if self.editing {
+            self.buf.get(row).map(|s| s.as_str())
+        } else if let QuickLookData::Text { lines, .. } = &self.file_data {
+            lines.get(row).map(|s| s.as_str())
+        } else {
+            None
+        }
+    }
+
     /// Drag the bottom horizontal scrollbar thumb → update `hscroll_px`. `cursor_x`
     /// is the absolute mouse X; `hscroll_content_w` (cached in render) gives the
     /// scrollable width without needing the line list here.
@@ -1535,6 +1547,47 @@ impl QuickLook {
 /// data and near-aligned when cells contain wide chars. Pure → headless tested.
 fn disp_width(s: &str) -> usize {
     s.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()
+}
+
+/// Map a horizontal pixel offset (relative to the glyph start = after the gutter)
+/// to the **char index under the pointer** (floor), accounting for CJK double-width
+/// glyphs with the same 1/2-col model as [`disp_width`]. `char_w` = single-column
+/// advance. A naive `rel/char_w` runs ~2× ahead on a CJK line (each 汉字 takes two
+/// columns), which is why the drag selection desynced from the mouse on Chinese
+/// text. Pure → headless tested.
+fn hover_char_at_x(line: &str, rel_x: f32, char_w: f32) -> usize {
+    if rel_x <= 0.0 || char_w <= 0.0 {
+        return 0;
+    }
+    let target = rel_x / char_w; // distance in single-width columns
+    let mut acc = 0.0f32;
+    for (idx, c) in line.chars().enumerate() {
+        let w = if c.is_ascii() { 1.0 } else { 2.0 };
+        if target < acc + w {
+            return idx;
+        }
+        acc += w;
+    }
+    line.chars().count()
+}
+
+/// Like [`hover_char_at_x`] but rounds to the nearest char **boundary** (caret
+/// position) — past a glyph's midpoint the caret lands to its right. Used for
+/// click-to-place-cursor; [`hover_char_at_x`] (floor) is used for drag extent.
+fn caret_col_at_x(line: &str, rel_x: f32, char_w: f32) -> usize {
+    if rel_x <= 0.0 || char_w <= 0.0 {
+        return 0;
+    }
+    let target = rel_x / char_w;
+    let mut acc = 0.0f32;
+    for (idx, c) in line.chars().enumerate() {
+        let w = if c.is_ascii() { 1.0 } else { 2.0 };
+        if target < acc + w {
+            return if target < acc + w / 2.0 { idx } else { idx + 1 };
+        }
+        acc += w;
+    }
+    line.chars().count()
 }
 
 /// Render spreadsheet cells (`.xlsx`/`.xls`/`.ods`) as a left-aligned monospace
@@ -2423,9 +2476,14 @@ impl Render for QuickLook {
                                         move |ev: &MouseDownEvent, _w, app| {
                                             let left = f32::from(bounds.borrow().origin.x);
                                             let rel = f32::from(ev.position.x) - left - GUTTER;
-                                            let col = (rel / char_w).round().max(0.0) as usize;
                                             let shift = ev.modifiers.shift;
                                             let _ = entity.update(app, |this, cx| {
+                                                // CJK 双宽:列由行内容步进算(见 caret_col_at_x),
+                                                // 不能 rel/char_w 当单宽(汉字行会跑 ~2× 偏)。
+                                                let col = this
+                                                    .row_text(i)
+                                                    .map(|l| caret_col_at_x(l, rel, char_w))
+                                                    .unwrap_or(0);
                                                 this.place_cursor(i, col, shift);
                                                 this.edit_drag = true; // 进入拖选
                                                 cx.notify();
@@ -2441,15 +2499,18 @@ impl Render for QuickLook {
                                         }
                                         let left = f32::from(bounds_mv.borrow().origin.x);
                                         let rel = f32::from(ev.position.x) - left - GUTTER;
-                                        // 鼠标悬停的字符索引(floor)。拖选要**包含**它,使「实心块
-                                        // 拖到哪、选区就到哪(含该字符)」——相对锚点向右拖让 caret
-                                        // 落该字符右侧(+1)、向左拖落其左侧。(选区是半开 [a,c),向右
-                                        // 不 +1 会漏掉光标处那个字符 = 你看到的「选到块之前」。)
-                                        let hover = (rel / char_w).max(0.0) as usize;
                                         let _ = entity_mv.update(app, |this, cx| {
                                             if !this.edit_drag {
                                                 return;
                                             }
+                                            // 鼠标悬停的字符索引(floor,CJK 双宽感知)。拖选要**包含**
+                                            // 它,使「实心块拖到哪、选区就到哪(含该字符)」——相对锚点
+                                            // 向右拖让 caret 落该字符右侧(+1)、向左落其左侧。(选区半开
+                                            // [a,c),向右不 +1 会漏掉光标处那个字符 = 你见的「选到块之前」。)
+                                            let hover = this
+                                                .row_text(i)
+                                                .map(|l| hover_char_at_x(l, rel, char_w))
+                                                .unwrap_or(0);
                                             let anchor = this.sel_anchor.unwrap_or(this.cursor);
                                             let col =
                                                 if (i, hover) >= anchor { hover + 1 } else { hover };
@@ -2479,9 +2540,12 @@ impl Render for QuickLook {
                                         move |ev: &MouseDownEvent, _w, app| {
                                             let left = f32::from(bounds.borrow().origin.x);
                                             let rel = f32::from(ev.position.x) - left - GUTTER;
-                                            let col = (rel / char_w).round().max(0.0) as usize;
                                             let shift = ev.modifiers.shift;
                                             let _ = entity.update(app, |this, cx| {
+                                                let col = this
+                                                    .row_text(i)
+                                                    .map(|l| caret_col_at_x(l, rel, char_w))
+                                                    .unwrap_or(0);
                                                 this.place_cursor(i, col, shift);
                                                 this.edit_drag = true;
                                                 cx.notify();
@@ -2495,11 +2559,14 @@ impl Render for QuickLook {
                                         }
                                         let left = f32::from(bounds_mv.borrow().origin.x);
                                         let rel = f32::from(ev.position.x) - left - GUTTER;
-                                        let hover = (rel / char_w).max(0.0) as usize;
                                         let _ = entity_mv.update(app, |this, cx| {
                                             if !this.edit_drag {
                                                 return;
                                             }
+                                            let hover = this
+                                                .row_text(i)
+                                                .map(|l| hover_char_at_x(l, rel, char_w))
+                                                .unwrap_or(0);
                                             let anchor = this.sel_anchor.unwrap_or(this.cursor);
                                             let col =
                                                 if (i, hover) >= anchor { hover + 1 } else { hover };
@@ -2816,6 +2883,28 @@ mod tests {
 
     fn buf(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn hit_test_accounts_for_cjk_double_width() {
+        // char_w = 10px. ASCII line: each glyph 1 col (10px).
+        assert_eq!(hover_char_at_x("abcd", 25.0, 10.0), 2, "25px → 3rd char");
+        assert_eq!(caret_col_at_x("abcd", 25.0, 10.0), 3, "past 中点 → boundary 右");
+        assert_eq!(caret_col_at_x("abcd", 21.0, 10.0), 2, "刚过边界 → 左侧 boundary");
+        // CJK line "中文字": each 汉字 2 cols (20px). Naive rel/char_w would报 ~2× 偏:
+        // 25px naively → idx 2, but visually it's still inside the 2nd 汉字 (20–40px).
+        assert_eq!(hover_char_at_x("中文字", 25.0, 10.0), 1, "25px 落第 2 个汉字");
+        assert_eq!(hover_char_at_x("中文字", 45.0, 10.0), 2, "45px 落第 3 个汉字");
+        assert_eq!(caret_col_at_x("中文字", 35.0, 10.0), 2, "过第2汉字中点 → 其右 boundary");
+        assert_eq!(caret_col_at_x("中文字", 25.0, 10.0), 1, "未过中点 → 其左 boundary");
+        // mixed "a中b": cols a[0–10) 中[10–30) b[30–40)
+        assert_eq!(hover_char_at_x("a中b", 5.0, 10.0), 0);
+        assert_eq!(hover_char_at_x("a中b", 15.0, 10.0), 1, "15px 在汉字内");
+        assert_eq!(hover_char_at_x("a中b", 35.0, 10.0), 2, "35px 在 b 上");
+        // 边界:负/零偏移 → 0;远超行尾 → char count
+        assert_eq!(hover_char_at_x("a中b", -3.0, 10.0), 0);
+        assert_eq!(hover_char_at_x("a中b", 999.0, 10.0), 3);
+        assert_eq!(caret_col_at_x("a中b", 999.0, 10.0), 3);
     }
 
     #[test]
