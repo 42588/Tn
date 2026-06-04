@@ -92,6 +92,15 @@ pub trait Killer: Send {
     fn kill(&mut self) -> anyhow::Result<()>;
 }
 
+/// Which SSH auth method ultimately succeeded — surfaced to the UI so the
+/// recent-connections list can show a key/password badge (A1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthKind {
+    PublicKey,
+    Password,
+    KeyboardInteractive,
+}
+
 /// An event emitted by a PTY backend that requires UI interaction.
 pub enum PtyEvent {
     /// The backend needs a password to continue authentication.
@@ -100,6 +109,11 @@ pub enum PtyEvent {
         prompt: String,
         /// A channel to send the password back. If dropped without sending, auth fails.
         reply: std::sync::mpsc::Sender<String>,
+    },
+    /// Authentication succeeded and the remote shell is open — the UI records
+    /// this target as a recent connection, tagged with the method used.
+    Connected {
+        method: AuthKind,
     },
     /// The connection was lost. The UI can choose to reconnect.
     Disconnected,

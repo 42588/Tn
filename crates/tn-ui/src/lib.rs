@@ -15,6 +15,7 @@ mod perf;
 mod platform;
 mod quick_look;
 mod quick_terminal;
+mod ssh_recents;
 mod style;
 mod terminal_view;
 mod welcome;

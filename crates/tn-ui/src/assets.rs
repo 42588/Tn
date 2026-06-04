@@ -45,6 +45,11 @@ const ICON_BODIES: &[(&str, &str)] = &[
     ("refresh", r#"<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19.5 4.5V9H15"/>"#),
     ("info", r#"<circle cx="12" cy="12" r="8"/><path d="M12 11.5v4.5"/><path d="M12 8.2h.01"/>"#),
     ("power", r#"<path d="M12 4.5v6.5"/><path d="M7.8 7.8a6.5 6.5 0 1 0 8.4 0"/>"#),
+    // SSH connector (06-ssh.html): remote globe, key/password auth badges, favorite star
+    ("globe", r#"<circle cx="12" cy="12" r="8.2"/><path d="M3.8 12h16.4M12 3.8c2.4 2.3 2.4 14.1 0 16.4M12 3.8c-2.4 2.3-2.4 14.1 0 16.4"/>"#),
+    ("key", r#"<circle cx="9" cy="14" r="3.2"/><path d="M11.3 11.7 19 4M16.4 6.6l2 2M14.3 8.7l1.8 1.8"/>"#),
+    ("lock", r#"<rect x="5.5" y="11" width="13" height="8.5" rx="2"/><path d="M8.2 11V8a3.8 3.8 0 0 1 7.6 0v3"/>"#),
+    ("star", r#"<path d="M12 4l2.5 5.1 5.6.8-4 3.9.95 5.6L12 16.8 7 19.4l.95-5.6-4-3.9 5.6-.8z"/>"#),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so

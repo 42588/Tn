@@ -24,7 +24,8 @@ use crate::explorer::{ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
-use crate::terminal_view::{FilesChanged, LaunchSpec, OpenInQuickLook, TerminalView, UsageUpdated};
+use crate::ssh_recents::{AuthBadge, SshRecents};
+use crate::terminal_view::{FilesChanged, LaunchSpec, OpenInQuickLook, SshConnected, TerminalView, UsageUpdated};
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
 type PaneId = u64;
@@ -600,6 +601,11 @@ pub struct Workspace {
     /// Tracks whether we have currently disabled IME for the SSH prompt (to
     /// avoid redundant `ImmAssociateContextEx` calls on every render frame).
     ssh_ime_disabled: bool,
+    /// Remembered SSH endpoints (A1). The connector lists these for one-keystroke
+    /// reconnect; a successful connect upserts the target here.
+    ssh_recents: SshRecents,
+    /// Selected row in the connector's recents list (index into the filtered list).
+    ssh_prompt_sel: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -689,6 +695,7 @@ impl Workspace {
             ws.ssh_prompt_needs_focus = true;
             ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
             ws.ssh_prompt_input.clear();
+            ws.ssh_prompt_sel = 0;
             cx.notify();
         })
         .detach();
@@ -742,6 +749,8 @@ impl Workspace {
             ssh_prompt_needs_focus: false,
             ssh_prompt_intent: None,
             ssh_ime_disabled: false,
+            ssh_recents: SshRecents::load(),
+            ssh_prompt_sel: 0,
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -962,8 +971,12 @@ impl Workspace {
         // new pane opens in the same directory as its sibling. Fall back to the
         // explorer root for the first pane (no sibling to inherit from).
         launch.cwd.get_or_insert_with(|| {
-            self.panes
-                .get(&self.tabs[self.active].focused)
+            // The very first pane (TN_AUTOQUIT/DEMO) is spawned *before* its tab is
+            // pushed, so `self.tabs[self.active]` would be out of bounds — fall back
+            // to the explorer root then. `.get` keeps this safe for the first pane.
+            self.tabs
+                .get(self.active)
+                .and_then(|tab| self.panes.get(&tab.focused))
                 .and_then(|v| v.read(cx).effective_cwd().map(std::path::PathBuf::from))
                 .unwrap_or_else(|| self.explorer.read(cx).root())
         });
@@ -1001,6 +1014,18 @@ impl Workspace {
             });
             ws.quick_look_open = true;
             cx.notify();
+        })
+        .detach();
+        // SSH pane authenticated + shell open → record its target as a recent
+        // connection (A1), tagged with the method that worked. The target lives in
+        // this pane's spec (pane_specs[id].ssh).
+        cx.subscribe(&view, move |ws, _view, ev: &SshConnected, cx| {
+            if let Some(cfg) = ws.pane_specs.get(&id).and_then(|s| s.ssh.clone()) {
+                ws.ssh_recents
+                    .record(&cfg.host, &cfg.user, cfg.port, AuthBadge::from_pty(ev.0));
+                ws.ssh_recents.save();
+                cx.notify();
+            }
         })
         .detach();
         self.panes.insert(id, view);
@@ -1173,6 +1198,7 @@ impl Workspace {
                 self.ssh_prompt_needs_focus = true;
                 self.ssh_prompt_intent = Some(SshPromptIntent::Palette);
                 self.ssh_prompt_input.clear();
+                self.ssh_prompt_sel = 0;
                 cx.notify();
             }
         }
@@ -1836,68 +1862,121 @@ impl Workspace {
     }
     fn on_ssh_prompt_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
-        if key == "escape" {
-            self.ssh_prompt_open = false;
-            self.refocus_active(window, cx);
-            cx.notify();
-        } else if key == "enter" {
-            let input = self.ssh_prompt_input.trim().to_string();
-            self.ssh_prompt_open = false;
-            self.ssh_prompt_input.clear();
-            cx.notify();
-            
-            if !input.is_empty() {
-                let cfg = tn_pty::SshConfig::parse(&input, None);
-                let mut program = cfg.host.clone();
-                if cfg.user != "root" && !cfg.user.is_empty() {
-                    program = format!("{}@{}", cfg.user, cfg.host);
-                }
-                let spec = LaunchSpec {
-                    program,
-                    args: vec![],
-                    integrate_pwsh: false,
-                    shell_integration: None,
-                    agent: None,
-                    ssh: Some(cfg),
-                    cwd: None,
-                };
-                
-                match self.ssh_prompt_intent.take() {
-                    Some(SshPromptIntent::Welcome) => {
-                        let id = self.spawn_pane_with(cx, spec);
-                        if let Some(tab) = self.tabs.get_mut(self.active) {
-                            tab.root = Node::Leaf(id);
-                            tab.focused = id;
-                            tab.welcome = false;
-                        }
-                    }
-                    Some(SshPromptIntent::Palette) => {
-                        let id = self.spawn_pane_with(cx, spec);
-                        self.tabs.push(Tab::panes(Node::Leaf(id), id));
-                        self.active = self.tabs.len() - 1;
-                        self.focus_pane(id, window, cx);
-                    }
-                    Some(SshPromptIntent::Split(dir)) => {
-                        self.split_session(dir, spec, window, cx);
-                    }
-                    None => {}
+        // The input box doubles as a live filter over the recents list.
+        let rows = self.ssh_recents.filtered(&self.ssh_prompt_input).len();
+        match key {
+            "escape" => {
+                self.ssh_prompt_open = false;
+                self.ssh_prompt_intent = None;
+                self.refocus_active(window, cx);
+                cx.notify();
+            }
+            "down" => {
+                if rows > 0 {
+                    self.ssh_prompt_sel = (self.ssh_prompt_sel + 1).min(rows - 1);
+                    cx.notify();
                 }
             }
-        } else if key == "backspace" {
-            self.ssh_prompt_input.pop();
-            cx.notify();
-        } else if let Some(c) = &ev.keystroke.key_char {
-            if !ev.keystroke.modifiers.control
-                && !ev.keystroke.modifiers.alt
-                && !ev.keystroke.modifiers.platform
-                // Only accept printable ASCII — no Chinese/emoji/etc. from IME slip-through.
-                && c.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
-            {
-                self.ssh_prompt_input.push_str(c);
+            "up" => {
+                self.ssh_prompt_sel = self.ssh_prompt_sel.saturating_sub(1);
                 cx.notify();
+            }
+            "enter" => {
+                // Matching recents → connect the selected one; no matches → connect
+                // whatever was typed (a brand-new target). Scope the borrow so the
+                // owned target string outlives it before we mutate self.
+                let target: Option<String> = {
+                    let recents = self.ssh_recents.filtered(&self.ssh_prompt_input);
+                    if recents.is_empty() {
+                        let t = self.ssh_prompt_input.trim();
+                        (!t.is_empty()).then(|| t.to_string())
+                    } else {
+                        recents
+                            .get(self.ssh_prompt_sel)
+                            .or_else(|| recents.first())
+                            .map(|r| r.target())
+                    }
+                };
+                match target {
+                    Some(target) => self.ssh_connect(&target, window, cx),
+                    None => {
+                        self.ssh_prompt_open = false;
+                        self.ssh_prompt_intent = None;
+                        self.refocus_active(window, cx);
+                        cx.notify();
+                    }
+                }
+            }
+            "backspace" => {
+                self.ssh_prompt_input.pop();
+                self.ssh_prompt_sel = 0;
+                cx.notify();
+            }
+            _ => {
+                if let Some(c) = &ev.keystroke.key_char {
+                    if !ev.keystroke.modifiers.control
+                        && !ev.keystroke.modifiers.alt
+                        && !ev.keystroke.modifiers.platform
+                        // Only accept printable ASCII — no Chinese/emoji/etc. from IME slip-through.
+                        && c.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+                    {
+                        self.ssh_prompt_input.push_str(c);
+                        self.ssh_prompt_sel = 0;
+                        cx.notify();
+                    }
+                }
             }
         }
         cx.stop_propagation();
+    }
+
+    /// Connect to an SSH target (`user@host[:port]`) and dispatch to the recorded
+    /// intent (welcome / palette / split). Closes the connector. Used by both the
+    /// typed-target path and clicking/selecting a recent.
+    fn ssh_connect(&mut self, target: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.ssh_prompt_open = false;
+        self.ssh_prompt_input.clear();
+        self.ssh_prompt_sel = 0;
+        cx.notify();
+        let target = target.trim();
+        if target.is_empty() {
+            self.ssh_prompt_intent = None;
+            return;
+        }
+        let cfg = tn_pty::SshConfig::parse(target, None);
+        let mut program = cfg.host.clone();
+        if cfg.user != "root" && !cfg.user.is_empty() {
+            program = format!("{}@{}", cfg.user, cfg.host);
+        }
+        let spec = LaunchSpec {
+            program,
+            args: vec![],
+            integrate_pwsh: false,
+            shell_integration: None,
+            agent: None,
+            ssh: Some(cfg),
+            cwd: None,
+        };
+        match self.ssh_prompt_intent.take() {
+            Some(SshPromptIntent::Welcome) => {
+                let id = self.spawn_pane_with(cx, spec);
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    tab.root = Node::Leaf(id);
+                    tab.focused = id;
+                    tab.welcome = false;
+                }
+            }
+            Some(SshPromptIntent::Palette) => {
+                let id = self.spawn_pane_with(cx, spec);
+                self.tabs.push(Tab::panes(Node::Leaf(id), id));
+                self.active = self.tabs.len() - 1;
+                self.focus_pane(id, window, cx);
+            }
+            Some(SshPromptIntent::Split(dir)) => {
+                self.split_session(dir, spec, window, cx);
+            }
+            None => {}
+        }
     }
 
     fn render_ssh_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
@@ -1908,83 +1987,158 @@ impl Workspace {
         let ui = &t.ui;
         let mono = SharedString::from(self.config.font().family.clone());
         let placeholder = "user@host:port  (例: root@192.168.1.1:22)";
-        
+        let typed = self.ssh_prompt_input.trim().to_string();
+
+        // ── live-parse chips: cheap user@host:port split (no IO) for the input row ──
+        let chips = (!typed.is_empty()).then(|| {
+            let (user, rest) = match typed.split_once('@') {
+                Some((u, r)) if !u.is_empty() => (Some(u.to_string()), r),
+                _ => (None, typed.as_str()),
+            };
+            let (host, port) = match rest.rsplit_once(':') {
+                Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
+                    (h.to_string(), Some(p.to_string()))
+                }
+                _ => (rest.to_string(), None),
+            };
+            (user, host, port)
+        });
+        let chip = |label: &str, val: String| {
+            div()
+                .flex().flex_row().items_center().gap(px(4.))
+                .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(rgba(HOVER)).text_size(px(10.))
+                .child(div().text_color(col(ui.muted)).child(SharedString::from(label.to_string())))
+                .child(div().font_family(mono.clone()).text_color(col(ui.accent)).child(SharedString::from(val)))
+        };
+        let chips_row = chips.as_ref().map(|(user, host, port)| {
+            let mut r = div().flex().flex_row().items_center().gap(px(5.));
+            if let Some(u) = user {
+                r = r.child(chip("user", u.clone()));
+            }
+            r = r.child(chip("host", host.clone()));
+            if let Some(p) = port {
+                r = r.child(chip("port", p.clone()));
+            }
+            r
+        });
+
         let input = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(10.))
-            .px(px(16.))
-            .py(px(13.))
+            .flex().flex_row().items_center().gap(px(10.)).px(px(16.)).py(px(13.))
             .text_size(px(14.))
-            .child(div().child(icon("external", 16., ui.muted)))
+            .child(div().child(icon("globe", 16., ui.muted)))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .font_family(mono.clone())
+                div().flex().flex_row().items_center().font_family(mono.clone())
                     .when(!self.ssh_prompt_input.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .text_color(col(ui.foreground))
-                                .child(SharedString::from(self.ssh_prompt_input.clone())),
-                        )
+                        d.child(div().text_color(col(ui.foreground)).child(SharedString::from(self.ssh_prompt_input.clone())))
                     })
                     .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
                     .when(self.ssh_prompt_input.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .ml(px(2.))
-                                .text_color(col(ui.muted))
-                                .child(SharedString::from(placeholder)),
-                        )
+                        d.child(div().ml(px(2.)).text_color(col(ui.muted)).child(SharedString::from(placeholder)))
                     }),
-            );
+            )
+            .child(div().flex_1())
+            .when_some(chips_row, |d, c| d.child(c));
+
+        // ── recents list (favorites first, then most-recent), filtered by input ──
+        let recents = self.ssh_recents.filtered(&self.ssh_prompt_input);
+        let sel = self.ssh_prompt_sel.min(recents.len().saturating_sub(1));
+        let list: gpui::Div = if recents.is_empty() {
+            let hint = if self.ssh_prompt_input.trim().is_empty() {
+                "还没有最近连接 — 输入 user@host:port 连接,成功后自动记住"
+            } else {
+                "无匹配 · 按 Enter 连接所输入的地址"
+            };
+            div().px(px(14.)).py(px(13.)).text_size(px(12.)).text_color(col(ui.muted))
+                .child(SharedString::from(hint))
+        } else {
+            let mut col_div = div().flex().flex_col().p(px(6.)).max_h(px(360.)).overflow_hidden();
+            for (i, r) in recents.iter().enumerate() {
+                let is_sel = i == sel;
+                let host = r.host.clone();
+                let user = r.user.clone();
+                let port = r.port;
+                let target = r.target();
+                let favorite = r.favorite;
+                let auth = r.auth;
+                let when = crate::ssh_recents::rel_time(r.last_used);
+                // ⭐ star toggles favorite without triggering the row's connect.
+                let (fav_host, fav_user) = (host.clone(), user.clone());
+                let star = div()
+                    .child(icon("star", 14., if favorite { t.ansi.yellow } else { ui.muted }))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.ssh_recents.toggle_favorite(&fav_host, &fav_user, port);
+                        this.ssh_recents.save();
+                        cx.notify();
+                    }));
+                let badge = match auth {
+                    AuthBadge::Key => Some(("key", "密钥", t.ansi.green)),
+                    AuthBadge::Password => Some(("lock", "密码", t.ansi.yellow)),
+                    AuthBadge::Unknown => None,
+                };
+                let conn_target = target.clone();
+                let row = div()
+                    .flex().flex_row().items_center().gap(px(11.))
+                    .px(px(11.)).py(px(9.)).rounded(px(9.))
+                    .when(is_sel, |d| d.bg(rgba(HOVER)))
+                    .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| {
+                        this.ssh_connect(&conn_target, w, cx);
+                    }))
+                    .child(star)
+                    .child(
+                        div().flex().flex_col().gap(px(1.)).min_w(px(0.))
+                            .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(host.clone())))
+                            .child(div().font_family(mono.clone()).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(target.clone()))),
+                    )
+                    .child(div().flex_1())
+                    .when_some(badge, |d, (ic, label, color)| {
+                        d.child(
+                            div().flex().flex_row().items_center().gap(px(5.))
+                                .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(color, 0.12))
+                                .child(icon(ic, 11., color))
+                                .child(div().text_size(px(10.)).text_color(col(color)).child(SharedString::from(label.to_string()))),
+                        )
+                    })
+                    // .when (relative time) — faint(无 token,同 .meta)
+                    .child(div().min_w(px(46.)).text_size(px(10.5)).text_color(gpui::rgb(0x474E72)).child(SharedString::from(when)));
+                col_div = col_div.child(row);
+            }
+            col_div
+        };
 
         let panel = crate::style::shadowed(
-            div()
-                .flex()
-                .flex_col()
-                .w(px(560.))
-                .rounded(px(R_PANEL))
-                .overflow_hidden()
-                .border_1()
-                .border_color(rgba(RIM))
+            div().flex().flex_col().w(px(560.)).rounded(px(R_PANEL)).overflow_hidden()
+                .border_1().border_color(rgba(RIM))
                 .bg(linear_gradient(
                     180.,
                     linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
                     linear_color_stop(rgba(0x161826eb), 1.),
                 ))
                 .child(input)
-                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
+                .child(list)
+                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(
-                    div()
-                        .p(px(12.))
-                        .text_size(px(12.))
-                        .text_color(col(ui.muted))
-                        .child("输入 SSH 目标地址并按 Enter 连接 · Esc 取消"),
+                    div().flex().flex_row().items_center().gap(px(8.))
+                        .px(px(14.)).py(px(9.)).text_size(px(11.)).text_color(col(ui.muted))
+                        .child(SharedString::from("↑↓ 选择 · ↵ 连接 · ★ 收藏 · Esc 取消")),
                 ),
             vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
         );
 
         let pl = if self.explorer_open { self.explorer_width + 23. } else { 12. };
-        
+
         Some(
             div()
-                .absolute()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center() // Center vertically
-                .pl(px(pl)) // Account for explorer width + body padding/gap
-                .pr(px(12.)) // Account for right body padding
+                .absolute().size_full().flex().flex_col().items_center().justify_center()
+                .pl(px(pl)).pr(px(12.))
                 .bg(rgba(0x0a0b118c))
                 .track_focus(&self.ssh_prompt_focus)
                 .on_key_down(cx.listener(Self::on_ssh_prompt_key))
                 .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, w, cx| {
                     this.ssh_prompt_open = false;
+                    this.ssh_prompt_intent = None;
                     this.refocus_active(w, cx);
                     cx.notify();
                 }))
@@ -1995,7 +2149,7 @@ impl Workspace {
                             this.ssh_prompt_focus.focus(w);
                             cx.notify();
                         }))
-                        .child(panel)
+                        .child(panel),
                 ),
         )
     }
@@ -2255,6 +2409,7 @@ impl Workspace {
                 self.ssh_prompt_needs_focus = true;
                 self.ssh_prompt_intent = Some(SshPromptIntent::Split(dir));
                 self.ssh_prompt_input.clear();
+                self.ssh_prompt_sel = 0;
                 cx.notify();
             }
         }

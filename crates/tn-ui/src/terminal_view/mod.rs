@@ -55,6 +55,11 @@ pub struct ProcessExited;
 /// 「点卡片 = 速览全 diff」). Carries the absolute path.
 pub struct OpenInQuickLook(pub std::path::PathBuf);
 
+/// Emitted when this pane's SSH session finishes authenticating and opens its
+/// shell — the workspace records the pane's target as a recent connection (A1),
+/// tagged with the method that worked.
+pub struct SshConnected(pub tn_pty::AuthKind);
+
 use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER};
 
@@ -623,8 +628,13 @@ impl TerminalView {
                 self.ssh_password_input.clear();
                 cx.notify();
             }
+            tn_pty::PtyEvent::Connected { method } => {
+                // Authenticated + shell open → workspace records this as a recent
+                // SSH connection (A1). Workspace knows the target via pane_specs.
+                cx.emit(SshConnected(method));
+            }
             tn_pty::PtyEvent::Disconnected => {
-                // TODO: Auto reconnect
+                // TODO: Auto reconnect (B4 — reconnect banner).
             }
         }
     }
@@ -1261,6 +1271,7 @@ impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
 impl gpui::EventEmitter<FilesChanged> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
+impl gpui::EventEmitter<SshConnected> for TerminalView {}
 
 /// IME / text input (fixes "终端无法输入中文"). gpui only delivers IME-composed text
 /// (pinyin → 中文) through an [`EntityInputHandler`]; without one, only ASCII

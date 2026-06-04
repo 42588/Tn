@@ -327,11 +327,14 @@ async fn run_session(
             }
         };
 
-        if let Err(e) = authenticate(&mut handle, &cfg, &event_tx, &waker, &in_tx).await {
-            let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 认证失败: {}\r\n", e);
-            let _ = in_tx.send(msg.into_bytes());
-            return Err(e);
-        }
+        let auth_method = match authenticate(&mut handle, &cfg, &event_tx, &waker, &in_tx).await {
+            Ok(m) => m,
+            Err(e) => {
+                let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 认证失败: {}\r\n", e);
+                let _ = in_tx.send(msg.into_bytes());
+                return Err(e);
+            }
+        };
 
         let _ = in_tx.send("\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n".as_bytes().to_vec());
 
@@ -341,6 +344,14 @@ async fn run_session(
             .await
             .context("request pty")?;
         channel.request_shell(true).await.context("request shell")?;
+
+        // Connected — let the UI record this target as a recent connection (A1),
+        // tagged with the method that actually worked.
+        if event_tx.send(crate::PtyEvent::Connected { method: auth_method }).is_ok() {
+            if let Some(w) = waker.lock().unwrap().as_ref() {
+                w();
+            }
+        }
 
         let mut explicit_exit = false;
 
@@ -407,14 +418,15 @@ async fn authenticate(
     event_tx: &StdSender<crate::PtyEvent>,
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     in_tx: &StdSender<Vec<u8>>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<crate::AuthKind> {
     // Probe offered methods via `none` (like `ssh -v`'s "Authentications that can
     // continue"). The failure reply carries the list — invaluable for diagnosing
     // blind. An empty list (probe errored) ⇒ assume every method is on offer and
     // just try them all.
     let mut methods: Vec<russh::MethodKind> = Vec::new();
     match handle.authenticate_none(cfg.user.as_str()).await {
-        Ok(client::AuthResult::Success) => return Ok(()), // passwordless (rare)
+        // Passwordless `none` accepted (very rare) — no secret given, badge as key.
+        Ok(client::AuthResult::Success) => return Ok(crate::AuthKind::PublicKey),
         Ok(client::AuthResult::Failure { remaining_methods, .. }) => {
             methods = remaining_methods.iter().copied().collect();
             let _ = in_tx.send(
@@ -446,7 +458,7 @@ async fn authenticate(
                 )
                 .await?;
             if res.success() {
-                return Ok(());
+                return Ok(crate::AuthKind::PublicKey);
             }
         }
     }
@@ -474,7 +486,7 @@ async fn authenticate(
                 .await?
                 .success()
             {
-                return Ok(());
+                return Ok(crate::AuthKind::Password);
             }
         }
         if server_offers(&methods, russh::MethodKind::KeyboardInteractive) {
@@ -484,7 +496,7 @@ async fn authenticate(
                     .to_vec(),
             );
             if try_keyboard_interactive(handle, cfg.user.as_str(), &pw).await? {
-                return Ok(());
+                return Ok(crate::AuthKind::KeyboardInteractive);
             }
         }
     }
