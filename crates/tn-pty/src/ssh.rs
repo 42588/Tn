@@ -18,13 +18,15 @@
 //! - **wait / try_wait**: a `Mutex<Option<i32>>` + `Condvar`, set on `ExitStatus`
 //!   or channel close.
 //!
-//! > **Status:** compiles + unit-tested for the headless config/parsing; the live
-//! > connect/auth/shell path is **unverified end-to-end** (no test host yet — see
-//! > CLAUDE.md M2). Auth chain is key-file → password; **agent + known_hosts
-//! > verification are TODO** (currently `check_server_key` accepts any key).
+//! > **Status:** compiles + unit-tested (headless config/parsing). The live
+//! > connect/auth/shell path is **unverified end-to-end** (no real test host yet —
+//! > see CLAUDE.md M2 "parked"). Auth chain: key-file → UI-prompted password;
+//! > `check_server_key` verifies against `~/.ssh/known_hosts` with TOFU on first
+//! > connect. **ssh-agent is TODO** (see `authenticate` TODO comment).
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver as StdReceiver, Sender as StdSender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -279,12 +281,14 @@ async fn run_session(
     let mut current_size = size;
 
     loop {
+        let key_rejected = Arc::new(AtomicBool::new(false));
         let handler = ClientHandler {
             host: cfg.host.clone(),
             port: cfg.port,
             in_tx: in_tx.clone(),
+            key_rejected: key_rejected.clone(),
         };
-        
+
         let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n", cfg.user, cfg.host, cfg.port).into_bytes());
 
         let connect_res = tokio::time::timeout(
@@ -295,6 +299,11 @@ async fn run_session(
         let mut handle = match connect_res {
             Ok(Ok(h)) => h,
             Ok(Err(e)) => {
+                // If we deliberately rejected the host key, do NOT retry — the
+                // warning was already printed by check_server_key.
+                if key_rejected.load(Ordering::Relaxed) {
+                    return Err(anyhow!("host key rejected"));
+                }
                 let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
                 let _ = in_tx.send(msg.into_bytes());
                 tokio::select! {
@@ -439,6 +448,10 @@ struct ClientHandler {
     host: String,
     port: u16,
     in_tx: StdSender<Vec<u8>>,
+    /// Set to `true` when we deliberately reject a mismatched host key, so the
+    /// outer retry loop can distinguish "network error → retry" from
+    /// "key mismatch → abort".
+    key_rejected: Arc<AtomicBool>,
 }
 
 impl client::Handler for ClientHandler {
@@ -475,6 +488,9 @@ impl client::Handler for ClientHandler {
                 );
                 let _ = self.in_tx.send(warning.into_bytes());
                 tracing::warn!("SSH: HOST KEY MISMATCH for {}:{}!", self.host, self.port);
+                // Signal the outer loop: this is a deliberate rejection, not a
+                // transient network failure — do NOT retry.
+                self.key_rejected.store(true, Ordering::Relaxed);
                 Ok(false)
             }
         }
