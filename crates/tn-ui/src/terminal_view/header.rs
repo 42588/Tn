@@ -242,19 +242,38 @@ impl TerminalView {
             ),
             None => head,
         };
-        head.child(div().flex_1()) // .sp
-            .child(
-                // mockup .chip:10.5 · 560 · py2 px9 · radius999 · fg-dim · bg g3(.06)
+        let mut head = head.child(div().flex_1()); // .sp
+        // B4: SSH connection-state four-phase dot + label (mockup `.cstate .d`).
+        if let Some(state) = self.ssh_conn {
+            use super::SshConnState::*;
+            let (color, label) = match state {
+                Connecting => (self.ui_accent, "连接中"),
+                Connected => (self.palette.ansi[2], "已连接"), // green
+                Reconnecting => (self.palette.ansi[3], "重连中"), // yellow
+                Disconnected => (self.palette.ansi[1], "已断开"), // red
+            };
+            head = head.child(
                 div()
-                    .text_size(px(10.5))
-                    .font_weight(FontWeight(560.))
-                    .py(px(2.))
-                    .px(px(9.))
-                    .rounded_full()
-                    .text_color(gpui::rgb(0xA6AFD4))
-                    .bg(rgba(HOVER))
-                    .child(SharedString::from(shell)),
-            )
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(color)))
+                    .child(div().text_size(px(10.5)).text_color(col(color)).child(SharedString::from(label))),
+            );
+        }
+        head.child(
+            // mockup .chip:10.5 · 560 · py2 px9 · radius999 · fg-dim · bg g3(.06)
+            div()
+                .text_size(px(10.5))
+                .font_weight(FontWeight(560.))
+                .py(px(2.))
+                .px(px(9.))
+                .rounded_full()
+                .text_color(gpui::rgb(0xA6AFD4))
+                .bg(rgba(HOVER))
+                .child(SharedString::from(shell)),
+        )
     }
 
     /// 活动栏里的一张「文件 + 增删」行(mockup `.afile`):图标 + 文件名 + 右侧 +N/−N。

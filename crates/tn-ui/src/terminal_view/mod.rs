@@ -89,6 +89,24 @@ pub(crate) struct SshPasswordPrompt {
 /// prompt (B3).
 pub struct SshRememberPassword(pub String);
 
+/// An in-flight host-key trust request (B2 TOFU): the host, its SHA256
+/// fingerprint, and the verdict reply channel.
+pub(crate) struct SshHostKeyPrompt {
+    pub host: String,
+    pub fingerprint: String,
+    pub reply: std::sync::mpsc::Sender<tn_pty::HostKeyVerdict>,
+}
+
+/// An SSH pane's live connection state — the four-phase dot in the header +
+/// reconnect banner (B4).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SshConnState {
+    Connecting,
+    Connected,
+    Reconnecting,
+    Disconnected,
+}
+
 use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER};
 
@@ -350,6 +368,12 @@ pub struct TerminalView {
     ssh_progress: Option<(tn_pty::SshPhase, String)>,
     // SSH failure detail for the actionable error card (C1); `None` = no error.
     ssh_error: Option<SshErrorInfo>,
+    // B2 TOFU: pending host-key trust prompt + the "记住(写 known_hosts)" toggle.
+    ssh_hostkey: Option<SshHostKeyPrompt>,
+    ssh_hostkey_remember: bool,
+    // B4: live connection state for SSH panes (None = not an SSH pane). Drives the
+    // header's four-phase dot + the reconnect banner.
+    ssh_conn: Option<SshConnState>,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -627,6 +651,9 @@ impl TerminalView {
             ssh_target,
             ssh_progress: None,
             ssh_error: None,
+            ssh_hostkey: None,
+            ssh_hostkey_remember: true,
+            ssh_conn: launch.ssh.as_ref().map(|_| SshConnState::Connecting),
         }
     }
 
@@ -696,6 +723,12 @@ impl TerminalView {
                 // clears any stale error card.
                 self.ssh_progress = Some((phase, detail));
                 self.ssh_error = None;
+                // B4: progress after a prior connect/drop = a reconnect (slim
+                // banner, no big card); the very first connect = Connecting.
+                self.ssh_conn = self.ssh_conn.map(|s| match s {
+                    SshConnState::Connecting => SshConnState::Connecting,
+                    _ => SshConnState::Reconnecting,
+                });
                 cx.notify();
             }
             tn_pty::PtyEvent::SshFailed { kind, detail, offered } => {
@@ -704,17 +737,28 @@ impl TerminalView {
                 self.ssh_error = Some(SshErrorInfo { kind, detail, offered });
                 cx.notify();
             }
+            tn_pty::PtyEvent::NeedHostKeyConfirm { host, fingerprint, reply } => {
+                // B2 TOFU: pause on the trust panel (the progress card hides).
+                self.ssh_hostkey = Some(SshHostKeyPrompt { host, fingerprint, reply });
+                self.ssh_hostkey_remember = true;
+                self.ssh_progress = None;
+                cx.notify();
+            }
             tn_pty::PtyEvent::Connected { method } => {
                 // Authenticated + shell open → drop the progress card, and let the
                 // workspace record this as a recent SSH connection (A1). Workspace
                 // knows the target via pane_specs.
                 self.ssh_progress = None;
                 self.ssh_error = None;
+                self.ssh_conn = self.ssh_conn.map(|_| SshConnState::Connected);
                 cx.emit(SshConnected(method));
                 cx.notify();
             }
             tn_pty::PtyEvent::Disconnected => {
-                // TODO: Auto reconnect (B4 — reconnect banner).
+                // B4: connection dropped — the backend auto-reconnects after 5s
+                // (a SshProgress will flip us to Reconnecting). Show the banner.
+                self.ssh_conn = self.ssh_conn.map(|_| SshConnState::Disconnected);
+                cx.notify();
             }
         }
     }
@@ -737,6 +781,26 @@ impl TerminalView {
         let Some(p) = self.ssh_password_prompt.take() else { return };
         let _ = p.reply.send(String::new());
         self.ssh_password_input.clear();
+        cx.notify();
+    }
+
+    /// Trust the pending host key (B2): save to known_hosts if "记住" is checked,
+    /// else accept for this session only.
+    fn trust_host_key(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ssh_hostkey.take() else { return };
+        let verdict = if self.ssh_hostkey_remember {
+            tn_pty::HostKeyVerdict::AcceptAndSave
+        } else {
+            tn_pty::HostKeyVerdict::AcceptOnce
+        };
+        let _ = p.reply.send(verdict);
+        cx.notify();
+    }
+
+    /// Reject the pending host key (B2): abort the connection.
+    fn reject_host_key(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ssh_hostkey.take() else { return };
+        let _ = p.reply.send(tn_pty::HostKeyVerdict::Reject);
         cx.notify();
     }
 
@@ -1178,6 +1242,17 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // SSH host-key trust panel (B2): Enter = trust, Esc = reject. Highest
+        // precedence — it gates the rest of the connection.
+        if self.ssh_hostkey.is_some() {
+            match event.keystroke.key.as_str() {
+                "enter" => self.trust_host_key(cx),
+                "escape" => self.reject_host_key(cx),
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
         // SSH error card (C1): Enter = retry, Esc = close. Takes precedence over
         // the terminal so the dead session's keys don't leak through.
         if self.ssh_error.is_some() {
@@ -1934,8 +2009,12 @@ impl Render for TerminalView {
                 )
         };
 
-        // B1: connection progress card.
-        let ssh_progress_card = (self.ssh_password_prompt.is_none() && self.ssh_error.is_none())
+        // B1: connection progress card. Suppressed during a *reconnect* (B4 shows
+        // the slim banner instead of the big card).
+        let ssh_progress_card = (self.ssh_password_prompt.is_none()
+            && self.ssh_error.is_none()
+            && self.ssh_hostkey.is_none()
+            && self.ssh_conn != Some(SshConnState::Reconnecting))
             .then_some(self.ssh_progress.as_ref())
             .flatten()
             .map(|(phase, detail)| {
@@ -2004,8 +2083,10 @@ impl Render for TerminalView {
                     } else {
                         format!("密钥被拒或密码错误。服务器开放的方式:{}。", info.offered)
                     }
-                } else {
+                } else if info.detail.is_empty() {
                     "服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。".to_string()
+                } else {
+                    format!("服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。\n服务器本次指纹:{}", info.detail)
                 };
                 // Yellow hint box (auth only): the backend's server-config hint, or a generic one.
                 let hint = if is_auth {
@@ -2152,6 +2233,91 @@ impl Render for TerminalView {
             )
         });
 
+        // B2: host-key trust panel (TOFU) — shown on first contact with an
+        // unrecognized host, before auth.
+        let ssh_hostkey_card = self.ssh_hostkey.as_ref().map(|hk| {
+            let remembered = self.ssh_hostkey_remember;
+            let fp_box = div()
+                .mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(8.))
+                .bg(rgba(crate::style::INSET)).border_1().border_color(rgba(crate::style::RIM))
+                .child(div().text_size(px(10.)).text_color(col(self.ui_muted)).child("ED25519 / SHA256 指纹"))
+                .child(div().font_family(self.font_family.clone()).text_size(px(12.)).text_color(col(self.ui_fg)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
+            let remember_row = div()
+                .flex().flex_row().items_center().gap(px(8.)).px(px(14.)).py(px(10.))
+                .child(
+                    div().w(px(16.)).h(px(16.)).flex_none().rounded(px(5.)).flex().items_center().justify_center()
+                        .when(remembered, |d| d.bg(cola(self.ui_accent, 0.9)))
+                        .when(!remembered, |d| d.border_1().border_color(cola(self.ui_muted, 0.6)))
+                        .when(remembered, |d| d.child(crate::style::icon("check", 12., self.palette.bg))),
+                )
+                .child(div().text_size(px(11.5)).text_color(col(self.ui_muted)).child("记住此主机(写入 ~/.ssh/known_hosts)"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.ssh_hostkey_remember = !this.ssh_hostkey_remember;
+                    cx.notify();
+                }));
+            let trust = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
+                .child(crate::style::icon("shield", 13., self.ui_accent))
+                .child(div().text_size(px(12.)).child("信任并连接"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.trust_host_key(cx);
+                }));
+            let cancel = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .child(div().text_size(px(12.)).child("取消"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.reject_host_key(cx);
+                }));
+            card_chrome(
+                div()
+                    .child(card_header("shield", self.ui_accent, "首次连接此主机", &hk.host))
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(
+                        div().px(px(14.)).pt(px(11.)).text_size(px(12.)).text_color(col(self.ui_muted))
+                            .child("你是第一次连接此主机。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
+                    )
+                    .child(fp_box)
+                    .child(remember_row)
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.)).child(cancel).child(trust)),
+            )
+        });
+
+        // B4: non-modal reconnect banner (pane top) while disconnected/reconnecting.
+        let ssh_banner = matches!(
+            self.ssh_conn,
+            Some(SshConnState::Disconnected) | Some(SshConnState::Reconnecting)
+        )
+        .then(|| {
+            let reconnecting = self.ssh_conn == Some(SshConnState::Reconnecting);
+            let msg = if reconnecting {
+                format!("与 {} 的连接已断开,正在重连…", self.ssh_target)
+            } else {
+                format!("与 {} 的连接已断开,即将自动重连…", self.ssh_target)
+            };
+            div()
+                .flex().flex_row().items_center().gap(px(8.)).px(px(13.)).py(px(7.)).flex_none()
+                .bg(cola(self.ui_yellow, 0.12))
+                .child(crate::style::icon("refresh", 13., self.ui_yellow))
+                .child(div().flex_1().text_size(px(11.5)).text_color(col(self.ui_yellow)).child(SharedString::from(msg)))
+                .child(
+                    div().px(px(9.)).py(px(3.)).rounded(px(7.)).text_size(px(11.)).text_color(col(self.ui_fg))
+                        .bg(rgba(crate::style::HOVER)).hover(|s| s.bg(rgba(crate::style::INSET)))
+                        .child("取消")
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
+                            cx.stop_propagation();
+                            cx.emit(SshCloseRequested);
+                        })),
+                )
+        });
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -2165,12 +2331,14 @@ impl Render for TerminalView {
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))
             .line_height(px(self.line_height))
+            .when_some(ssh_banner, |this, b| this.child(b))
             .when_some(header, |this, h| this.child(h))
             .child(body_region)
             .when_some(block_bar, |this, bar| this.child(bar))
             .when_some(ssh_progress_card, |this, p| this.child(p))
             .when_some(ssh_error_card, |this, p| this.child(p))
             .when_some(ssh_password_card, |this, p| this.child(p))
+            .when_some(ssh_hostkey_card, |this, p| this.child(p))
     }
 }
 

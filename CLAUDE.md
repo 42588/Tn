@@ -38,7 +38,7 @@ tn-core    alacritty 包装:Term + VTE 解析 + TerminalSnapshot(每格 fg/bg + 
 tn-pty     PtyBackend trait + LocalPty(ConPTY,Drop 杀子进程)+ wsl.rs(parse_distros 解码
            `wsl --list --quiet` 的 UTF-16LE + list_distros)+ ssh.rs(SshBackend 实现 PtyBackend——
            专属 tokio 线程把 russh 的 async channel 桥成同步 Read/Write;认证探测 + 密钥/密码/keyboard-interactive;
-           **结构化连接事件** `PtyEvent::{SshProgress(phase),SshFailed(kind,offered),NeedPassword,Connected,Disconnected}` 驱动 UI 进度/错误/密码卡)。WSL 复用 LocalPty 跑 wsl.exe。
+           **结构化连接事件** `PtyEvent::{SshProgress(phase),SshFailed(kind,offered),NeedPassword(error),NeedHostKeyConfirm(fingerprint),Connected,Disconnected}` 驱动 UI 进度/错误/密码/指纹卡 + 连接态;host-key TOFU 经 `HostKeyVerdict` 回传)。WSL 复用 LocalPty 跑 wsl.exe。
 tn-config  配置 + 主题(TOML schema、%APPDATA%\Tn、首次写默认、热重载源)+ quick_terminal.rs
            ([quick_terminal] schema + 滑入几何 shown/hidden/frame_rect + ease_out_cubic + 热键解析 parse_hotkey)
            + append_profile/profiles_toml_fragment(把单个 `[[profiles]]` 片段**追加**写回 config.toml、不丢注释——A2「保存为连接」,见坑)。
@@ -48,7 +48,7 @@ tn-ai      AI 用量 + 检测:claude.rs / codex.rs 解析本地会话 JSONL → 
            detect.rs resolve_session(启动意图 > 日志新鲜度)。
 tn-ui      GPUI 前端(唯一链接 gpui 的库):style(共享 Calm Glass 令牌 + col/cola/soft_shadow/shadowed/icon,
            单一真源)· assets(内嵌 SVG 图标 + 动态用量环)· input(按键编码)· gitutil(共享**有界** git 调用 + numstat/preview 解析,quick_look diff 与活动栏「本次改动」共用)·
-           terminal_view/(文件夹模块:mod 渲染核心[正文落 `.body` 11/15 内边距:`BODY_PAD` 偏移网格/光标/鼠标命中/适配]+ `sync_shell_agent`[敲 claude/codex 切 agent 态]+ `refresh_changes`/`spawn_change_watcher`[notify 文件监听 → git 刷新]+ io 后台线程[用量轮询 + 重绘泵 + repaint 里跑 `sync_shell_agent`]+ header agent 头/活动栏[`rail_files` 真实 `git diff HEAD`、诚实状态、点卡片发 `OpenInQuickLook`]+ launch LaunchSpec;**`EntityInputHandler` 接 IME→中文写 PTY**;**SSH 连接卡覆盖层**[`ssh_progress`=B1 进度卡 / `ssh_error`=C1 错误卡 / `ssh_password_prompt`=密码框,优先级 密码>错误>进度;按钮发 `SshRetryRequested`/`SshCloseRequested` 给 workspace];可见光标 + generation 渲染缓存)· perf(PerfStats,TN_PERF 渲染日志)· block_view(block 卡片)·
+           terminal_view/(文件夹模块:mod 渲染核心[正文落 `.body` 11/15 内边距:`BODY_PAD` 偏移网格/光标/鼠标命中/适配]+ `sync_shell_agent`[敲 claude/codex 切 agent 态]+ `refresh_changes`/`spawn_change_watcher`[notify 文件监听 → git 刷新]+ io 后台线程[用量轮询 + 重绘泵 + repaint 里跑 `sync_shell_agent`]+ header agent 头/活动栏[`rail_files` 真实 `git diff HEAD`、诚实状态、点卡片发 `OpenInQuickLook`]+ launch LaunchSpec;**`EntityInputHandler` 接 IME→中文写 PTY**;**SSH 连接卡覆盖层**[`ssh_progress`=B1 进度卡 / `ssh_error`=C1 错误卡 / `ssh_password_prompt`=B3 密码框 / `ssh_hostkey`=B2 指纹信任卡 / `ssh_conn`=B4 连接态(shell 头四相点 + 断线重连横幅),优先级 指纹>密码>错误>进度;按钮发 `SshRetryRequested`/`SshCloseRequested` 给 workspace];可见光标 + generation 渲染缓存)· perf(PerfStats,TN_PERF 渲染日志)· block_view(block 卡片)·
            explorer(文件树侧栏 + 键盘 nav:`↑↓` 移选中 / `Space`·`Enter` 开 Quick Look / focus-on-click;`select_adjacent_file` 供浮层换文件)· welcome(欢迎 launchpad:新标签/首标签的启动磁贴 + 快捷键,点磁贴启动会话)· ssh_recents(SSH 最近/收藏连接持久化:`SshRecent`/`SshRecents`,成功连接 upsert + ⭐收藏 + 相对时间,JSON `%APPDATA%\Tn\ssh_recents.json`;连接器列表的数据源,A1)+ `format_target` 共享给已保存 profile(A2)· quick_look(原 viewer;文件/Diff 速览浮层:贴树右缘、浮于终端、不占分屏,`quicklook_fill` 烤实暗玻璃 + `quicklook_frame` 冷能量边 + 左缘 seam + 虚拟化代码区;预览导航 + **自绘小编辑器**[`buf`/`cursor`/`sel_anchor` + undo 快照栈,选区/复制粘贴/撤销重做/全选/鼠标点位/编辑态高亮/查找替换,`op_*`·`all_matches`·`parse_diff` 纯函数单测,`Ctrl+S` 写盘];**diff 惰性**[`diff_dirty`,只在切 Diff tab 时 `ensure_diff` 跑 git]+ **有界 git** 走 `crate::gitutil::capture_bounded`[丢线程 + 超时 + `CREATE_NO_WINDOW`,防 git 卡死 UI,见坑];`QuickLookEvent` Nav/Close 回 workspace)· workspace(标题栏 + 标签/n-ary 分屏 + 侧栏 +
            状态栏 + 命令面板 + SSH 连接器[`render_ssh_prompt`/`ssh_conn_rows`:已保存(命名 config.toml)+ 最近(json)合并去重、⊕「存为连接」命名子态写 `[[profiles]]` = A2]+ 新会话分屏启动器[`render_split_launcher`]+ app 菜单 popup[`render_app_menu`]+ 布局管理器[`render_layout_manager`,7 槽存/取/删]+ Calm Glass chrome)· layout(布局序列化:`LayoutNode`/`LayoutPane`/`Layouts`,JSON 持久化,加载按结构重拉起)· platform(Windows-only:全局热键 + 置顶/滑动 SetWindowPos)·
            quick_terminal(无边框置顶 PopUp 窗口 + 启动器)。
@@ -91,14 +91,15 @@ $env:TN_DEMO="1";     cargo run -p tn-app      # 演示:窗口里自动步进滚
     - **A1 最近连接 + ⭐收藏** —— 成功连接自动记住、一键回连(`ssh_recents.json`)。
     - **A2 保存为连接** —— 连接器 ⊕ 命名写 `config.toml [[profiles]]`(`tn_config::append_profile` 片段追加、不丢注释,见坑);连接器 = 已保存(config)+ 最近(json)合并去重(`ssh_conn_rows`)。SSH profile 在 launcher 被折叠,故命名连接走**连接器**而非磁贴。
     - **B1 连接进度卡** —— 后端 `PtyEvent::SshProgress{phase}` 诚实 3 步(建立连接→认证→开 shell);每窗格覆盖卡(active 用点不用转圈——无帧时钟、不伪造)。
+    - **B2 主机指纹确认(TOFU)** —— 首连未知主机弹**信任面板**(shield 头 + SHA256 指纹 + 「记住写 known_hosts」勾选,确认才接受;后端 `check_server_key` 改为发 `PtyEvent::NeedHostKeyConfirm` 阻塞等 `HostKeyVerdict`,不再自动接受);指纹不匹配 = 危险中止 + 错误卡显新指纹(`SshFailed{HostKeyMismatch,detail=fp}`)。「仍信任并更新 known_hosts」未做(安全默认中止)。
     - **B3 密码框** —— 👁 显隐 / 记住密码(仅本会话,缓存 `pane_specs[id].ssh.password`、仅内存)/ 后端 `authenticate` 密码段 **3 次原地重试**(同连接不重连,`NeedPassword{error}` 带次数)。
+    - **B4 断线重连横幅 + 连接态四相点** —— `TerminalView` 持 `ssh_conn`(连接中/已连/重连/断开),由 `SshProgress`/`Connected`/`Disconnected` 驱动;shell 头(`.phead`)右侧四相点 + 文案;断线/重连时窗格顶**非模态横幅**(自动重连提示 + 取消=关窗格);重连走 slim 横幅(进度大卡 gate 掉 Reconnecting)。倒计时/「立即重连」未做(后端自动 5s 重连、无 reconnect-now 通道)。
     - **C1 可操作错误卡** —— 认证失败 `SshFailed{Auth,offered}` → 原因 + 服务器开放方式 + PermitRootLogin 提示 + [重试](`install_pane` 原地重建同 id)/[关闭](`close_pane_id`)。
   - **🧭 后续计划(按优先级)**:
-    1. **B2 主机指纹确认(TOFU)** —— **后端现状**:`check_server_key` 对**未知主机自动接受 + 写 known_hosts**(无 UI 确认),不匹配则拒 + 已发 `SshFailed{HostKeyMismatch}`。**要做**:① 首连未知主机改为弹**信任面板**(显示 SHA256 指纹 + 「记住(写 known_hosts)」勾选,确认才接受)——需后端新增 `PtyEvent::NeedHostKeyConfirm{fingerprint, reply}` + 阻塞等回传(仿 `NeedPassword`);② 不匹配做**专门危险弹层**(新旧指纹对比、默认中止),取代当前走通用错误卡。
-    2. **B4 断线重连横幅 + 连接态四相点** —— **后端现状**:`PtyEvent::Disconnected` 已发,后端自动 5s 重连。**要做**:窗格顶**非模态横幅**(倒计时 + 立即重连/取消)+ 头部/标签**连接态点**(连接中/已连/重连/断开 四相);需 `TerminalView` 持连接态 + `SshProgress`/`Connected`/`Disconnected` 驱动。
-    3. **A4 枚举 `~/.ssh/config` 主机** —— 解析 `Host` 别名做成连接器第三段(`ssh_conn_rows` 现成可扩;`SshConfig::parse` 已会读 ssh_config 单主机)。
-    4. **C2 拨号前校验 / C3 首连引导 + 成功反馈** —— 空 host/坏 port 当场标红;首连引导 + 成功提示(用了密钥/密码)。
-  - **真机仍未走过**:所有连接卡(B1/B3/C1)肉眼 · keyboard-interactive(测试机未开放)· 断线重连 · TOFU 首连(主机已在 known_hosts)· ssh-agent · `~/.ssh/config` 进阶(ProxyJump)。
+    1. **A4 枚举 `~/.ssh/config` 主机** —— 解析 `Host` 别名做成连接器第三段(`ssh_conn_rows` 现成可扩;`SshConfig::parse` 已会读 ssh_config 单主机)。
+    2. **C2 拨号前校验 / C3 首连引导 + 成功反馈** —— 空 host/坏 port 当场标红;首连引导 + 成功提示(用了密钥/密码)。
+    3. **打磨**:B2「仍信任并更新」(改 known_hosts 旧条目)· B4 倒计时 + 立即重连(需后端 reconnect-now 通道)· C1 超时卡 / 改用密码 / 编辑连接 · tab 上的连接态点 · 记住密码升级凭据管理器(替代内存)。
+  - **真机仍未走过**:连接卡 B1/B2/B3/C1/B4 肉眼 · keyboard-interactive(测试机未开放)· 断线重连实景 · ssh-agent · `~/.ssh/config` 进阶(ProxyJump)。
 - **Quick Look 编辑器**:自绘小编辑器已含 选区 / **鼠标拖选(含光标字符语义)** / 复制粘贴 / 撤销重做 / 全选 / 鼠标点位 / 编辑态高亮 / 查找替换 / **终端式就地反相块光标** / **固定单元格渲染**(ASCII 串定宽 + CJK 单字 2 列定宽 = 列↔像素精确,根治 CJK 行光标漂移/选区不跟手,见坑)/ **编辑+预览横向滚动**(自绘底部条 + 编辑态 caret-follow)/ **预览态(只读)鼠标拖选 + Ctrl+C/A 复制**(基于 `lines`、不可改)。**曾试 Q弹平滑滑动光标(绝对叠层 + 弹簧),owner 实测卡顿+字飘后取流畅、撤销**(见坑)。更远期(若需要):多光标、列选、**Diff tab 拖选**(本轮拖选只做了 File/编辑)、增量式语法解析、LSP/补全——已超出「速览快编」定位,真要重度编辑应回终端用 vim。
 - **命令面板中文搜索**(parked):面板靠 `on_key` 读 ASCII `key_char`,而 IME 合成的中文**只经 `EntityInputHandler` 投递**(同终端「打中文」根治),面板还没接 → 目前**只能搜英文**。补法:给 `Workspace` 接 `EntityInputHandler`(`palette_marked` 合成态 + 提交进 `palette_query`)+ 面板内挂 canvas 注册 `handle_input` + `on_palette_key` 对可打印键**放行**走 IME 提交链 + 渲染预编辑串。
 - **分屏交互**:✅ 分隔线鼠标拖拽(**commit-on-release**:拖动只移动一条 2px 预览线、释放才改权重 resize 一次——避免 ConPTY 每帧 resize 抖动;配合 `resize_conpty` 顶锚定长高,**拖大窗格不再丢滚动历史**;把手平时隐形、hover 微亮)· 🧭 拖拽停靠(drag-dock:拖到边=分屏、拖到中=标签组)。

@@ -253,7 +253,7 @@
 
   <!-- ② 进度 + ③ 指纹(并排) -->
   <div class="demo">
-    <div class="label">② 连接进度卡 · ③ 首次连接指纹确认(TOFU) <span class="id">.card / .steps / .fp</span><span class="impl"><span style="color:var(--green)">✅ B1 进度卡已落地(terminal_view 覆盖卡,诚实 3 步)</span> · ③ 指纹 TOFU 面板(规划)</span></div>
+    <div class="label">② 连接进度卡 · ③ 首次连接指纹确认(TOFU) <span class="id">.card / .steps / .fp</span><span class="impl" style="color:var(--green)">✅ B1 进度卡 + B2 指纹信任卡已落地(terminal_view ssh_progress / ssh_hostkey;后端 NeedHostKeyConfirm)</span></div>
     <div class="canvas tall" style="padding:32px;">
       <div class="two">
         <!-- 进度 -->
@@ -291,7 +291,7 @@
 
   <!-- ③b 指纹不匹配(危险) -->
   <div class="demo">
-    <div class="label">③b 主机密钥已更改 — 危险弹层(取代终端里的红字墙;安全默认 = 中止) <span class="id">.card.danger / .fp.new</span><span class="impl">render_ssh_fingerprint(mismatch)(规划)</span></div>
+    <div class="label">③b 主机密钥已更改 — 危险弹层(取代终端里的红字墙;安全默认 = 中止) <span class="id">.card.danger / .fp.new</span><span class="impl" style="color:var(--green)">✅ 部分:不匹配 = 中止 + 错误卡显新指纹(SshFailed{HostKeyMismatch});「仍信任并更新」未做</span></div>
     <div class="canvas mid" style="padding:32px;display:flex;align-items:center;justify-content:center;">
       <div class="card danger" style="width:460px;">
         <div class="ch">
@@ -354,7 +354,7 @@
 
   <!-- ⑤ 重连横幅 + 连接态 -->
   <div class="demo">
-    <div class="label">⑤ 断线重连横幅(窗格顶,非模态)+ 头部/标签连接态点 <span class="id">.banner / .cstate / .phead</span><span class="impl">terminal_view header / tab(规划)</span></div>
+    <div class="label">⑤ 断线重连横幅(窗格顶,非模态)+ 头部/标签连接态点 <span class="id">.banner / .cstate / .phead</span><span class="impl" style="color:var(--green)">✅ B4 已落地:shell 头四相点 + 断线横幅(取消=关窗格);倒计时/立即重连/tab 点未做</span></div>
     <div class="canvas mid" style="padding:0;">
       <div class="pane active" style="position:absolute;inset:34px;">
         <div class="banner">

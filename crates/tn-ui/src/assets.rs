@@ -56,6 +56,8 @@ const ICON_BODIES: &[(&str, &str)] = &[
     ("alert", r#"<path d="M12 3.8 20.5 19.5a1 1 0 0 1-.9 1.5H4.4a1 1 0 0 1-.9-1.5z"/><path d="M12 9.5v4.5"/><path d="M12 17.3h.01"/>"#),
     ("eye", r#"<path d="M2.6 12S6 5.6 12 5.6 21.4 12 21.4 12 18 18.4 12 18.4 2.6 12 2.6 12z"/><circle cx="12" cy="12" r="2.7"/>"#),
     ("enter", r#"<path d="M20 6v5a3 3 0 0 1-3 3H5"/><path d="M8 11l-3 3 3 3"/>"#),
+    // host-key trust (B2 TOFU)
+    ("shield", r#"<path d="M12 3.2 19 6v5c0 4.6-3 8.2-7 10-4-1.8-7-5.4-7-10V6z"/><path d="M9 12l2 2 4-4"/>"#),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so

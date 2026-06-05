@@ -136,6 +136,17 @@ pub enum SshErrorKind {
     HostKeyMismatch,
 }
 
+/// The user's decision on an unrecognized SSH host key (B2 TOFU trust panel).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostKeyVerdict {
+    /// Abort — don't trust this key.
+    Reject,
+    /// Trust for this session only (do not persist to known_hosts).
+    AcceptOnce,
+    /// Trust and append to `~/.ssh/known_hosts`.
+    AcceptAndSave,
+}
+
 /// An event emitted by a PTY backend that requires UI interaction.
 pub enum PtyEvent {
     /// The backend needs a password to continue authentication.
@@ -161,6 +172,14 @@ pub enum PtyEvent {
         kind: SshErrorKind,
         detail: String,
         offered: String,
+    },
+    /// First connection to an unrecognized host (B2 TOFU): the UI shows a trust
+    /// panel with the SHA256 `fingerprint` and replies with the user's verdict.
+    /// Dropping the reply without sending ⇒ reject.
+    NeedHostKeyConfirm {
+        host: String,
+        fingerprint: String,
+        reply: std::sync::mpsc::Sender<HostKeyVerdict>,
     },
     /// Authentication succeeded and the remote shell is open — the UI records
     /// this target as a recent connection, tagged with the method used.

@@ -292,6 +292,8 @@ async fn run_session(
             host: cfg.host.clone(),
             port: cfg.port,
             in_tx: in_tx.clone(),
+            event_tx: event_tx.clone(),
+            waker: waker.clone(),
             key_rejected: key_rejected.clone(),
         };
 
@@ -316,15 +318,8 @@ async fn run_session(
                 // If we deliberately rejected the host key, do NOT retry — the
                 // warning was already printed by check_server_key.
                 if key_rejected.load(Ordering::Relaxed) {
-                    emit_event(
-                        &event_tx,
-                        &waker,
-                        crate::PtyEvent::SshFailed {
-                            kind: crate::SshErrorKind::HostKeyMismatch,
-                            detail: format!("{}:{}", cfg.host, cfg.port),
-                            offered: String::new(),
-                        },
-                    );
+                    // check_server_key already emitted the precise event (mismatch
+                    // danger card, or a quiet TOFU rejection) — just stop.
                     return Err(anyhow!("host key rejected"));
                 }
                 let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
@@ -668,9 +663,12 @@ struct ClientHandler {
     host: String,
     port: u16,
     in_tx: StdSender<Vec<u8>>,
-    /// Set to `true` when we deliberately reject a mismatched host key, so the
-    /// outer retry loop can distinguish "network error → retry" from
-    /// "key mismatch → abort".
+    /// For the B2 TOFU trust panel + host-key-mismatch event.
+    event_tx: StdSender<crate::PtyEvent>,
+    waker: Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    /// Set to `true` when we deliberately reject a mismatched / untrusted host
+    /// key, so the outer retry loop can distinguish "network error → retry" from
+    /// "key rejected → abort".
     key_rejected: Arc<AtomicBool>,
 }
 
@@ -681,39 +679,84 @@ impl client::Handler for ClientHandler {
         let known_hosts_path = home_dir()
             .map(|h| h.join(".ssh").join("known_hosts"))
             .unwrap_or_else(|| PathBuf::from("known_hosts"));
+        let fingerprint = key.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
-        if !known_hosts_path.exists() {
-            tracing::info!("SSH: known_hosts not found, accepting key (TOFU)");
-            append_known_host(&known_hosts_path, &self.host, self.port, key);
-            return Ok(true);
+        // Known + matching → accept silently. Mismatch → danger card + abort.
+        // Unknown (no file / not listed) → fall through to the TOFU trust panel.
+        if known_hosts_path.exists() {
+            match russh::keys::check_known_hosts_path(&self.host, self.port, key, &known_hosts_path)
+            {
+                Ok(true) => return Ok(true),
+                Ok(false) => {} // unknown → TOFU below
+                Err(_) => {
+                    tracing::warn!("SSH: HOST KEY MISMATCH for {}:{}!", self.host, self.port);
+                    let _ = self.in_tx.send(
+                        format!(
+                            "\r\n\x1b[31;1m[SSH] 警告: 远程主机标识已更改!\x1b[0m 连接已中止({}:{})。\r\n",
+                            self.host, self.port
+                        )
+                        .into_bytes(),
+                    );
+                    // B2 danger card: host key changed (possible MITM). Safe default
+                    // = abort; surface the new fingerprint.
+                    emit_event(
+                        &self.event_tx,
+                        &self.waker,
+                        crate::PtyEvent::SshFailed {
+                            kind: crate::SshErrorKind::HostKeyMismatch,
+                            detail: fingerprint,
+                            offered: String::new(),
+                        },
+                    );
+                    self.key_rejected.store(true, Ordering::Relaxed);
+                    return Ok(false);
+                }
+            }
         }
 
-        match russh::keys::check_known_hosts_path(&self.host, self.port, key, &known_hosts_path) {
-            Ok(true) => Ok(true),
-            Ok(false) => {
-                tracing::info!("SSH: Host {}:{} not in known_hosts, accepting (TOFU)", self.host, self.port);
+        // First contact with an unrecognized host → ask the user (B2 TOFU).
+        tracing::info!("SSH: unknown host {}:{}, asking to trust (TOFU)", self.host, self.port);
+        match self.confirm_host_key(&fingerprint).await {
+            crate::HostKeyVerdict::AcceptAndSave => {
                 append_known_host(&known_hosts_path, &self.host, self.port, key);
                 Ok(true)
             }
-            Err(_) => {
-                let warning = format!(
-                    "\r\n\x1b[31;1m@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n\
-                     @ 警告: 远程主机标识已更改!     @\r\n\
-                     @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\x1b[0m\r\n\
-                     可能存在中间人攻击或主机已重装。\r\n\
-                     主机: {}:{}\r\n\
-                     请手动验证或删除 ~/.ssh/known_hosts 中对应条目。\r\n\
-                     连接已中止。\r\n",
-                    self.host, self.port
-                );
-                let _ = self.in_tx.send(warning.into_bytes());
-                tracing::warn!("SSH: HOST KEY MISMATCH for {}:{}!", self.host, self.port);
-                // Signal the outer loop: this is a deliberate rejection, not a
-                // transient network failure — do NOT retry.
+            crate::HostKeyVerdict::AcceptOnce => Ok(true),
+            crate::HostKeyVerdict::Reject => {
+                let _ = self
+                    .in_tx
+                    .send("\r\n\x1b[33m[SSH]\x1b[0m 已取消:未信任主机指纹。\r\n".as_bytes().to_vec());
                 self.key_rejected.store(true, Ordering::Relaxed);
                 Ok(false)
             }
         }
+    }
+}
+
+impl ClientHandler {
+    /// Ask the UI to trust an unrecognized host key (B2 TOFU) and block (off the
+    /// runtime) on the reply. A dropped channel ⇒ reject.
+    async fn confirm_host_key(&self, fingerprint: &str) -> crate::HostKeyVerdict {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if self
+            .event_tx
+            .send(crate::PtyEvent::NeedHostKeyConfirm {
+                host: format!("{}:{}", self.host, self.port),
+                fingerprint: fingerprint.to_string(),
+                reply: tx,
+            })
+            .is_err()
+        {
+            return crate::HostKeyVerdict::Reject;
+        }
+        if let Some(w) = self.waker.lock().unwrap().as_ref() {
+            w();
+        }
+        tokio::task::spawn_blocking(move || rx.recv().ok())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(crate::HostKeyVerdict::Reject)
     }
 }
 
