@@ -105,6 +105,36 @@ pub fn load_from(dir: &Path, write_defaults: bool) -> Loaded {
     }
 }
 
+/// Append a `[[profiles]]` entry to the user's `config.toml`, preserving
+/// everything already in it (comments and all). The in-app "save as connection"
+/// (A2) uses this to persist a named SSH connection so it survives restarts and
+/// is hand-editable. Errors if no config directory can be resolved.
+pub fn append_profile(profile: &Profile) -> std::io::Result<()> {
+    let path = config_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config directory"))?;
+    append_profile_to(&path, profile)
+}
+
+/// [`append_profile`] targeting an explicit file — testable without touching the
+/// real config location. Creates the file (and parent dir) if absent. The new
+/// block is appended after a blank line so it never merges into a preceding
+/// table; appending a fresh `[[profiles]]` header at EOF is valid regardless of
+/// what comes before it.
+pub fn append_profile_to(path: &Path, profile: &Profile) -> std::io::Result<()> {
+    let fragment = config::profiles_toml_fragment(std::slice::from_ref(profile))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    let mut text = fs::read_to_string(path).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push('\n');
+    text.push_str(&fragment);
+    fs::write(path, text)
+}
+
 /// Write `contents` to `file` if it doesn't already exist, creating `parent`.
 fn write_if_absent(file: &Path, contents: &str, parent: &Path) {
     if file.exists() {
@@ -191,6 +221,68 @@ mod tests {
         assert_eq!(loaded.config.font.size, 20.0); // user value kept
         assert_eq!(loaded.config.font.family, "CaskaydiaCove Nerd Font"); // inherited default
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_profile_preserves_existing_and_adds_entry() {
+        // A2: appending a saved SSH connection must keep the user's edits intact
+        // (comments / other keys) and parse back as a profile.
+        let dir = unique_temp();
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(&cfg, "[font]\nsize = 20.0\n").unwrap();
+
+        let p = Profile {
+            name: "WSL Test".into(),
+            kind: ProfileKind::Ssh,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: Some("172.24.16.162:2222".into()),
+            user: Some("root".into()),
+            agent: None,
+            accent: None,
+            glyph: None,
+        };
+        append_profile_to(&cfg, &p).unwrap();
+
+        let parsed = Config::from_toml_str(&fs::read_to_string(&cfg).unwrap())
+            .expect("still valid toml after append");
+        assert_eq!(parsed.font.size, 20.0); // user edit preserved
+        let saved = parsed
+            .profiles
+            .iter()
+            .find(|x| x.name == "WSL Test")
+            .expect("profile appended");
+        assert_eq!(saved.kind, ProfileKind::Ssh);
+        assert_eq!(saved.host.as_deref(), Some("172.24.16.162:2222"));
+        assert_eq!(saved.user.as_deref(), Some("root"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_profile_creates_file_when_absent() {
+        let dir = unique_temp();
+        let cfg = dir.join("config.toml");
+        let p = Profile {
+            name: "srv".into(),
+            kind: ProfileKind::Ssh,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: Some("h".into()),
+            user: None,
+            agent: None,
+            accent: None,
+            glyph: None,
+        };
+        append_profile_to(&cfg, &p).unwrap();
+        let parsed = Config::from_toml_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
+        assert!(parsed.profiles.iter().any(|x| x.name == "srv"));
         let _ = fs::remove_dir_all(&dir);
     }
 

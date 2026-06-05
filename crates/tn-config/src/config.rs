@@ -38,6 +38,19 @@ impl Config {
     }
 }
 
+/// Serialize `profiles` as one or more `[[profiles]]` TOML blocks — used to
+/// **append** a saved connection to an existing `config.toml` (the in-app "save
+/// as connection", A2) without rewriting (and thus losing the comments in) the
+/// rest of the file. `None` fields are omitted by the TOML serializer, so a
+/// minimal SSH profile emits just `name` / `kind` / `host` / `user`.
+pub fn profiles_toml_fragment(profiles: &[Profile]) -> Result<String, toml::ser::Error> {
+    #[derive(Serialize)]
+    struct Fragment<'a> {
+        profiles: &'a [Profile],
+    }
+    toml::to_string(&Fragment { profiles })
+}
+
 /// How a pane's usage pill presents its readout. Clicking the pill cycles
 /// through the concrete modes **per pane** (runtime, in memory); these values are
 /// the *starting* mode for a new pane, chosen by config.
@@ -264,6 +277,34 @@ mod tests {
         assert!(!c.appearance.visual_bell);
         assert!(c.appearance.audio_bell);
         assert_eq!(c.appearance.theme, "Tn Dark"); // inherited
+    }
+
+    #[test]
+    fn ssh_profile_fragment_roundtrips() {
+        // A2: a saved SSH connection serialized to a `[[profiles]]` block must
+        // parse back identically — incl. a CJK name, a `host:port`, and an accent.
+        let p = Profile {
+            name: "我的服务器".into(),
+            kind: ProfileKind::Ssh,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: Some("ex.com:2222".into()),
+            user: Some("ubuntu".into()),
+            agent: None,
+            accent: Some(Color::new(0x7A, 0xA2, 0xF7)),
+            glyph: None,
+        };
+        let frag = profiles_toml_fragment(std::slice::from_ref(&p)).expect("serializes");
+        assert!(frag.contains("[[profiles]]"));
+        let parsed = Config::from_toml_str(&frag).expect("fragment is valid toml");
+        let q = &parsed.profiles[0];
+        assert_eq!(q.name, "我的服务器");
+        assert_eq!(q.kind, ProfileKind::Ssh);
+        assert_eq!(q.host.as_deref(), Some("ex.com:2222"));
+        assert_eq!(q.user.as_deref(), Some("ubuntu"));
+        assert_eq!(q.accent, Some(Color::new(0x7A, 0xA2, 0xF7)));
     }
 
     #[test]

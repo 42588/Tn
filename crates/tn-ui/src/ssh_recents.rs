@@ -50,19 +50,26 @@ pub struct SshRecent {
     pub favorite: bool,
 }
 
+/// The reconnect target string `user@host[:port]` (user omitted when empty,
+/// port shown only when ≠ 22). Shared by recents (A1) and saved profiles (A2)
+/// so both render identical targets.
+pub fn format_target(user: &str, host: &str, port: u16) -> String {
+    let up = if user.is_empty() {
+        host.to_string()
+    } else {
+        format!("{user}@{host}")
+    };
+    if port == 22 {
+        up
+    } else {
+        format!("{up}:{port}")
+    }
+}
+
 impl SshRecent {
     /// The reconnect target string `user@host[:port]` (port shown only when ≠ 22).
     pub fn target(&self) -> String {
-        let up = if self.user.is_empty() {
-            self.host.clone()
-        } else {
-            format!("{}@{}", self.user, self.host)
-        };
-        if self.port == 22 {
-            up
-        } else {
-            format!("{up}:{}", self.port)
-        }
+        format_target(&self.user, &self.host, self.port)
     }
 
     /// Case-insensitive substring match over host / user / target — the connector

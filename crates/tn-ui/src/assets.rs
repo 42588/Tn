@@ -50,6 +50,8 @@ const ICON_BODIES: &[(&str, &str)] = &[
     ("key", r#"<circle cx="9" cy="14" r="3.2"/><path d="M11.3 11.7 19 4M16.4 6.6l2 2M14.3 8.7l1.8 1.8"/>"#),
     ("lock", r#"<rect x="5.5" y="11" width="13" height="8.5" rx="2"/><path d="M8.2 11V8a3.8 3.8 0 0 1 7.6 0v3"/>"#),
     ("star", r#"<path d="M12 4l2.5 5.1 5.6.8-4 3.9.95 5.6L12 16.8 7 19.4l.95-5.6-4-3.9 5.6-.8z"/>"#),
+    // save-as-connection (A2): a bookmark with a + inside ("存为连接")
+    ("bookmark-plus", r#"<path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/><path d="M12 8v5M9.5 10.5h5"/>"#),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so
