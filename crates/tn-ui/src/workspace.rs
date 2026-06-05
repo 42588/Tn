@@ -613,6 +613,10 @@ pub struct Workspace {
     /// the user is naming an endpoint before it's written to `config.toml` as a
     /// `[[profiles]]` entry. Replaces the list with a name-entry form.
     ssh_save: Option<SshSaveDraft>,
+    /// `Host` aliases enumerated from `~/.ssh/config` (A4) — the connector's third
+    /// section. Refreshed each time the connector opens (the file is tiny and
+    /// rarely changes mid-session).
+    ssh_config_hosts: Vec<tn_pty::SshHostEntry>,
 }
 
 #[derive(Clone, Copy)]
@@ -652,6 +656,50 @@ enum SshConnRow {
         auth: AuthBadge,
         last_used: u64,
     },
+    /// A `Host` alias from `~/.ssh/config` (A4): not yet connected, just an
+    /// endpoint OpenSSH already knows. `target` is `[user@]host[:port]`.
+    Config {
+        alias: String,
+        target: String,
+    },
+}
+
+/// C2 pre-dial validation of a typed `[user@]host[:port]`. Returns `Err(msg)`
+/// when the target is obviously unconnectable so the connector can flag it red
+/// *before* dialing (empty host, dangling `@`/`:`, out-of-range port). A
+/// non-numeric `:suffix` is left alone — it stays part of the host, matching
+/// `SshConfig::parse`. Empty input is `Ok` (placeholder state, nothing to flag).
+fn validate_ssh_target(typed: &str) -> Result<(), &'static str> {
+    let t = typed.trim();
+    if t.is_empty() {
+        return Ok(());
+    }
+    let rest = match t.split_once('@') {
+        Some(("", _)) => return Err("缺少用户名(@ 前为空)"),
+        Some((_, r)) => r,
+        None => t,
+    };
+    if rest.is_empty() {
+        return Err("缺少主机");
+    }
+    if let Some((h, p)) = rest.rsplit_once(':') {
+        if p.is_empty() {
+            // trailing colon: `host:`
+            return Err("端口未填(去掉末尾的 :)");
+        }
+        // Only a digit-like suffix is meant as a port; otherwise it's hostname.
+        if p.chars().all(|c| c.is_ascii_digit()) {
+            match p.parse::<u32>() {
+                Ok(n) if (1..=65535).contains(&n) => {
+                    if h.is_empty() {
+                        return Err("缺少主机");
+                    }
+                }
+                _ => return Err("端口无效(应为 1–65535)"),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Split a `host[:port]` field into `(host, port)`, defaulting to 22 — mirrors
@@ -747,6 +795,7 @@ impl Workspace {
             ws.ssh_prompt_input.clear();
             ws.ssh_prompt_sel = 0;
             ws.ssh_save = None;
+            ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
             cx.notify();
         })
         .detach();
@@ -803,6 +852,7 @@ impl Workspace {
             ssh_recents: SshRecents::load(),
             ssh_prompt_sel: 0,
             ssh_save: None,
+            ssh_config_hosts: tn_pty::list_ssh_config_hosts(),
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -1314,6 +1364,7 @@ impl Workspace {
                 self.ssh_prompt_input.clear();
                 self.ssh_prompt_sel = 0;
                 self.ssh_save = None;
+                self.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             }
         }
@@ -2048,9 +2099,18 @@ impl Workspace {
                         SshConnRow::Saved { target, .. } | SshConnRow::Recent { target, .. } => {
                             target.clone()
                         }
+                        // Connect via the alias so ssh-config's HostName/User/Port/
+                        // IdentityFile all apply (SshConfig::parse re-queries config).
+                        SshConnRow::Config { alias, .. } => alias.clone(),
                     })
                 } else {
                     let t = self.ssh_prompt_input.trim();
+                    // C2: refuse an obviously-bad typed target (the red hint already
+                    // tells the user why); selected rows are always valid.
+                    if validate_ssh_target(t).is_err() {
+                        cx.stop_propagation();
+                        return;
+                    }
                     (!t.is_empty()).then(|| t.to_string())
                 };
                 match target {
@@ -2115,6 +2175,7 @@ impl Workspace {
             if saved_eps.contains(&(r.host.to_ascii_lowercase(), r.user.clone(), r.port)) {
                 continue;
             }
+            saved_eps.insert((r.host.to_ascii_lowercase(), r.user.clone(), r.port));
             rows.push(SshConnRow::Recent {
                 host: r.host.clone(),
                 user: r.user.clone(),
@@ -2124,6 +2185,20 @@ impl Workspace {
                 auth: r.auth,
                 last_used: r.last_used,
             });
+        }
+
+        // ssh-config Host aliases (A4), minus endpoints already shown above.
+        for h in &self.ssh_config_hosts {
+            let user = h.user.clone().unwrap_or_default();
+            if saved_eps.contains(&(h.host.to_ascii_lowercase(), user.clone(), h.port)) {
+                continue;
+            }
+            let target = crate::ssh_recents::format_target(&user, &h.host, h.port);
+            if !(matches(&h.alias) || matches(&h.host) || matches(&user) || matches(&target)) {
+                continue;
+            }
+            saved_eps.insert((h.host.to_ascii_lowercase(), user, h.port));
+            rows.push(SshConnRow::Config { alias: h.alias.clone(), target });
         }
         rows
     }
@@ -2262,6 +2337,16 @@ impl Workspace {
             }
             r
         });
+        // C2 pre-dial validation: a bad typed target shows a red chip in place of
+        // the parse chips (and Enter is gated in the key handler).
+        let ssh_err = validate_ssh_target(&typed).err();
+        let red = t.ansi.red;
+        let err_chip = ssh_err.map(|msg| {
+            div().flex().flex_row().items_center().gap(px(5.))
+                .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(red, 0.12)).text_size(px(10.))
+                .child(icon("alert", 11., red))
+                .child(div().text_color(col(red)).child(SharedString::from(msg)))
+        });
 
         let input = div()
             .flex().flex_row().items_center().gap(px(10.)).px(px(16.)).py(px(13.))
@@ -2278,7 +2363,9 @@ impl Workspace {
                     }),
             )
             .child(div().flex_1())
-            .when_some(chips_row, |d, c| d.child(c));
+            // red error chip takes priority over the parse chips when invalid.
+            .when_some(err_chip, |d, c| d.child(c))
+            .when(ssh_err.is_none(), |d| d.when_some(chips_row, |d, c| d.child(c)));
 
         // Connector rows (list mode only); also drives whether the footer advertises
         // the per-row ★/⊕ actions (hidden when there are no rows to act on).
@@ -2338,13 +2425,27 @@ impl Workspace {
             let rows = &conn_rows;
             let sel = self.ssh_prompt_sel.min(rows.len().saturating_sub(1));
             let list: gpui::Div = if rows.is_empty() {
-                let hint = if self.ssh_prompt_input.trim().is_empty() {
-                    "还没有连接 — 输入 user@host:port 连接;成功后自动记住,再「存为连接」命名留存"
+                if self.ssh_prompt_input.trim().is_empty() {
+                    // C3 first-connect guide: a short three-line walkthrough shown
+                    // when the connector is empty (no saved / recent / config hosts).
+                    let step = |ic: &'static str, head: &str, sub: &str| {
+                        div().flex().flex_row().items_start().gap(px(10.))
+                            .child(div().mt(px(1.)).child(icon(ic, 14., ui.accent)))
+                            .child(
+                                div().flex().flex_col().gap(px(1.))
+                                    .child(div().text_size(px(12.5)).text_color(col(ui.foreground)).child(SharedString::from(head.to_string())))
+                                    .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(sub.to_string()))),
+                            )
+                    };
+                    div().flex().flex_col().gap(px(12.)).px(px(16.)).py(px(15.))
+                        .child(div().text_size(px(12.)).text_color(col(ui.muted)).child(SharedString::from("首次连接 — 三步上手")))
+                        .child(step("globe", "1 · 输入地址", "user@host:port,例 root@192.168.1.1:22(端口默认 22 可省)"))
+                        .child(step("key", "2 · 自动认证", "优先用 ~/.ssh 里的密钥;无密钥则弹密码框(可记住本次会话)"))
+                        .child(step("bookmark-plus", "3 · 记住连接", "连上后自动进「最近」,再点 ⊕ 命名存为常用连接"))
                 } else {
-                    "无匹配 · 按 Enter 连接所输入的地址"
-                };
-                div().px(px(14.)).py(px(13.)).text_size(px(12.)).text_color(col(ui.muted))
-                    .child(SharedString::from(hint))
+                    div().px(px(14.)).py(px(13.)).text_size(px(12.)).text_color(col(ui.muted))
+                        .child(SharedString::from("无匹配 · 按 Enter 连接所输入的地址"))
+                }
             } else {
                 let mut col_div = div().flex().flex_col().p(px(6.)).max_h(px(360.)).overflow_hidden();
                 for (i, row_data) in rows.iter().enumerate() {
@@ -2435,6 +2536,28 @@ impl Workspace {
                                 .child(save_btn)
                                 // relative time — faint(无 token,同 .meta)
                                 .child(div().min_w(px(46.)).text_size(px(10.5)).text_color(gpui::rgb(0x474E72)).child(SharedString::from(when)))
+                        }
+                        SshConnRow::Config { alias, target } => {
+                            // A4: connect via the alias so ssh-config rules apply.
+                            let conn_alias = alias.clone();
+                            base()
+                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| {
+                                    this.ssh_connect(&conn_alias, w, cx);
+                                }))
+                                // hollow dot marker = an endpoint we haven't dialed yet
+                                .child(div().w(px(14.)).flex().justify_center().flex_none()
+                                    .child(div().w(px(8.)).h(px(8.)).rounded(px(999.)).border_1().border_color(col(ui.muted))))
+                                .child(
+                                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
+                                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(alias.clone())))
+                                        .child(div().font_family(mono.clone()).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(target.clone()))),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div().flex().flex_row().items_center()
+                                        .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(rgba(HOVER))
+                                        .child(div().text_size(px(10.)).text_color(col(ui.muted)).child(SharedString::from("ssh-config"))),
+                                )
                         }
                     };
                     col_div = col_div.child(row);
@@ -2758,6 +2881,7 @@ impl Workspace {
                 self.ssh_prompt_input.clear();
                 self.ssh_prompt_sel = 0;
                 self.ssh_save = None;
+                self.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             }
         }
@@ -3699,6 +3823,27 @@ impl Render for Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_ssh_target_accepts_good_targets() {
+        // C2: well-formed targets (and empty input) pass.
+        for ok in ["", "host", "user@host", "host:22", "root@10.0.0.5:2222", "alma"] {
+            assert!(validate_ssh_target(ok).is_ok(), "{ok:?} should be ok");
+        }
+        // A non-numeric suffix stays part of the host (matches SshConfig::parse).
+        assert!(validate_ssh_target("host:notaport").is_ok());
+    }
+
+    #[test]
+    fn validate_ssh_target_flags_bad_targets() {
+        // C2: empty host, dangling @/:, and out-of-range ports are caught pre-dial.
+        assert!(validate_ssh_target("@host").is_err()); // empty user
+        assert!(validate_ssh_target("user@").is_err()); // empty host
+        assert!(validate_ssh_target("host:").is_err()); // dangling colon
+        assert!(validate_ssh_target("host:0").is_err()); // port 0
+        assert!(validate_ssh_target("host:70000").is_err()); // > 65535
+        assert!(validate_ssh_target(":22").is_err()); // no host
+    }
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {
         let weights = vec![1.0; kids.len()];

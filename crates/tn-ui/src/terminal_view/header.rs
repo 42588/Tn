@@ -247,10 +247,19 @@ impl TerminalView {
         if let Some(state) = self.ssh_conn {
             use super::SshConnState::*;
             let (color, label) = match state {
-                Connecting => (self.ui_accent, "连接中"),
-                Connected => (self.palette.ansi[2], "已连接"), // green
-                Reconnecting => (self.palette.ansi[3], "重连中"), // yellow
-                Disconnected => (self.palette.ansi[1], "已断开"), // red
+                Connecting => (self.ui_accent, "连接中".to_string()),
+                // C3 success feedback: tag the method that authenticated.
+                Connected => {
+                    let method = match self.ssh_conn_method {
+                        Some(tn_pty::AuthKind::PublicKey) => " · 密钥",
+                        Some(tn_pty::AuthKind::Password) => " · 密码",
+                        Some(tn_pty::AuthKind::KeyboardInteractive) => " · 交互",
+                        None => "",
+                    };
+                    (self.palette.ansi[2], format!("已连接{method}")) // green
+                }
+                Reconnecting => (self.palette.ansi[3], "重连中".to_string()), // yellow
+                Disconnected => (self.palette.ansi[1], "已断开".to_string()), // red
             };
             head = head.child(
                 div()

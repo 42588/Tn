@@ -374,6 +374,9 @@ pub struct TerminalView {
     // B4: live connection state for SSH panes (None = not an SSH pane). Drives the
     // header's four-phase dot + the reconnect banner.
     ssh_conn: Option<SshConnState>,
+    // C3 success feedback: the auth method that succeeded, appended to the
+    // header's "已连接" label (密钥 / 密码 / 交互).
+    ssh_conn_method: Option<tn_pty::AuthKind>,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -654,6 +657,7 @@ impl TerminalView {
             ssh_hostkey: None,
             ssh_hostkey_remember: true,
             ssh_conn: launch.ssh.as_ref().map(|_| SshConnState::Connecting),
+            ssh_conn_method: None,
         }
     }
 
@@ -751,6 +755,7 @@ impl TerminalView {
                 self.ssh_progress = None;
                 self.ssh_error = None;
                 self.ssh_conn = self.ssh_conn.map(|_| SshConnState::Connected);
+                self.ssh_conn_method = Some(method); // C3: surface 密钥/密码 in header
                 cx.emit(SshConnected(method));
                 cx.notify();
             }

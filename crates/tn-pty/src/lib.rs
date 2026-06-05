@@ -13,7 +13,7 @@ mod local;
 pub use local::LocalPty;
 
 mod ssh;
-pub use ssh::{SshBackend, SshConfig};
+pub use ssh::{list_ssh_config_hosts, SshBackend, SshConfig, SshHostEntry};
 
 pub mod wsl;
 

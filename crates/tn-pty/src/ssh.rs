@@ -135,6 +135,91 @@ impl SshConfig {
     }
 }
 
+/// A `Host` alias resolved from `~/.ssh/config` — surfaced as the connector's
+/// third section (A4). `host`/`user`/`port` come from the alias's `HostName`/
+/// `User`/`Port` directives (falling back to the alias itself / defaults).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SshHostEntry {
+    pub alias: String,
+    pub host: String,
+    pub user: Option<String>,
+    pub port: u16,
+}
+
+/// Enumerate concrete `Host` aliases from `~/.ssh/config` (A4), each resolved
+/// via the same parser `SshConfig::parse` uses. Wildcard patterns (`*`/`?`) and
+/// negations (`!`) are skipped — they're rules, not endpoints. Returns empty if
+/// there's no config file.
+pub fn list_ssh_config_hosts() -> Vec<SshHostEntry> {
+    let Some(home) = home_dir() else {
+        return Vec::new();
+    };
+    let path = home.join(".ssh").join("config");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let aliases = parse_host_aliases(&content);
+    if aliases.is_empty() {
+        return Vec::new();
+    }
+    // Parse once; resolve each alias's effective HostName/User/Port via query().
+    let parsed = {
+        let mut reader = std::io::BufReader::new(content.as_bytes());
+        ssh2_config::SshConfig::default()
+            .parse(&mut reader, ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS)
+            .ok()
+    };
+    aliases
+        .into_iter()
+        .map(|alias| {
+            let mut host = alias.clone();
+            let mut user = None;
+            let mut port = 22;
+            if let Some(cfg) = &parsed {
+                let params = cfg.query(&alias);
+                if let Some(h) = params.host_name {
+                    host = h;
+                }
+                if let Some(u) = params.user {
+                    user = Some(u);
+                }
+                if let Some(p) = params.port {
+                    port = p;
+                }
+            }
+            SshHostEntry { alias, host, user, port }
+        })
+        .collect()
+}
+
+/// Pure scan of ssh_config text for `Host` directive aliases, in file order,
+/// deduped. Skips comments, wildcard patterns (`*`/`?`) and negations (`!`);
+/// one `Host` line may declare several patterns. Unit-testable (no real `~/.ssh`).
+fn parse_host_aliases(content: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut parts = line.splitn(2, char::is_whitespace);
+        let kw = parts.next().unwrap_or("");
+        if !kw.eq_ignore_ascii_case("Host") {
+            continue;
+        }
+        let Some(rest) = parts.next() else { continue };
+        for pat in rest.split_whitespace() {
+            if pat.contains('*') || pat.contains('?') || pat.starts_with('!') {
+                continue;
+            }
+            if !out.iter().any(|a| a == pat) {
+                out.push(pat.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// Existing `id_*` private keys under `ssh_dir`, in preference order. Pure (no
 /// real `~/.ssh` dependency) so it's unit-testable.
 fn key_candidates_in(ssh_dir: &Path) -> Vec<PathBuf> {
@@ -880,5 +965,35 @@ mod tests {
         let mut c = SshConfig::new("h", "u");
         c.key_path = Some(PathBuf::from("/custom/key"));
         assert_eq!(c.key_candidates(), vec![PathBuf::from("/custom/key")]);
+    }
+
+    #[test]
+    fn host_aliases_skip_wildcards_and_dedupe() {
+        let cfg = "\
+# comment
+Host *
+  ForwardAgent yes
+
+Host alma  bastion
+  HostName 10.0.0.5
+
+Host web-* db?
+  User deploy
+
+Host !secret prod
+  HostName prod.example.com
+
+Host alma
+  Port 2222
+";
+        let aliases = parse_host_aliases(cfg);
+        // `*`, `web-*`, `db?`, `!secret` are patterns/negations → skipped; the
+        // second `Host alma` block doesn't duplicate the alias.
+        assert_eq!(aliases, vec!["alma", "bastion", "prod"]);
+    }
+
+    #[test]
+    fn host_aliases_empty_when_no_host_lines() {
+        assert!(parse_host_aliases("# just a comment\nForwardAgent yes\n").is_empty());
     }
 }
