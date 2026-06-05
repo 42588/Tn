@@ -253,7 +253,7 @@
 
   <!-- ② 进度 + ③ 指纹(并排) -->
   <div class="demo">
-    <div class="label">② 连接进度卡 · ③ 首次连接指纹确认(TOFU) <span class="id">.card / .steps / .fp</span><span class="impl">workspace::render_ssh_progress / render_ssh_fingerprint(规划)</span></div>
+    <div class="label">② 连接进度卡 · ③ 首次连接指纹确认(TOFU) <span class="id">.card / .steps / .fp</span><span class="impl"><span style="color:var(--green)">✅ B1 进度卡已落地(terminal_view 覆盖卡,诚实 3 步)</span> · ③ 指纹 TOFU 面板(规划)</span></div>
     <div class="canvas tall" style="padding:32px;">
       <div class="two">
         <!-- 进度 -->
@@ -395,7 +395,7 @@
 
   <!-- ⑥ 可操作错误 -->
   <div class="demo">
-    <div class="label">⑥ 可操作错误卡 — 把「一行字 + 会话死掉」变成「原因 + 按钮 + 提示」 <span class="id">.card.danger / .btnrow</span><span class="impl">render_ssh_error(规划)</span></div>
+    <div class="label">⑥ 可操作错误卡 — 把「一行字 + 会话死掉」变成「原因 + 按钮 + 提示」 <span class="id">.card.danger / .btnrow</span><span class="impl" style="color:var(--green)">✅ C1 已落地 · terminal_view ssh_error 卡([重试]/[关闭] + PermitRootLogin 提示;超时/改用密码/编辑待做)</span></div>
     <div class="canvas tall" style="padding:32px;">
       <div class="two">
         <!-- 认证失败 -->

@@ -296,6 +296,14 @@ async fn run_session(
         };
 
         let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n", cfg.user, cfg.host, cfg.port).into_bytes());
+        emit_event(
+            &event_tx,
+            &waker,
+            crate::PtyEvent::SshProgress {
+                phase: crate::SshPhase::Connecting,
+                detail: format!("{}:{}", cfg.host, cfg.port),
+            },
+        );
 
         let connect_res = tokio::time::timeout(
             Duration::from_secs(15),
@@ -308,6 +316,15 @@ async fn run_session(
                 // If we deliberately rejected the host key, do NOT retry — the
                 // warning was already printed by check_server_key.
                 if key_rejected.load(Ordering::Relaxed) {
+                    emit_event(
+                        &event_tx,
+                        &waker,
+                        crate::PtyEvent::SshFailed {
+                            kind: crate::SshErrorKind::HostKeyMismatch,
+                            detail: format!("{}:{}", cfg.host, cfg.port),
+                            offered: String::new(),
+                        },
+                    );
                     return Err(anyhow!("host key rejected"));
                 }
                 let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
@@ -337,6 +354,14 @@ async fn run_session(
         };
 
         let _ = in_tx.send("\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n".as_bytes().to_vec());
+        emit_event(
+            &event_tx,
+            &waker,
+            crate::PtyEvent::SshProgress {
+                phase: crate::SshPhase::OpeningShell,
+                detail: String::new(),
+            },
+        );
 
         let mut channel = handle.channel_open_session().await.context("open session")?;
         channel
@@ -440,6 +465,16 @@ async fn authenticate(
         Err(e) => tracing::debug!("ssh: `none` auth probe failed: {e}"),
     }
 
+    // Connection progress: now authenticating (B1 card).
+    emit_event(
+        event_tx,
+        waker,
+        crate::PtyEvent::SshProgress {
+            phase: crate::SshPhase::Authenticating,
+            detail: String::new(),
+        },
+    );
+
     // 1) Public-key (explicit key or ~/.ssh/id_*).
     if server_offers(&methods, russh::MethodKind::PublicKey) {
         for path in &cfg.key_candidates() {
@@ -514,12 +549,36 @@ async fn authenticate(
     } else {
         String::new()
     };
+    // Actionable error card (C1): reason + the methods the server advertised.
+    emit_event(
+        event_tx,
+        waker,
+        crate::PtyEvent::SshFailed {
+            kind: crate::SshErrorKind::Auth,
+            detail: hint.trim().to_string(),
+            offered: methods_str(&methods),
+        },
+    );
     Err(anyhow!(
         "ssh authentication failed for {}@{}{}",
         cfg.user,
         cfg.host,
         hint
     ))
+}
+
+/// Send a UI [`crate::PtyEvent`] + wake the foreground so the card repaints
+/// promptly (same pattern as `Connected`/`NeedPassword`).
+fn emit_event(
+    event_tx: &StdSender<crate::PtyEvent>,
+    waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
+    ev: crate::PtyEvent,
+) {
+    if event_tx.send(ev).is_ok() {
+        if let Some(w) = waker.lock().unwrap().as_ref() {
+            w();
+        }
+    }
 }
 
 /// Whether the server offered method `m` — or the offered set is unknown (probe

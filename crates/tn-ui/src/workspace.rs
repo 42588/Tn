@@ -25,7 +25,10 @@ use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::ssh_recents::{AuthBadge, SshRecents};
-use crate::terminal_view::{FilesChanged, LaunchSpec, OpenInQuickLook, SshConnected, TerminalView, UsageUpdated};
+use crate::terminal_view::{
+    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected, SshRetryRequested,
+    TerminalView, UsageUpdated,
+};
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
 type PaneId = u64;
@@ -1029,6 +1032,18 @@ impl Workspace {
                 .and_then(|v| v.read(cx).effective_cwd().map(std::path::PathBuf::from))
                 .unwrap_or_else(|| self.explorer.read(cx).root())
         });
+        let id = self.next_id;
+        self.next_id += 1;
+        self.install_pane(id, launch, cx);
+        id
+    }
+
+    /// Create — or **re-create**, for SSH retry — the [`TerminalView`] for `id`,
+    /// wire all its subscriptions, and store it. Re-installing an existing `id`
+    /// drops the old view (its `Drop` kills the old backend) and reconnects with
+    /// the same spec, keeping the pane's position in the tab tree (the tree refers
+    /// to `id`, not the view). Used by the SSH error card's 重试.
+    fn install_pane(&mut self, id: PaneId, launch: LaunchSpec, cx: &mut Context<Self>) {
         let config = self.config.clone();
         let view = cx.new(|cx| TerminalView::new(cx, config, launch.clone()));
         // Repaint the status bar when this pane's usage changes (only on change,
@@ -1041,10 +1056,6 @@ impl Workspace {
             ws.explorer.update(cx, |explorer, cx| explorer.rebuild(cx));
         })
         .detach();
-        // Assign the pane id BEFORE setting up subscriptions so the
-        // OpenInQuickLook handler can capture it (needed for rail nav context).
-        let id = self.next_id;
-        self.next_id += 1;
         // Agent activity-rail card click → open that file in Quick Look (Diff tab)
         // and record which pane + which file-index was clicked so ↑↓ nav stays
         // scoped to that rail's changed-file list.
@@ -1077,9 +1088,55 @@ impl Workspace {
             }
         })
         .detach();
+        // SSH error card 重试 → reconnect in place: rebuild this pane's view with
+        // the same spec (same id/position), dropping the failed one.
+        cx.subscribe(&view, move |ws, _view, _ev: &SshRetryRequested, cx| {
+            if let Some(spec) = ws.pane_specs.get(&id).cloned() {
+                ws.install_pane(id, spec, cx);
+                cx.notify();
+            }
+        })
+        .detach();
+        // SSH progress/error card 取消 / 关闭 → close this pane.
+        cx.subscribe(&view, move |ws, _view, _ev: &SshCloseRequested, cx| {
+            ws.close_pane_id(id, cx);
+        })
+        .detach();
         self.panes.insert(id, view);
         self.pane_specs.insert(id, launch);
-        id
+    }
+
+    /// Close a specific pane by `id` (the SSH cards' 取消 / 关闭). Mirrors
+    /// [`close_pane`](Self::close_pane) but targets an arbitrary id in whatever tab
+    /// holds it, and defers focus to `render`'s focus reconciliation (no `Window`
+    /// in an event callback). The only pane of the only tab is left as-is.
+    fn close_pane_id(&mut self, id: PaneId, cx: &mut Context<Self>) {
+        let Some(ti) = self.tabs.iter().position(|t| {
+            let mut leaves = Vec::new();
+            collect_leaves(&t.root, &mut leaves);
+            leaves.contains(&id)
+        }) else {
+            return;
+        };
+        if self.tabs[ti].root.leaf_count() <= 1 {
+            // Last pane in its tab: drop the whole tab if another remains.
+            if self.tabs.len() > 1 {
+                self.panes.remove(&id);
+                self.pane_specs.remove(&id);
+                self.tabs.remove(ti);
+                self.active = self.active.min(self.tabs.len() - 1);
+            }
+            cx.notify();
+            return;
+        }
+        let root = std::mem::replace(&mut self.tabs[ti].root, Node::Leaf(0));
+        self.tabs[ti].root = prune(root, id).expect("tree non-empty");
+        self.panes.remove(&id);
+        self.pane_specs.remove(&id);
+        if self.tabs[ti].focused == id {
+            self.tabs[ti].focused = first_leaf(&self.tabs[ti].root);
+        }
+        cx.notify();
     }
 
     /// Send `cd <dir>` to every **plain local shell** pane (`打开文件夹`). Agents

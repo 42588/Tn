@@ -101,6 +101,41 @@ pub enum AuthKind {
     KeyboardInteractive,
 }
 
+/// A step in establishing an SSH session — drives the connection progress card
+/// (B1). Ordinal order = display order; the UI marks steps before the current as
+/// done, the current as active, and later ones as pending. Only phases the
+/// backend can *honestly* observe are listed (TCP handshake + host-key check are
+/// one atomic `connect()` step in russh, so they fold into `Connecting`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshPhase {
+    /// TCP connect + SSH transport handshake + host-key verification.
+    Connecting,
+    /// Offering keys / password to the server.
+    Authenticating,
+    /// Opening the remote PTY + shell.
+    OpeningShell,
+}
+
+impl SshPhase {
+    /// Position in the fixed step list (for done/active/pending comparison).
+    pub fn ordinal(self) -> usize {
+        match self {
+            SshPhase::Connecting => 0,
+            SshPhase::Authenticating => 1,
+            SshPhase::OpeningShell => 2,
+        }
+    }
+}
+
+/// Why an SSH connection failed — drives the actionable error card (C1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshErrorKind {
+    /// All offered auth methods were rejected (keys + password).
+    Auth,
+    /// The server's host key didn't match `~/.ssh/known_hosts` (possible MITM).
+    HostKeyMismatch,
+}
+
 /// An event emitted by a PTY backend that requires UI interaction.
 pub enum PtyEvent {
     /// The backend needs a password to continue authentication.
@@ -109,6 +144,20 @@ pub enum PtyEvent {
         prompt: String,
         /// A channel to send the password back. If dropped without sending, auth fails.
         reply: std::sync::mpsc::Sender<String>,
+    },
+    /// SSH connection progressed to a new phase (B1 progress card). `detail` is a
+    /// short human note for the active step (resolved host, key file, …).
+    SshProgress {
+        phase: SshPhase,
+        detail: String,
+    },
+    /// SSH connection failed unrecoverably (C1 error card). `offered` lists the
+    /// auth methods the server advertised (e.g. `publickey · password`), empty if
+    /// unknown.
+    SshFailed {
+        kind: SshErrorKind,
+        detail: String,
+        offered: String,
     },
     /// Authentication succeeded and the remote shell is open — the UI records
     /// this target as a recent connection, tagged with the method used.

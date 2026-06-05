@@ -60,6 +60,22 @@ pub struct OpenInQuickLook(pub std::path::PathBuf);
 /// tagged with the method that worked.
 pub struct SshConnected(pub tn_pty::AuthKind);
 
+/// Emitted when the SSH error card's 重试 is clicked — the workspace re-spawns
+/// this pane in place with the same target (C1 retry).
+pub struct SshRetryRequested;
+
+/// Emitted when an SSH progress/error card's 取消 / 关闭 is clicked — the
+/// workspace closes this pane (B1 cancel / C1 close).
+pub struct SshCloseRequested;
+
+/// SSH connection failure detail for the actionable error card (C1).
+#[derive(Clone)]
+pub(crate) struct SshErrorInfo {
+    pub kind: tn_pty::SshErrorKind,
+    pub detail: String,
+    pub offered: String,
+}
+
 use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER};
 
@@ -288,6 +304,11 @@ pub struct TerminalView {
     // the terminal palette). fg-dim has no theme token → literal in header.rs.
     ui_fg: Rgb,
     ui_muted: Rgb,
+    // ANSI accents for the SSH connection cards (done ✓ green / error red / hint
+    // yellow). Pulled from the theme like ui_accent.
+    ui_green: Rgb,
+    ui_red: Rgb,
+    ui_yellow: Rgb,
     // Launch program (e.g. "powershell.exe") — for a clean shell label.
     program: String,
     // IME composition (preedit) text, set by the platform input handler while the
@@ -306,6 +327,13 @@ pub struct TerminalView {
     // floating input above the terminal, routing keystrokes to `ssh_password_input`.
     ssh_password_prompt: Option<(String, std::sync::mpsc::Sender<String>)>,
     ssh_password_input: String,
+    // SSH target label (`user@host:port`) shown on the connection cards.
+    ssh_target: String,
+    // Current SSH phase while connecting (B1 progress card); cleared once the
+    // shell opens (`Connected`) or the attempt fails.
+    ssh_progress: Option<(tn_pty::SshPhase, String)>,
+    // SSH failure detail for the actionable error card (C1); `None` = no error.
+    ssh_error: Option<SshErrorInfo>,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -423,6 +451,14 @@ impl TerminalView {
         let ui_accent = to_rgb(config.theme.ui.accent);
         let ui_fg = to_rgb(config.theme.ui.foreground);
         let ui_muted = to_rgb(config.theme.ui.muted);
+        let ui_green = to_rgb(config.theme.ansi.green);
+        let ui_red = to_rgb(config.theme.ansi.red);
+        let ui_yellow = to_rgb(config.theme.ansi.yellow);
+        let ssh_target = launch
+            .ssh
+            .as_ref()
+            .map(|c| crate::ssh_recents::format_target(&c.user, &c.host, c.port))
+            .unwrap_or_default();
         let visual_bell = config.config.appearance.visual_bell;
         let audio_bell = config.config.appearance.audio_bell;
         let billing_mode = config.config.general.billing_mode;
@@ -561,12 +597,18 @@ impl TerminalView {
             ui_accent,
             ui_fg,
             ui_muted,
+            ui_green,
+            ui_red,
+            ui_yellow,
             program: launch.program.clone(),
             ime_marked: None,
             render_cache: None,
             perf: PerfStats::new("pane.render"),
             ssh_password_prompt: None,
             ssh_password_input: String::new(),
+            ssh_target,
+            ssh_progress: None,
+            ssh_error: None,
         }
     }
 
@@ -628,10 +670,27 @@ impl TerminalView {
                 self.ssh_password_input.clear();
                 cx.notify();
             }
+            tn_pty::PtyEvent::SshProgress { phase, detail } => {
+                // B1 progress card: advance the connection step. A new attempt
+                // clears any stale error card.
+                self.ssh_progress = Some((phase, detail));
+                self.ssh_error = None;
+                cx.notify();
+            }
+            tn_pty::PtyEvent::SshFailed { kind, detail, offered } => {
+                // C1 error card: stop the progress card, show the actionable error.
+                self.ssh_progress = None;
+                self.ssh_error = Some(SshErrorInfo { kind, detail, offered });
+                cx.notify();
+            }
             tn_pty::PtyEvent::Connected { method } => {
-                // Authenticated + shell open → workspace records this as a recent
-                // SSH connection (A1). Workspace knows the target via pane_specs.
+                // Authenticated + shell open → drop the progress card, and let the
+                // workspace record this as a recent SSH connection (A1). Workspace
+                // knows the target via pane_specs.
+                self.ssh_progress = None;
+                self.ssh_error = None;
                 cx.emit(SshConnected(method));
+                cx.notify();
             }
             tn_pty::PtyEvent::Disconnected => {
                 // TODO: Auto reconnect (B4 — reconnect banner).
@@ -1077,6 +1136,31 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // SSH error card (C1): Enter = retry, Esc = close. Takes precedence over
+        // the terminal so the dead session's keys don't leak through.
+        if self.ssh_error.is_some() {
+            match event.keystroke.key.as_str() {
+                "enter" => {
+                    cx.emit(SshRetryRequested);
+                    cx.stop_propagation();
+                    return;
+                }
+                "escape" => {
+                    cx.emit(SshCloseRequested);
+                    cx.stop_propagation();
+                    return;
+                }
+                _ => {}
+            }
+            cx.stop_propagation();
+            return;
+        }
+        // SSH progress card (B1): Esc = cancel the in-flight connection.
+        if self.ssh_progress.is_some() && event.keystroke.key.as_str() == "escape" {
+            cx.emit(SshCloseRequested);
+            cx.stop_propagation();
+            return;
+        }
         // Handle SSH password prompt input intercept
         if let Some((_, reply)) = self.ssh_password_prompt.as_ref() {
             let keystroke = &event.keystroke;
@@ -1272,6 +1356,8 @@ impl gpui::EventEmitter<FilesChanged> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
 impl gpui::EventEmitter<SshConnected> for TerminalView {}
+impl gpui::EventEmitter<SshRetryRequested> for TerminalView {}
+impl gpui::EventEmitter<SshCloseRequested> for TerminalView {}
 
 /// IME / text input (fixes "终端无法输入中文"). gpui only delivers IME-composed text
 /// (pinyin → 中文) through an [`EntityInputHandler`]; without one, only ASCII
@@ -1835,6 +1921,168 @@ impl Render for TerminalView {
                 .child(panel)
         });
 
+        // ── SSH connection cards (B1 progress / C1 error). Precedence: a password
+        // prompt wins (it's interactive); then the error card; then progress. ──
+        let card_chrome = |inner: gpui::Div| -> gpui::Div {
+            let panel = crate::style::shadowed(
+                inner
+                    .flex().flex_col().w(px(420.)).rounded(px(crate::style::R_PANEL))
+                    .overflow_hidden().border_1().border_color(rgba(crate::style::RIM))
+                    .bg(gpui::linear_gradient(
+                        180.,
+                        gpui::linear_color_stop(cola(self.palette.bg, 0.92), 0.),
+                        gpui::linear_color_stop(rgba(0x161826eb), 1.),
+                    ))
+                    .on_mouse_down(gpui::MouseButton::Left, |_e, _w, cx| cx.stop_propagation()),
+                vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
+            );
+            div().absolute().size_full().flex().items_center().justify_center()
+                .bg(rgba(0x0a0b118c))
+                .child(panel)
+        };
+        let card_header = |icon_name: &'static str, accent: Rgb, title: &str, subtitle: &str| {
+            div().flex().flex_row().items_center().gap(px(11.)).p(px(14.))
+                .child(
+                    div().w(px(34.)).h(px(34.)).flex_none().rounded(px(9.))
+                        .flex().items_center().justify_center().bg(cola(accent, 0.16))
+                        .child(crate::style::icon(icon_name, 17., accent)),
+                )
+                .child(
+                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
+                        .child(div().text_size(px(13.5)).font_weight(FontWeight(600.)).text_color(col(self.ui_fg)).child(SharedString::from(title.to_string())))
+                        .child(div().font_family(self.font_family.clone()).text_size(px(11.)).text_color(col(self.ui_muted)).child(SharedString::from(subtitle.to_string()))),
+                )
+        };
+
+        // B1: connection progress card.
+        let ssh_progress_card = (self.ssh_password_prompt.is_none() && self.ssh_error.is_none())
+            .then_some(self.ssh_progress.as_ref())
+            .flatten()
+            .map(|(phase, detail)| {
+                let cur = phase.ordinal();
+                let steps = [
+                    (tn_pty::SshPhase::Connecting, "建立连接"),
+                    (tn_pty::SshPhase::Authenticating, "认证"),
+                    (tn_pty::SshPhase::OpeningShell, "打开远程 shell"),
+                ];
+                let mut steps_col = div().flex().flex_col().gap(px(8.)).px(px(14.)).pb(px(6.));
+                for (p, label) in steps {
+                    let o = p.ordinal();
+                    let marker = if o < cur {
+                        div().w(px(14.)).flex().justify_center().flex_none()
+                            .child(crate::style::icon("check", 14., self.ui_green))
+                    } else if o == cur {
+                        div().w(px(14.)).flex().justify_center().items_center().flex_none()
+                            .child(div().w(px(8.)).h(px(8.)).rounded(px(999.)).bg(col(self.ui_accent)))
+                    } else {
+                        div().w(px(14.)).flex().justify_center().items_center().flex_none()
+                            .child(div().w(px(7.)).h(px(7.)).rounded(px(999.)).bg(cola(self.ui_muted, 0.5)))
+                    };
+                    let txt = if o <= cur { self.ui_fg } else { self.ui_muted };
+                    let detail_owned = detail.clone();
+                    steps_col = steps_col.child(
+                        div().flex().flex_row().items_center().gap(px(9.))
+                            .child(marker)
+                            .child(div().text_size(px(12.5)).text_color(col(txt)).child(SharedString::from(label.to_string())))
+                            .when(o == cur && !detail_owned.is_empty(), |d| {
+                                d.child(div().font_family(self.font_family.clone()).text_size(px(11.)).text_color(col(self.ui_muted)).child(SharedString::from(detail_owned)))
+                            }),
+                    );
+                }
+                let cancel = div()
+                    .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                    .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                    .hover(|s| s.bg(rgba(crate::style::INSET)))
+                    .child(crate::style::icon("close", 13., self.ui_muted))
+                    .child(div().text_size(px(12.)).child(SharedString::from("取消")))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        cx.emit(SshCloseRequested);
+                    }));
+                card_chrome(
+                    div()
+                        .child(card_header("globe", self.ui_accent, "正在连接", &self.ssh_target))
+                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                        .child(steps_col)
+                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                        .child(div().flex().flex_row().justify_end().p(px(11.)).child(cancel)),
+                )
+            });
+
+        // C1: actionable error card.
+        let ssh_error_card = self
+            .ssh_password_prompt
+            .is_none()
+            .then_some(self.ssh_error.as_ref())
+            .flatten()
+            .map(|info| {
+                let is_auth = info.kind == tn_pty::SshErrorKind::Auth;
+                let title = if is_auth { "认证失败" } else { "主机密钥已更改" };
+                let body_text = if is_auth {
+                    if info.offered.is_empty() || info.offered == "(未知)" {
+                        "密钥被拒或密码错误。".to_string()
+                    } else {
+                        format!("密钥被拒或密码错误。服务器开放的方式:{}。", info.offered)
+                    }
+                } else {
+                    "服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。".to_string()
+                };
+                // Yellow hint box (auth only): the backend's server-config hint, or a generic one.
+                let hint = if is_auth {
+                    Some(if info.detail.is_empty() {
+                        "提示:若确信密码正确,服务器可能设了 PermitRootLogin prohibit-password 或 PasswordAuthentication no,需在服务端放开。".to_string()
+                    } else {
+                        info.detail.clone()
+                    })
+                } else {
+                    None
+                };
+                let retry = div()
+                    .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                    .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                    .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
+                    .child(crate::style::icon("refresh", 13., self.ui_accent))
+                    .child(div().text_size(px(12.)).child(SharedString::from("重试")))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        cx.emit(SshRetryRequested);
+                    }));
+                let close = div()
+                    .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                    .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                    .hover(|s| s.bg(rgba(crate::style::INSET)))
+                    .child(crate::style::icon("close", 13., self.ui_muted))
+                    .child(div().text_size(px(12.)).child(SharedString::from("关闭")))
+                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        cx.emit(SshCloseRequested);
+                    }));
+                let mut btnrow = div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.));
+                if is_auth {
+                    btnrow = btnrow.child(retry);
+                }
+                btnrow = btnrow.child(close);
+                card_chrome(
+                    div()
+                        .child(card_header("alert", self.ui_red, title, &self.ssh_target))
+                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                        .child(
+                            div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
+                                .child(SharedString::from(body_text)),
+                        )
+                        .when_some(hint, |d, h| {
+                            d.child(
+                                div().mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(8.))
+                                    .bg(cola(self.ui_yellow, 0.08)).border_1().border_color(cola(self.ui_yellow, 0.22))
+                                    .text_size(px(11.5)).text_color(col(self.ui_yellow))
+                                    .child(SharedString::from(h)),
+                            )
+                        })
+                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)).mt(px(12.)))
+                        .child(btnrow),
+                )
+            });
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -1851,6 +2099,8 @@ impl Render for TerminalView {
             .when_some(header, |this, h| this.child(h))
             .child(body_region)
             .when_some(block_bar, |this, bar| this.child(bar))
+            .when_some(ssh_progress_card, |this, p| this.child(p))
+            .when_some(ssh_error_card, |this, p| this.child(p))
             .when_some(ssh_prompt, |this, p| this.child(p))
     }
 }
