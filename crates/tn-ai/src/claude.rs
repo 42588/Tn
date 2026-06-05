@@ -120,7 +120,13 @@ pub fn claude_projects_dir() -> Option<PathBuf> {
 /// (e.g. `d:\coder\Tn` → `d--coder-Tn`).
 pub fn encode_project_dir(cwd: &str) -> String {
     cwd.chars()
-        .map(|c| if matches!(c, ':' | '\\' | '/') { '-' } else { c })
+        .map(|c| {
+            if matches!(c, ':' | '\\' | '/') {
+                '-'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -240,12 +246,16 @@ mod tests {
         let u = parse_claude_session(SAMPLE).expect("usage");
         assert_eq!(u.model, "claude-opus-4-7");
         assert_eq!(u.turns, 2);
-        assert_eq!((u.input, u.output, u.cache_create, u.cache_read), (300, 130, 10, 3000));
+        assert_eq!(
+            (u.input, u.output, u.cache_create, u.cache_read),
+            (300, 130, 10, 3000)
+        );
         // context = LAST turn total input = 200 + 0 + 2000.
         assert_eq!(u.context_used, 2200);
         assert_eq!(u.context_max, 200_000);
         // input/cache_create/cache_read are separate additive buckets, each billed at its own rate.
-        let expect = 300.0 / 1e6 * 15.0 + 130.0 / 1e6 * 75.0 + 10.0 / 1e6 * 18.75 + 3000.0 / 1e6 * 1.5;
+        let expect =
+            300.0 / 1e6 * 15.0 + 130.0 / 1e6 * 75.0 + 10.0 / 1e6 * 18.75 + 3000.0 / 1e6 * 1.5;
         assert!((u.cost_usd - expect).abs() < 1e-9);
     }
 

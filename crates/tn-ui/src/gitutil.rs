@@ -29,7 +29,9 @@ pub(crate) fn capture_bounded(root: &Path, args: &[&str], timeout: Duration) -> 
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+        let out = cmd
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
         let _ = tx.send(out);
     });
     match rx.recv_timeout(timeout) {
@@ -101,7 +103,15 @@ pub(crate) fn parse_numstat(text: &str) -> Vec<FileChange> {
 pub(crate) fn changes_for(root: &Path) -> Vec<FileChange> {
     let out = capture_bounded(
         root,
-        &["-c", "core.quotePath=false", "diff", "--no-color", "HEAD", "--numstat", "--relative"],
+        &[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-color",
+            "HEAD",
+            "--numstat",
+            "--relative",
+        ],
         Duration::from_millis(1200),
     );
     parse_numstat(out.as_deref().unwrap_or(""))
@@ -115,16 +125,37 @@ mod tests {
         let s = "3\t1\tcrates/tn-ui/src/element.rs\n1\t0\tlib.rs\n";
         let v = parse_numstat(s);
         assert_eq!(v.len(), 2);
-        assert_eq!(v[0], FileChange { path: "crates/tn-ui/src/element.rs".into(), add: 3, del: 1 });
+        assert_eq!(
+            v[0],
+            FileChange {
+                path: "crates/tn-ui/src/element.rs".into(),
+                add: 3,
+                del: 1
+            }
+        );
         assert_eq!(v[0].name(), "element.rs");
-        assert_eq!(v[1], FileChange { path: "lib.rs".into(), add: 1, del: 0 });
+        assert_eq!(
+            v[1],
+            FileChange {
+                path: "lib.rs".into(),
+                add: 1,
+                del: 0
+            }
+        );
         assert_eq!(v[1].name(), "lib.rs");
     }
 
     #[test]
     fn numstat_treats_binary_dashes_as_zero_and_skips_blank() {
         let v = parse_numstat("-\t-\tassets/logo.png\n\n");
-        assert_eq!(v, vec![FileChange { path: "assets/logo.png".into(), add: 0, del: 0 }]);
+        assert_eq!(
+            v,
+            vec![FileChange {
+                path: "assets/logo.png".into(),
+                add: 0,
+                del: 0
+            }]
+        );
     }
 
     #[test]
@@ -134,7 +165,11 @@ mod tests {
 
     #[test]
     fn name_handles_windows_separators() {
-        let f = FileChange { path: r"crates\tn-ui\src\mod.rs".into(), add: 0, del: 0 };
+        let f = FileChange {
+            path: r"crates\tn-ui\src\mod.rs".into(),
+            add: 0,
+            del: 0,
+        };
         assert_eq!(f.name(), "mod.rs");
     }
 }

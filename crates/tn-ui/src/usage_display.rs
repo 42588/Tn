@@ -61,7 +61,12 @@ mod tests {
     fn starting_mode_prefers_agent_override_then_global() {
         // Explicit per-agent override wins over the global default.
         assert_eq!(
-            starting_mode(AgentKind::Codex, BillingMode::Api, None, Some(BillingMode::Tokens)),
+            starting_mode(
+                AgentKind::Codex,
+                BillingMode::Api,
+                None,
+                Some(BillingMode::Tokens)
+            ),
             BillingMode::Tokens
         );
         // The other agent's override doesn't leak across.

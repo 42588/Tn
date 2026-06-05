@@ -27,7 +27,9 @@ impl AuthBadge {
     pub fn from_pty(k: tn_pty::AuthKind) -> Self {
         match k {
             tn_pty::AuthKind::PublicKey => AuthBadge::Key,
-            tn_pty::AuthKind::Password | tn_pty::AuthKind::KeyboardInteractive => AuthBadge::Password,
+            tn_pty::AuthKind::Password | tn_pty::AuthKind::KeyboardInteractive => {
+                AuthBadge::Password
+            }
         }
     }
 }
@@ -41,6 +43,10 @@ pub struct SshRecent {
     pub host: String,
     pub user: String,
     pub port: u16,
+    /// Optional display nickname for favorites. The reconnect target stays
+    /// `user@host[:port]`; this only changes what the connector shows/searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     #[serde(default)]
     pub auth: AuthBadge,
     /// Unix seconds of the last successful connect.
@@ -79,16 +85,17 @@ impl SshRecent {
             return true;
         }
         let q = q.to_ascii_lowercase();
-        self.host.to_ascii_lowercase().contains(&q)
+        self.name
+            .as_deref()
+            .is_some_and(|n| n.to_ascii_lowercase().contains(&q))
+            || self.host.to_ascii_lowercase().contains(&q)
             || self.user.to_ascii_lowercase().contains(&q)
             || self.target().to_ascii_lowercase().contains(&q)
     }
 
     /// Same endpoint = same host (case-insensitive) + user + port.
     fn same_endpoint(&self, host: &str, user: &str, port: u16) -> bool {
-        self.port == port
-            && self.user == user
-            && self.host.eq_ignore_ascii_case(host)
+        self.port == port && self.user == user && self.host.eq_ignore_ascii_case(host)
     }
 }
 
@@ -168,6 +175,7 @@ impl SshRecents {
                 host: host.to_string(),
                 user: user.to_string(),
                 port,
+                name: None,
                 auth,
                 last_used: now,
                 favorite: false,
@@ -184,6 +192,18 @@ impl SshRecents {
             .find(|e| e.same_endpoint(host, user, port))
         {
             e.favorite = !e.favorite;
+        }
+    }
+
+    /// Rename a remembered endpoint. Empty/whitespace names clear the nickname.
+    pub fn rename(&mut self, host: &str, user: &str, port: u16, name: &str) {
+        if let Some(e) = self
+            .entries
+            .iter_mut()
+            .find(|e| e.same_endpoint(host, user, port))
+        {
+            let trimmed = name.trim();
+            e.name = (!trimmed.is_empty()).then(|| trimmed.to_string());
         }
     }
 
@@ -209,8 +229,7 @@ impl SshRecents {
             return;
         }
         // Newest non-favorites to keep.
-        let mut non_fav: Vec<&SshRecent> =
-            self.entries.iter().filter(|e| !e.favorite).collect();
+        let mut non_fav: Vec<&SshRecent> = self.entries.iter().filter(|e| !e.favorite).collect();
         non_fav.sort_by(|a, b| b.last_used.cmp(&a.last_used));
         let keep: std::collections::HashSet<(String, String, u16)> = non_fav
             .into_iter()
@@ -228,7 +247,15 @@ mod tests {
     use super::*;
 
     fn rec(host: &str, user: &str, port: u16) -> SshRecent {
-        SshRecent { host: host.into(), user: user.into(), port, auth: AuthBadge::Unknown, last_used: 0, favorite: false }
+        SshRecent {
+            host: host.into(),
+            user: user.into(),
+            port,
+            name: None,
+            auth: AuthBadge::Unknown,
+            last_used: 0,
+            favorite: false,
+        }
     }
 
     #[test]
@@ -252,15 +279,28 @@ mod tests {
         assert_eq!(s.entries.len(), 1);
         assert!(s.entries[0].favorite);
         assert_eq!(s.entries[0].auth, AuthBadge::Password);
+        s.rename("host", "root", 2222, "生产");
+        s.record("host", "root", 2222, AuthBadge::Key);
+        assert_eq!(s.entries[0].name.as_deref(), Some("生产"));
     }
 
     #[test]
     fn sorted_favorites_first_then_recency() {
         let mut s = SshRecents::default();
         s.entries = vec![
-            SshRecent { last_used: 10, ..rec("old", "u", 22) },
-            SshRecent { last_used: 30, ..rec("new", "u", 22) },
-            SshRecent { last_used: 5, favorite: true, ..rec("fav", "u", 22) },
+            SshRecent {
+                last_used: 10,
+                ..rec("old", "u", 22)
+            },
+            SshRecent {
+                last_used: 30,
+                ..rec("new", "u", 22)
+            },
+            SshRecent {
+                last_used: 5,
+                favorite: true,
+                ..rec("fav", "u", 22)
+            },
         ];
         let order: Vec<&str> = s.sorted().iter().map(|e| e.host.as_str()).collect();
         assert_eq!(order, vec!["fav", "new", "old"]);
@@ -269,8 +309,11 @@ mod tests {
     #[test]
     fn filter_matches_substring() {
         let mut s = SshRecents::default();
-        s.entries = vec![rec("alma.local", "root", 22), rec("10.0.0.5", "ubuntu", 22)];
+        let mut named = rec("alma.local", "root", 22);
+        named.name = Some("生产服务器".into());
+        s.entries = vec![named, rec("10.0.0.5", "ubuntu", 22)];
         assert_eq!(s.filtered("alma").len(), 1);
+        assert_eq!(s.filtered("生产").len(), 1);
         assert_eq!(s.filtered("ubuntu").len(), 1);
         assert_eq!(s.filtered("root@alma").len(), 1);
         assert_eq!(s.filtered("").len(), 2);
@@ -281,9 +324,16 @@ mod tests {
     fn trim_keeps_favorites_over_cap() {
         let mut s = SshRecents::default();
         // One pinned favorite + many recents over the cap.
-        s.entries.push(SshRecent { favorite: true, last_used: 1, ..rec("fav", "u", 22) });
+        s.entries.push(SshRecent {
+            favorite: true,
+            last_used: 1,
+            ..rec("fav", "u", 22)
+        });
         for i in 0..(MAX_RECENTS as u64 + 5) {
-            s.entries.push(SshRecent { last_used: 100 + i, ..rec(&format!("h{i}"), "u", 22) });
+            s.entries.push(SshRecent {
+                last_used: 100 + i,
+                ..rec(&format!("h{i}"), "u", 22)
+            });
         }
         s.trim();
         assert!(s.entries.iter().any(|e| e.host == "fav")); // favorite survived
@@ -296,10 +346,12 @@ mod tests {
         let mut s = SshRecents::default();
         s.record("h", "u", 2222, AuthBadge::Key);
         s.entries[0].favorite = true;
+        s.rename("h", "u", 2222, "测试机");
         let json = serde_json::to_string(&s).unwrap();
         let back: SshRecents = serde_json::from_str(&json).unwrap();
         assert_eq!(back.entries.len(), 1);
         assert!(back.entries[0].favorite);
+        assert_eq!(back.entries[0].name.as_deref(), Some("测试机"));
         assert_eq!(back.entries[0].auth, AuthBadge::Key);
     }
 }

@@ -175,7 +175,11 @@ fn tree_row(
             .flex_1()
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(if is_sel || row.is_dir { col(ui.foreground) } else { col(ui.muted) })
+            .text_color(if is_sel || row.is_dir {
+                col(ui.foreground)
+            } else {
+                col(ui.muted)
+            })
             .when(row.is_dir, |d| d.font_weight(gpui::FontWeight(540.)))
             .child(SharedString::from(row.name.clone())),
     );
@@ -211,10 +215,13 @@ impl ExplorerView {
         me
     }
 
-    fn spawn_change_watcher(root: &std::path::Path, cx: &mut Context<Self>) -> Option<notify::RecommendedWatcher> {
-        use notify::Watcher;
+    fn spawn_change_watcher(
+        root: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Option<notify::RecommendedWatcher> {
         use futures::future::{select, Either};
         use futures::StreamExt;
+        use notify::Watcher;
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<()>();
         let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             if let Ok(ev) = res {
@@ -225,29 +232,41 @@ impl ExplorerView {
                 }
                 let _ = tx.unbounded_send(());
             }
-        }).ok()?;
-        if watcher.watch(root, notify::RecursiveMode::Recursive).is_err() {
+        })
+        .ok()?;
+        if watcher
+            .watch(root, notify::RecursiveMode::Recursive)
+            .is_err()
+        {
             return None;
         }
         let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            // Trailing-edge debounce(同 rail watcher,审查⑨):收到事件后持续吸收、每个新
-            // 事件重置静默计时,静默 500ms 才 rebuild 一次。单次文件操作 ~500ms 后即刷;
-            // 长构建的持续事件流被不断推后 → 只在停下后扫一次目录(旧固定窗口每 500ms 扫
-            // 一次)。is_noise_path 已挡构建产物,源码区无持续事件流,无需 max-wait 上限。
-            while rx.next().await.is_some() {
-                loop {
-                    match select(rx.next(), std::pin::pin!(exec.timer(Duration::from_millis(500)))).await {
-                        Either::Left((Some(_), _)) => continue,
-                        Either::Left((None, _)) => return,
-                        Either::Right(((), _)) => break,
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                // Trailing-edge debounce(同 rail watcher,审查⑨):收到事件后持续吸收、每个新
+                // 事件重置静默计时,静默 500ms 才 rebuild 一次。单次文件操作 ~500ms 后即刷;
+                // 长构建的持续事件流被不断推后 → 只在停下后扫一次目录(旧固定窗口每 500ms 扫
+                // 一次)。is_noise_path 已挡构建产物,源码区无持续事件流,无需 max-wait 上限。
+                while rx.next().await.is_some() {
+                    loop {
+                        match select(
+                            rx.next(),
+                            std::pin::pin!(exec.timer(Duration::from_millis(500))),
+                        )
+                        .await
+                        {
+                            Either::Left((Some(_), _)) => continue,
+                            Either::Left((None, _)) => return,
+                            Either::Right(((), _)) => break,
+                        }
+                    }
+                    if this.update(cx, |this, cx| this.rebuild(cx)).is_err() {
+                        return;
                     }
                 }
-                if this.update(cx, |this, cx| this.rebuild(cx)).is_err() {
-                    return;
-                }
-            }
-        }).detach();
+            },
+        )
+        .detach();
         Some(watcher)
     }
 
@@ -279,7 +298,8 @@ impl ExplorerView {
             return;
         }
         self.root = root.clone();
-        self.expanded.retain(|p| p.starts_with(&root) || root.starts_with(p));
+        self.expanded
+            .retain(|p| p.starts_with(&root) || root.starts_with(p));
         self._change_watcher = Self::spawn_change_watcher(&root, cx);
         self.selected = selection_under_root(&self.selected, &root);
         self.rebuild(cx);
@@ -385,7 +405,13 @@ impl ExplorerView {
                 return;
             }
             let is_expanded = is_dir && expanded.contains(&path);
-            out.push(Row { path: path.clone(), name, depth, is_dir, expanded: is_expanded });
+            out.push(Row {
+                path: path.clone(),
+                name,
+                depth,
+                is_dir,
+                expanded: is_expanded,
+            });
             if is_expanded {
                 Self::walk(&path, depth + 1, expanded, out);
             }
@@ -399,21 +425,25 @@ impl ExplorerView {
         let root = self.root.clone();
         let expanded = self.expanded.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let rows = cx.background_executor().spawn(async move {
-                let (tx, rx) = futures::channel::oneshot::channel();
-                std::thread::spawn(move || {
-                    let mut out = Vec::new();
-                    Self::walk(&root, 0, &expanded, &mut out);
-                    let _ = tx.send(out);
-                });
-                rx.await.unwrap_or_default()
-            }).await;
+            let rows = cx
+                .background_executor()
+                .spawn(async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let mut out = Vec::new();
+                        Self::walk(&root, 0, &expanded, &mut out);
+                        let _ = tx.send(out);
+                    });
+                    rx.await.unwrap_or_default()
+                })
+                .await;
             let _ = this.update(cx, |this, cx| {
                 this.rows = rows;
                 this.git_stale = true;
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
     }
 
     /// Kick off an async git-status refresh. Safe to call from any context;
@@ -450,7 +480,13 @@ impl ExplorerView {
         self.git_stale = true;
     }
 
-    fn on_row_click(&mut self, path: PathBuf, is_dir: bool, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_row_click(
+        &mut self,
+        path: PathBuf,
+        is_dir: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if is_dir {
             // Keep the tree focused so ↑↓ / Space keep working after expanding.
             self.focus_handle.focus(window);
@@ -514,7 +550,13 @@ impl ExplorerView {
             .and_then(|p| self.rows.iter().position(|r| &r.path == p));
         let next = match cur {
             Some(i) => (i as i32 + delta).clamp(0, self.rows.len() as i32 - 1) as usize,
-            None => if delta >= 0 { 0 } else { self.rows.len() - 1 },
+            None => {
+                if delta >= 0 {
+                    0
+                } else {
+                    self.rows.len() - 1
+                }
+            }
         };
         self.selected = Some(self.rows[next].path.clone());
         self.scroll_to_selected();
@@ -602,7 +644,8 @@ impl Render for ExplorerView {
         let tree_rows: std::rc::Rc<Vec<Row>> = std::rc::Rc::new(self.rows.clone());
         let tree_config = self.config.clone(); // Arc
         let tree_root: std::rc::Rc<PathBuf> = std::rc::Rc::new(self.root.clone());
-        let tree_git: std::rc::Rc<HashMap<String, char>> = std::rc::Rc::new(self.git_status.clone());
+        let tree_git: std::rc::Rc<HashMap<String, char>> =
+            std::rc::Rc::new(self.git_status.clone());
         let tree_sel: std::rc::Rc<Option<PathBuf>> = std::rc::Rc::new(self.selected.clone());
         let tree_entity = cx.entity().downgrade();
 
@@ -611,7 +654,9 @@ impl Render for ExplorerView {
         let is_focused = self.focus_handle.is_focused(window);
         let inner = div()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
+            )
             .size_full()
             .relative() // anchor the absolute specular layer
             .flex()
@@ -624,22 +669,22 @@ impl Render for ExplorerView {
             .child(crate::style::specular_wash(is_focused, ui.accent))
             .child(header)
             .child(
-                uniform_list("explorer-tree", self.rows.len(), move |range, _window, _cx| {
-                    range
-                        .map(|i| {
-                            let row = &tree_rows[i];
-                            let indent = 10.0 + row.depth as f32 * 16.0;
-                            let is_sel =
-                                tree_sel.as_ref().as_ref() == Some(&row.path);
-                            let key = row
-                                .path
-                                .strip_prefix(tree_root.as_ref())
-                                .ok()
-                                .map(|p| p.to_string_lossy().replace('\\', "/"));
-                            let git_tag =
-                                key.as_ref()
-                                    .and_then(|k| tree_git.get(k))
-                                    .map(|&tag| {
+                uniform_list(
+                    "explorer-tree",
+                    self.rows.len(),
+                    move |range, _window, _cx| {
+                        range
+                            .map(|i| {
+                                let row = &tree_rows[i];
+                                let indent = 10.0 + row.depth as f32 * 16.0;
+                                let is_sel = tree_sel.as_ref().as_ref() == Some(&row.path);
+                                let key = row
+                                    .path
+                                    .strip_prefix(tree_root.as_ref())
+                                    .ok()
+                                    .map(|p| p.to_string_lossy().replace('\\', "/"));
+                                let git_tag =
+                                    key.as_ref().and_then(|k| tree_git.get(k)).map(|&tag| {
                                         let c = match tag {
                                             'U' | 'A' => tree_config.theme.ansi.green,
                                             'D' => tree_config.theme.ansi.red,
@@ -647,37 +692,41 @@ impl Render for ExplorerView {
                                         };
                                         (tag, c)
                                     });
-                            let path = row.path.clone();
-                            let is_dir = row.is_dir;
-                            let entity = tree_entity.clone();
-                            tree_row(
-                                &tree_config.theme.ui,
-                                &tree_config.theme,
-                                row,
-                                indent,
-                                is_sel,
-                                git_tag,
-                            )
-                            .on_mouse_down(MouseButton::Left, move |_ev, _w, app| {
-                                app.stop_propagation();
-                                let path = path.clone();
-                                let _ = entity.update(app, move |this, cx| {
-                                    if is_dir {
-                                        if !this.expanded.remove(&path) {
-                                            this.expanded.insert(path.clone());
-                                        }
-                                        this.rebuild(cx);
-                                    } else {
-                                        let p = path.clone();
-                                        this.selected = Some(path);
-                                        cx.emit(OpenFile(p));
-                                    }
-                                    cx.notify();
-                                });
+                                let path = row.path.clone();
+                                let is_dir = row.is_dir;
+                                let entity = tree_entity.clone();
+                                tree_row(
+                                    &tree_config.theme.ui,
+                                    &tree_config.theme,
+                                    row,
+                                    indent,
+                                    is_sel,
+                                    git_tag,
+                                )
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    move |_ev, _w, app| {
+                                        app.stop_propagation();
+                                        let path = path.clone();
+                                        let _ = entity.update(app, move |this, cx| {
+                                            if is_dir {
+                                                if !this.expanded.remove(&path) {
+                                                    this.expanded.insert(path.clone());
+                                                }
+                                                this.rebuild(cx);
+                                            } else {
+                                                let p = path.clone();
+                                                this.selected = Some(path);
+                                                cx.emit(OpenFile(p));
+                                            }
+                                            cx.notify();
+                                        });
+                                    },
+                                )
                             })
-                        })
-                        .collect::<Vec<_>>()
-                })
+                            .collect::<Vec<_>>()
+                    },
+                )
                 .flex_1()
                 .min_h(px(0.))
                 .p(px(6.)) // mockup .tree padding 6
@@ -730,7 +779,11 @@ mod tests {
         // dir (docs) did — octal-escaped quoted paths produced unmatchable keys after
         // the `\`→`/` step (symptom: 文件夹有 M、中文文件无标识).
         let m = parse_porcelain(" M docs/优化日志.md\n?? 新增模块.md\n");
-        assert_eq!(m.get("docs/优化日志.md"), Some(&'M'), "CJK file path matches its real key");
+        assert_eq!(
+            m.get("docs/优化日志.md"),
+            Some(&'M'),
+            "CJK file path matches its real key"
+        );
         assert_eq!(m.get("新增模块.md"), Some(&'U'));
         // (Ancestor-dir aggregation lives in `compute_git_status`, not here.)
     }
@@ -756,6 +809,9 @@ mod tests {
         // Empty output (clean repo / not-a-repo) and malformed short lines yield
         // nothing instead of panicking on the `[..2]` / `[3..]` slices.
         assert!(parse_porcelain("").is_empty());
-        assert!(parse_porcelain("\n\nx\n M\n").is_empty(), "lines < 4 chars skipped");
+        assert!(
+            parse_porcelain("\n\nx\n M\n").is_empty(),
+            "lines < 4 chars skipped"
+        );
     }
 }

@@ -81,7 +81,7 @@ pub(crate) struct SshErrorInfo {
 pub(crate) struct SshPasswordPrompt {
     pub prompt: String,
     pub error: Option<String>,
-    pub reply: std::sync::mpsc::Sender<String>,
+    pub reply: std::sync::mpsc::Sender<tn_pty::PasswordReply>,
 }
 
 /// Emitted when the user checks "记住密码" and submits — the workspace caches the
@@ -824,7 +824,10 @@ impl TerminalView {
         if self.ssh_password_remember && !pw.is_empty() {
             cx.emit(SshRememberPassword(pw.clone()));
         }
-        let _ = p.reply.send(pw);
+        let _ = p.reply.send(tn_pty::PasswordReply {
+            password: pw,
+            remember: self.ssh_password_remember,
+        });
         cx.notify();
     }
 
@@ -834,7 +837,10 @@ impl TerminalView {
         let Some(p) = self.ssh_password_prompt.take() else {
             return;
         };
-        let _ = p.reply.send(String::new());
+        let _ = p.reply.send(tn_pty::PasswordReply {
+            password: String::new(),
+            remember: false,
+        });
         self.ssh_password_input.clear();
         cx.emit(SshCloseRequested);
         cx.notify();

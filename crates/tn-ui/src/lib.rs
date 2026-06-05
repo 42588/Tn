@@ -18,12 +18,12 @@ mod quick_terminal;
 mod ssh_recents;
 mod style;
 mod terminal_view;
-mod welcome;
 mod usage_display;
+mod welcome;
 mod workspace;
 
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use gpui::{
@@ -102,107 +102,109 @@ pub fn run() {
         _ => WindowBackgroundAppearance::Opaque,
     };
 
-    Application::new().with_assets(assets::Assets).run(move |cx: &mut App| {
-        workspace::bind_keys(cx, &config);
+    Application::new()
+        .with_assets(assets::Assets)
+        .run(move |cx: &mut App| {
+            workspace::bind_keys(cx, &config);
 
-        // ── 嵌入 CaskaydiaCove Nerd Font ──────────────────────────────────
-        // include_bytes! 在编译期将字体硬编码进二进制，运行时不再依赖系统安装。
-        // GPUI 解析 .ttf 提取 Family Name → 与 config.toml 的 family 字段匹配。
-        let font_regular =
-            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Regular.ttf").to_vec();
-        let font_bold =
-            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Bold.ttf").to_vec();
-        let font_italic =
-            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Italic.ttf").to_vec();
-        let font_bold_italic =
-            include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-BoldItalic.ttf").to_vec();
-        cx.text_system()
-            .add_fonts(vec![
-                std::borrow::Cow::Owned(font_regular),
-                std::borrow::Cow::Owned(font_bold),
-                std::borrow::Cow::Owned(font_italic),
-                std::borrow::Cow::Owned(font_bold_italic),
-            ])
-            .expect("Failed to load embedded CaskaydiaCove Nerd Font");
-        // ──────────────────────────────────────────────────────────────────
+            // ── 嵌入 CaskaydiaCove Nerd Font ──────────────────────────────────
+            // include_bytes! 在编译期将字体硬编码进二进制，运行时不再依赖系统安装。
+            // GPUI 解析 .ttf 提取 Family Name → 与 config.toml 的 family 字段匹配。
+            let font_regular =
+                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Regular.ttf").to_vec();
+            let font_bold =
+                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Bold.ttf").to_vec();
+            let font_italic =
+                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Italic.ttf").to_vec();
+            let font_bold_italic =
+                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-BoldItalic.ttf").to_vec();
+            cx.text_system()
+                .add_fonts(vec![
+                    std::borrow::Cow::Owned(font_regular),
+                    std::borrow::Cow::Owned(font_bold),
+                    std::borrow::Cow::Owned(font_italic),
+                    std::borrow::Cow::Owned(font_bold_italic),
+                ])
+                .expect("Failed to load embedded CaskaydiaCove Nerd Font");
+            // ──────────────────────────────────────────────────────────────────
 
-        let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-        let main_config = config.clone();
-        let main_window = cx
-            .open_window(
-                WindowOptions {
-                    window_bounds: Some(WindowBounds::Windowed(bounds)),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Tn".into()),
-                        appears_transparent: true,
+            let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
+            let main_config = config.clone();
+            let main_window = cx
+                .open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Tn".into()),
+                            appears_transparent: true,
+                            ..Default::default()
+                        }),
+                        window_background,
+                        show: false,
                         ..Default::default()
-                    }),
-                    window_background,
-                    show: false,
-                    ..Default::default()
-                },
-                move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),
-            )
-            .expect("failed to open window");
-        let main_id = main_window.window_id();
+                    },
+                    move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),
+                )
+                .expect("failed to open window");
+            let main_id = main_window.window_id();
 
-        // ── Wire up tray (primary only) ──────────────────────────────
-        let tray_hwnd_opt = if let Some((tray_hwnd, tray_rx)) = tray {
-            cx.set_global(TrayHwnd(tray_hwnd));
-            spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd);
-            Some(tray_hwnd)
-        } else {
-            None
-        };
+            // ── Wire up tray (primary only) ──────────────────────────────
+            let tray_hwnd_opt = if let Some((tray_hwnd, tray_rx)) = tray {
+                cx.set_global(TrayHwnd(tray_hwnd));
+                spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd);
+                Some(tray_hwnd)
+            } else {
+                None
+            };
 
-        // ── Quick Terminal (primary only — hotkey probe passed) ───────
-        if is_primary {
-            spawn_quick_terminal(cx, config.clone());
-        }
-
-        // ── Shared state for window-close handling ─────────────────────
-        let state = Arc::new(Mutex::new(AppState {
-            main_window_id: Some(main_id),
-            tray_hwnd: tray_hwnd_opt,
-            tray_icon_visible: false,
-        }));
-
-        // ── on_window_closed: hide-to-tray or quit ─────────────────────
-        cx.on_window_closed(move |cx| {
-            // Genuine quit in progress — let everything tear down.
-            if platform::QUITTING.load(Ordering::Acquire) {
-                return;
+            // ── Quick Terminal (primary only — hotkey probe passed) ───────
+            if is_primary {
+                spawn_quick_terminal(cx, config.clone());
             }
-            // All windows gone (shouldn't normally happen while Quick Terminal
-            // is alive, but guard against edge cases).
-            if cx.windows().is_empty() {
-                cx.quit();
-                return;
-            }
-            let mut s = state.lock().unwrap();
-            let main_gone = s
-                .main_window_id
-                .map(|id| !cx.windows().iter().any(|w| w.window_id() == id))
-                .unwrap_or(true);
-            if main_gone {
-                s.main_window_id = None;
-                if let Some(h) = s.tray_hwnd {
-                    if !s.tray_icon_visible {
-                        s.tray_icon_visible = platform::create_tray_icon(h);
-                    }
-                    // Process stays alive — Quick Terminal's hidden PopUp
-                    // window keeps the GPUI event loop running, and the
-                    // global hotkey thread continues to listen.
-                } else {
-                    // No tray = old behavior: quit when the main window closes.
-                    cx.quit();
+
+            // ── Shared state for window-close handling ─────────────────────
+            let state = Arc::new(Mutex::new(AppState {
+                main_window_id: Some(main_id),
+                tray_hwnd: tray_hwnd_opt,
+                tray_icon_visible: false,
+            }));
+
+            // ── on_window_closed: hide-to-tray or quit ─────────────────────
+            cx.on_window_closed(move |cx| {
+                // Genuine quit in progress — let everything tear down.
+                if platform::QUITTING.load(Ordering::Acquire) {
+                    return;
                 }
-            }
-        })
-        .detach();
+                // All windows gone (shouldn't normally happen while Quick Terminal
+                // is alive, but guard against edge cases).
+                if cx.windows().is_empty() {
+                    cx.quit();
+                    return;
+                }
+                let mut s = state.lock().unwrap();
+                let main_gone = s
+                    .main_window_id
+                    .map(|id| !cx.windows().iter().any(|w| w.window_id() == id))
+                    .unwrap_or(true);
+                if main_gone {
+                    s.main_window_id = None;
+                    if let Some(h) = s.tray_hwnd {
+                        if !s.tray_icon_visible {
+                            s.tray_icon_visible = platform::create_tray_icon(h);
+                        }
+                        // Process stays alive — Quick Terminal's hidden PopUp
+                        // window keeps the GPUI event loop running, and the
+                        // global hotkey thread continues to listen.
+                    } else {
+                        // No tray = old behavior: quit when the main window closes.
+                        cx.quit();
+                    }
+                }
+            })
+            .detach();
 
-        cx.activate(true);
-    });
+            cx.activate(true);
+        });
 }
 
 // ── Tray event handler (GPUI side) ─────────────────────────────────────────
@@ -304,7 +306,9 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
     // (another instance grabbed it between the probe and now) doesn't leave an
     // orphan QT window that can never be summoned.
     let Some(mut hotkey_rx) = platform::spawn_hotkey_listener(&spec) else {
-        tracing::info!("quick terminal hotkey lost between probe and permanent registration; skipping QT");
+        tracing::info!(
+            "quick terminal hotkey lost between probe and permanent registration; skipping QT"
+        );
         return;
     };
 
@@ -313,7 +317,10 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
     let window = match cx.open_window(
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions { appears_transparent: true, ..Default::default() }),
+            titlebar: Some(TitlebarOptions {
+                appears_transparent: true,
+                ..Default::default()
+            }),
             kind: WindowKind::PopUp,
             is_movable: false,
             is_resizable: false,

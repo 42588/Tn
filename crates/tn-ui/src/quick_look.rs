@@ -22,9 +22,8 @@ use gpui::{
     canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
     uniform_list, AsyncApp, Bounds, ClipboardItem, Context, ElementInputHandler,
     EntityInputHandler, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point,
-    Rgba, ScrollStrategy, SharedString, UniformListScrollHandle, UTF16Selection, WeakEntity,
-    Window,
+    MouseUpEvent, Pixels, Point, Rgba, ScrollStrategy, SharedString, UTF16Selection,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 
@@ -255,7 +254,11 @@ fn highlight(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
         let mut j = i;
         while j < n {
             let d = chars[j];
-            if d.is_alphanumeric() || d == '_' || d == '"' || (d == '/' && j + 1 < n && chars[j + 1] == '/') {
+            if d.is_alphanumeric()
+                || d == '_'
+                || d == '"'
+                || (d == '/' && j + 1 < n && chars[j + 1] == '/')
+            {
                 break;
             }
             j += 1;
@@ -374,7 +377,9 @@ pub struct QuickLook {
     find_field_replace: bool,
     // 编辑态高亮**不缓存**:可见行仅 ~30,每帧直接算够快;按行号缓存会在删除/撤销后
     // 显示陈旧内容(审查⑫)。仅预览态(只读、内容不变)缓存,行号 key 安全。
-    file_highlight_cache: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<usize, Vec<(smol_str::SmolStr, Tint)>>>>,
+    file_highlight_cache: std::rc::Rc<
+        std::cell::RefCell<std::collections::HashMap<usize, Vec<(smol_str::SmolStr, Tint)>>>,
+    >,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
     /// Grab focus in the next render (focusing in an event/open callback doesn't
@@ -408,7 +413,9 @@ impl QuickLook {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         // Measure the monospace advance once (mouse click → column). Mirrors
         // terminal_view's cell-width probe; falls back to a 0.6 ratio.
-        let font_id = cx.text_system().resolve_font(&gpui::font(&config.font().family));
+        let font_id = cx
+            .text_system()
+            .resolve_font(&gpui::font(&config.font().family));
         let char_w = cx
             .text_system()
             .advance(font_id, px(CODE_FS), 'm')
@@ -439,7 +446,9 @@ impl QuickLook {
             find_query: String::new(),
             replace_query: String::new(),
             find_field_replace: false,
-            file_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new())),
+            file_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(
+                std::collections::HashMap::new(),
+            )),
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
             focus_handle: cx.focus_handle(),
@@ -470,7 +479,9 @@ impl QuickLook {
         match &self.file_data {
             // 截断的大文件(>MAX_LINES)不可编辑:buf 只含已加载的前若干行,进编辑→保存会用
             // 它覆盖整个文件、永久丢失其余内容(审查⑮ 确证的数据丢失)。截断文件只读看。
-            QuickLookData::Text { truncated: true, .. } => return false,
+            QuickLookData::Text {
+                truncated: true, ..
+            } => return false,
             QuickLookData::Text { .. } => {}
             _ => return false,
         }
@@ -485,10 +496,7 @@ impl QuickLook {
             .to_lowercase();
         !matches!(
             ext.as_str(),
-            "docx" | "doc" | "xlsx" | "xls" | "ods"
-            | "pptx" | "ppt" | "odp"
-            | "odt"
-            | "pdf"
+            "docx" | "doc" | "xlsx" | "xls" | "ods" | "pptx" | "ppt" | "odp" | "odt" | "pdf"
         )
     }
 
@@ -523,7 +531,7 @@ impl QuickLook {
             }
             _ => {}
         }
-        
+
         // --- MEMORY CAPACITY RELEASE ---
         self.path = None;
         self.file_data = QuickLookData::None;
@@ -532,13 +540,15 @@ impl QuickLook {
         self.undo = Vec::new();
         self.redo = Vec::new();
         self.ime_marked = None;
-        
+
         // Replace HashMaps entirely to return their capacity to the OS!
-        self.file_highlight_cache = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
-        
+        self.file_highlight_cache =
+            std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+
         // Cancel any pending async tasks.
-        self.cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
-        
+        self.cancel_token
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
         cx.notify();
     }
 
@@ -593,7 +603,8 @@ impl QuickLook {
         self.find_open = false;
         self.file_highlight_cache.borrow_mut().clear();
 
-        self.cancel_token.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.cancel_token
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let cancel_token = self.cancel_token.clone();
 
@@ -607,8 +618,12 @@ impl QuickLook {
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let path_clone = path.clone();
-            let ext = path_clone.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-            
+            let ext = path_clone
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
             if ext == "pdf" {
                 let (tx, mut rx) = futures::channel::mpsc::unbounded();
                 let pdf_cancel = cancel_token.clone();
@@ -617,7 +632,13 @@ impl QuickLook {
                     static PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
                     let pdfium_lock = PDFIUM.get_or_init(|| {
                         let exe_dir = std::env::current_exe().unwrap();
-                        let workspace_dir = exe_dir.parent().unwrap().parent().unwrap().parent().unwrap();
+                        let workspace_dir = exe_dir
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap();
                         let pdfium_dll = workspace_dir.join("pdfium.dll");
                         let bind_result = Pdfium::bind_to_system_library()
                             .or_else(|_| Pdfium::bind_to_library(&pdfium_dll));
@@ -641,7 +662,7 @@ impl QuickLook {
                             let page_count = document.pages().len() as usize;
                             let limit = page_count.min(100); // 宽容到 100 页
                             let _ = tx.unbounded_send(Ok((limit, None)));
-                            
+
                             // 1000px 对速览足够清晰,比 1200 省 ~30% JPEG 字节/页内存(审查⑪)。
                             let render_config = PdfRenderConfig::new().set_target_width(1000);
                             for (i, page) in document.pages().iter().take(limit).enumerate() {
@@ -651,10 +672,20 @@ impl QuickLook {
                                 if let Ok(bitmap) = page.render_with_config(&render_config) {
                                     if let Ok(img) = bitmap.as_image() {
                                         let mut cursor = std::io::Cursor::new(Vec::new());
-                                        let rgb_img = image::DynamicImage::ImageRgb8(img.into_rgb8());
-                                        if rgb_img.write_to(&mut cursor, image::ImageFormat::Jpeg).is_ok() {
-                                            let gpui_img = gpui::Image::from_bytes(gpui::ImageFormat::Jpeg, cursor.into_inner());
-                                            let _ = tx.unbounded_send(Ok((limit, Some((i, Arc::new(gpui_img))))));
+                                        let rgb_img =
+                                            image::DynamicImage::ImageRgb8(img.into_rgb8());
+                                        if rgb_img
+                                            .write_to(&mut cursor, image::ImageFormat::Jpeg)
+                                            .is_ok()
+                                        {
+                                            let gpui_img = gpui::Image::from_bytes(
+                                                gpui::ImageFormat::Jpeg,
+                                                cursor.into_inner(),
+                                            );
+                                            let _ = tx.unbounded_send(Ok((
+                                                limit,
+                                                Some((i, Arc::new(gpui_img))),
+                                            )));
                                         }
                                     }
                                 }
@@ -664,19 +695,26 @@ impl QuickLook {
                             let _ = tx.unbounded_send(Err("无法解析此 PDF 文件".to_string()));
                         }
                     }
-                }).detach();
-                
+                })
+                .detach();
+
                 use futures::StreamExt;
-                let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>> = None;
-                
+                let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>> =
+                    None;
+
                 while let Some(msg) = rx.next().await {
                     match msg {
                         Ok((limit, None)) => {
                             let arc = Arc::new(std::sync::Mutex::new(vec![None; limit]));
                             pages_arc = Some(arc.clone());
                             let _ = this.update(cx, |v, cx| {
-                                if v.generation != gen { return; }
-                                v.file_data = QuickLookData::Pdf { pages: arc, page_count: limit };
+                                if v.generation != gen {
+                                    return;
+                                }
+                                v.file_data = QuickLookData::Pdf {
+                                    pages: arc,
+                                    page_count: limit,
+                                };
                                 v.loading_state = LoadingState::Ready;
                                 cx.notify();
                             });
@@ -697,8 +735,13 @@ impl QuickLook {
                         }
                         Err(e) => {
                             let _ = this.update(cx, |v, cx| {
-                                if v.generation != gen { return; }
-                                v.file_data = QuickLookData::Text { lines: Arc::new(vec![e]), truncated: false };
+                                if v.generation != gen {
+                                    return;
+                                }
+                                v.file_data = QuickLookData::Text {
+                                    lines: Arc::new(vec![e]),
+                                    truncated: false,
+                                };
                                 v.loading_state = LoadingState::Ready;
                                 cx.notify();
                             });
@@ -709,28 +752,40 @@ impl QuickLook {
                 return;
             }
 
-            if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif") {
+            if matches!(
+                ext.as_str(),
+                "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif"
+            ) {
                 let path_for_bg = path_clone.clone();
                 let img_cancel = cancel_token.clone();
-                let bytes_res = cx.background_executor().spawn(async move {
-                    if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Cancelled"));
-                    }
-                    let bytes = std::fs::read(&path_for_bg)?;
-                    if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "Cancelled"));
-                    }
-                    let fmt = match ext.as_str() {
-                        "png" => gpui::ImageFormat::Png,
-                        "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
-                        "webp" => gpui::ImageFormat::Webp,
-                        "gif" => gpui::ImageFormat::Gif,
-                        "bmp" => gpui::ImageFormat::Bmp,
-                        _ => gpui::ImageFormat::Png,
-                    };
-                    Ok(gpui::Image::from_bytes(fmt, bytes))
-                }).await;
-                
+                let bytes_res = cx
+                    .background_executor()
+                    .spawn(async move {
+                        if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "Cancelled",
+                            ));
+                        }
+                        let bytes = std::fs::read(&path_for_bg)?;
+                        if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::Interrupted,
+                                "Cancelled",
+                            ));
+                        }
+                        let fmt = match ext.as_str() {
+                            "png" => gpui::ImageFormat::Png,
+                            "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
+                            "webp" => gpui::ImageFormat::Webp,
+                            "gif" => gpui::ImageFormat::Gif,
+                            "bmp" => gpui::ImageFormat::Bmp,
+                            _ => gpui::ImageFormat::Png,
+                        };
+                        Ok(gpui::Image::from_bytes(fmt, bytes))
+                    })
+                    .await;
+
                 if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
@@ -747,10 +802,14 @@ impl QuickLook {
                     });
                     return;
                 }
-                
+
                 let _ = this.update(cx, |v, cx| {
-                    if v.generation != gen { return; }
-                    v.file_data = QuickLookData::Binary { size: std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0) };
+                    if v.generation != gen {
+                        return;
+                    }
+                    v.file_data = QuickLookData::Binary {
+                        size: std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0),
+                    };
                     v.loading_state = LoadingState::Ready;
                     cx.notify();
                 });
@@ -776,7 +835,7 @@ impl QuickLook {
                     } else {
                         false
                     };
-                    
+
                     if matches!(ext.as_str(), "docx" | "xlsx" | "xls" | "ods") {
                         if ext == "docx" {
                             use dotext::MsDoc;
@@ -793,10 +852,13 @@ impl QuickLook {
                                     lines.push(line.to_string());
                                 }
                                 let truncated = line_iter.next().is_some();
-                                return QuickLookData::Text { lines: Arc::new(lines), truncated };
+                                return QuickLookData::Text {
+                                    lines: Arc::new(lines),
+                                    truncated,
+                                };
                             }
                         } else {
-                            use calamine::{Reader, open_workbook_auto, Data};
+                            use calamine::{open_workbook_auto, Data, Reader};
                             if let Ok(mut workbook) = open_workbook_auto(&path) {
                                 // Two-pass alignment (审查㉑): collect cells first, then
                                 // `align_table` pads each column to its widest cell so the
@@ -809,17 +871,24 @@ impl QuickLook {
                                         if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                                             return QuickLookData::None;
                                         }
-                                        cells.push(row.iter().map(|c| match c {
-                                            Data::String(s) => s.to_string(),
-                                            Data::Float(f) => f.to_string(),
-                                            Data::Int(i) => i.to_string(),
-                                            Data::Bool(b) => b.to_string(),
-                                            _ => String::new(),
-                                        }).collect::<Vec<_>>());
+                                        cells.push(
+                                            row.iter()
+                                                .map(|c| match c {
+                                                    Data::String(s) => s.to_string(),
+                                                    Data::Float(f) => f.to_string(),
+                                                    Data::Int(i) => i.to_string(),
+                                                    Data::Bool(b) => b.to_string(),
+                                                    _ => String::new(),
+                                                })
+                                                .collect::<Vec<_>>(),
+                                        );
                                     }
                                     truncated = row_iter.next().is_some();
                                 }
-                                return QuickLookData::Text { lines: Arc::new(align_table(&cells)), truncated };
+                                return QuickLookData::Text {
+                                    lines: Arc::new(align_table(&cells)),
+                                    truncated,
+                                };
                             }
                         }
                     }
@@ -857,7 +926,10 @@ impl QuickLook {
                         lines.push(line.to_string());
                     }
                     let truncated = line_iter.next().is_some();
-                    QuickLookData::Text { lines: Arc::new(lines), truncated }
+                    QuickLookData::Text {
+                        lines: Arc::new(lines),
+                        truncated,
+                    }
                 })
                 .await;
 
@@ -916,7 +988,9 @@ impl QuickLook {
         if !self.diff_dirty || self.diff_loading {
             return;
         }
-        let Some(path) = self.path.clone() else { return };
+        let Some(path) = self.path.clone() else {
+            return;
+        };
 
         self.diff_generation = self.diff_generation.wrapping_add(1);
         let gen = self.diff_generation;
@@ -995,13 +1069,22 @@ impl QuickLook {
     /// The `write` is sync (typically <1ms for reasonable files), but the
     /// diff recomputation is dispatched off-thread via `ensure_diff`.
     fn save(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.path.clone() else { return };
+        let Some(path) = self.path.clone() else {
+            return;
+        };
         let joined = self.buf.join("\n");
-        let content = if joined.is_empty() { joined } else { format!("{joined}\n") };
+        let content = if joined.is_empty() {
+            joined
+        } else {
+            format!("{joined}\n")
+        };
         match std::fs::write(&path, content) {
             Ok(()) => {
                 self.dirty = false;
-                self.file_data = QuickLookData::Text { lines: Arc::new(self.buf.as_ref().clone()), truncated: false };
+                self.file_data = QuickLookData::Text {
+                    lines: Arc::new(self.buf.as_ref().clone()),
+                    truncated: false,
+                };
                 // The diff is now stale; recompute lazily (only if the Diff tab is
                 // currently showing — otherwise just mark it dirty so Ctrl+S stays
                 // fast and never blocks on `git diff`).
@@ -1182,7 +1265,10 @@ impl QuickLook {
             (last, line_chars(&self.buf, last))
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let last = lines.len().saturating_sub(1);
-            (last, lines.get(last).map(|l| l.chars().count()).unwrap_or(0))
+            (
+                last,
+                lines.get(last).map(|l| l.chars().count()).unwrap_or(0),
+            )
         } else {
             return;
         };
@@ -1199,7 +1285,10 @@ impl QuickLook {
             (r, col.min(line_chars(&self.buf, r)))
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let r = row.min(lines.len().saturating_sub(1));
-            (r, col.min(lines.get(r).map(|l| l.chars().count()).unwrap_or(0)))
+            (
+                r,
+                col.min(lines.get(r).map(|l| l.chars().count()).unwrap_or(0)),
+            )
         } else {
             return; // 非文本预览(图片 / PDF)不可选
         };
@@ -1229,7 +1318,9 @@ impl QuickLook {
     /// is the absolute mouse X; `hscroll_content_w` (cached in render) gives the
     /// scrollable width without needing the line list here.
     fn on_hscroll_move(&mut self, cursor_x: f32, cx: &mut Context<Self>) {
-        let Some(grab) = self.hscroll_drag else { return };
+        let Some(grab) = self.hscroll_drag else {
+            return;
+        };
         let (viewport_w, track_left) = {
             let b = self.code_bounds.borrow();
             (f32::from(b.size.width), f32::from(b.origin.x))
@@ -1255,7 +1346,10 @@ impl QuickLook {
         if self.editing {
             let text = match self.sel_range() {
                 Some((s, e)) => selected_text(&self.buf, s, e),
-                None => format!("{}\n", self.buf.get(self.cursor.0).cloned().unwrap_or_default()),
+                None => format!(
+                    "{}\n",
+                    self.buf.get(self.cursor.0).cloned().unwrap_or_default()
+                ),
             };
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
@@ -1290,7 +1384,9 @@ impl QuickLook {
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
-        let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) else { return };
+        let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) else {
+            return;
+        };
         if text.is_empty() {
             return;
         }
@@ -1326,7 +1422,10 @@ impl QuickLook {
         let idx = if forward {
             matches.iter().position(|(s, _)| *s > cur).unwrap_or(0)
         } else {
-            matches.iter().rposition(|(s, _)| *s < cur).unwrap_or(matches.len() - 1)
+            matches
+                .iter()
+                .rposition(|(s, _)| *s < cur)
+                .unwrap_or(matches.len() - 1)
         };
         let (s, e) = matches[idx];
         self.sel_anchor = Some(s);
@@ -1344,7 +1443,11 @@ impl QuickLook {
                 op_delete_range(Rc::make_mut(&mut self.buf), s, e);
                 self.cursor = s;
                 self.sel_anchor = None;
-                op_insert_multiline(Rc::make_mut(&mut self.buf), &mut self.cursor, &self.replace_query);
+                op_insert_multiline(
+                    Rc::make_mut(&mut self.buf),
+                    &mut self.cursor,
+                    &self.replace_query,
+                );
                 self.dirty = true;
             }
         }
@@ -1356,7 +1459,11 @@ impl QuickLook {
             return;
         }
         self.snapshot(false);
-        let n = replace_all_in(Rc::make_mut(&mut self.buf), &self.find_query, &self.replace_query);
+        let n = replace_all_in(
+            Rc::make_mut(&mut self.buf),
+            &self.find_query,
+            &self.replace_query,
+        );
         if n > 0 {
             self.dirty = true;
             self.cursor = (0, 0);
@@ -1381,12 +1488,20 @@ impl QuickLook {
                 }
             }
             "backspace" => {
-                let q = if self.find_field_replace { &mut self.replace_query } else { &mut self.find_query };
+                let q = if self.find_field_replace {
+                    &mut self.replace_query
+                } else {
+                    &mut self.find_query
+                };
                 q.pop();
             }
             _ => {
                 if let Some(ch) = key_char.filter(|s| !s.is_empty()) {
-                    let q = if self.find_field_replace { &mut self.replace_query } else { &mut self.find_query };
+                    let q = if self.find_field_replace {
+                        &mut self.replace_query
+                    } else {
+                        &mut self.find_query
+                    };
                     q.push_str(ch);
                 }
             }
@@ -1450,7 +1565,8 @@ impl QuickLook {
                     _ => false,
                 };
                 if handled {
-                    self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                    self.scroll
+                        .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -1462,7 +1578,8 @@ impl QuickLook {
             // The find bar captures plain input while it's open.
             if self.find_open {
                 self.find_key(key, ks.key_char.as_deref(), m.shift);
-                self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                self.scroll
+                    .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
                 cx.stop_propagation();
                 cx.notify();
                 return;
@@ -1498,7 +1615,8 @@ impl QuickLook {
             }
             if handled {
                 if self.editing {
-                    self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                    self.scroll
+                        .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
                 }
                 cx.stop_propagation();
                 cx.notify();
@@ -1532,7 +1650,11 @@ impl QuickLook {
                     cx.stop_propagation();
                 }
                 "tab" => {
-                    let next_tab = if self.tab == Tab::File { Tab::Diff } else { Tab::File };
+                    let next_tab = if self.tab == Tab::File {
+                        Tab::Diff
+                    } else {
+                        Tab::File
+                    };
                     self.select_tab(next_tab, cx);
                     cx.stop_propagation();
                     cx.notify(); // diff 已缓存时 ensure_diff 不会 notify，需显式触发重渲染
@@ -1551,7 +1673,6 @@ impl QuickLook {
             }
         }
     }
-
 }
 
 /// Display width of `s` in monospace columns: ASCII = 1, others (CJK etc.) ≈ 2.
@@ -1602,7 +1723,6 @@ fn caret_col_at_x(line: &str, rel_x: f32, char_w: f32) -> usize {
     }
     line.chars().count()
 }
-
 
 /// Render spreadsheet cells (`.xlsx`/`.xls`/`.ods`) as a left-aligned monospace
 /// table: each column padded to its widest cell's [`disp_width`], joined with
@@ -1665,13 +1785,20 @@ fn parse_diff(text: &str) -> Vec<DiffLine> {
                 let num: String = plus.chars().take_while(|c| c.is_ascii_digit()).collect();
                 new_no = num.parse().unwrap_or(new_no);
             }
-            lines.push(DiffLine { kind: DiffKind::Hunk, new_no: None, text: line.to_string() });
+            lines.push(DiffLine {
+                kind: DiffKind::Hunk,
+                new_no: None,
+                text: line.to_string(),
+            });
             continue;
         }
         let (kind, text) = match line.chars().next() {
             Some('+') => (DiffKind::Add, line[1..].to_string()),
             Some('-') => (DiffKind::Del, line[1..].to_string()),
-            _ => (DiffKind::Ctx, line.strip_prefix(' ').unwrap_or(line).to_string()),
+            _ => (
+                DiffKind::Ctx,
+                line.strip_prefix(' ').unwrap_or(line).to_string(),
+            ),
         };
         let no = if kind == DiffKind::Del {
             None
@@ -1680,7 +1807,11 @@ fn parse_diff(text: &str) -> Vec<DiffLine> {
             new_no += 1;
             Some(n)
         };
-        lines.push(DiffLine { kind, new_no: no, text });
+        lines.push(DiffLine {
+            kind,
+            new_no: no,
+            text,
+        });
         if lines.len() >= MAX_LINES {
             break;
         }
@@ -1731,13 +1862,23 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
                 .child(SharedString::from(no)),
         )
         // mockup .cl .mk:width 14 居中
-        .child(div().w(px(14.)).flex_none().text_center().text_color(mark_col).child(mark))
+        .child(
+            div()
+                .w(px(14.))
+                .flex_none()
+                .text_center()
+                .text_color(mark_col)
+                .child(mark),
+        )
         .child(div().flex().flex_row().children(spans))
 }
 
 /// Char index → byte offset within `line` (cursor cols are char-based).
 fn char_to_byte(line: &str, col: usize) -> usize {
-    line.char_indices().nth(col).map(|(b, _)| b).unwrap_or(line.len())
+    line.char_indices()
+        .nth(col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len())
 }
 
 /// Char length of buffer line `i` (0 if out of range).
@@ -1900,7 +2041,10 @@ fn op_insert_multiline(buf: &mut Vec<String>, cur: &mut (usize, usize), text: &s
 /// The selected text for the normalized range `[s, e)` (joins lines with `\n`).
 fn selected_text(buf: &[String], s: (usize, usize), e: (usize, usize)) -> String {
     if s.0 == e.0 {
-        return buf.get(s.0).map(|l| l.chars().skip(s.1).take(e.1 - s.1).collect()).unwrap_or_default();
+        return buf
+            .get(s.0)
+            .map(|l| l.chars().skip(s.1).take(e.1 - s.1).collect())
+            .unwrap_or_default();
     }
     let mut out: String = buf[s.0].chars().skip(s.1).collect();
     for line in buf.iter().take(e.0).skip(s.0 + 1) {
@@ -1955,7 +2099,11 @@ fn replace_all_in(buf: &mut Vec<String>, query: &str, repl: &str) -> usize {
 /// inverse block inline in `edit_row_cached` (block bg + glyph repainted in the panel
 /// bg color); at end-of-line (no glyph) this standalone block is pushed instead.
 fn cursor_block(config: &Loaded) -> gpui::Div {
-    div().w(px(7.5)).h(px(16.)).flex_none().bg(col(config.theme.ui.foreground))
+    div()
+        .w(px(7.5))
+        .h(px(16.))
+        .flex_none()
+        .bg(col(config.theme.ui.foreground))
 }
 
 /// Per-char tint for `line` (expands `highlight()` runs to one tint per char).
@@ -1981,16 +2129,28 @@ fn edit_row_cached(
     let n = chars.len();
     if chars.len() > LONG_LINE_BYTES {
         let fg = col(config.theme.ui.foreground);
-        let cc = if i == cursor.0 { cursor.1.min(n) } else { n + 1 };
+        let cc = if i == cursor.0 {
+            cursor.1.min(n)
+        } else {
+            n + 1
+        };
         let before: String = chars.iter().take(cc.min(n)).collect();
         let after: String = chars.iter().skip(cc.min(n)).collect();
-        let mut row = div().flex().flex_row().items_center()
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
             .child(div().text_color(fg).child(SharedString::from(before)));
         if i == cursor.0 {
             row = row.child(cursor_block(config));
         }
         row = row.child(div().text_color(fg).child(SharedString::from(after)));
-        return code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![row]);
+        return code_row(
+            format!("{}", i + 1),
+            "",
+            col(config.theme.ui.muted),
+            vec![row],
+        );
     }
 
     let tint_at = |k: usize| *tints.get(k).unwrap_or(&Tint::Plain);
@@ -2017,7 +2177,11 @@ fn edit_row_cached(
     let caret_bg = col(config.theme.ui.foreground);
     let caret_fg = col(config.theme.ui.chrome_bg);
     let cell = |text: String, cols: f32| {
-        div().flex_none().w(px(cols * char_w)).overflow_hidden().child(SharedString::from(text))
+        div()
+            .flex_none()
+            .w(px(cols * char_w))
+            .overflow_hidden()
+            .child(SharedString::from(text))
     };
     let mut spans: Vec<gpui::Div> = Vec::new();
     let mut k = 0;
@@ -2064,7 +2228,12 @@ fn edit_row_cached(
         spans.push(cursor_block(config));
     }
     let content = div().flex().flex_row().items_center().children(spans);
-    code_row(format!("{}", i + 1), "", col(config.theme.ui.muted), vec![content])
+    code_row(
+        format!("{}", i + 1),
+        "",
+        col(config.theme.ui.muted),
+        vec![content],
+    )
 }
 
 /// A line past this byte length is rendered as a single plain span (skip
@@ -2108,7 +2277,12 @@ fn coalesce_spans(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     out
 }
 
-fn file_row_cached(config: &Loaded, cached_spans: &[(smol_str::SmolStr, Tint)], i: usize, char_w: f32) -> gpui::Div {
+fn file_row_cached(
+    config: &Loaded,
+    cached_spans: &[(smol_str::SmolStr, Tint)],
+    i: usize,
+    char_w: f32,
+) -> gpui::Div {
     // 同 edit_row_cached:固定单元格(ASCII 串定宽 / CJK 单字 2 列定宽),使列↔像素精确 →
     // 预览态拖选 hit-test / 横向滚动内容宽一致(否则 CJK 行选区/横滚也会漂)。
     let mut spans: Vec<gpui::Div> = Vec::new();
@@ -2155,13 +2329,35 @@ fn diff_row(config: &Loaded, diff: &[DiffLine], i: usize) -> gpui::Div {
     let d = &diff[i];
     let (bg, mark, mark_col, txt_col) = match d.kind {
         // mockup .cl.add/.del:bg=绿/红 @ .09;.ln/.mk 同色;正文不暗化(del 不 muted)
-        DiffKind::Add => (cola(th.ansi.green, 0.09), "+", col(th.ansi.green), col(th.ui.foreground)),
-        DiffKind::Del => (cola(th.ansi.red, 0.09), "-", col(th.ansi.red), col(th.ui.foreground)),
-        DiffKind::Hunk => (rgba(0x00000000), " ", col(th.ui.accent_alt), col(th.ui.accent_alt)),
-        DiffKind::Ctx => (rgba(0x00000000), " ", col(th.ui.muted), col(th.ui.foreground)),
+        DiffKind::Add => (
+            cola(th.ansi.green, 0.09),
+            "+",
+            col(th.ansi.green),
+            col(th.ui.foreground),
+        ),
+        DiffKind::Del => (
+            cola(th.ansi.red, 0.09),
+            "-",
+            col(th.ansi.red),
+            col(th.ui.foreground),
+        ),
+        DiffKind::Hunk => (
+            rgba(0x00000000),
+            " ",
+            col(th.ui.accent_alt),
+            col(th.ui.accent_alt),
+        ),
+        DiffKind::Ctx => (
+            rgba(0x00000000),
+            " ",
+            col(th.ui.muted),
+            col(th.ui.foreground),
+        ),
     };
     let no = d.new_no.map(|n| format!("{n}")).unwrap_or_default();
-    let spans = vec![div().text_color(txt_col).child(SharedString::from(d.text.clone()))];
+    let spans = vec![div()
+        .text_color(txt_col)
+        .child(SharedString::from(d.text.clone()))];
     code_row(no, mark, mark_col, spans).bg(bg)
 }
 
@@ -2180,7 +2376,12 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        let units: Vec<u16> = self.ime_marked.as_deref().unwrap_or("").encode_utf16().collect();
+        let units: Vec<u16> = self
+            .ime_marked
+            .as_deref()
+            .unwrap_or("")
+            .encode_utf16()
+            .collect();
         let start = range.start.min(units.len());
         let end = range.end.min(units.len());
         *adjusted = Some(start..end);
@@ -2193,8 +2394,15 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let end = self.ime_marked.as_deref().map(|s| s.encode_utf16().count()).unwrap_or(0);
-        Some(UTF16Selection { range: end..end, reversed: false })
+        let end = self
+            .ime_marked
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(
@@ -2202,7 +2410,9 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
-        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
+        self.ime_marked
+            .as_deref()
+            .map(|s| 0..s.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -2222,7 +2432,8 @@ impl EntityInputHandler for QuickLook {
         // cancel. (Backspace is encoded in `on_key`, never routed here.)
         if !text.is_empty() {
             self.type_char(text);
-            self.scroll.scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+            self.scroll
+                .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
         }
         self.ime_marked = None;
         cx.notify();
@@ -2251,7 +2462,8 @@ impl EntityInputHandler for QuickLook {
         // row is approximated to the code area's vertical center (edits scroll the
         // cursor to center, and `uniform_list`'s scroll offset isn't readable in
         // production — see坑), which is close enough for the IME popup.
-        let x = f32::from(element_bounds.origin.x) + CODE_GUTTER + self.cursor.1 as f32 * self.char_w;
+        let x =
+            f32::from(element_bounds.origin.x) + CODE_GUTTER + self.cursor.1 as f32 * self.char_w;
         let y = f32::from(element_bounds.origin.y) + f32::from(element_bounds.size.height) * 0.5;
         Some(Bounds {
             origin: point(px(x), px(y)),
@@ -2360,7 +2572,11 @@ impl Render for QuickLook {
             // mockup .vh .by:编辑态 = 「编辑中(●)」,预览态有未提交改动 = 「已改动」(claude)
             .when(self.editing || !self.diff.is_empty(), |d| {
                 let label = if self.editing {
-                    if self.dirty { "编辑中 ●" } else { "编辑中" }
+                    if self.dirty {
+                        "编辑中 ●"
+                    } else {
+                        "编辑中"
+                    }
                 } else {
                     "已改动"
                 };
@@ -2401,10 +2617,10 @@ impl Render for QuickLook {
         let canvas_bounds = self.code_bounds.clone(); // for the capturing canvas
         let row_bounds = self.code_bounds.clone(); // for the per-row click handler
         const GUTTER: f32 = CODE_GUTTER; // ln(38) + mr(14) + mk(14)
-        // IME/text input handler captures (registered in the canvas paint below) —
-        // only while editing AND the find bar is closed (else composed/typed text
-        // would wrongly insert into the buffer instead of the find query; find typing
-        // stays on the `find_key`/key_char path).
+                                         // IME/text input handler captures (registered in the canvas paint below) —
+                                         // only while editing AND the find bar is closed (else composed/typed text
+                                         // would wrongly insert into the buffer instead of the find query; find typing
+                                         // stays on the `find_key`/key_char path).
         let ime_focus = self.focus_handle.clone();
         let ime_entity = cx.entity();
         let ime_active = editing && !self.find_open;
@@ -2450,40 +2666,46 @@ impl Render for QuickLook {
             let pages = pages.clone();
             let page_count = *page_count;
             body = body.child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .bg(rgba(0x1e1e1e))
-                    .child(
-                        uniform_list("pdf_scroll_container", page_count, move |range, _window, _cx| {
+                div().flex_1().overflow_hidden().bg(rgba(0x1e1e1e)).child(
+                    uniform_list(
+                        "pdf_scroll_container",
+                        page_count,
+                        move |range, _window, _cx| {
                             let pages_lock = pages.lock().ok();
-                            range.map(|i| {
-                                // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
-                                // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
-                                // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
-                                if let Some(lock) = &pages_lock {
-                                    if let Some(img) = &lock[i] {
-                                        let img_source = gpui::ImageSource::Image(img.clone());
-                                        return div()
-                                            .w_full()
-                                            .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
-                                            .bg(rgba(0x1e1e1e))
-                                            .flex()
-                                            .justify_center()
-                                            .items_center()
-                                            .child(gpui::img(img_source).max_w_full().max_h_full().w_auto().h_auto().object_fit(gpui::ObjectFit::ScaleDown));
+                            range
+                                .map(|i| {
+                                    // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
+                                    // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
+                                    // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
+                                    if let Some(lock) = &pages_lock {
+                                        if let Some(img) = &lock[i] {
+                                            let img_source = gpui::ImageSource::Image(img.clone());
+                                            return div()
+                                                .w_full()
+                                                .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
+                                                .bg(rgba(0x1e1e1e))
+                                                .flex()
+                                                .justify_center()
+                                                .items_center()
+                                                .child(
+                                                    gpui::img(img_source)
+                                                        .max_w_full()
+                                                        .max_h_full()
+                                                        .w_auto()
+                                                        .h_auto()
+                                                        .object_fit(gpui::ObjectFit::ScaleDown),
+                                                );
+                                        }
                                     }
-                                }
-                                div()
-                                    .w_full()
-                                    .h(px(1400.))
-                                    .bg(rgba(0x1e1e1e))
-                            }).collect::<Vec<_>>()
-                        })
-                        .track_scroll(self.scroll.clone())
-                        .w_full()
-                        .h_full()
+                                    div().w_full().h(px(1400.)).bg(rgba(0x1e1e1e))
+                                })
+                                .collect::<Vec<_>>()
+                        },
                     )
+                    .track_scroll(self.scroll.clone())
+                    .w_full()
+                    .h_full(),
+                ),
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
             let img_source = gpui::ImageSource::Image(img.clone());
@@ -2498,7 +2720,11 @@ impl Render for QuickLook {
                     // Contain + 适度内边距:图片按比例**铺满**预览区(只在一轴留暗边),不再
                     // 自然小尺寸居中留大片空白(修「四周留白很多」)。
                     .p(px(10.))
-                    .child(gpui::img(img_source).size_full().object_fit(gpui::ObjectFit::Contain))
+                    .child(
+                        gpui::img(img_source)
+                            .size_full()
+                            .object_fit(gpui::ObjectFit::Contain),
+                    ),
             );
         } else if self.tab == Tab::Diff && self.diff_loading {
             // 不渲染占位符
@@ -2510,7 +2736,7 @@ impl Render for QuickLook {
                     .px(px(14.))
                     .py(px(8.))
                     .text_color(col(ui.muted))
-                    .child("无改动 · git working tree clean")
+                    .child("无改动 · git working tree clean"),
             );
         } else {
             let _sel_anchor = sel.as_ref().map(|s| s.0);
@@ -2537,130 +2763,158 @@ impl Render for QuickLook {
                 0.0
             };
             let list = uniform_list("ql-code", count, move |range, _window, _cx| {
-                        let mut f_cache = file_cache.borrow_mut();
-                        range
-                            .map(|i| {
-                                if editing {
-                                    // 编辑态不缓存高亮:可见行仅 ~30,每帧直接算够快;按行号缓存
-                                    // 会在删除/撤销后显示陈旧内容(审查⑫)。直接从 buf[i] 算最稳。
-                                    let line = &buf[i];
-                                    let chars: Vec<char> = line.chars().collect();
-                                    let tints = tints_per_char(line);
-                                    let row = edit_row_cached(&config, &chars, &tints, i, cursor, sel, char_w);
-                                    let entity = entity.clone();
-                                    let entity_mv = entity.clone();
-                                    let bounds = row_bounds.clone();
-                                    let bounds_mv = row_bounds.clone();
-                                    row.on_mouse_down(
-                                        MouseButton::Left,
-                                        move |ev: &MouseDownEvent, _w, app| {
-                                            let left = f32::from(bounds.borrow().origin.x);
-                                            let rel = f32::from(ev.position.x) - left - GUTTER;
-                                            let shift = ev.modifiers.shift;
-                                            let _ = entity.update(app, |this, cx| {
-                                                // CJK 双宽:列由行内容步进算(见 caret_col_at_x),
-                                                // 不能 rel/char_w 当单宽(汉字行会跑 ~2× 偏)。
-                                                let col = this
-                                                    .row_text(i)
-                                                    .map(|l| caret_col_at_x(l, rel + this.hscroll_px, char_w))
-                                                    .unwrap_or(0);
-                                                this.place_cursor(i, col, shift);
-                                                this.edit_drag = true; // 进入拖选
-                                                cx.notify();
-                                            });
-                                            app.stop_propagation();
-                                        },
-                                    )
-                                    .on_mouse_move(move |ev: &MouseMoveEvent, _w, app| {
-                                        // 左键拖动 → 扩选。每行各自的 move(行号 i 已知)绕开
-                                        // uniform_list 不可读的纵向 scroll offset。
-                                        if ev.pressed_button != Some(MouseButton::Left) {
+                let mut f_cache = file_cache.borrow_mut();
+                range
+                    .map(|i| {
+                        if editing {
+                            // 编辑态不缓存高亮:可见行仅 ~30,每帧直接算够快;按行号缓存
+                            // 会在删除/撤销后显示陈旧内容(审查⑫)。直接从 buf[i] 算最稳。
+                            let line = &buf[i];
+                            let chars: Vec<char> = line.chars().collect();
+                            let tints = tints_per_char(line);
+                            let row =
+                                edit_row_cached(&config, &chars, &tints, i, cursor, sel, char_w);
+                            let entity = entity.clone();
+                            let entity_mv = entity.clone();
+                            let bounds = row_bounds.clone();
+                            let bounds_mv = row_bounds.clone();
+                            row.on_mouse_down(
+                                MouseButton::Left,
+                                move |ev: &MouseDownEvent, _w, app| {
+                                    let left = f32::from(bounds.borrow().origin.x);
+                                    let rel = f32::from(ev.position.x) - left - GUTTER;
+                                    let shift = ev.modifiers.shift;
+                                    let _ = entity.update(app, |this, cx| {
+                                        // CJK 双宽:列由行内容步进算(见 caret_col_at_x),
+                                        // 不能 rel/char_w 当单宽(汉字行会跑 ~2× 偏)。
+                                        let col = this
+                                            .row_text(i)
+                                            .map(|l| {
+                                                caret_col_at_x(l, rel + this.hscroll_px, char_w)
+                                            })
+                                            .unwrap_or(0);
+                                        this.place_cursor(i, col, shift);
+                                        this.edit_drag = true; // 进入拖选
+                                        cx.notify();
+                                    });
+                                    app.stop_propagation();
+                                },
+                            )
+                            .on_mouse_move(
+                                move |ev: &MouseMoveEvent, _w, app| {
+                                    // 左键拖动 → 扩选。每行各自的 move(行号 i 已知)绕开
+                                    // uniform_list 不可读的纵向 scroll offset。
+                                    if ev.pressed_button != Some(MouseButton::Left) {
+                                        return;
+                                    }
+                                    let left = f32::from(bounds_mv.borrow().origin.x);
+                                    let rel = f32::from(ev.position.x) - left - GUTTER;
+                                    let _ = entity_mv.update(app, |this, cx| {
+                                        if !this.edit_drag {
                                             return;
                                         }
-                                        let left = f32::from(bounds_mv.borrow().origin.x);
-                                        let rel = f32::from(ev.position.x) - left - GUTTER;
-                                        let _ = entity_mv.update(app, |this, cx| {
-                                            if !this.edit_drag {
-                                                return;
-                                            }
-                                            // 鼠标悬停的字符索引(floor,CJK 双宽感知)。拖选要**包含**
-                                            // 它,使「实心块拖到哪、选区就到哪(含该字符)」——相对锚点
-                                            // 向右拖让 caret 落该字符右侧(+1)、向左落其左侧。(选区半开
-                                            // [a,c),向右不 +1 会漏掉光标处那个字符 = 你见的「选到块之前」。)
-                                            let hover = this
-                                                .row_text(i)
-                                                .map(|l| hover_char_at_x(l, rel + this.hscroll_px, char_w))
-                                                .unwrap_or(0);
-                                            let anchor = this.sel_anchor.unwrap_or(this.cursor);
-                                            let col =
-                                                if (i, hover) >= anchor { hover + 1 } else { hover };
-                                            this.place_cursor(i, col, true);
-                                            cx.notify();
-                                        });
-                                    })
-                                } else if tab == Tab::File {
-                                    let line = &lines[i];
-                                    // 选区触及本行 → 按 char 渲染(复用 edit_row_cached,caret=(MAX,MAX)
-                                    // 永不命中任何行 = 预览态不画光标)以显选区底色;否则用缓存的 tint
-                                    // spans(快)。预览态拖选 + Ctrl+C 复制,只读不改。
-                                    let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
-                                        let chars: Vec<char> = line.chars().collect();
-                                        let tints = tints_per_char(line);
-                                        edit_row_cached(&config, &chars, &tints, i, (usize::MAX, usize::MAX), sel, char_w)
-                                    } else {
-                                        let spans = f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
-                                        file_row_cached(&config, spans, i, char_w)
-                                    };
-                                    let entity = entity.clone();
-                                    let entity_mv = entity.clone();
-                                    let bounds = row_bounds.clone();
-                                    let bounds_mv = row_bounds.clone();
-                                    row.on_mouse_down(
-                                        MouseButton::Left,
-                                        move |ev: &MouseDownEvent, _w, app| {
-                                            let left = f32::from(bounds.borrow().origin.x);
-                                            let rel = f32::from(ev.position.x) - left - GUTTER;
-                                            let shift = ev.modifiers.shift;
-                                            let _ = entity.update(app, |this, cx| {
-                                                let col = this
-                                                    .row_text(i)
-                                                    .map(|l| caret_col_at_x(l, rel + this.hscroll_px, char_w))
-                                                    .unwrap_or(0);
-                                                this.place_cursor(i, col, shift);
-                                                this.edit_drag = true;
-                                                cx.notify();
-                                            });
-                                            app.stop_propagation();
-                                        },
-                                    )
-                                    .on_mouse_move(move |ev: &MouseMoveEvent, _w, app| {
-                                        if ev.pressed_button != Some(MouseButton::Left) {
+                                        // 鼠标悬停的字符索引(floor,CJK 双宽感知)。拖选要**包含**
+                                        // 它,使「实心块拖到哪、选区就到哪(含该字符)」——相对锚点
+                                        // 向右拖让 caret 落该字符右侧(+1)、向左落其左侧。(选区半开
+                                        // [a,c),向右不 +1 会漏掉光标处那个字符 = 你见的「选到块之前」。)
+                                        let hover = this
+                                            .row_text(i)
+                                            .map(|l| {
+                                                hover_char_at_x(l, rel + this.hscroll_px, char_w)
+                                            })
+                                            .unwrap_or(0);
+                                        let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                                        let col = if (i, hover) >= anchor {
+                                            hover + 1
+                                        } else {
+                                            hover
+                                        };
+                                        this.place_cursor(i, col, true);
+                                        cx.notify();
+                                    });
+                                },
+                            )
+                        } else if tab == Tab::File {
+                            let line = &lines[i];
+                            // 选区触及本行 → 按 char 渲染(复用 edit_row_cached,caret=(MAX,MAX)
+                            // 永不命中任何行 = 预览态不画光标)以显选区底色;否则用缓存的 tint
+                            // spans(快)。预览态拖选 + Ctrl+C 复制,只读不改。
+                            let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
+                                let chars: Vec<char> = line.chars().collect();
+                                let tints = tints_per_char(line);
+                                edit_row_cached(
+                                    &config,
+                                    &chars,
+                                    &tints,
+                                    i,
+                                    (usize::MAX, usize::MAX),
+                                    sel,
+                                    char_w,
+                                )
+                            } else {
+                                let spans =
+                                    f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
+                                file_row_cached(&config, spans, i, char_w)
+                            };
+                            let entity = entity.clone();
+                            let entity_mv = entity.clone();
+                            let bounds = row_bounds.clone();
+                            let bounds_mv = row_bounds.clone();
+                            row.on_mouse_down(
+                                MouseButton::Left,
+                                move |ev: &MouseDownEvent, _w, app| {
+                                    let left = f32::from(bounds.borrow().origin.x);
+                                    let rel = f32::from(ev.position.x) - left - GUTTER;
+                                    let shift = ev.modifiers.shift;
+                                    let _ = entity.update(app, |this, cx| {
+                                        let col = this
+                                            .row_text(i)
+                                            .map(|l| {
+                                                caret_col_at_x(l, rel + this.hscroll_px, char_w)
+                                            })
+                                            .unwrap_or(0);
+                                        this.place_cursor(i, col, shift);
+                                        this.edit_drag = true;
+                                        cx.notify();
+                                    });
+                                    app.stop_propagation();
+                                },
+                            )
+                            .on_mouse_move(
+                                move |ev: &MouseMoveEvent, _w, app| {
+                                    if ev.pressed_button != Some(MouseButton::Left) {
+                                        return;
+                                    }
+                                    let left = f32::from(bounds_mv.borrow().origin.x);
+                                    let rel = f32::from(ev.position.x) - left - GUTTER;
+                                    let _ = entity_mv.update(app, |this, cx| {
+                                        if !this.edit_drag {
                                             return;
                                         }
-                                        let left = f32::from(bounds_mv.borrow().origin.x);
-                                        let rel = f32::from(ev.position.x) - left - GUTTER;
-                                        let _ = entity_mv.update(app, |this, cx| {
-                                            if !this.edit_drag {
-                                                return;
-                                            }
-                                            let hover = this
-                                                .row_text(i)
-                                                .map(|l| hover_char_at_x(l, rel + this.hscroll_px, char_w))
-                                                .unwrap_or(0);
-                                            let anchor = this.sel_anchor.unwrap_or(this.cursor);
-                                            let col =
-                                                if (i, hover) >= anchor { hover + 1 } else { hover };
-                                            this.place_cursor(i, col, true);
-                                            cx.notify();
-                                        });
-                                    })
-                                } else {
-                                    diff_row(&config, &diff, i)
-                                }
-                            })
-                            .collect::<Vec<_>>()
+                                        let hover = this
+                                            .row_text(i)
+                                            .map(|l| {
+                                                hover_char_at_x(l, rel + this.hscroll_px, char_w)
+                                            })
+                                            .unwrap_or(0);
+                                        let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                                        let col = if (i, hover) >= anchor {
+                                            hover + 1
+                                        } else {
+                                            hover
+                                        };
+                                        this.place_cursor(i, col, true);
+                                        cx.notify();
+                                    });
+                                },
+                            )
+                        } else {
+                            diff_row(&config, &diff, i)
+                        }
                     })
-                    .track_scroll(self.scroll.clone());
+                    .collect::<Vec<_>>()
+            })
+            .track_scroll(self.scroll.clone());
             // 横向滚动(修复:预览/编辑长行被截断、看不全)。把列表撑到「最长行宽」
             // (gutter + 列数×char_w + 余量)放裁剪窗、`.absolute().left(-h_off)` 平移,
             // 底部一条可拖 thumb 改 `hscroll_px`。**不用** overflow.x scroll(会让滚轮横纵同滚
@@ -2702,7 +2956,8 @@ impl Render for QuickLook {
                         let rows = (viewport_h / ROW_H).floor() as usize;
                         let last = first + rows.saturating_sub(1);
                         if cursor.0 < first || cursor.0 > last {
-                            self.scroll.scroll_to_item(cursor.0, gpui::ScrollStrategy::Center);
+                            self.scroll
+                                .scroll_to_item(cursor.0, gpui::ScrollStrategy::Center);
                         }
                     }
                 }
@@ -2713,7 +2968,13 @@ impl Render for QuickLook {
                     .min_h(px(0.))
                     .relative()
                     .overflow_hidden()
-                    .child(list.w(px(content_w)).h_full().absolute().top_0().left(px(-h_off)));
+                    .child(
+                        list.w(px(content_w))
+                            .h_full()
+                            .absolute()
+                            .top_0()
+                            .left(px(-h_off)),
+                    );
                 // 横向滚动条:仅当**确有**超视口内容(>8px)才显;可见条细(3px)、暗(muted .45)、
                 // 左右内缘各留 6px,不贴边、不抢视线。命中区做**高 14px**(透明、承接拖拽),里头细
                 // bar 靠底显示 → 视觉仍纤细、但好抓(修「可交互区域太小」)。
@@ -2735,8 +2996,7 @@ impl Render for QuickLook {
                             .on_mouse_down(
                                 MouseButton::Left,
                                 move |ev: &MouseDownEvent, _w, app| {
-                                    let grab =
-                                        f32::from(ev.position.x) - (track_left + thumb_x);
+                                    let grab = f32::from(ev.position.x) - (track_left + thumb_x);
                                     let _ = ent.update(app, |this, cx| {
                                         this.hscroll_drag = Some(grab);
                                         cx.notify();
@@ -2862,7 +3122,12 @@ impl Render for QuickLook {
                     .flex_row()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().text_size(px(10.)).text_color(col(ui.muted)).child(label))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(col(ui.muted))
+                            .child(label),
+                    )
                     .child(
                         div()
                             .min_w(px(140.))
@@ -2871,13 +3136,21 @@ impl Render for QuickLook {
                             .rounded(px(6.))
                             .bg(rgba(INSET))
                             .border_1()
-                            .border_color(if active { cola(ui.accent, 0.5) } else { rgba(0x00000000) })
+                            .border_color(if active {
+                                cola(ui.accent, 0.5)
+                            } else {
+                                rgba(0x00000000)
+                            })
                             .font_family(mono.clone())
                             .text_size(px(11.))
                             .text_color(col(ui.foreground))
                             // show a thin caret stand-in when the active field is empty
                             .child(SharedString::from(if text.is_empty() {
-                                if active { "▏".to_string() } else { String::new() }
+                                if active {
+                                    "▏".to_string()
+                                } else {
+                                    String::new()
+                                }
                             } else {
                                 text.to_string()
                             })),
@@ -2908,13 +3181,27 @@ impl Render for QuickLook {
                         .child(SharedString::from(format!("{n} 项"))),
                 )
                 .child(kcap("Enter"))
-                .child(div().text_size(px(10.)).text_color(col(ui.muted)).child("下一个"))
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(col(ui.muted))
+                        .child("下一个"),
+                )
                 .when(self.replacing, |d| {
-                    d.child(kcap("Ctrl+↵"))
-                        .child(div().text_size(px(10.)).text_color(col(ui.muted)).child("全部替换"))
+                    d.child(kcap("Ctrl+↵")).child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(col(ui.muted))
+                            .child("全部替换"),
+                    )
                 })
                 .child(kcap("Esc"))
-                .child(div().text_size(px(10.)).text_color(col(ui.muted)).child("关闭"))
+                .child(
+                    div()
+                        .text_size(px(10.))
+                        .text_color(col(ui.muted))
+                        .child("关闭"),
+                )
         });
 
         // ── 左缘 accent 竖线(.seam):指向树中选中文件的「连接感」;末位子 = 画在最上层 ──
@@ -2929,13 +3216,18 @@ impl Render for QuickLook {
 
         let inner = div()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
+            )
             // Swallow any click landing on the panel (not already handled by a child
             // like a code row) so it neither bubbles to the workspace click-away scrim
             // (which would close the overlay) nor passes through to a terminal pane
             // (which would steal focus to the shell). Clicking the panel keeps focus
             // here (track_focus). 修「面板穿透事件 / 焦点漏到底层 shell」。
-            .on_mouse_down(MouseButton::Left, cx.listener(|_, _ev, _w, cx| cx.stop_propagation()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _w, cx| cx.stop_propagation()),
+            )
             // Drag the preview's bottom horizontal scrollbar thumb (set in `body`).
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _w, cx| {
                 if this.hscroll_drag.is_some() {
@@ -3001,14 +3293,38 @@ mod tests {
     fn hit_test_accounts_for_cjk_double_width() {
         // char_w = 10px. ASCII line: each glyph 1 col (10px).
         assert_eq!(hover_char_at_x("abcd", 25.0, 10.0), 2, "25px → 3rd char");
-        assert_eq!(caret_col_at_x("abcd", 25.0, 10.0), 3, "past 中点 → boundary 右");
-        assert_eq!(caret_col_at_x("abcd", 21.0, 10.0), 2, "刚过边界 → 左侧 boundary");
+        assert_eq!(
+            caret_col_at_x("abcd", 25.0, 10.0),
+            3,
+            "past 中点 → boundary 右"
+        );
+        assert_eq!(
+            caret_col_at_x("abcd", 21.0, 10.0),
+            2,
+            "刚过边界 → 左侧 boundary"
+        );
         // CJK line "中文字": each 汉字 2 cols (20px). Naive rel/char_w would报 ~2× 偏:
         // 25px naively → idx 2, but visually it's still inside the 2nd 汉字 (20–40px).
-        assert_eq!(hover_char_at_x("中文字", 25.0, 10.0), 1, "25px 落第 2 个汉字");
-        assert_eq!(hover_char_at_x("中文字", 45.0, 10.0), 2, "45px 落第 3 个汉字");
-        assert_eq!(caret_col_at_x("中文字", 35.0, 10.0), 2, "过第2汉字中点 → 其右 boundary");
-        assert_eq!(caret_col_at_x("中文字", 25.0, 10.0), 1, "未过中点 → 其左 boundary");
+        assert_eq!(
+            hover_char_at_x("中文字", 25.0, 10.0),
+            1,
+            "25px 落第 2 个汉字"
+        );
+        assert_eq!(
+            hover_char_at_x("中文字", 45.0, 10.0),
+            2,
+            "45px 落第 3 个汉字"
+        );
+        assert_eq!(
+            caret_col_at_x("中文字", 35.0, 10.0),
+            2,
+            "过第2汉字中点 → 其右 boundary"
+        );
+        assert_eq!(
+            caret_col_at_x("中文字", 25.0, 10.0),
+            1,
+            "未过中点 → 其左 boundary"
+        );
         // mixed "a中b": cols a[0–10) 中[10–30) b[30–40)
         assert_eq!(hover_char_at_x("a中b", 5.0, 10.0), 0);
         assert_eq!(hover_char_at_x("a中b", 15.0, 10.0), 1, "15px 在汉字内");
@@ -3134,7 +3450,10 @@ mod tests {
     fn matches_and_replace_all() {
         let b = buf(&["foo bar foo", "baz foo"]);
         let m = all_matches(&b, "foo");
-        assert_eq!(m, vec![((0, 0), (0, 3)), ((0, 8), (0, 11)), ((1, 4), (1, 7))]);
+        assert_eq!(
+            m,
+            vec![((0, 0), (0, 3)), ((0, 8), (0, 11)), ((1, 4), (1, 7))]
+        );
         let mut b2 = b.clone();
         let n = replace_all_in(&mut b2, "foo", "X");
         assert_eq!(n, 3);
@@ -3150,7 +3469,15 @@ mod tests {
         // is_alphabetic()/is_ascii_digit(), so it fell through to the punct branch
         // which broke at j==i → infinite loop → OOM (froze opening an HTML with `①`).
         // These must all return promptly with token count bounded by char count.
-        for s in ["①", "① 窗口外壳", "②③ x", "½ cup", "a①b", "<h1>① 标题</h1>", "Ⅷ ⑩ ㊀"] {
+        for s in [
+            "①",
+            "① 窗口外壳",
+            "②③ x",
+            "½ cup",
+            "a①b",
+            "<h1>① 标题</h1>",
+            "Ⅷ ⑩ ㊀",
+        ] {
             let toks = highlight(s);
             assert!(
                 toks.len() <= s.chars().count() + 1,
@@ -3170,7 +3497,11 @@ mod tests {
         let line = r#"<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4z"/></symbol>"#;
         let raw = highlight(line).len();
         let merged = coalesce_spans(line);
-        assert!(merged.len() < raw, "coalesced ({}) must be fewer than raw tokens ({raw})", merged.len());
+        assert!(
+            merged.len() < raw,
+            "coalesced ({}) must be fewer than raw tokens ({raw})",
+            merged.len()
+        );
         // reconstructing the merged runs yields the original text (nothing dropped)
         let joined: String = merged.iter().map(|(s, _)| s.as_str()).collect();
         assert_eq!(joined, line);
@@ -3183,7 +3514,11 @@ mod tests {
         let long = "x".repeat(LONG_LINE_BYTES + 10);
         let s = coalesce_spans(&long);
         assert_eq!(s.len(), 1);
-        assert_eq!(s[0].0.len(), long.len(), "long line kept whole, just untinted");
+        assert_eq!(
+            s[0].0.len(),
+            long.len(),
+            "long line kept whole, just untinted"
+        );
 
         // Span count is hard-capped, with the tail preserved.
         let many = "a.".repeat(200); // ~400 alternating tokens
@@ -3250,5 +3585,4 @@ mod tests {
         // row1's only cell is its last → not padded.
         assert_eq!(out[1], "ab");
     }
-
 }

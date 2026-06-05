@@ -38,7 +38,8 @@ pub fn resolve_session(cwd: &str, hint: Option<AgentKind>) -> Option<SessionRef>
         // that agent overall — a freshly-launched agent pane's session is the
         // newest, and its cwd often differs from the app cwd (e.g. Codex in ~).
         Some(AgentKind::ClaudeCode) => {
-            let path = claude::latest_session_file(cwd).or_else(claude::latest_claude_session_any)?;
+            let path =
+                claude::latest_session_file(cwd).or_else(claude::latest_claude_session_any)?;
             session_ref(AgentKind::ClaudeCode, path)
         }
         Some(AgentKind::Codex) => {
@@ -88,12 +89,13 @@ fn pick_pane_session(
     launched_at: SystemTime,
     baseline: &HashMap<PathBuf, SystemTime>,
 ) -> Option<PathBuf> {
-    let stale_before = launched_at.checked_sub(SESSION_ACTIVE_MARGIN).unwrap_or(launched_at);
+    let stale_before = launched_at
+        .checked_sub(SESSION_ACTIVE_MARGIN)
+        .unwrap_or(launched_at);
     sessions
         .into_iter()
         .filter(|(path, mtime)| {
-            *mtime >= launched_at
-                && baseline.get(path).is_none_or(|&b| b < stale_before)
+            *mtime >= launched_at && baseline.get(path).is_none_or(|&b| b < stale_before)
         })
         .max_by_key(|(_, mtime)| *mtime)
         .map(|(path, _)| path)
@@ -167,8 +169,12 @@ fn home_dir() -> Option<PathBuf> {
 fn claude_is_subscription() -> bool {
     let Some(home) = home_dir() else { return false };
     let path = home.join(".claude").join(".credentials.json");
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
     v.get("claudeAiOauth")
         .and_then(|o| o.get("subscriptionType"))
         .and_then(|s| s.as_str())
@@ -180,8 +186,12 @@ fn claude_is_subscription() -> bool {
 fn codex_is_subscription() -> bool {
     let Some(home) = home_dir() else { return false };
     let path = home.join(".codex").join("auth.json");
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else { return false };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
     v.get("auth_mode")
         .and_then(|s| s.as_str())
         .is_some_and(|s| !s.is_empty() && !s.eq_ignore_ascii_case("apikey"))
@@ -206,9 +216,18 @@ mod tests {
 
     #[test]
     fn command_classification() {
-        assert_eq!(agent_kind_for_command("claude"), Some(AgentKind::ClaudeCode));
-        assert_eq!(agent_kind_for_command("C:/npm/codex.cmd"), Some(AgentKind::Codex));
-        assert_eq!(agent_kind_for_command("& 'claude' '--resume'"), Some(AgentKind::ClaudeCode));
+        assert_eq!(
+            agent_kind_for_command("claude"),
+            Some(AgentKind::ClaudeCode)
+        );
+        assert_eq!(
+            agent_kind_for_command("C:/npm/codex.cmd"),
+            Some(AgentKind::Codex)
+        );
+        assert_eq!(
+            agent_kind_for_command("& 'claude' '--resume'"),
+            Some(AgentKind::ClaudeCode)
+        );
         assert_eq!(agent_kind_for_command("powershell.exe"), None);
     }
 

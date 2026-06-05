@@ -14,9 +14,10 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
-    AnyElement, App, AppContext, AsyncApp, Context, Entity, FocusHandle, KeyBinding, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Rgba,
-    SharedString, Subscription, WeakEntity, Window, WindowControlArea,
+    AnyElement, App, AppContext, AsyncApp, Bounds, Context, ElementInputHandler, Entity,
+    EntityInputHandler, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba, SharedString,
+    Subscription, UTF16Selection, WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -633,10 +634,10 @@ pub struct Workspace {
     ssh_recents: SshRecents,
     /// Selected row in the connector's recents list (index into the filtered list).
     ssh_prompt_sel: usize,
-    /// When `Some`, the connector is in its "save as connection" sub-mode (A2):
-    /// the user is naming an endpoint before it's written to `config.toml` as a
-    /// `[[profiles]]` entry. Replaces the list with a name-entry form.
-    ssh_save: Option<SshSaveDraft>,
+    /// When `Some`, a favorite recent is being renamed in-place. Kept separate
+    /// from the filter string so IME/中文 input can be routed to the nickname.
+    ssh_rename: Option<SshRenameDraft>,
+    ssh_rename_marked: Option<String>,
     /// `Host` aliases enumerated from `~/.ssh/config` (A4) — the connector's third
     /// section. Refreshed each time the connector opens (the file is tiny and
     /// rarely changes mid-session).
@@ -650,31 +651,23 @@ enum SshPromptIntent {
     Split(SplitDir),
 }
 
-/// A connection being promoted to a named, persistent `[[profiles]]` entry (A2).
-/// Built from a recent (the connector's "存为连接" button) and edited in place.
 #[derive(Clone)]
-pub struct SshSaveDraft {
+struct SshRenameDraft {
     host: String,
     user: String,
     port: u16,
-    auth: AuthBadge,
-    /// The nickname being typed (prefilled with the host; ASCII while the
-    /// connector keeps IME disabled — CJK names can be hand-edited in config).
     name: String,
 }
 
-/// One connector list row: a saved named profile (`config.toml`) or an
-/// auto-recorded recent (`ssh_recents.json`). Owned so the per-row click
-/// listeners can capture their data without borrowing `self`.
+/// One connector list row: an auto-recorded recent (`ssh_recents.json`) or a
+/// read-only `ssh-config` alias. Owned so the per-row click listeners can capture
+/// their data without borrowing `self`.
 enum SshConnRow {
-    Saved {
-        name: String,
-        target: String,
-    },
     Recent {
         host: String,
         user: String,
         port: u16,
+        name: Option<String>,
         target: String,
         favorite: bool,
         auth: AuthBadge,
@@ -724,17 +717,6 @@ fn validate_ssh_target(typed: &str) -> Result<(), &'static str> {
         }
     }
     Ok(())
-}
-
-/// Split a `host[:port]` field into `(host, port)`, defaulting to 22 — mirrors
-/// `SshConfig::parse`'s rule (a numeric suffix after the last colon is the port).
-fn split_host_port(host_field: &str) -> (String, u16) {
-    match host_field.rsplit_once(':') {
-        Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
-            (h.to_string(), p.parse().unwrap())
-        }
-        _ => (host_field.to_string(), 22),
-    }
 }
 
 impl Workspace {
@@ -824,7 +806,8 @@ impl Workspace {
                 ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
                 ws.ssh_prompt_input.clear();
                 ws.ssh_prompt_sel = 0;
-                ws.ssh_save = None;
+                ws.ssh_rename = None;
+                ws.ssh_rename_marked = None;
                 ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             },
@@ -882,7 +865,8 @@ impl Workspace {
             ssh_ime_disabled: false,
             ssh_recents: SshRecents::load(),
             ssh_prompt_sel: 0,
-            ssh_save: None,
+            ssh_rename: None,
+            ssh_rename_marked: None,
             ssh_config_hosts: tn_pty::list_ssh_config_hosts(),
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
@@ -1426,7 +1410,8 @@ impl Workspace {
                 self.ssh_prompt_intent = Some(SshPromptIntent::Palette);
                 self.ssh_prompt_input.clear();
                 self.ssh_prompt_sel = 0;
-                self.ssh_save = None;
+                self.ssh_rename = None;
+                self.ssh_rename_marked = None;
                 self.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             }
@@ -2194,6 +2179,24 @@ impl Workspace {
         }
         self.reload_config(&ReloadConfig, window, cx);
     }
+
+    fn ssh_commit_rename(&mut self, cx: &mut Context<Self>) {
+        let Some(draft) = self.ssh_rename.take() else {
+            return;
+        };
+        self.ssh_rename_marked = None;
+        self.ssh_recents
+            .rename(&draft.host, &draft.user, draft.port, &draft.name);
+        self.ssh_recents.save();
+        cx.notify();
+    }
+
+    fn ssh_cancel_rename(&mut self, cx: &mut Context<Self>) {
+        self.ssh_rename = None;
+        self.ssh_rename_marked = None;
+        cx.notify();
+    }
+
     fn on_ssh_prompt_key(
         &mut self,
         ev: &KeyDownEvent,
@@ -2201,8 +2204,8 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let key = ev.keystroke.key.as_str();
-        // Printable ASCII (no modifiers, no IME CJK slip-through) — used by both
-        // the filter box and the save-mode name field.
+        // Printable ASCII (no modifiers, no IME CJK slip-through) for the live
+        // filter box.
         let printable = |ev: &KeyDownEvent| -> Option<String> {
             ev.keystroke
                 .key_char
@@ -2216,23 +2219,21 @@ impl Workspace {
                 .cloned()
         };
 
-        // ── save sub-mode (A2): naming an endpoint before writing it to config ──
-        if self.ssh_save.is_some() {
+        if self.ssh_rename.is_some() {
             match key {
-                "escape" => {
-                    self.ssh_save = None; // back to the list
-                    cx.notify();
-                }
-                "enter" => self.ssh_save_commit(cx),
+                "escape" => self.ssh_cancel_rename(cx),
+                "enter" => self.ssh_commit_rename(cx),
                 "backspace" => {
-                    if let Some(d) = self.ssh_save.as_mut() {
+                    if self.ssh_rename_marked.take().is_some() {
+                        cx.notify();
+                    } else if let Some(d) = self.ssh_rename.as_mut() {
                         d.name.pop();
+                        cx.notify();
                     }
-                    cx.notify();
                 }
                 _ => {
                     if let Some(c) = printable(ev) {
-                        if let Some(d) = self.ssh_save.as_mut() {
+                        if let Some(d) = self.ssh_rename.as_mut() {
                             d.name.push_str(&c);
                         }
                         cx.notify();
@@ -2243,14 +2244,16 @@ impl Workspace {
             return;
         }
 
-        // ── list mode: the input box doubles as a live filter over the combined
-        // saved-profiles + recents list ──
+        // The input box doubles as a live filter over the combined recents +
+        // ssh-config list.
         let rows = self.ssh_conn_rows();
         let n = rows.len();
         match key {
             "escape" => {
                 self.ssh_prompt_open = false;
                 self.ssh_prompt_intent = None;
+                self.ssh_rename = None;
+                self.ssh_rename_marked = None;
                 self.refocus_active(window, cx);
                 cx.notify();
             }
@@ -2269,9 +2272,7 @@ impl Workspace {
                 let target: Option<String> = if n > 0 {
                     let i = self.ssh_prompt_sel.min(n - 1);
                     Some(match &rows[i] {
-                        SshConnRow::Saved { target, .. } | SshConnRow::Recent { target, .. } => {
-                            target.clone()
-                        }
+                        SshConnRow::Recent { target, .. } => target.clone(),
                         // Connect via the alias so ssh-config's HostName/User/Port/
                         // IdentityFile all apply (SshConfig::parse re-queries config).
                         SshConnRow::Config { alias, .. } => alias.clone(),
@@ -2291,6 +2292,8 @@ impl Workspace {
                     None => {
                         self.ssh_prompt_open = false;
                         self.ssh_prompt_intent = None;
+                        self.ssh_rename = None;
+                        self.ssh_rename_marked = None;
                         self.refocus_active(window, cx);
                         cx.notify();
                     }
@@ -2312,50 +2315,31 @@ impl Workspace {
         cx.stop_propagation();
     }
 
-    /// The connector's combined rows: saved named profiles (`config.toml`) first,
-    /// then auto-recents (`ssh_recents.json`) — both filtered by the input box and
-    /// deduped (a recent whose endpoint is already a saved profile folds away).
+    /// The connector's combined rows: favorites/recents (`ssh_recents.json`) first,
+    /// then read-only ssh-config aliases — both filtered by the input box and
+    /// deduped by endpoint.
     /// Owned so the per-row click listeners can capture freely.
     fn ssh_conn_rows(&self) -> Vec<SshConnRow> {
         let q = self.ssh_prompt_input.trim();
         let ql = q.to_ascii_lowercase();
         let matches = |s: &str| ql.is_empty() || s.to_ascii_lowercase().contains(ql.as_str());
 
-        let mut saved_eps: std::collections::HashSet<(String, String, u16)> =
+        let mut seen_eps: std::collections::HashSet<(String, String, u16)> =
             std::collections::HashSet::new();
         let mut rows: Vec<SshConnRow> = Vec::new();
 
-        // Saved SSH profiles from config.toml (`kind = "ssh"` with a host).
-        for p in &self.config.config.profiles {
-            if p.kind != tn_config::ProfileKind::Ssh {
-                continue;
-            }
-            let Some(host_field) = p.host.as_deref().filter(|h| !h.is_empty()) else {
-                continue;
-            };
-            let (host, port) = split_host_port(host_field);
-            let user = p.user.clone().unwrap_or_default();
-            let target = crate::ssh_recents::format_target(&user, &host, port);
-            if !(matches(&p.name) || matches(&host) || matches(&user) || matches(&target)) {
-                continue;
-            }
-            saved_eps.insert((host.to_ascii_lowercase(), user, port));
-            rows.push(SshConnRow::Saved {
-                name: p.name.clone(),
-                target,
-            });
-        }
-
-        // Auto-recents, minus any endpoint already covered by a saved profile.
+        // Auto-recents: favorites stay pinned by `SshRecents`, non-favorites keep
+        // the bounded recent-history behavior.
         for r in self.ssh_recents.filtered(q) {
-            if saved_eps.contains(&(r.host.to_ascii_lowercase(), r.user.clone(), r.port)) {
+            if seen_eps.contains(&(r.host.to_ascii_lowercase(), r.user.clone(), r.port)) {
                 continue;
             }
-            saved_eps.insert((r.host.to_ascii_lowercase(), r.user.clone(), r.port));
+            seen_eps.insert((r.host.to_ascii_lowercase(), r.user.clone(), r.port));
             rows.push(SshConnRow::Recent {
                 host: r.host.clone(),
                 user: r.user.clone(),
                 port: r.port,
+                name: r.name.clone(),
                 target: r.target(),
                 favorite: r.favorite,
                 auth: r.auth,
@@ -2366,64 +2350,20 @@ impl Workspace {
         // ssh-config Host aliases (A4), minus endpoints already shown above.
         for h in &self.ssh_config_hosts {
             let user = h.user.clone().unwrap_or_default();
-            if saved_eps.contains(&(h.host.to_ascii_lowercase(), user.clone(), h.port)) {
+            if seen_eps.contains(&(h.host.to_ascii_lowercase(), user.clone(), h.port)) {
                 continue;
             }
             let target = crate::ssh_recents::format_target(&user, &h.host, h.port);
             if !(matches(&h.alias) || matches(&h.host) || matches(&user) || matches(&target)) {
                 continue;
             }
-            saved_eps.insert((h.host.to_ascii_lowercase(), user, h.port));
+            seen_eps.insert((h.host.to_ascii_lowercase(), user, h.port));
             rows.push(SshConnRow::Config {
                 alias: h.alias.clone(),
                 target,
             });
         }
         rows
-    }
-
-    /// Persist the in-flight save draft as a `[[profiles]]` SSH entry in
-    /// `config.toml` (A2), then re-read config so the new named connection shows
-    /// in the list immediately.
-    fn ssh_save_commit(&mut self, cx: &mut Context<Self>) {
-        let Some(draft) = self.ssh_save.take() else {
-            return;
-        };
-        let name = {
-            let t = draft.name.trim();
-            if t.is_empty() {
-                draft.host.clone()
-            } else {
-                t.to_string()
-            }
-        };
-        let host_field = if draft.port == 22 {
-            draft.host.clone()
-        } else {
-            format!("{}:{}", draft.host, draft.port)
-        };
-        let user = (!draft.user.is_empty()).then(|| draft.user.clone());
-        let profile = tn_config::Profile {
-            name,
-            kind: tn_config::ProfileKind::Ssh,
-            command: None,
-            args: Vec::new(),
-            cwd: None,
-            distro: None,
-            host: Some(host_field),
-            user,
-            agent: None,
-            accent: None,
-            glyph: None,
-        };
-        match tn_config::append_profile(&profile) {
-            // Re-read config so the saved connection appears immediately (the
-            // connector reads `self.config.config.profiles`). Cheap file read;
-            // avoids re-running discover_profiles (which shells out to wsl.exe).
-            Ok(()) => self.config = Arc::new(tn_config::load()),
-            Err(e) => tracing::error!(error = %e, "save SSH connection to config.toml failed"),
-        }
-        cx.notify();
     }
 
     /// Connect to an SSH target (`user@host[:port]`) and dispatch to the recorded
@@ -2433,7 +2373,8 @@ impl Workspace {
         self.ssh_prompt_open = false;
         self.ssh_prompt_input.clear();
         self.ssh_prompt_sel = 0;
-        self.ssh_save = None;
+        self.ssh_rename = None;
+        self.ssh_rename_marked = None;
         cx.notify();
         let target = target.trim();
         if target.is_empty() {
@@ -2596,135 +2537,19 @@ impl Workspace {
                 d.when_some(chips_row, |d, c| d.child(c))
             });
 
-        // Connector rows (list mode only); also drives whether the footer advertises
-        // the per-row ★/⊕ actions (hidden when there are no rows to act on).
-        let conn_rows = if self.ssh_save.is_some() {
-            Vec::new()
-        } else {
-            self.ssh_conn_rows()
-        };
+        // Connector rows; also drives whether the footer advertises the per-row
+        // ★ action (hidden when there are no rows to act on).
+        let conn_rows = self.ssh_conn_rows();
         let has_rows = !conn_rows.is_empty();
 
-        // ── panel body: the save-mode name form, or the list of saved + recent rows ──
-        let panel_body: gpui::Div = if let Some(d) = &self.ssh_save {
-            // A2 save sub-mode: name an endpoint before it's written to config.toml.
-            let target = crate::ssh_recents::format_target(&d.user, &d.host, d.port);
-            let badge = match d.auth {
-                AuthBadge::Key => Some(("key", "密钥", t.ansi.green)),
-                AuthBadge::Password => Some(("lock", "密码", t.ansi.yellow)),
-                AuthBadge::Unknown => None,
-            };
-            let lbl = |s: &str| {
-                div()
-                    .min_w(px(40.))
-                    .text_size(px(11.))
-                    .text_color(col(ui.muted))
-                    .child(SharedString::from(s.to_string()))
-            };
-            div()
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.))
-                        .px(px(16.))
-                        .py(px(13.))
-                        .child(icon("bookmark-plus", 16., ui.accent))
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .text_color(col(ui.foreground))
-                                .child(SharedString::from("保存为连接")),
-                        ),
-                )
-                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(16.))
-                        .pt(px(13.))
-                        .child(lbl("端点"))
-                        .child(
-                            div()
-                                .font_family(mono.clone())
-                                .text_size(px(13.))
-                                .text_color(col(ui.foreground))
-                                .child(SharedString::from(target)),
-                        )
-                        .child(div().flex_1())
-                        .when_some(badge, |dd, (ic, label, color)| {
-                            dd.child(
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(5.))
-                                    .px(px(8.))
-                                    .py(px(2.))
-                                    .rounded(px(999.))
-                                    .bg(cola(color, 0.12))
-                                    .child(icon(ic, 11., color))
-                                    .child(
-                                        div()
-                                            .text_size(px(10.))
-                                            .text_color(col(color))
-                                            .child(SharedString::from(label.to_string())),
-                                    ),
-                            )
-                        }),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
-                        .px(px(16.))
-                        .py(px(13.))
-                        .child(lbl("名称"))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .font_family(mono.clone())
-                                .text_size(px(14.))
-                                .when(!d.name.is_empty(), |dd| {
-                                    dd.child(
-                                        div()
-                                            .text_color(col(ui.foreground))
-                                            .child(SharedString::from(d.name.clone())),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_color(col(ui.muted))
-                                        .child(SharedString::from("▏")),
-                                ) // caret
-                                .when(d.name.is_empty(), |dd| {
-                                    dd.child(
-                                        div()
-                                            .ml(px(2.))
-                                            .text_color(col(ui.muted))
-                                            .child(SharedString::from("给这个连接起个名字…")),
-                                    )
-                                }),
-                        ),
-                )
-        } else {
-            // List mode: combined saved profiles (top) + recents, filtered by input.
+        // ── panel body: input + combined favorites/recents + ssh-config rows ──
+        let panel_body: gpui::Div = {
             let rows = &conn_rows;
             let sel = self.ssh_prompt_sel.min(rows.len().saturating_sub(1));
             let list: gpui::Div = if rows.is_empty() {
                 if self.ssh_prompt_input.trim().is_empty() {
                     // C3 first-connect guide: a short three-line walkthrough shown
-                    // when the connector is empty (no saved / recent / config hosts).
+                    // when the connector is empty (no recent / config hosts).
                     let step = |ic: &'static str, head: &str, sub: &str| {
                         div()
                             .flex()
@@ -2774,9 +2599,9 @@ impl Workspace {
                             "优先用 ~/.ssh 里的密钥;无密钥则弹密码框(可记住本次会话)",
                         ))
                         .child(step(
-                            "bookmark-plus",
+                            "star",
                             "3 · 记住连接",
-                            "连上后自动进「最近」,再点 ⊕ 命名存为常用连接",
+                            "连上后自动进「最近」,点 ★ 收藏长期保留;再点一次取消",
                         ))
                 } else {
                     div()
@@ -2808,67 +2633,11 @@ impl Workspace {
                             .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
                     };
                     let row = match row_data {
-                        SshConnRow::Saved { name, target } => {
-                            let conn_target = target.clone();
-                            base()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _e, w, cx| {
-                                        this.ssh_connect(&conn_target, w, cx);
-                                    }),
-                                )
-                                // accent dot marker (named/saved), aligned to the recents' star column
-                                .child(
-                                    div().w(px(14.)).flex().justify_center().flex_none().child(
-                                        div()
-                                            .w(px(8.))
-                                            .h(px(8.))
-                                            .rounded(px(999.))
-                                            .bg(col(ui.accent)),
-                                    ),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(1.))
-                                        .min_w(px(0.))
-                                        .child(
-                                            div()
-                                                .text_size(px(13.))
-                                                .text_color(col(ui.foreground))
-                                                .child(SharedString::from(name.clone())),
-                                        )
-                                        .child(
-                                            div()
-                                                .font_family(mono.clone())
-                                                .text_size(px(11.))
-                                                .text_color(col(ui.muted))
-                                                .child(SharedString::from(target.clone())),
-                                        ),
-                                )
-                                .child(div().flex_1())
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_row()
-                                        .items_center()
-                                        .px(px(8.))
-                                        .py(px(2.))
-                                        .rounded(px(999.))
-                                        .bg(cola(ui.accent, 0.12))
-                                        .child(
-                                            div()
-                                                .text_size(px(10.))
-                                                .text_color(col(ui.accent))
-                                                .child(SharedString::from("已保存")),
-                                        ),
-                                )
-                        }
                         SshConnRow::Recent {
                             host,
                             user,
                             port,
+                            name,
                             target,
                             favorite,
                             auth,
@@ -2876,7 +2645,23 @@ impl Workspace {
                         } => {
                             let (host, user, port, favorite, auth) =
                                 (host.clone(), user.clone(), *port, *favorite, *auth);
+                            let name = name.clone();
                             let target = target.clone();
+                            let rename_active = self.ssh_rename.as_ref().is_some_and(|d| {
+                                d.port == port
+                                    && d.user == user
+                                    && d.host.eq_ignore_ascii_case(&host)
+                            });
+                            let title_text = self
+                                .ssh_rename
+                                .as_ref()
+                                .filter(|_| rename_active)
+                                .map(|d| d.name.clone())
+                                .or_else(|| name.clone())
+                                .unwrap_or_else(|| host.clone());
+                            let marked = rename_active
+                                .then(|| self.ssh_rename_marked.clone())
+                                .flatten();
                             let when = crate::ssh_recents::rel_time(*last_used);
                             // ⭐ star toggles favorite without triggering the row's connect.
                             let (fav_host, fav_user) = (host.clone(), user.clone());
@@ -2892,6 +2677,14 @@ impl Workspace {
                                         cx.stop_propagation();
                                         this.ssh_recents
                                             .toggle_favorite(&fav_host, &fav_user, port);
+                                        if this.ssh_rename.as_ref().is_some_and(|d| {
+                                            d.port == port
+                                                && d.user == fav_user
+                                                && d.host.eq_ignore_ascii_case(&fav_host)
+                                        }) {
+                                            this.ssh_rename = None;
+                                            this.ssh_rename_marked = None;
+                                        }
                                         this.ssh_recents.save();
                                         cx.notify();
                                     }),
@@ -2901,24 +2694,32 @@ impl Workspace {
                                 AuthBadge::Password => Some(("lock", "密码", t.ansi.yellow)),
                                 AuthBadge::Unknown => None,
                             };
-                            // ⊕ save-as-connection: promote this recent to a named [[profiles]] entry.
-                            let (save_host, save_user) = (host.clone(), user.clone());
-                            let save_btn = div()
-                                .child(icon("bookmark-plus", 14., ui.muted))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, _e, _w, cx| {
-                                        cx.stop_propagation();
-                                        this.ssh_save = Some(SshSaveDraft {
-                                            host: save_host.clone(),
-                                            user: save_user.clone(),
-                                            port,
-                                            auth,
-                                            name: save_host.clone(),
-                                        });
-                                        cx.notify();
-                                    }),
-                                );
+                            let rename_btn = if favorite {
+                                let (rename_host, rename_user) = (host.clone(), user.clone());
+                                let initial_name =
+                                    name.clone().unwrap_or_else(|| rename_host.clone());
+                                Some(
+                                    div()
+                                        .child(icon("pen", 13., ui.muted))
+                                        .hover(|s| s.text_color(col(ui.accent)))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(move |this, _e, _w, cx| {
+                                                cx.stop_propagation();
+                                                this.ssh_rename = Some(SshRenameDraft {
+                                                    host: rename_host.clone(),
+                                                    user: rename_user.clone(),
+                                                    port,
+                                                    name: initial_name.clone(),
+                                                });
+                                                this.ssh_rename_marked = None;
+                                                cx.notify();
+                                            }),
+                                        ),
+                                )
+                            } else {
+                                None
+                            };
                             let conn_target = target.clone();
                             base()
                                 .on_mouse_down(
@@ -2936,9 +2737,30 @@ impl Workspace {
                                         .min_w(px(0.))
                                         .child(
                                             div()
+                                                .flex()
+                                                .flex_row()
+                                                .items_center()
                                                 .text_size(px(13.))
-                                                .text_color(col(ui.foreground))
-                                                .child(SharedString::from(host.clone())),
+                                                .text_color(if rename_active {
+                                                    col(ui.accent)
+                                                } else {
+                                                    col(ui.foreground)
+                                                })
+                                                .child(SharedString::from(title_text))
+                                                .when_some(marked, |d, m| {
+                                                    d.child(
+                                                        div()
+                                                            .text_color(col(ui.muted))
+                                                            .child(SharedString::from(m)),
+                                                    )
+                                                })
+                                                .when(rename_active, |d| {
+                                                    d.child(
+                                                        div()
+                                                            .text_color(col(ui.muted))
+                                                            .child(SharedString::from("▏")),
+                                                    )
+                                                }),
                                         )
                                         .child(
                                             div()
@@ -2969,7 +2791,7 @@ impl Workspace {
                                             ),
                                     )
                                 })
-                                .child(save_btn)
+                                .when_some(rename_btn, |d, b| d.child(b))
                                 // relative time — faint(无 token,同 .meta)
                                 .child(
                                     div()
@@ -2979,7 +2801,10 @@ impl Workspace {
                                         .child(SharedString::from(when)),
                                 )
                         }
-                        SshConnRow::Config { alias, target } => {
+                        SshConnRow::Config {
+                            alias,
+                            target,
+                        } => {
                             // A4: connect via the alias so ssh-config rules apply.
                             let conn_alias = alias.clone();
                             base()
@@ -3051,19 +2876,26 @@ impl Workspace {
                 .child(list)
         };
 
-        let footer_text = if self.ssh_save.is_some() {
-            "↵ 保存 · Esc 返回"
+        let footer_text = if self.ssh_rename.is_some() {
+            "↵ 保存名称 · Esc 取消 · 支持中文输入"
         } else if has_rows {
-            "↑↓ 选择 · ↵ 连接 · ★ 收藏 · ⊕ 存为连接 · Esc 取消"
+            "↑↓ 选择 · ↵ 连接 · ★ 收藏/取消收藏 · Esc 取消"
         } else {
             "↵ 连接 · Esc 取消"
         };
 
+        let ime_focus = self.ssh_prompt_focus.clone();
+        let ime_entity = cx.entity();
+        let rename_ime_active = self.ssh_rename.is_some();
+
         let panel = crate::style::shadowed(
             div()
+                .relative()
                 .flex()
                 .flex_col()
                 .w(px(560.))
+                .max_w(relative(0.92))
+                .max_h(relative(0.86))
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
@@ -3086,7 +2918,23 @@ impl Workspace {
                         .text_size(px(11.))
                         .text_color(col(ui.muted))
                         .child(SharedString::from(footer_text)),
-                ),
+                )
+                .when(rename_ime_active, |d| {
+                    d.child(
+                        canvas(
+                            |_bounds, _window, _cx| {},
+                            move |bounds, _state, window, cx| {
+                                window.handle_input(
+                                    &ime_focus,
+                                    ElementInputHandler::new(bounds, ime_entity.clone()),
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                }),
             vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
         );
 
@@ -3114,7 +2962,8 @@ impl Workspace {
                     cx.listener(|this, _e, w, cx| {
                         this.ssh_prompt_open = false;
                         this.ssh_prompt_intent = None;
-                        this.ssh_save = None;
+                        this.ssh_rename = None;
+                        this.ssh_rename_marked = None;
                         this.refocus_active(w, cx);
                         cx.notify();
                     }),
@@ -3424,7 +3273,8 @@ impl Workspace {
                 self.ssh_prompt_intent = Some(SshPromptIntent::Split(dir));
                 self.ssh_prompt_input.clear();
                 self.ssh_prompt_sel = 0;
-                self.ssh_save = None;
+                self.ssh_rename = None;
+                self.ssh_rename_marked = None;
                 self.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             }
@@ -3904,6 +3754,111 @@ impl Workspace {
     }
 }
 
+impl EntityInputHandler for Workspace {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let units: Vec<u16> = self
+            .ssh_rename_marked
+            .as_deref()
+            .unwrap_or("")
+            .encode_utf16()
+            .collect();
+        let start = range.start.min(units.len());
+        let end = range.end.min(units.len());
+        *adjusted = Some(start..end);
+        Some(String::from_utf16_lossy(&units[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        self.ssh_rename.as_ref()?;
+        let end = self
+            .ssh_rename_marked
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.ssh_rename_marked
+            .as_deref()
+            .map(|s| 0..s.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.ssh_rename_marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(draft) = self.ssh_rename.as_mut() {
+            draft.name.push_str(text);
+        }
+        self.ssh_rename_marked = None;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.ssh_rename_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        Some(Bounds {
+            origin: gpui::point(
+                element_bounds.origin.x + px(72.),
+                element_bounds.origin.y + px(112.),
+            ),
+            size: gpui::size(px(220.), px(28.)),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Focus the initial pane once (no notify -> avoid a render loop).
@@ -3986,14 +3941,14 @@ impl Render for Workspace {
             self.ssh_prompt_needs_focus = false;
             self.ssh_prompt_focus.focus(window);
         }
-        // IME control: disable IME while the SSH prompt is open so the user can
-        // type ASCII host/user/port without having to switch input methods.
-        // Re-enable when the prompt closes. Only call the API on transitions.
-        if self.ssh_prompt_open != self.ssh_ime_disabled {
+        // IME control: disable IME for the SSH target filter (ASCII host/user/port),
+        // but re-enable it while renaming a favorite so Chinese nicknames work.
+        let ssh_should_disable_ime = self.ssh_prompt_open && self.ssh_rename.is_none();
+        if ssh_should_disable_ime != self.ssh_ime_disabled {
             if let Some(hwnd) = crate::platform::hwnd_of(window) {
-                crate::platform::set_ime_enabled(hwnd, !self.ssh_prompt_open);
+                crate::platform::set_ime_enabled(hwnd, !ssh_should_disable_ime);
             }
-            self.ssh_ime_disabled = self.ssh_prompt_open;
+            self.ssh_ime_disabled = ssh_should_disable_ime;
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // file list (or active pane) now (the event callback had no `window`).

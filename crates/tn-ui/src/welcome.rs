@@ -20,9 +20,7 @@ use gpui::{
 use tn_ai::{agent_kind_for_command, AgentKind};
 use tn_config::{Loaded, Profile, ProfileKind};
 
-use crate::style::{
-    col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
-};
+use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
 
 // ── Shared launch-tile helpers (mockup `.tile` / `.dot`) ────────────────────────
 // The welcome launchpad, the Quick Terminal launcher, and the command palette all
@@ -59,9 +57,11 @@ pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<AgentKind>) -> String {
         Some(AgentKind::ClaudeCode) => "Claude Code".into(),
         Some(AgentKind::Codex) => "Codex".into(),
         None => match p.kind {
-            ProfileKind::Wsl => {
-                p.distro.clone().filter(|d| !d.is_empty()).unwrap_or_else(|| "WSL".into())
-            }
+            ProfileKind::Wsl => p
+                .distro
+                .clone()
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "WSL".into()),
             ProfileKind::Ssh => p.host.clone().unwrap_or_else(|| "SSH".into()),
             _ => {
                 let c = p.command.clone().unwrap_or_default().to_ascii_lowercase();
@@ -107,12 +107,22 @@ pub(crate) fn profile_card(t: &tn_config::Theme, p: &Profile) -> CardId {
 
 /// The aggregated WSL card (mockup violet `.tile.wsl`): violet accent, "N 个发行版".
 pub(crate) fn wsl_card(t: &tn_config::Theme, n: usize) -> CardId {
-    CardId { name: "WSL".into(), sub: format!("{n} 个发行版"), glyph: "term", accent: t.ui.accent_alt }
+    CardId {
+        name: "WSL".into(),
+        sub: format!("{n} 个发行版"),
+        glyph: "term",
+        accent: t.ui.accent_alt,
+    }
 }
 
 /// The SSH prompt card (user@host input modal).
 pub(crate) fn ssh_card(t: &tn_config::Theme) -> CardId {
-    CardId { name: "SSH".into(), sub: "快速连接".into(), glyph: "external", accent: t.ui.accent }
+    CardId {
+        name: "SSH".into(),
+        sub: "快速连接".into(),
+        glyph: "external",
+        accent: t.ui.accent,
+    }
 }
 
 /// One launch-surface card after aggregation. Indices are into the surface's
@@ -230,7 +240,12 @@ pub struct WelcomeView {
 
 impl WelcomeView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>, profiles: Vec<Profile>) -> Self {
-        Self { config, profiles, wsl_open: false, focus_handle: cx.focus_handle() }
+        Self {
+            config,
+            profiles,
+            wsl_open: false,
+            focus_handle: cx.focus_handle(),
+        }
     }
 
     // `tile_accent` / `tile_sub` / agent detection now live as module-level free fns
@@ -260,7 +275,7 @@ impl WelcomeView {
             .hover(|s| {
                 // Enhance hover state with dynamic agent color glow
                 s.bg(cola(card.accent, 0.08))
-                 .border_color(cola(card.accent, 0.30))
+                    .border_color(cola(card.accent, 0.30))
             })
             .on_mouse_down(MouseButton::Left, cx.listener(on_down))
             .child(
@@ -285,7 +300,10 @@ impl WelcomeView {
             )
             .child(
                 // .td:11px / muted
-                div().text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(card.sub)),
+                div()
+                    .text_size(px(11.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from(card.sub)),
             )
     }
 
@@ -316,7 +334,11 @@ impl WelcomeView {
 
     /// The SSH interactive connector tile.
     fn ssh_tile(&self, cx: &mut Context<Self>) -> Div {
-        self.card_tile(ssh_card(&self.config.theme), |_this, _e, _w, cx| cx.emit(SshPromptRequested), cx)
+        self.card_tile(
+            ssh_card(&self.config.theme),
+            |_this, _e, _w, cx| cx.emit(SshPromptRequested),
+            cx,
+        )
     }
 
     /// Back tile shown in the WSL sub-grid → return to the root launchpad.
@@ -376,7 +398,14 @@ impl Render for WelcomeView {
         // Grouped for a clean two-row launchpad: agents (Claude/Codex) on top, shells +
         // WSL + SSH below (用户要的排版). Drilling into WSL shows a Back tile + the
         // distros in one wrapping row.
-        let row = || div().flex().flex_row().flex_wrap().justify_center().gap(px(11.)); // §16 .tiles gap 11
+        let row = || {
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .justify_center()
+                .gap(px(11.))
+        }; // §16 .tiles gap 11
         let tiles = if self.wsl_open {
             let mut v = vec![self.back_tile(cx)];
             for i in wsl_distros(&self.profiles) {
@@ -515,7 +544,13 @@ mod tests {
     #[test]
     fn launch_entries_collapses_wsl_and_appends_ssh() {
         let profiles = vec![
-            prof("pwsh", ProfileKind::Shell, None, None, Some("powershell.exe")),
+            prof(
+                "pwsh",
+                ProfileKind::Shell,
+                None,
+                None,
+                Some("powershell.exe"),
+            ),
             prof("Ubuntu", ProfileKind::Wsl, Some("Ubuntu"), None, None),
             prof("Debian", ProfileKind::Wsl, Some("Debian"), None, None),
             prof("box", ProfileKind::Ssh, None, Some("h"), None), // folded into placeholder
@@ -533,7 +568,13 @@ mod tests {
 
     #[test]
     fn launch_entries_without_wsl_still_appends_ssh() {
-        let profiles = vec![prof("pwsh", ProfileKind::Shell, None, None, Some("powershell.exe"))];
+        let profiles = vec![prof(
+            "pwsh",
+            ProfileKind::Shell,
+            None,
+            None,
+            Some("powershell.exe"),
+        )];
         let e = launch_entries(&profiles);
         assert_eq!(e.len(), 2); // pwsh + SSH placeholder, no WSL card
         assert!(matches!(e[0], LaunchEntry::Profile(0)));
@@ -543,7 +584,13 @@ mod tests {
     #[test]
     fn launch_entries_puts_agents_before_shells() {
         let profiles = vec![
-            prof("pwsh", ProfileKind::Shell, None, None, Some("powershell.exe")),
+            prof(
+                "pwsh",
+                ProfileKind::Shell,
+                None,
+                None,
+                Some("powershell.exe"),
+            ),
             prof("Claude", ProfileKind::Agent, None, None, Some("claude")),
             prof("Codex", ProfileKind::Agent, None, None, Some("codex")),
         ];

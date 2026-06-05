@@ -119,7 +119,11 @@ impl QuickTerminal {
     fn picker_rows(&self) -> Vec<Vec<PickerItem>> {
         if self.wsl_drill {
             // Just the distros — back is via the clickable "‹" header or Esc.
-            return vec![self.wsl_indices().into_iter().map(PickerItem::Launch).collect()];
+            return vec![self
+                .wsl_indices()
+                .into_iter()
+                .map(PickerItem::Launch)
+                .collect()];
         }
         let mut agents = Vec::new();
         let mut others = Vec::new();
@@ -213,7 +217,9 @@ impl QuickTerminal {
     /// WSL sub-picker, or no-op on the parked SSH placeholder.
     fn activate_sel(&mut self, cx: &mut Context<Self>) {
         let items = self.picker_items();
-        let Some(item) = items.get(self.picker_sel) else { return };
+        let Some(item) = items.get(self.picker_sel) else {
+            return;
+        };
         match *item {
             PickerItem::Launch(i) => self.launch_profile(i, cx),
             PickerItem::Pwsh => self.launch_spec(LaunchSpec::pwsh(), cx),
@@ -250,7 +256,8 @@ impl QuickTerminal {
         let config = self.config.clone();
         let term = cx.new(|cx| TerminalView::new(cx, config, spec));
         // Repaint when this session's agent usage changes (keeps the ring live).
-        cx.subscribe(&term, |_qt, _t, _ev: &UsageUpdated, cx| cx.notify()).detach();
+        cx.subscribe(&term, |_qt, _t, _ev: &UsageUpdated, cx| cx.notify())
+            .detach();
         // When the session's process exits, return to the launcher (guard against a
         // stale watcher from a session we've since replaced).
         cx.subscribe(&term, |this, emitter, _ev: &ProcessExited, cx| {
@@ -394,23 +401,27 @@ impl QuickTerminal {
         if !self.visible {
             return;
         }
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            let Some(work) = platform::work_area(h) else { return };
-            let scale = platform::scale_for(h);
-            let Ok((rect, rounded)) =
-                this.update(cx, |v, _| (v.shown_for(work, scale), v.term.is_none()))
-            else {
-                return;
-            };
-            platform::set_bounds(h, rect);
-            // Round the launcher card window; a running session fills edge-to-edge.
-            if rounded {
-                platform::set_round_region(h, rect.width, rect.height, R_PANEL * scale);
-            } else {
-                platform::clear_region(h);
-            }
-            let _ = this.update(cx, |_, cx| cx.notify());
-        })
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                let Some(work) = platform::work_area(h) else {
+                    return;
+                };
+                let scale = platform::scale_for(h);
+                let Ok((rect, rounded)) =
+                    this.update(cx, |v, _| (v.shown_for(work, scale), v.term.is_none()))
+                else {
+                    return;
+                };
+                platform::set_bounds(h, rect);
+                // Round the launcher card window; a running session fills edge-to-edge.
+                if rounded {
+                    platform::set_round_region(h, rect.width, rect.height, R_PANEL * scale);
+                } else {
+                    platform::clear_region(h);
+                }
+                let _ = this.update(cx, |_, cx| cx.notify());
+            },
+        )
         .detach();
     }
 
@@ -420,8 +431,8 @@ impl QuickTerminal {
     fn start_transition(&mut self, cx: &mut Context<Self>) {
         self.transition_at = Some(Instant::now());
         let total = Duration::from_millis(TRANSITION_MS);
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            loop {
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| loop {
                 let done = this
                     .update(cx, |v, cx| {
                         let done = v.transition_at.is_none_or(|t| t.elapsed() >= total);
@@ -435,9 +446,11 @@ impl QuickTerminal {
                 if done {
                     break;
                 }
-                cx.background_executor().timer(Duration::from_millis(16)).await;
-            }
-        })
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+            },
+        )
         .detach();
     }
 
@@ -453,53 +466,66 @@ impl QuickTerminal {
         self.topmost_done = true;
         let anim_ms = self.config.config.quick_terminal.animation_ms;
 
-        cx.spawn(async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
-            if first {
-                platform::make_topmost(h);
-            }
-            let Some(work) = platform::work_area(h) else { return };
-            let scale = platform::scale_for(h);
-            // State-aware endpoints: card-sized for a bare launcher, full for a session.
-            let Ok((hidden, shown, rounded)) = this.update(cx, |v, _| {
-                (v.hidden_for(work, scale), v.shown_for(work, scale), v.term.is_none())
-            }) else {
-                return;
-            };
-            if reveal {
-                platform::set_bounds(h, hidden);
-                // Round the launcher window so its corners match the card (size is
-                // constant across the slide, so set it once here). Square for a session.
-                if rounded {
-                    platform::set_round_region(h, hidden.width, hidden.height, R_PANEL * scale);
-                } else {
-                    platform::clear_region(h);
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if first {
+                    platform::make_topmost(h);
                 }
-                platform::show(h, true);
-                let _ = this.update(cx, |_, cx| cx.notify()); // render -> consume focus
-            }
-            let dur = Duration::from_millis(anim_ms);
-            let start = Instant::now();
-            loop {
-                if !this.update(cx, |v, _| v.anim_token == token).unwrap_or(false) {
+                let Some(work) = platform::work_area(h) else {
                     return;
-                }
-                let elapsed = start.elapsed();
-                let progress = if dur.is_zero() {
-                    1.0
-                } else {
-                    (elapsed.as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0)
                 };
-                let t = if reveal { progress } else { 1.0 - progress };
-                platform::set_bounds(h, lerp_rect(hidden, shown, ease_out_cubic(t)));
-                if dur.is_zero() || elapsed >= dur {
-                    if !reveal {
-                        platform::show(h, false);
-                    }
+                let scale = platform::scale_for(h);
+                // State-aware endpoints: card-sized for a bare launcher, full for a session.
+                let Ok((hidden, shown, rounded)) = this.update(cx, |v, _| {
+                    (
+                        v.hidden_for(work, scale),
+                        v.shown_for(work, scale),
+                        v.term.is_none(),
+                    )
+                }) else {
                     return;
+                };
+                if reveal {
+                    platform::set_bounds(h, hidden);
+                    // Round the launcher window so its corners match the card (size is
+                    // constant across the slide, so set it once here). Square for a session.
+                    if rounded {
+                        platform::set_round_region(h, hidden.width, hidden.height, R_PANEL * scale);
+                    } else {
+                        platform::clear_region(h);
+                    }
+                    platform::show(h, true);
+                    let _ = this.update(cx, |_, cx| cx.notify()); // render -> consume focus
                 }
-                cx.background_executor().timer(Duration::from_millis(16)).await;
-            }
-        })
+                let dur = Duration::from_millis(anim_ms);
+                let start = Instant::now();
+                loop {
+                    if !this
+                        .update(cx, |v, _| v.anim_token == token)
+                        .unwrap_or(false)
+                    {
+                        return;
+                    }
+                    let elapsed = start.elapsed();
+                    let progress = if dur.is_zero() {
+                        1.0
+                    } else {
+                        (elapsed.as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0)
+                    };
+                    let t = if reveal { progress } else { 1.0 - progress };
+                    platform::set_bounds(h, lerp_rect(hidden, shown, ease_out_cubic(t)));
+                    if dur.is_zero() || elapsed >= dur {
+                        if !reveal {
+                            platform::show(h, false);
+                        }
+                        return;
+                    }
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                }
+            },
+        )
         .detach();
         cx.notify();
     }
@@ -530,12 +556,21 @@ impl QuickTerminal {
                 tiles.push(self.launcher_tile(i, i == sel, c.name, c.sub, c.glyph, c.accent, cx));
             }
             row_divs.push(
-                div().flex().flex_row().flex_wrap().justify_center().gap(px(11.)).children(tiles),
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .justify_center()
+                    .gap(px(11.))
+                    .children(tiles),
             );
         }
 
-        let head =
-            if self.wsl_drill { "‹ 选择 WSL 发行版" } else { "起一个会话 — Quick Terminal" };
+        let head = if self.wsl_drill {
+            "‹ 选择 WSL 发行版"
+        } else {
+            "起一个会话 — Quick Terminal"
+        };
         let hint = if self.wsl_drill {
             "↑↓←→ 选择 · Enter 启动 · Esc 返回"
         } else {
@@ -556,7 +591,9 @@ impl QuickTerminal {
             .border_1()
             .border_color(rgba(RIM))
             .track_focus(&self.picker_focus)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_picker_key(ev, w, cx)))
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_picker_key(ev, w, cx)),
+            )
             // mockup .quick bg:#151622 → #0F1019(略带通透,无 token)
             .bg(linear_gradient(
                 180.,
@@ -637,11 +674,12 @@ impl QuickTerminal {
             .bg(rgba(INSET)) // .tile bg = g2(.04)
             .border_1()
             // .tile.sel: dynamic agent color border + bg; 否则 rim 边 + 动态 agent color hover 提亮
-            .when(is_sel, |d| d.border_color(cola(accent, 0.4)).bg(cola(accent, 0.12)))
+            .when(is_sel, |d| {
+                d.border_color(cola(accent, 0.4)).bg(cola(accent, 0.12))
+            })
             .when(!is_sel, |d| {
-                d.border_color(rgba(RIM)).hover(|s| {
-                    s.bg(cola(accent, 0.08)).border_color(cola(accent, 0.30))
-                })
+                d.border_color(rgba(RIM))
+                    .hover(|s| s.bg(cola(accent, 0.08)).border_color(cola(accent, 0.30)))
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -672,7 +710,10 @@ impl QuickTerminal {
             )
             .child(
                 // .td:11 / muted
-                div().text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(sub)),
+                div()
+                    .text_size(px(11.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from(sub)),
             )
     }
 }
@@ -709,11 +750,15 @@ impl Render for QuickTerminal {
             // Launcher → session cross-fade: a dark wash over the fresh terminal that
             // eases out, so the session develops in instead of snapping.
             if let Some(at) = self.transition_at {
-                let p = (at.elapsed().as_secs_f32() / (TRANSITION_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+                let p =
+                    (at.elapsed().as_secs_f32() / (TRANSITION_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                 let a = (1.0 - ease_out_cubic(p)) * 0.96;
                 if a > 0.004 {
                     root = root.child(
-                        div().absolute().size_full().bg(cola(theme.terminal.background, a)),
+                        div()
+                            .absolute()
+                            .size_full()
+                            .bg(cola(theme.terminal.background, a)),
                     );
                 }
             }

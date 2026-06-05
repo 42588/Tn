@@ -243,33 +243,74 @@ impl TerminalView {
             None => head,
         };
         let mut head = head.child(div().flex_1()); // .sp
-        // B4: SSH connection-state four-phase dot + label (mockup `.cstate .d`).
+        // B4/C3: SSH connection state as one polished info pill:
+        // `已连接 root@host:port 登录方案 密钥`.
         if let Some(state) = self.ssh_conn {
             use super::SshConnState::*;
-            let (color, label) = match state {
-                Connecting => (self.ui_accent, "连接中".to_string()),
-                // C3 success feedback: tag the method that authenticated.
-                Connected => {
-                    let method = match self.ssh_conn_method {
-                        Some(tn_pty::AuthKind::PublicKey) => " · 密钥",
-                        Some(tn_pty::AuthKind::Password) => " · 密码",
-                        Some(tn_pty::AuthKind::KeyboardInteractive) => " · 交互",
-                        None => "",
-                    };
-                    (self.palette.ansi[2], format!("已连接{method}")) // green
-                }
-                Reconnecting => (self.palette.ansi[3], "重连中".to_string()), // yellow
-                Disconnected => (self.palette.ansi[1], "已断开".to_string()), // red
+            let (color, status) = match state {
+                Connecting => (self.ui_accent, "连接中"),
+                Connected => (self.palette.ansi[2], "已连接"),
+                Reconnecting => (self.palette.ansi[3], "重连中"),
+                Disconnected => (self.palette.ansi[1], "已断开"),
+            };
+            let method = match self.ssh_conn_method {
+                Some(tn_pty::AuthKind::PublicKey) => "密钥",
+                Some(tn_pty::AuthKind::Password) => "密码",
+                Some(tn_pty::AuthKind::KeyboardInteractive) => "交互",
+                None => "检测中",
+            };
+            let target = if self.ssh_target.chars().count() > 34 {
+                let mut s: String = self.ssh_target.chars().take(33).collect();
+                s.push('…');
+                s
+            } else {
+                self.ssh_target.clone()
             };
             head = head.child(
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(5.))
+                    .gap(px(8.))
+                    .py(px(4.))
+                    .pl(px(9.))
+                    .pr(px(10.))
+                    .rounded_full()
+                    .bg(cola(color, 0.10))
+                    .border_1()
+                    .border_color(cola(color, 0.28))
                     .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(color)))
-                    .child(div().text_size(px(10.5)).text_color(col(color)).child(SharedString::from(label))),
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(700.))
+                            .text_color(col(color))
+                            .child(SharedString::from(status)),
+                    )
+                    .child(
+                        div()
+                            .font_family(UI_SANS)
+                            .text_size(px(11.))
+                            .font_weight(FontWeight(650.))
+                            .text_color(gpui::rgb(0xD7DDF6))
+                            .child(SharedString::from(target)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .font_weight(FontWeight(620.))
+                            .text_color(col(self.ui_muted))
+                            .child(SharedString::from("登录方案")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight(720.))
+                            .text_color(col(color))
+                            .child(SharedString::from(method)),
+                    ),
             );
+            return head;
         }
         head.child(
             // mockup .chip:10.5 · 560 · py2 px9 · radius999 · fg-dim · bg g3(.06)
@@ -296,9 +337,17 @@ impl TerminalView {
             .flex_none()
             .text_size(px(10.))
             .font_weight(FontWeight(680.))
-            .child(div().text_color(green).child(SharedString::from(plus.to_string()))); // .ad green
+            .child(
+                div()
+                    .text_color(green)
+                    .child(SharedString::from(plus.to_string())),
+            ); // .ad green
         if let Some(m) = minus {
-            pm = pm.child(div().text_color(red).child(SharedString::from(m.to_string()))); // .dl red
+            pm = pm.child(
+                div()
+                    .text_color(red)
+                    .child(SharedString::from(m.to_string())),
+            ); // .dl red
         }
         div()
             .flex()
@@ -373,15 +422,31 @@ impl TerminalView {
                         .flex_none()
                         .bg(col(self.agent_accent())),
                 )
-                .child(div().flex_1().child(SharedString::from(summary.to_string())));
+                .child(
+                    div()
+                        .flex_1()
+                        .child(SharedString::from(summary.to_string())),
+                );
             if let (Some(a), Some(d)) = (add, del) {
                 if a > 0 || d > 0 {
                     s = s.child(
                         div()
-                            .flex().flex_row().gap(px(5.)).flex_none()
-                            .text_size(px(10.5)).font_weight(FontWeight(680.))
-                            .child(div().text_color(green).child(SharedString::from(format!("+{a}"))))
-                            .child(div().text_color(red).child(SharedString::from(format!("−{d}")))),
+                            .flex()
+                            .flex_row()
+                            .gap(px(5.))
+                            .flex_none()
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight(680.))
+                            .child(
+                                div()
+                                    .text_color(green)
+                                    .child(SharedString::from(format!("+{a}"))),
+                            )
+                            .child(
+                                div()
+                                    .text_color(red)
+                                    .child(SharedString::from(format!("−{d}"))),
+                            ),
                     );
                 }
             }
@@ -392,18 +457,19 @@ impl TerminalView {
             // ── Loading: skeleton placeholders ──
             super::RailState::Loading => {
                 let status = build_status("正在分析改动…", None, None);
-                let skeleton = div()
-                    .px(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .children((0..3).map(|_| {
-                        div()
-                            .w_full()
-                            .h(px(32.))
-                            .rounded(px(R_CARD))
-                            .bg(rgba(INSET))
-                    }));
+                let skeleton =
+                    div()
+                        .px(px(12.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .children((0..3).map(|_| {
+                            div()
+                                .w_full()
+                                .h(px(32.))
+                                .rounded(px(R_CARD))
+                                .bg(rgba(INSET))
+                        }));
                 rail_shell(status, skeleton.into_any_element())
             }
 
@@ -417,28 +483,43 @@ impl TerminalView {
                     format!("{} 个文件改动", files.len())
                 };
                 let has_files = !files.is_empty();
-                let status = build_status(&summary, has_files.then_some(total_add), has_files.then_some(total_del));
+                let status = build_status(
+                    &summary,
+                    has_files.then_some(total_add),
+                    has_files.then_some(total_del),
+                );
 
                 if !has_files {
-                    return rail_shell(status, div()
-                        .text_size(px(10.5))
-                        .text_color(col(self.ui_muted))
-                        .pt(px(2.)).px(px(12.))
-                        .child(SharedString::from("agent 改动会实时显示在这里"))
-                        .into_any_element());
+                    return rail_shell(
+                        status,
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(col(self.ui_muted))
+                            .pt(px(2.))
+                            .px(px(12.))
+                            .child(SharedString::from("agent 改动会实时显示在这里"))
+                            .into_any_element(),
+                    );
                 }
 
                 let mut scrollable = div()
                     .id("arail-scrollable")
-                    .flex_1().min_h(px(0.)).flex().flex_col()
-                    .gap(px(11.)).pb(px(14.)).overflow_hidden();
+                    .flex_1()
+                    .min_h(px(0.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(11.))
+                    .pb(px(14.))
+                    .overflow_hidden();
                 scrollable.interactivity().base_style.overflow.y = Some(Overflow::Scroll);
 
                 scrollable = scrollable.child(
                     div()
                         .px(px(12.))
-                        .text_size(px(10.)).font_weight(FontWeight(680.))
-                        .text_color(col(self.ui_muted)).pt(px(2.))
+                        .text_size(px(10.))
+                        .font_weight(FontWeight(680.))
+                        .text_color(col(self.ui_muted))
+                        .pt(px(2.))
                         .child(SharedString::from("本次改动")),
                 );
 
@@ -485,17 +566,14 @@ impl TerminalView {
                 // ★ 外层 div 物理隔离：px(12) 左右安全区 + py(6) 上下舒展空间。
                 // flex_none() 禁止 scrollable 的 flex 容器挤压卡片高度，
                 // 否则上下光晕被压扁、发散空间不足。
-                scrollable = scrollable.child(
-                    div()
-                        .flex_none()
-                        .px(px(12.))
-                        .py(px(6.))
-                        .child(single_card),
-                );
+                scrollable =
+                    scrollable.child(div().flex_none().px(px(12.)).py(px(6.)).child(single_card));
 
                 scrollable = scrollable.child(
                     div()
-                        .text_size(px(10.)).text_color(gpui::rgb(0x474E72)).px(px(12.))
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(0x474E72))
+                        .px(px(12.))
                         .child(SharedString::from("点卡片 = 速览全 diff")),
                 );
 

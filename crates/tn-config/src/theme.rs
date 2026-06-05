@@ -67,11 +67,22 @@ impl Ansi16 {
     /// Palette entries in index order 0..16, as RGB tuples.
     pub fn as_rgb(&self) -> [(u8, u8, u8); 16] {
         [
-            self.black.rgb(), self.red.rgb(), self.green.rgb(), self.yellow.rgb(),
-            self.blue.rgb(), self.magenta.rgb(), self.cyan.rgb(), self.white.rgb(),
-            self.bright_black.rgb(), self.bright_red.rgb(), self.bright_green.rgb(),
-            self.bright_yellow.rgb(), self.bright_blue.rgb(), self.bright_magenta.rgb(),
-            self.bright_cyan.rgb(), self.bright_white.rgb(),
+            self.black.rgb(),
+            self.red.rgb(),
+            self.green.rgb(),
+            self.yellow.rgb(),
+            self.blue.rgb(),
+            self.magenta.rgb(),
+            self.cyan.rgb(),
+            self.white.rgb(),
+            self.bright_black.rgb(),
+            self.bright_red.rgb(),
+            self.bright_green.rgb(),
+            self.bright_yellow.rgb(),
+            self.bright_blue.rgb(),
+            self.bright_magenta.rgb(),
+            self.bright_cyan.rgb(),
+            self.bright_white.rgb(),
         ]
     }
 }
@@ -219,9 +230,22 @@ mod tests {
         let mut toml = String::from("name = \"Mini\"\n");
         toml.push_str("[ansi]\n");
         for k in [
-            "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
-            "bright_black", "bright_red", "bright_green", "bright_yellow", "bright_blue",
-            "bright_magenta", "bright_cyan", "bright_white",
+            "black",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+            "magenta",
+            "cyan",
+            "white",
+            "bright_black",
+            "bright_red",
+            "bright_green",
+            "bright_yellow",
+            "bright_blue",
+            "bright_magenta",
+            "bright_cyan",
+            "bright_white",
         ] {
             toml.push_str(&format!("{k} = \"#000000\"\n"));
         }

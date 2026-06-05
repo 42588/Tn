@@ -35,7 +35,11 @@ impl Pricing {
 /// widened to 1M when the id signals the long-context variant (e.g. `…-1m`).
 pub fn pricing_for(model: &str) -> Pricing {
     let id = model.to_ascii_lowercase();
-    let context_window = if id.contains("1m") { 1_000_000 } else { 200_000 };
+    let context_window = if id.contains("1m") {
+        1_000_000
+    } else {
+        200_000
+    };
     let (input, output, cache_write, cache_read) = if id.contains("opus") {
         (15.0, 75.0, 18.75, 1.50)
     } else if id.contains("haiku") {
@@ -67,14 +71,17 @@ mod tests {
         assert_eq!(pricing_for("claude-sonnet-4-6").output, 15.0);
         assert_eq!(pricing_for("claude-haiku-4-5").input, 1.0);
         assert_eq!(pricing_for("claude-opus-4-7").context_window, 200_000);
-        assert_eq!(pricing_for("claude-sonnet-4-6-1m").context_window, 1_000_000);
+        assert_eq!(
+            pricing_for("claude-sonnet-4-6-1m").context_window,
+            1_000_000
+        );
         assert_eq!(pricing_for("totally-unknown").input, 0.0);
     }
 
     #[test]
     fn cost_math() {
         let p = pricing_for("claude-sonnet-4-6"); // 3 / 15 / 3.75 / 0.30 per MTok
-        // 1M input + 1M output = $3 + $15 = $18.
+                                                  // 1M input + 1M output = $3 + $15 = $18.
         assert!((p.cost(1_000_000, 1_000_000, 0, 0) - 18.0).abs() < 1e-9);
     }
 }

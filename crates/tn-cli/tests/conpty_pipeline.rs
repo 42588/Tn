@@ -21,7 +21,9 @@ use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec};
 fn conpty_echo_reaches_the_grid() {
     const MARKER: &str = "HELLO_TN_PIPELINE";
     let size = GridSize::new(24, 80);
-    let spec = SpawnSpec::program("cmd.exe").arg("/c").arg(format!("echo {MARKER}"));
+    let spec = SpawnSpec::program("cmd.exe")
+        .arg("/c")
+        .arg(format!("echo {MARKER}"));
     let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))
         .expect("spawn cmd.exe in a ConPTY");
     let mut reader = pty.take_reader().expect("pty reader");
@@ -71,5 +73,8 @@ fn conpty_echo_reaches_the_grid() {
     thread::sleep(Duration::from_millis(300));
 
     let text = term.lock().unwrap().snapshot().to_text();
-    assert!(text.contains(MARKER), "marker {MARKER:?} not found in grid:\n{text}");
+    assert!(
+        text.contains(MARKER),
+        "marker {MARKER:?} not found in grid:\n{text}"
+    );
 }

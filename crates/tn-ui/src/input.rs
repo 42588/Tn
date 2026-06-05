@@ -254,107 +254,254 @@ mod tests {
 
     #[test]
     fn arrows_csi_when_app_cursor_off() {
-        assert_eq!(encode_key(&ks("up", false, false, false, None), off()), Some(b"\x1b[A".to_vec()));
-        assert_eq!(encode_key(&ks("left", false, false, false, None), off()), Some(b"\x1b[D".to_vec()));
+        assert_eq!(
+            encode_key(&ks("up", false, false, false, None), off()),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("left", false, false, false, None), off()),
+            Some(b"\x1b[D".to_vec())
+        );
     }
 
     #[test]
     fn arrows_ss3_when_app_cursor_on() {
-        let app = InputMode { app_cursor: true, ..off() };
-        assert_eq!(encode_key(&ks("up", false, false, false, None), app), Some(b"\x1bOA".to_vec()));
-        assert_eq!(encode_key(&ks("end", false, false, false, None), app), Some(b"\x1bOF".to_vec()));
+        let app = InputMode {
+            app_cursor: true,
+            ..off()
+        };
+        assert_eq!(
+            encode_key(&ks("up", false, false, false, None), app),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("end", false, false, false, None), app),
+            Some(b"\x1bOF".to_vec())
+        );
     }
 
     #[test]
     fn modified_arrow_uses_csi_mod_param() {
         // Ctrl+Right → mod bits 4 → param 5. App-cursor must not matter.
-        let app = InputMode { app_cursor: true, ..off() };
-        assert_eq!(encode_key(&ks("right", true, false, false, None), app), Some(b"\x1b[1;5C".to_vec()));
+        let app = InputMode {
+            app_cursor: true,
+            ..off()
+        };
+        assert_eq!(
+            encode_key(&ks("right", true, false, false, None), app),
+            Some(b"\x1b[1;5C".to_vec())
+        );
         // Alt+Up folds into the mod param (2 → 3), no ESC prefix.
-        assert_eq!(encode_key(&ks("up", false, true, false, None), off()), Some(b"\x1b[1;3A".to_vec()));
+        assert_eq!(
+            encode_key(&ks("up", false, true, false, None), off()),
+            Some(b"\x1b[1;3A".to_vec())
+        );
         // Shift+Down → param 2.
-        assert_eq!(encode_key(&ks("down", false, false, true, None), off()), Some(b"\x1b[1;2B".to_vec()));
+        assert_eq!(
+            encode_key(&ks("down", false, false, true, None), off()),
+            Some(b"\x1b[1;2B".to_vec())
+        );
     }
 
     #[test]
     fn function_keys() {
-        assert_eq!(encode_key(&ks("f1", false, false, false, None), off()), Some(b"\x1bOP".to_vec()));
-        assert_eq!(encode_key(&ks("f4", false, false, true, None), off()), Some(b"\x1b[1;2S".to_vec()));
-        assert_eq!(encode_key(&ks("f5", false, false, false, None), off()), Some(b"\x1b[15~".to_vec()));
-        assert_eq!(encode_key(&ks("f6", false, false, false, None), off()), Some(b"\x1b[17~".to_vec()));
-        assert_eq!(encode_key(&ks("f12", false, false, false, None), off()), Some(b"\x1b[24~".to_vec()));
+        assert_eq!(
+            encode_key(&ks("f1", false, false, false, None), off()),
+            Some(b"\x1bOP".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("f4", false, false, true, None), off()),
+            Some(b"\x1b[1;2S".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("f5", false, false, false, None), off()),
+            Some(b"\x1b[15~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("f6", false, false, false, None), off()),
+            Some(b"\x1b[17~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("f12", false, false, false, None), off()),
+            Some(b"\x1b[24~".to_vec())
+        );
         // Modified DECFNK: Shift+F5 → ESC[15;2~.
-        assert_eq!(encode_key(&ks("f5", false, false, true, None), off()), Some(b"\x1b[15;2~".to_vec()));
+        assert_eq!(
+            encode_key(&ks("f5", false, false, true, None), off()),
+            Some(b"\x1b[15;2~".to_vec())
+        );
     }
 
     #[test]
     fn editing_keys() {
-        assert_eq!(encode_key(&ks("insert", false, false, false, None), off()), Some(b"\x1b[2~".to_vec()));
-        assert_eq!(encode_key(&ks("delete", false, false, false, None), off()), Some(b"\x1b[3~".to_vec()));
-        assert_eq!(encode_key(&ks("pageup", false, false, false, None), off()), Some(b"\x1b[5~".to_vec()));
-        assert_eq!(encode_key(&ks("pagedown", true, false, false, None), off()), Some(b"\x1b[6;5~".to_vec()));
+        assert_eq!(
+            encode_key(&ks("insert", false, false, false, None), off()),
+            Some(b"\x1b[2~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("delete", false, false, false, None), off()),
+            Some(b"\x1b[3~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("pageup", false, false, false, None), off()),
+            Some(b"\x1b[5~".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("pagedown", true, false, false, None), off()),
+            Some(b"\x1b[6;5~".to_vec())
+        );
     }
 
     #[test]
     fn backspace_and_tab() {
-        assert_eq!(encode_key(&ks("backspace", false, false, false, None), off()), Some(vec![0x7f]));
-        assert_eq!(encode_key(&ks("backspace", true, false, false, None), off()), Some(vec![0x08]));
-        assert_eq!(encode_key(&ks("backspace", false, true, false, None), off()), Some(vec![ESC, 0x7f]));
-        assert_eq!(encode_key(&ks("tab", false, false, false, None), off()), Some(vec![b'\t']));
-        assert_eq!(encode_key(&ks("tab", false, false, true, None), off()), Some(b"\x1b[Z".to_vec()));
-        assert_eq!(encode_key(&ks("tab", true, false, false, None), off()), None); // Ctrl+Tab reserved
+        assert_eq!(
+            encode_key(&ks("backspace", false, false, false, None), off()),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            encode_key(&ks("backspace", true, false, false, None), off()),
+            Some(vec![0x08])
+        );
+        assert_eq!(
+            encode_key(&ks("backspace", false, true, false, None), off()),
+            Some(vec![ESC, 0x7f])
+        );
+        assert_eq!(
+            encode_key(&ks("tab", false, false, false, None), off()),
+            Some(vec![b'\t'])
+        );
+        assert_eq!(
+            encode_key(&ks("tab", false, false, true, None), off()),
+            Some(b"\x1b[Z".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("tab", true, false, false, None), off()),
+            None
+        ); // Ctrl+Tab reserved
     }
 
     #[test]
     fn enter_modes() {
-        assert_eq!(encode_key(&ks("enter", false, false, false, None), off()), Some(vec![b'\r']));
-        let lnm = InputMode { line_feed_newline: true, ..off() };
-        assert_eq!(encode_key(&ks("enter", false, false, false, None), lnm), Some(b"\r\n".to_vec()));
-        assert_eq!(encode_key(&ks("enter", true, false, false, None), off()), Some(vec![b'\n']));
-        assert_eq!(encode_key(&ks("enter", false, true, false, None), off()), Some(vec![ESC, b'\r']));
+        assert_eq!(
+            encode_key(&ks("enter", false, false, false, None), off()),
+            Some(vec![b'\r'])
+        );
+        let lnm = InputMode {
+            line_feed_newline: true,
+            ..off()
+        };
+        assert_eq!(
+            encode_key(&ks("enter", false, false, false, None), lnm),
+            Some(b"\r\n".to_vec())
+        );
+        assert_eq!(
+            encode_key(&ks("enter", true, false, false, None), off()),
+            Some(vec![b'\n'])
+        );
+        assert_eq!(
+            encode_key(&ks("enter", false, true, false, None), off()),
+            Some(vec![ESC, b'\r'])
+        );
     }
 
     #[test]
     fn ctrl_chars() {
-        assert_eq!(encode_key(&ks("c", true, false, false, None), off()), Some(vec![0x03])); // Ctrl+C
-        assert_eq!(encode_key(&ks("a", true, false, false, None), off()), Some(vec![0x01]));
-        assert_eq!(encode_key(&ks("[", true, false, false, None), off()), Some(vec![0x1b])); // Ctrl+[
-        assert_eq!(encode_key(&ks("space", true, false, false, None), off()), Some(vec![0x00]));
-        assert_eq!(encode_key(&ks("2", true, false, false, None), off()), Some(vec![0x00]));
-        assert_eq!(encode_key(&ks("8", true, false, false, None), off()), Some(vec![0x7f]));
+        assert_eq!(
+            encode_key(&ks("c", true, false, false, None), off()),
+            Some(vec![0x03])
+        ); // Ctrl+C
+        assert_eq!(
+            encode_key(&ks("a", true, false, false, None), off()),
+            Some(vec![0x01])
+        );
+        assert_eq!(
+            encode_key(&ks("[", true, false, false, None), off()),
+            Some(vec![0x1b])
+        ); // Ctrl+[
+        assert_eq!(
+            encode_key(&ks("space", true, false, false, None), off()),
+            Some(vec![0x00])
+        );
+        assert_eq!(
+            encode_key(&ks("2", true, false, false, None), off()),
+            Some(vec![0x00])
+        );
+        assert_eq!(
+            encode_key(&ks("8", true, false, false, None), off()),
+            Some(vec![0x7f])
+        );
         // Alt+Ctrl+C → ESC then 0x03.
-        assert_eq!(encode_key(&ks("c", true, true, false, None), off()), Some(vec![ESC, 0x03]));
+        assert_eq!(
+            encode_key(&ks("c", true, true, false, None), off()),
+            Some(vec![ESC, 0x03])
+        );
     }
 
     #[test]
     fn printable_and_alt_prefix() {
-        assert_eq!(encode_key(&ks("a", false, false, false, Some("a")), off()), Some(b"a".to_vec()));
+        assert_eq!(
+            encode_key(&ks("a", false, false, false, Some("a")), off()),
+            Some(b"a".to_vec())
+        );
         // Shift resolves into key_char.
-        assert_eq!(encode_key(&ks("a", false, false, true, Some("A")), off()), Some(b"A".to_vec()));
+        assert_eq!(
+            encode_key(&ks("a", false, false, true, Some("A")), off()),
+            Some(b"A".to_vec())
+        );
         // Alt+letter → ESC prefix.
-        assert_eq!(encode_key(&ks("b", false, true, false, Some("b")), off()), Some(vec![ESC, b'b']));
+        assert_eq!(
+            encode_key(&ks("b", false, true, false, Some("b")), off()),
+            Some(vec![ESC, b'b'])
+        );
         // UTF-8 key_char passes through.
-        assert_eq!(encode_key(&ks("s", false, true, false, Some("ß")), off()), {
-            let mut v = vec![ESC];
-            v.extend_from_slice("ß".as_bytes());
-            Some(v)
-        });
+        assert_eq!(
+            encode_key(&ks("s", false, true, false, Some("ß")), off()),
+            {
+                let mut v = vec![ESC];
+                v.extend_from_slice("ß".as_bytes());
+                Some(v)
+            }
+        );
     }
 
     #[test]
     fn reserved_and_unmapped() {
         assert_eq!(encode_key(&ks("t", true, false, true, None), off()), None); // Ctrl+Shift+T
-        assert_eq!(encode_key(&ks("capslock", false, false, false, None), off()), None); // no mapping
-        // A bare single-char key still falls back to the literal byte.
-        assert_eq!(encode_key(&ks("z", false, false, false, None), off()), Some(b"z".to_vec()));
+        assert_eq!(
+            encode_key(&ks("capslock", false, false, false, None), off()),
+            None
+        ); // no mapping
+           // A bare single-char key still falls back to the literal byte.
+        assert_eq!(
+            encode_key(&ks("z", false, false, false, None), off()),
+            Some(b"z".to_vec())
+        );
     }
 
     /// Every key Tn knows about, for the no-panic sweep below.
     fn sweep_keys() -> Vec<String> {
         let mut keys: Vec<String> = [
-            "up", "down", "left", "right", "home", "end", "insert", "delete", "pageup",
-            "pagedown", "backspace", "tab", "enter", "escape", "space", // handled specials
-            "capslock", "menu", "", "f0", "scroll-lock", "weird-key", // unhandled / edge
+            "up",
+            "down",
+            "left",
+            "right",
+            "home",
+            "end",
+            "insert",
+            "delete",
+            "pageup",
+            "pagedown",
+            "backspace",
+            "tab",
+            "enter",
+            "escape",
+            "space", // handled specials
+            "capslock",
+            "menu",
+            "",
+            "f0",
+            "scroll-lock",
+            "weird-key", // unhandled / edge
         ]
         .into_iter()
         .map(String::from)
@@ -376,8 +523,14 @@ mod tests {
         // swallow the keystroke. Guards the many branches without a proptest dep.
         let modes = [
             InputMode::default(),
-            InputMode { app_cursor: true, ..InputMode::default() },
-            InputMode { line_feed_newline: true, ..InputMode::default() },
+            InputMode {
+                app_cursor: true,
+                ..InputMode::default()
+            },
+            InputMode {
+                line_feed_newline: true,
+                ..InputMode::default()
+            },
             InputMode {
                 app_cursor: true,
                 line_feed_newline: true,
@@ -393,7 +546,11 @@ mod tests {
                 for alt in [false, true] {
                     for shift in [false, true] {
                         // Mirror real input: a printable single char carries key_char.
-                        let kc = if single && !control { Some(key.as_str()) } else { None };
+                        let kc = if single && !control {
+                            Some(key.as_str())
+                        } else {
+                            None
+                        };
                         let k = ks(&key, control, alt, shift, kc);
                         for mode in modes {
                             if let Some(bytes) = encode_key(&k, mode) {
@@ -422,7 +579,10 @@ mod tests {
             );
             let mut k = ks(key, false, false, false, Some(key));
             k.modifiers.platform = true;
-            assert!(encode_key(&k, off()).is_none(), "Win+{key} is not terminal input");
+            assert!(
+                encode_key(&k, off()).is_none(),
+                "Win+{key} is not terminal input"
+            );
         }
     }
 }

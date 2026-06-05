@@ -22,7 +22,8 @@ pub use codex::{
 };
 pub use detect::{
     agent_kind_for_command, detect_subscription, parse_session, resolve_session,
-    resolve_session_for_pane, session_mtimes, update_session, usage_for_cwd as usage_for_cwd_any, SessionRef,
+    resolve_session_for_pane, session_mtimes, update_session, usage_for_cwd as usage_for_cwd_any,
+    SessionRef,
 };
 pub use pricing::{pricing_for, Pricing};
 

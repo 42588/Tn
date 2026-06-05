@@ -79,8 +79,14 @@ mod tests {
 
     #[test]
     fn parses_hex_with_and_without_hash() {
-        assert_eq!(Color::from_hex("#7AA2F7").unwrap(), Color::new(0x7A, 0xA2, 0xF7));
-        assert_eq!(Color::from_hex("7aa2f7").unwrap(), Color::new(0x7A, 0xA2, 0xF7));
+        assert_eq!(
+            Color::from_hex("#7AA2F7").unwrap(),
+            Color::new(0x7A, 0xA2, 0xF7)
+        );
+        assert_eq!(
+            Color::from_hex("7aa2f7").unwrap(),
+            Color::new(0x7A, 0xA2, 0xF7)
+        );
     }
 
     #[test]

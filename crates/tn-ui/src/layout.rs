@@ -115,7 +115,9 @@ pub struct Layouts {
 
 impl Default for Layouts {
     fn default() -> Self {
-        Self { slots: (0..SLOTS).map(|_| None).collect() }
+        Self {
+            slots: (0..SLOTS).map(|_| None).collect(),
+        }
     }
 }
 
@@ -179,12 +181,30 @@ mod tests {
         let tree = LayoutNode::Split {
             row: true,
             kids: vec![
-                LayoutNode::Pane(LayoutPane { program: "pwsh".into(), args: vec![], integrate_pwsh: true, shell_integration: None, agent: None }),
+                LayoutNode::Pane(LayoutPane {
+                    program: "pwsh".into(),
+                    args: vec![],
+                    integrate_pwsh: true,
+                    shell_integration: None,
+                    agent: None,
+                }),
                 LayoutNode::Split {
                     row: false,
                     kids: vec![
-                        LayoutNode::Pane(LayoutPane { program: "a".into(), args: vec![], integrate_pwsh: false, shell_integration: None, agent: Some("codex".into()) }),
-                        LayoutNode::Pane(LayoutPane { program: "b".into(), args: vec![], integrate_pwsh: false, shell_integration: None, agent: None }),
+                        LayoutNode::Pane(LayoutPane {
+                            program: "a".into(),
+                            args: vec![],
+                            integrate_pwsh: false,
+                            shell_integration: None,
+                            agent: Some("codex".into()),
+                        }),
+                        LayoutNode::Pane(LayoutPane {
+                            program: "b".into(),
+                            args: vec![],
+                            integrate_pwsh: false,
+                            shell_integration: None,
+                            agent: None,
+                        }),
                     ],
                     weights: vec![1.0, 1.0],
                 },

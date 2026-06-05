@@ -66,7 +66,11 @@ impl BlockBar {
         };
         let b: &Block = chosen?;
         Some(Self {
-            command: b.command.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+            command: b
+                .command
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             cwd: b.cwd.as_ref().map(|s| s.to_string()),
             state: b.state,
             exit: b.exit,
@@ -209,7 +213,11 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     }
     row = row.child(exit_chip(data, pal));
     if let Some(cwd) = &data.cwd {
-        row = row.child(div().text_color(pal.muted).child(SharedString::from(short_path(cwd, 22))));
+        row = row.child(
+            div()
+                .text_color(pal.muted)
+                .child(SharedString::from(short_path(cwd, 22))),
+        );
     }
     row
 }

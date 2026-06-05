@@ -51,7 +51,9 @@ impl Default for ShellParser {
 impl ShellParser {
     /// A fresh parser with no buffered escape-sequence state.
     pub fn new() -> Self {
-        Self { parser: Parser::new() }
+        Self {
+            parser: Parser::new(),
+        }
     }
 
     /// Feed PTY bytes; returns the shell-integration events found within them.
@@ -305,6 +307,9 @@ mod tests {
         // The parser is stateful: a sequence split across two feeds still parses.
         let mut p = ShellParser::new();
         assert_eq!(p.advance(b"\x1b]133;"), vec![]);
-        assert_eq!(p.advance(b"D;42\x07"), vec![BlockEvent::CommandFinished { exit: Some(42) }]);
+        assert_eq!(
+            p.advance(b"D;42\x07"),
+            vec![BlockEvent::CommandFinished { exit: Some(42) }]
+        );
     }
 }

@@ -86,7 +86,10 @@ fn init_logging() -> Option<tracing_appender::non_blocking::WorkerGuard> {
         Some(dir) if std::fs::create_dir_all(&dir).is_ok() => {
             let appender = tracing_appender::rolling::never(&dir, "tn.log");
             let (nb, guard) = tracing_appender::non_blocking(appender);
-            (Some(fmt::layer().with_ansi(false).with_writer(nb)), Some(guard))
+            (
+                Some(fmt::layer().with_ansi(false).with_writer(nb)),
+                Some(guard),
+            )
         }
         _ => (None, None),
     };

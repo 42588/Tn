@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use tn_core::{GridSize, Terminal, TermEvent};
+use tn_core::{GridSize, TermEvent, Terminal};
 use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec};
 
 const MARKER: &str = "HELLO_TN_MARKER";
@@ -50,7 +50,9 @@ fn main() -> anyhow::Result<()> {
         }
         s
     } else {
-        SpawnSpec::program("cmd.exe").arg("/c").arg(format!("echo {MARKER}"))
+        SpawnSpec::program("cmd.exe")
+            .arg("/c")
+            .arg(format!("echo {MARKER}"))
     };
 
     let mut pty = LocalPty::spawn(&spec, PtySize::new(size.rows as u16, size.cols as u16))?;
@@ -213,7 +215,11 @@ fn resize_experiment() -> anyhow::Result<()> {
         let missing: Vec<u32> = (1..=40)
             .filter(|n| !seen.contains(&format!("LINE_{n}")))
             .collect();
-        println!("[{label}] {}/40 lines survive; missing = {:?}", present.len(), missing);
+        println!(
+            "[{label}] {}/40 lines survive; missing = {:?}",
+            present.len(),
+            missing
+        );
     };
 
     // `TN_RESIZE_EXP=locked` exercises the row-lock fix: alacritty resizes
@@ -230,21 +236,22 @@ fn resize_experiment() -> anyhow::Result<()> {
     let locked = mode == "locked";
     let topgrow = mode == "topgrow";
     let mut pty_hwm = start.rows as u16;
-    let resize = |term: &Arc<Mutex<Terminal>>, pty: &mut LocalPty, rows: u16, cols: u16, hwm: &mut u16| {
-        let size = GridSize::new(rows as usize, cols as usize);
-        if topgrow {
-            term.lock().unwrap().resize_conpty(size);
-        } else {
-            term.lock().unwrap().resize(size);
-        }
-        let pty_rows = if locked {
-            *hwm = (*hwm).max(rows);
-            *hwm
-        } else {
-            rows
+    let resize =
+        |term: &Arc<Mutex<Terminal>>, pty: &mut LocalPty, rows: u16, cols: u16, hwm: &mut u16| {
+            let size = GridSize::new(rows as usize, cols as usize);
+            if topgrow {
+                term.lock().unwrap().resize_conpty(size);
+            } else {
+                term.lock().unwrap().resize(size);
+            }
+            let pty_rows = if locked {
+                *hwm = (*hwm).max(rows);
+                *hwm
+            } else {
+                rows
+            };
+            let _ = pty.resize(PtySize::new(pty_rows, cols));
         };
-        let _ = pty.resize(PtySize::new(pty_rows, cols));
-    };
 
     println!(
         "strategy: {}",
@@ -280,17 +287,28 @@ fn resize_experiment() -> anyhow::Result<()> {
 /// a tall ConPTY + fancy prompt pushes content down. Env: `TN_PTY_ROWS` (ConPTY,
 /// default 120), `TN_GRID_ROWS` (alacritty, default 40).
 fn prompt_layout_probe() -> anyhow::Result<()> {
-    let pty_rows: u16 = std::env::var("TN_PTY_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(120);
-    let grid_rows: usize =
-        std::env::var("TN_GRID_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(40);
+    let pty_rows: u16 = std::env::var("TN_PTY_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    let grid_rows: usize = std::env::var("TN_GRID_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40);
     let cols = 90u16;
     // Mimic the real app: spawn at the initial ROWS (34), then the first render
     // resizes ConPTY to the row-lock (120) + alacritty to the pane height. That
     // 34->120 resize is what oh-my-posh/PSReadLine react to. `TN_SPAWN_ROWS`=0
     // skips it (spawn straight at the final size).
-    let spawn_rows: u16 =
-        std::env::var("TN_SPAWN_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(34);
-    let initial = if spawn_rows == 0 { pty_rows } else { spawn_rows };
+    let spawn_rows: u16 = std::env::var("TN_SPAWN_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(34);
+    let initial = if spawn_rows == 0 {
+        pty_rows
+    } else {
+        spawn_rows
+    };
     // `TN_PTY_NOGROW=1` = the FIX: spawn ConPTY straight at the lock height
     // (`pty_rows`) and never grow its rows — only alacritty resizes. The buggy
     // path (default) grows ConPTY `initial`->`pty_rows` on the resize step.
@@ -311,7 +329,10 @@ fn prompt_layout_probe() -> anyhow::Result<()> {
     let mut reader = pty.take_reader()?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.writer()?));
     // alacritty grid starts at the spawn rows, then (below) resizes to grid_rows.
-    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(initial as usize, cols as usize))));
+    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(
+        initial as usize,
+        cols as usize,
+    ))));
     let reader_term = Arc::clone(&term);
     let reader_writer = Arc::clone(&writer);
     thread::spawn(move || {
@@ -354,10 +375,12 @@ fn prompt_layout_probe() -> anyhow::Result<()> {
     };
 
     thread::sleep(Duration::from_millis(2000)); // profile + prompt load at spawn size
-    // First-render resize: alacritty -> grid_rows. ConPTY grows to the lock only
-    // in the buggy path; the fix (`nogrow`) leaves ConPTY at its spawn height.
+                                                // First-render resize: alacritty -> grid_rows. ConPTY grows to the lock only
+                                                // in the buggy path; the fix (`nogrow`) leaves ConPTY at its spawn height.
     if spawn_rows != 0 {
-        term.lock().unwrap().resize(GridSize::new(grid_rows, cols as usize));
+        term.lock()
+            .unwrap()
+            .resize(GridSize::new(grid_rows, cols as usize));
         if !nogrow {
             let _ = pty.resize(PtySize::new(pty_rows, cols));
         }
@@ -389,14 +412,22 @@ fn prompt_layout_probe() -> anyhow::Result<()> {
 /// pwsh, shrink ONLY alacritty (ConPTY stays tall), run a 15-line command, and
 /// dump the visible grid for inspection.
 fn resize_interactive_probe() -> anyhow::Result<()> {
-    let pty_rows: u16 = std::env::var("TN_PTY_ROWS").ok().and_then(|v| v.parse().ok()).unwrap_or(24);
+    let pty_rows: u16 = std::env::var("TN_PTY_ROWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(24);
     let cols = 80u16;
-    let spec = SpawnSpec::program("powershell.exe").arg("-NoLogo").arg("-NoProfile");
+    let spec = SpawnSpec::program("powershell.exe")
+        .arg("-NoLogo")
+        .arg("-NoProfile");
     let mut pty = LocalPty::spawn(&spec, PtySize::new(pty_rows, cols))?;
     let mut reader = pty.take_reader()?;
     let writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(pty.writer()?));
     // alacritty starts matched, then we shrink ONLY it to 12 (ConPTY stays 24).
-    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(pty_rows as usize, cols as usize))));
+    let term = Arc::new(Mutex::new(Terminal::new(GridSize::new(
+        pty_rows as usize,
+        cols as usize,
+    ))));
     let reader_term = Arc::clone(&term);
     let reader_writer = Arc::clone(&writer);
     thread::spawn(move || {
@@ -431,7 +462,10 @@ fn resize_interactive_probe() -> anyhow::Result<()> {
     };
     let dump = |label: &str| {
         let snap = term.lock().unwrap().snapshot();
-        println!("\n----- visible grid after {label} ({}x{}) -----", snap.rows, snap.cols);
+        println!(
+            "\n----- visible grid after {label} ({}x{}) -----",
+            snap.rows, snap.cols
+        );
         for (i, line) in snap.rows_text().iter().enumerate() {
             println!("{i:>2}|{line}");
         }
@@ -441,7 +475,9 @@ fn resize_interactive_probe() -> anyhow::Result<()> {
     thread::sleep(Duration::from_millis(1800)); // initial prompt
 
     // Enter the row-locked-shrunk state: alacritty 12 rows, ConPTY still 24.
-    term.lock().unwrap().resize(GridSize::new(12, cols as usize));
+    term.lock()
+        .unwrap()
+        .resize(GridSize::new(12, cols as usize));
     thread::sleep(Duration::from_millis(300));
 
     // A 15-line burst — more than alacritty's 12 rows but fewer than ConPTY's 24,

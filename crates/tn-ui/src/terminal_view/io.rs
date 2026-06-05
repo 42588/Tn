@@ -25,8 +25,8 @@ use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
 use super::{
-    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS,
-    CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
+    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
+    CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
 impl TerminalView {
@@ -87,9 +87,7 @@ impl TerminalView {
                                         // A hosted agent emits this sentinel title
                                         // once it exits → flag it instead of
                                         // showing it as the window title.
-                                        TermEvent::Title(s)
-                                            if s == super::AGENT_EXIT_SENTINEL =>
-                                        {
+                                        TermEvent::Title(s) if s == super::AGENT_EXIT_SENTINEL => {
                                             agent_exited.store(true, Ordering::Relaxed);
                                         }
                                         TermEvent::Title(s) => *title.lock().unwrap() = Some(s),
@@ -104,7 +102,11 @@ impl TerminalView {
                                 // The cursor anchor is only used when this batch
                                 // produced block events — the common case is none,
                                 // so skip the extra grid borrow (待优化清单 §2.4).
-                                if events.is_empty() { 0 } else { t.cursor_abs_line() }
+                                if events.is_empty() {
+                                    0
+                                } else {
+                                    t.cursor_abs_line()
+                                }
                             }))
                             // `t` drops here, normally, even on the Err path.
                         };
@@ -387,7 +389,8 @@ impl TerminalView {
                         let _ = tx.send(tn_ai::session_mtimes(kind));
                     });
                     rx.await.unwrap_or_default()
-                }).await,
+                })
+                .await,
             );
             let mut pinned: Option<PathBuf> = None; // this pane's session, once found
             let mut last_mtime: Option<SystemTime> = None;
@@ -414,17 +417,26 @@ impl TerminalView {
                                 let path = match pinned2 {
                                     Some(p) => p,
                                     None => {
-                                        tn_ai::resolve_session_for_pane(kind, launched_at, &baseline2)?.path
+                                        tn_ai::resolve_session_for_pane(
+                                            kind,
+                                            launched_at,
+                                            &baseline2,
+                                        )?
+                                        .path
                                     }
                                 };
                                 let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
                                 if prev == Some(mtime) {
-                                    return Some((path, mtime, None, prev_offset)); // pinned, unchanged
+                                    return Some((path, mtime, None, prev_offset));
+                                    // pinned, unchanged
                                 }
                                 let mut f = std::fs::File::open(&path).ok()?;
                                 let len = f.metadata().ok()?.len();
                                 use std::io::{Read, Seek, SeekFrom};
-                                let (next_offset, usage) = if prev_offset > 0 && prev_offset <= len && prev_usage_clone.is_some() {
+                                let (next_offset, usage) = if prev_offset > 0
+                                    && prev_offset <= len
+                                    && prev_usage_clone.is_some()
+                                {
                                     f.seek(SeekFrom::Start(prev_offset)).ok()?;
                                     let mut delta = String::new();
                                     f.read_to_string(&mut delta).ok()?;
@@ -432,7 +444,11 @@ impl TerminalView {
                                     let valid_delta = &delta[..valid_bytes];
                                     let new_offset = prev_offset + valid_bytes as u64;
                                     let new_usage = if valid_bytes > 0 {
-                                        tn_ai::update_session(kind, valid_delta, prev_usage_clone.unwrap())
+                                        tn_ai::update_session(
+                                            kind,
+                                            valid_delta,
+                                            prev_usage_clone.unwrap(),
+                                        )
                                     } else {
                                         prev_usage_clone.unwrap()
                                     };
@@ -498,17 +514,19 @@ impl TerminalView {
         }
         // notify callback (own thread) → unbounded channel → debounce task.
         let (tx, mut rx) = mpsc::unbounded::<()>();
-        let mut watcher =
-            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                if let Ok(ev) = res {
-                    if ev.paths.iter().any(|p| crate::gitutil::is_noise_path(p)) {
-                        return;
-                    }
-                    let _ = tx.unbounded_send(());
+        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res {
+                if ev.paths.iter().any(|p| crate::gitutil::is_noise_path(p)) {
+                    return;
                 }
-            })
-            .ok()?;
-        if watcher.watch(&root, notify::RecursiveMode::Recursive).is_err() {
+                let _ = tx.unbounded_send(());
+            }
+        })
+        .ok()?;
+        if watcher
+            .watch(&root, notify::RecursiveMode::Recursive)
+            .is_err()
+        {
             return None;
         }
         let exec = cx.background_executor().clone();

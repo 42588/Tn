@@ -27,7 +27,7 @@ pub use quick_terminal::{
     ease_out_cubic, lerp_rect, parse_hotkey, HotkeySpec, QuickTermPosition, QuickTerminal, Rect,
 };
 pub use theme::{
-    Ansi16, AgentColors, Backdrop, Corner, Mode, TerminalColors, Theme, UiColors, WindowChrome,
+    AgentColors, Ansi16, Backdrop, Corner, Mode, TerminalColors, Theme, UiColors, WindowChrome,
     TN_DARK_TOML,
 };
 
@@ -87,7 +87,11 @@ pub fn load_from(dir: &Path, write_defaults: bool) -> Loaded {
 
     if write_defaults {
         write_if_absent(&config_file, DEFAULT_CONFIG_TOML, dir);
-        write_if_absent(&themes_path.join("tn-dark.toml"), TN_DARK_TOML, &themes_path);
+        write_if_absent(
+            &themes_path.join("tn-dark.toml"),
+            TN_DARK_TOML,
+            &themes_path,
+        );
     }
 
     let config = read_config(&config_file);
@@ -133,6 +137,87 @@ pub fn append_profile_to(path: &Path, profile: &Profile) -> std::io::Result<()> 
     text.push('\n');
     text.push_str(&fragment);
     fs::write(path, text)
+}
+
+/// Remove a matching `[[profiles]]` entry from the user's `config.toml`,
+/// preserving unrelated text and comments. Returns `Ok(true)` when a block was
+/// removed. The match is exact on the serialized identity fields the SSH
+/// connector owns (`name`, `kind`, `host`, `user`).
+pub fn remove_profile(profile: &Profile) -> std::io::Result<bool> {
+    let path = config_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config directory"))?;
+    remove_profile_from(&path, profile)
+}
+
+/// [`remove_profile`] targeting an explicit file — testable without touching the
+/// real config location. This scans top-level `[[profiles]]` blocks, parses each
+/// candidate block as TOML, and removes only the first exact match.
+pub fn remove_profile_from(path: &Path, profile: &Profile) -> std::io::Result<bool> {
+    let text = fs::read_to_string(path)?;
+    let Some(range) = find_profile_block(&text, profile)? else {
+        return Ok(false);
+    };
+    let mut out = text;
+    out.replace_range(range, "");
+    fs::write(path, out)?;
+    Ok(true)
+}
+
+fn find_profile_block(
+    text: &str,
+    needle: &Profile,
+) -> std::io::Result<Option<std::ops::Range<usize>>> {
+    for range in profile_block_ranges(text) {
+        let block = &text[range.clone()];
+        let parsed = Config::from_toml_str(block)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if parsed
+            .profiles
+            .iter()
+            .any(|p| profile_identity_eq(p, needle))
+        {
+            return Ok(Some(trim_profile_block_range(text, range)));
+        }
+    }
+    Ok(None)
+}
+
+fn profile_identity_eq(a: &Profile, b: &Profile) -> bool {
+    a.name == b.name && a.kind == b.kind && a.host == b.host && a.user == b.user
+}
+
+fn profile_block_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut pos = 0;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("[[profiles]]") {
+            if let Some(start) = current.replace(pos) {
+                ranges.push(start..pos);
+            }
+        } else if current.is_some() && trimmed.starts_with('[') {
+            if let Some(start) = current.take() {
+                ranges.push(start..pos);
+            }
+        }
+        pos += line.len();
+    }
+    if let Some(start) = current {
+        ranges.push(start..text.len());
+    }
+    ranges
+}
+
+fn trim_profile_block_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    // A2 append writes a blank separator before each saved profile. Remove that
+    // single separator too so delete does not leave a growing trail of blank
+    // lines, but keep user comments immediately above the block.
+    let mut start = range.start;
+    if start >= 2 && &text.as_bytes()[start - 2..start] == b"\n\n" {
+        start -= 1;
+    }
+    start..range.end
 }
 
 /// Write `contents` to `file` if it doesn't already exist, creating `parent`.
@@ -283,6 +368,64 @@ mod tests {
         append_profile_to(&cfg, &p).unwrap();
         let parsed = Config::from_toml_str(&fs::read_to_string(&cfg).unwrap()).unwrap();
         assert!(parsed.profiles.iter().any(|x| x.name == "srv"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_profile_preserves_comments_and_other_profiles() {
+        let dir = unique_temp();
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(
+            &cfg,
+            r#"# keep this header
+[font]
+size = 20.0
+
+[[profiles]]
+name = "keep"
+kind = "ssh"
+host = "keep.example"
+user = "root"
+
+# remove only the next profile
+[[profiles]]
+name = "drop"
+kind = "ssh"
+host = "drop.example:2222"
+user = "admin"
+
+[appearance]
+theme = "Tn Dark"
+"#,
+        )
+        .unwrap();
+        let drop = Profile {
+            name: "drop".into(),
+            kind: ProfileKind::Ssh,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: Some("drop.example:2222".into()),
+            user: Some("admin".into()),
+            agent: None,
+            accent: None,
+            glyph: None,
+        };
+
+        assert!(remove_profile_from(&cfg, &drop).unwrap());
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("# keep this header"));
+        assert!(text.contains("# remove only the next profile"));
+        assert!(text.contains("name = \"keep\""));
+        assert!(!text.contains("name = \"drop\""));
+        assert!(text.contains("[appearance]"));
+        let parsed = Config::from_toml_str(&text).expect("still valid toml after remove");
+        assert_eq!(parsed.font.size, 20.0);
+        assert!(parsed.profiles.iter().any(|p| p.name == "keep"));
+        assert!(!parsed.profiles.iter().any(|p| p.name == "drop"));
+
         let _ = fs::remove_dir_all(&dir);
     }
 

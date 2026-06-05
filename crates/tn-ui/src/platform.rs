@@ -34,14 +34,13 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-        GetCursorPos, GetMessageW, GetWindowLongPtrW, LoadImageW, PostMessageW, RegisterClassW,
-        RegisterWindowMessageW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-        ShowWindow, TrackPopupMenu, TranslateMessage, GWLP_USERDATA, GWL_EXSTYLE, HICON,
-        HWND_MESSAGE, HWND_TOPMOST, IMAGE_ICON, LR_LOADFROMFILE, MF_STRING, MSG, PostQuitMessage,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW, TPM_BOTTOMALIGN, TPM_RETURNCMD,
-        TPM_RIGHTBUTTON, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_NULL,
-        WM_RBUTTONUP, WM_SETICON, WNDCLASSW, WS_EX_TOPMOST, CS_HREDRAW, CS_VREDRAW,
-        DispatchMessageW,
+        DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW, LoadImageW, PostMessageW,
+        PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW,
+        CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, HICON, HWND_MESSAGE, HWND_TOPMOST, IMAGE_ICON,
+        LR_LOADFROMFILE, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+        TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
+        WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_SETICON, WNDCLASSW, WS_EX_TOPMOST,
     };
 
     fn as_hwnd(h: isize) -> HWND {
@@ -95,8 +94,18 @@ mod imp {
         let icon_small = load_app_icon_at(16, 16);
         let icon_big = load_app_icon_at(48, 48);
         unsafe {
-            SendMessageW(h, WM_SETICON, Some(WPARAM(0)), Some(LPARAM(icon_small.0 as isize)));
-            SendMessageW(h, WM_SETICON, Some(WPARAM(1)), Some(LPARAM(icon_big.0 as isize)));
+            SendMessageW(
+                h,
+                WM_SETICON,
+                Some(WPARAM(0)),
+                Some(LPARAM(icon_small.0 as isize)),
+            );
+            SendMessageW(
+                h,
+                WM_SETICON,
+                Some(WPARAM(1)),
+                Some(LPARAM(icon_big.0 as isize)),
+            );
         }
     }
 
@@ -126,10 +135,10 @@ mod imp {
         if b.len() == 1 {
             return match b[0] {
                 c @ b'a'..=b'z' => Some((c - b'a' + 0x41) as u32), // VK_A..VK_Z
-                c @ b'0'..=b'9' => Some(c as u32),                  // VK_0..VK_9
-                b'`' => Some(0xC0),                                 // VK_OEM_3
-                b'-' => Some(0xBD),                                 // VK_OEM_MINUS
-                b'=' => Some(0xBB),                                 // VK_OEM_PLUS
+                c @ b'0'..=b'9' => Some(c as u32),                 // VK_0..VK_9
+                b'`' => Some(0xC0),                                // VK_OEM_3
+                b'-' => Some(0xBD),                                // VK_OEM_MINUS
+                b'=' => Some(0xBB),                                // VK_OEM_PLUS
                 _ => None,
             };
         }
@@ -584,9 +593,8 @@ mod imp {
         let (tx, rx) = mpsc::unbounded::<TrayEvent>();
 
         // Register a custom "Tn show main" message for cross-instance IPC.
-        let msg_show_main = unsafe {
-            RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1"))
-        };
+        let msg_show_main =
+            unsafe { RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1")) };
 
         let hinstance = {
             let hmod = unsafe { GetModuleHandleW(None) }.unwrap_or_default();
@@ -618,18 +626,18 @@ mod imp {
         // Create the message-only window.
         let hwnd = unsafe {
             CreateWindowExW(
-                Default::default(),               // dwExStyle
+                Default::default(), // dwExStyle
                 class_name,
-                windows::core::w!(""),            // window name (unused)
+                windows::core::w!(""), // window name (unused)
                 windows::Win32::UI::WindowsAndMessaging::WINDOW_STYLE(0), // style (0 for message-only)
                 0,
                 0, // x, y
                 0,
-                0, // w, h
-                Some(HWND_MESSAGE),               // parent = message-only
-                None,                             // no menu
-                Some(hinstance),                  // hInstance
-                None,                             // no extra param
+                0,                  // w, h
+                Some(HWND_MESSAGE), // parent = message-only
+                None,               // no menu
+                Some(hinstance),    // hInstance
+                None,               // no extra param
             )
         };
         let hwnd = match hwnd {
@@ -678,7 +686,6 @@ mod imp {
 
         Some((hwnd_value, rx))
     }
-
 }
 
 #[cfg(target_os = "windows")]

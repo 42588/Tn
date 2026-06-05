@@ -203,8 +203,16 @@ fn base64(data: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(A[(n >> 18 & 63) as usize] as char);
         out.push(A[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { A[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { A[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            A[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -224,9 +232,15 @@ mod tests {
         assert!(s.contains("$?"), "bash exit code must derive from $?");
         assert!(s.contains(&i.nonce));
         assert!(!s.contains("__NONCE__"));
-        assert!(s.contains("PROMPT_COMMAND"), "bash script must use PROMPT_COMMAND");
+        assert!(
+            s.contains("PROMPT_COMMAND"),
+            "bash script must use PROMPT_COMMAND"
+        );
         assert!(s.contains("trap"), "bash script must use DEBUG trap");
-        assert!(s.contains("BASH_COMMAND"), "bash script must read BASH_COMMAND");
+        assert!(
+            s.contains("BASH_COMMAND"),
+            "bash script must read BASH_COMMAND"
+        );
     }
 
     #[test]
@@ -252,7 +266,10 @@ mod tests {
         for marker in ["]133;A", "]133;B", "]133;C", "]133;D", "]633;E"] {
             assert!(s.contains(marker), "script missing {marker}");
         }
-        assert!(s.contains("$?"), "exit code must derive from $? (not stale $LASTEXITCODE)");
+        assert!(
+            s.contains("$?"),
+            "exit code must derive from $? (not stale $LASTEXITCODE)"
+        );
         assert!(s.contains(&i.nonce));
         assert!(!s.contains("__NONCE__"));
     }

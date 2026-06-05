@@ -64,7 +64,10 @@ pub fn parse_codex_session(jsonl: &str) -> Option<AiUsage> {
         let payload = v.get("payload");
         match ty {
             "turn_context" => {
-                if let Some(m) = payload.and_then(|p| p.get("model")).and_then(|m| m.as_str()) {
+                if let Some(m) = payload
+                    .and_then(|p| p.get("model"))
+                    .and_then(|m| m.as_str())
+                {
                     if !m.is_empty() {
                         model = m.to_string();
                     }
@@ -191,10 +194,7 @@ fn session_meta_cwd(line: &str) -> Option<String> {
     if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
         return None;
     }
-    v.get("payload")?
-        .get("cwd")?
-        .as_str()
-        .map(str::to_string)
+    v.get("payload")?.get("cwd")?.as_str().map(str::to_string)
 }
 
 /// Collect every `rollout-*.jsonl` under `dir` (recursively), with its mtime.
@@ -262,7 +262,10 @@ pub fn codex_sessions_with_mtime() -> Vec<(PathBuf, SystemTime)> {
     };
     let mut rollouts = Vec::new();
     collect_rollouts(&dir, &mut rollouts); // pushes (mtime, path)
-    rollouts.into_iter().map(|(mtime, path)| (path, mtime)).collect()
+    rollouts
+        .into_iter()
+        .map(|(mtime, path)| (path, mtime))
+        .collect()
 }
 
 /// Read + parse the newest Codex session for `cwd`.

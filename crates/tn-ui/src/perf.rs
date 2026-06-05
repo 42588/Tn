@@ -67,10 +67,16 @@ impl PerfStats {
 
     fn flush(&mut self) {
         let secs = self.window_start.elapsed().as_secs_f64().max(1e-6);
-        let hit_pct =
-            if self.renders > 0 { 100.0 * self.cache_hits as f64 / self.renders as f64 } else { 0.0 };
-        let avg_us =
-            if self.rebuilds > 0 { self.rebuild_ns_sum as f64 / self.rebuilds as f64 / 1000.0 } else { 0.0 };
+        let hit_pct = if self.renders > 0 {
+            100.0 * self.cache_hits as f64 / self.renders as f64
+        } else {
+            0.0
+        };
+        let avg_us = if self.rebuilds > 0 {
+            self.rebuild_ns_sum as f64 / self.rebuilds as f64 / 1000.0
+        } else {
+            0.0
+        };
         let max_us = self.rebuild_ns_max as f64 / 1000.0;
         tracing::info!(
             target: "tn::perf",

@@ -71,7 +71,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -84,16 +89,12 @@ impl QuickTerminal {
         let hpct = (self.height_percent / 100.0).clamp(0.1, 1.0);
         let wpct = (self.width_percent / 100.0).clamp(0.1, 1.0);
         match self.position {
-            QuickTermPosition::Top => {
-                Rect::new(work.x, work.y, work.width, work.height * hpct)
-            }
+            QuickTermPosition::Top => Rect::new(work.x, work.y, work.width, work.height * hpct),
             QuickTermPosition::Bottom => {
                 let h = work.height * hpct;
                 Rect::new(work.x, work.y + work.height - h, work.width, h)
             }
-            QuickTermPosition::Left => {
-                Rect::new(work.x, work.y, work.width * wpct, work.height)
-            }
+            QuickTermPosition::Left => Rect::new(work.x, work.y, work.width * wpct, work.height),
             QuickTermPosition::Right => {
                 let w = work.width * wpct;
                 Rect::new(work.x + work.width - w, work.y, w, work.height)
@@ -146,7 +147,12 @@ impl QuickTerminal {
 /// Component-wise linear interpolation between two rects.
 pub fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
     let l = |x: f32, y: f32| x + (y - x) * t;
-    Rect::new(l(a.x, b.x), l(a.y, b.y), l(a.width, b.width), l(a.height, b.height))
+    Rect::new(
+        l(a.x, b.x),
+        l(a.y, b.y),
+        l(a.width, b.width),
+        l(a.height, b.height),
+    )
 }
 
 /// Cubic ease-out: fast start, gentle settle. `f(0)=0`, `f(1)=1`.
@@ -208,7 +214,12 @@ pub fn parse_hotkey(s: &str) -> Option<HotkeySpec> {
 mod tests {
     use super::*;
 
-    const WORK: Rect = Rect { x: 0.0, y: 0.0, width: 1000.0, height: 800.0 };
+    const WORK: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 1000.0,
+        height: 800.0,
+    };
 
     #[test]
     fn defaults_are_sane() {
@@ -222,7 +233,11 @@ mod tests {
 
     #[test]
     fn top_spans_width_and_docks_top() {
-        let q = QuickTerminal { position: QuickTermPosition::Top, height_percent: 50.0, ..Default::default() };
+        let q = QuickTerminal {
+            position: QuickTermPosition::Top,
+            height_percent: 50.0,
+            ..Default::default()
+        };
         let s = q.shown_rect(WORK);
         assert_eq!(s, Rect::new(0.0, 0.0, 1000.0, 400.0));
         // Hidden is fully above the work area.
@@ -232,7 +247,11 @@ mod tests {
 
     #[test]
     fn bottom_docks_bottom() {
-        let q = QuickTerminal { position: QuickTermPosition::Bottom, height_percent: 25.0, ..Default::default() };
+        let q = QuickTerminal {
+            position: QuickTermPosition::Bottom,
+            height_percent: 25.0,
+            ..Default::default()
+        };
         let s = q.shown_rect(WORK);
         assert_eq!(s, Rect::new(0.0, 600.0, 1000.0, 200.0));
         let h = q.hidden_rect(WORK);
@@ -241,11 +260,19 @@ mod tests {
 
     #[test]
     fn left_and_right_span_height() {
-        let l = QuickTerminal { position: QuickTermPosition::Left, width_percent: 30.0, ..Default::default() };
+        let l = QuickTerminal {
+            position: QuickTermPosition::Left,
+            width_percent: 30.0,
+            ..Default::default()
+        };
         assert_eq!(l.shown_rect(WORK), Rect::new(0.0, 0.0, 300.0, 800.0));
         assert_eq!(l.hidden_rect(WORK), Rect::new(-300.0, 0.0, 300.0, 800.0));
 
-        let r = QuickTerminal { position: QuickTermPosition::Right, width_percent: 40.0, ..Default::default() };
+        let r = QuickTerminal {
+            position: QuickTermPosition::Right,
+            width_percent: 40.0,
+            ..Default::default()
+        };
         assert_eq!(r.shown_rect(WORK), Rect::new(600.0, 0.0, 400.0, 800.0));
         assert_eq!(r.hidden_rect(WORK), Rect::new(1000.0, 0.0, 400.0, 800.0));
     }
@@ -264,7 +291,11 @@ mod tests {
 
     #[test]
     fn frame_endpoints_match_hidden_and_shown() {
-        let q = QuickTerminal { position: QuickTermPosition::Top, height_percent: 50.0, ..Default::default() };
+        let q = QuickTerminal {
+            position: QuickTermPosition::Top,
+            height_percent: 50.0,
+            ..Default::default()
+        };
         assert_eq!(q.frame_rect(WORK, 0.0), q.hidden_rect(WORK));
         assert_eq!(q.frame_rect(WORK, 1.0), q.shown_rect(WORK));
         // Midway, size is unchanged and y is between hidden and shown.
@@ -275,9 +306,17 @@ mod tests {
 
     #[test]
     fn percentages_are_clamped() {
-        let q = QuickTerminal { position: QuickTermPosition::Top, height_percent: 999.0, ..Default::default() };
+        let q = QuickTerminal {
+            position: QuickTermPosition::Top,
+            height_percent: 999.0,
+            ..Default::default()
+        };
         assert_eq!(q.shown_rect(WORK).height, 800.0); // clamped to 100%
-        let q0 = QuickTerminal { position: QuickTermPosition::Top, height_percent: 0.0, ..Default::default() };
+        let q0 = QuickTerminal {
+            position: QuickTermPosition::Top,
+            height_percent: 0.0,
+            ..Default::default()
+        };
         assert_eq!(q0.shown_rect(WORK).height, 80.0); // clamped to 10%
     }
 

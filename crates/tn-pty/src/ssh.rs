@@ -392,7 +392,7 @@ impl PtyBackend for SshBackend {
 }
 
 async fn run_session(
-    cfg: SshConfig,
+    mut cfg: SshConfig,
     size: PtySize,
     mut out_rx: UnboundedReceiver<Vec<u8>>,
     mut resize_rx: UnboundedReceiver<(u32, u32)>,
@@ -471,7 +471,7 @@ async fn run_session(
             }
         };
 
-        let auth_method = match authenticate(&mut handle, &cfg, &event_tx, &waker, &in_tx).await {
+        let auth_method = match authenticate(&mut handle, &mut cfg, &event_tx, &waker, &in_tx).await {
             Ok(m) => m,
             Err(e) => {
                 let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 认证失败: {}\r\n", e);
@@ -595,7 +595,7 @@ async fn run_session(
 /// TODO(M2): SSH agent (`russh::keys::agent`) before key files.
 async fn authenticate(
     handle: &mut Handle<ClientHandler>,
-    cfg: &SshConfig,
+    cfg: &mut SshConfig,
     event_tx: &StdSender<crate::PtyEvent>,
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     in_tx: &StdSender<Vec<u8>>,
@@ -672,7 +672,17 @@ async fn authenticate(
         for attempt in 1..=3u32 {
             let password = match &cfg.password {
                 Some(pw) => Some(pw.clone()),
-                None => prompt_password(cfg, event_tx, waker, in_tx, last_error.take()).await,
+                None => {
+                    let reply = prompt_password(cfg, event_tx, waker, in_tx, last_error.take()).await;
+                    if let Some(reply) = reply {
+                        if reply.remember && !reply.password.is_empty() {
+                            cfg.password = Some(reply.password.clone());
+                        }
+                        Some(reply.password)
+                    } else {
+                        None
+                    }
+                }
             };
             let Some(pw) = password.filter(|p| !p.is_empty()) else {
                 break; // user cancelled / empty input
@@ -782,7 +792,7 @@ async fn prompt_password(
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     in_tx: &StdSender<Vec<u8>>,
     error: Option<String>,
-) -> Option<String> {
+) -> Option<crate::PasswordReply> {
     let _ = in_tx.send(
         "\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码..."
             .as_bytes()

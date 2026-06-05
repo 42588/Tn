@@ -241,7 +241,10 @@ mod tests {
         assert_eq!(c.font.family, "CaskaydiaCove Nerd Font");
         assert_eq!(c.appearance.theme, "Tn Dark");
         // Template ships example profiles + keybindings.
-        assert!(c.profiles.iter().any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("claude")));
+        assert!(c
+            .profiles
+            .iter()
+            .any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("claude")));
         assert!(c.keybindings.iter().any(|k| k.id == "new_tab"));
         // Quick Terminal section parses and matches its documented defaults.
         assert!(c.quick_terminal.enabled);

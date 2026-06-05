@@ -13,8 +13,8 @@ use alacritty_terminal::index::{Column, Line, Point, Side};
 use alacritty_terminal::selection::{Selection, SelectionType};
 use alacritty_terminal::term::cell::Flags;
 pub use alacritty_terminal::term::color::Colors;
-pub use alacritty_terminal::vte::ansi::CursorShape;
 use alacritty_terminal::term::{viewport_to_point, Config, Term, TermMode};
+pub use alacritty_terminal::vte::ansi::CursorShape;
 use alacritty_terminal::vte::ansi::{Color, Processor};
 
 /// Re-export so consumers can match on terminal events without depending on
@@ -115,10 +115,22 @@ impl Default for Palette {
         // Tn Dark (Tokyo Night tuned) — mirrors config/themes/tn-dark.toml.
         Self {
             ansi: [
-                hex(0x15161E), hex(0xF7768E), hex(0x9ECE6A), hex(0xE0AF68),
-                hex(0x7AA2F7), hex(0xBB9AF7), hex(0x7DCFFF), hex(0xA9B1D6),
-                hex(0x414868), hex(0xF7768E), hex(0x9ECE6A), hex(0xE0AF68),
-                hex(0x7AA2F7), hex(0xBB9AF7), hex(0x7DCFFF), hex(0xC0CAF5),
+                hex(0x15161E),
+                hex(0xF7768E),
+                hex(0x9ECE6A),
+                hex(0xE0AF68),
+                hex(0x7AA2F7),
+                hex(0xBB9AF7),
+                hex(0x7DCFFF),
+                hex(0xA9B1D6),
+                hex(0x414868),
+                hex(0xF7768E),
+                hex(0x9ECE6A),
+                hex(0xE0AF68),
+                hex(0x7AA2F7),
+                hex(0xBB9AF7),
+                hex(0x7DCFFF),
+                hex(0xC0CAF5),
             ],
             fg: hex(0xC0CAF5),
             bg: hex(0x1A1B26),
@@ -295,7 +307,10 @@ fn is_url_char(c: char) -> bool {
 
 /// Punctuation that, at a URL's tail, is almost always sentence/markup, not link.
 fn is_trailing_punct(c: char) -> bool {
-    matches!(c, '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '>')
+    matches!(
+        c,
+        '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '\'' | '"' | '>'
+    )
 }
 
 impl TerminalSnapshot {
@@ -564,14 +579,17 @@ impl Terminal {
     /// swapped, a swap is in flight, or a finished swap is still awaiting reap.
     pub fn swap_out_async(&mut self, path: std::path::PathBuf) {
         if self.swapped_path.is_some()
-            || self.swap_in_flight.load(std::sync::atomic::Ordering::Relaxed)
+            || self
+                .swap_in_flight
+                .load(std::sync::atomic::Ordering::Relaxed)
             || self.swap_result.lock().unwrap().is_some()
         {
             return;
         }
         let grid_clone = self.term.grid().clone();
         self.swap_gen = self.generation;
-        self.swap_in_flight.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.swap_in_flight
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         let in_flight = self.swap_in_flight.clone();
         let result = self.swap_result.clone();
         std::thread::spawn(move || {
@@ -670,7 +688,9 @@ impl Terminal {
             let pulled = history_before.min(delta);
             if pulled > 0 {
                 let rows = size.rows as i32;
-                self.term.grid_mut().scroll_up(&(Line(0)..Line(rows)), pulled);
+                self.term
+                    .grid_mut()
+                    .scroll_up(&(Line(0)..Line(rows)), pulled);
             }
         }
         self.bump();
@@ -763,7 +783,11 @@ impl Terminal {
             }
             for start in 0..=(line.len() - needle.len()) {
                 if line[start..start + needle.len()] == needle[..] {
-                    out.push(SearchMatch { line: abs, col_start: start, col_end: start + needle.len() });
+                    out.push(SearchMatch {
+                        line: abs,
+                        col_start: start,
+                        col_end: start + needle.len(),
+                    });
                 }
             }
         }
@@ -874,7 +898,8 @@ impl Terminal {
             cols: self.size.cols,
             cursor: (cursor_row, cur.column.0),
             cursor_shape: content.cursor.shape,
-            cursor_visible: self.term.mode().contains(TermMode::SHOW_CURSOR) && content.cursor.shape != CursorShape::Hidden,
+            cursor_visible: self.term.mode().contains(TermMode::SHOW_CURSOR)
+                && content.cursor.shape != CursorShape::Hidden,
             scroll_offset: content.display_offset,
             scroll_history: self.term.grid().history_size(),
             fg: self.palette.fg,
@@ -916,7 +941,11 @@ mod tests {
         assert_eq!(cols, 20, "run columns must equal the grid width");
         // The 中-bearing run reports 2 columns for that one char.
         let wide = rows[0].iter().find(|r| r.text.starts_with('中')).unwrap();
-        assert!(wide.cols >= 2, "wide char spans >= 2 cols, got {}", wide.cols);
+        assert!(
+            wide.cols >= 2,
+            "wide char spans >= 2 cols, got {}",
+            wide.cols
+        );
     }
 
     #[test]
@@ -926,7 +955,11 @@ mod tests {
         // proxy; we just confirm it reaches `drain_events`.
         let mut t = Terminal::new(GridSize::new(2, 10));
         t.advance(b"a\x07b");
-        let bells = t.drain_events().into_iter().filter(|e| matches!(e, Event::Bell)).count();
+        let bells = t
+            .drain_events()
+            .into_iter()
+            .filter(|e| matches!(e, Event::Bell))
+            .count();
         assert_eq!(bells, 1, "one BEL byte yields exactly one Bell event");
         // The visible text is unaffected by the bell.
         assert!(t.snapshot().to_text().contains("ab"));
@@ -953,15 +986,23 @@ mod tests {
         let path = std::env::temp_dir().join(format!("tn_swap_rt_{}.bin", std::process::id()));
         let _ = std::fs::remove_file(&path); // drop any stale file from a prior run
 
-        t.swap_out(path.clone()).expect("swap_out serializes the grid to disk");
-        assert!(t.swapped_path.is_some(), "grid is parked on disk after swap_out");
+        t.swap_out(path.clone())
+            .expect("swap_out serializes the grid to disk");
+        assert!(
+            t.swapped_path.is_some(),
+            "grid is parked on disk after swap_out"
+        );
         assert!(path.exists(), "swap file was written");
 
         t.restore_if_swapped();
         assert!(t.swapped_path.is_none(), "restore clears the swapped state");
         assert!(!path.exists(), "restore deletes the swap file");
 
-        assert_eq!(t.snapshot().to_text(), before, "content survives the round-trip");
+        assert_eq!(
+            t.snapshot().to_text(),
+            before,
+            "content survives the round-trip"
+        );
     }
 
     #[test]
@@ -974,10 +1015,16 @@ mod tests {
         let _ = std::fs::remove_file(&path);
 
         t.swap_out(path.clone()).unwrap();
-        assert!(t.snapshot().to_text().contains("parked-content"), "static frame shown while swapped");
+        assert!(
+            t.snapshot().to_text().contains("parked-content"),
+            "static frame shown while swapped"
+        );
 
         t.restore_if_swapped();
-        assert!(t.snapshot().to_text().contains("parked-content"), "content restored from disk");
+        assert!(
+            t.snapshot().to_text().contains("parked-content"),
+            "content restored from disk"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1001,7 +1048,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         // Clone-based: the live grid is untouched until we reap, so content is intact.
-        assert_eq!(t.snapshot().to_text(), before, "grid stays live until reaped");
+        assert_eq!(
+            t.snapshot().to_text(),
+            before,
+            "grid stays live until reaped"
+        );
 
         // No output since the clone → reap blanks the live grid + parks it on disk.
         t.try_finish_swap();
@@ -1009,7 +1060,11 @@ mod tests {
 
         t.restore_if_swapped();
         assert!(t.swapped_path.is_none(), "restore clears the swapped state");
-        assert_eq!(t.snapshot().to_text(), before, "content survives async swap round-trip");
+        assert_eq!(
+            t.snapshot().to_text(),
+            before,
+            "content survives async swap round-trip"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1033,8 +1088,14 @@ mod tests {
         // (Kept short — "before-after" is 12 cols, no wrapping in a 20-col grid.)
         t.advance(b"-after");
         t.try_finish_swap();
-        assert!(t.swapped_path.is_none(), "stale disk copy discarded, grid not swapped");
-        assert!(t.snapshot().to_text().contains("before-after"), "live grid kept (newer), not blanked");
+        assert!(
+            t.swapped_path.is_none(),
+            "stale disk copy discarded, grid not swapped"
+        );
+        assert!(
+            t.snapshot().to_text().contains("before-after"),
+            "live grid kept (newer), not blanked"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1080,10 +1141,22 @@ mod tests {
         assert!(snap.scroll_history > 0, "scrollback retained");
         assert_eq!(snap.scroll_offset, 0);
         t.scroll(2);
-        assert_ne!(bottom, t.snapshot().to_text(), "scrolling up changes visible rows");
-        assert_eq!(t.snapshot().scroll_offset, 2, "snapshot reflects scroll offset");
+        assert_ne!(
+            bottom,
+            t.snapshot().to_text(),
+            "scrolling up changes visible rows"
+        );
+        assert_eq!(
+            t.snapshot().scroll_offset,
+            2,
+            "snapshot reflects scroll offset"
+        );
         t.scroll_to_bottom();
-        assert_eq!(bottom, t.snapshot().to_text(), "scroll-to-bottom restores live view");
+        assert_eq!(
+            bottom,
+            t.snapshot().to_text(),
+            "scroll-to-bottom restores live view"
+        );
         assert_eq!(t.snapshot().scroll_offset, 0);
     }
 
@@ -1111,10 +1184,18 @@ mod tests {
         }
         let before = t.snapshot().to_text();
         t.resize(GridSize::new(3, 20)); // shrink
-        assert_eq!(t.scroll_position().0, 0, "stays bottom-anchored after shrink");
+        assert_eq!(
+            t.scroll_position().0,
+            0,
+            "stays bottom-anchored after shrink"
+        );
         assert!(t.scroll_position().1 >= 18, "shrunk rows go to scrollback");
         t.resize(GridSize::new(6, 20)); // grow back
-        assert_eq!(t.snapshot().to_text(), before, "grow restores the prior view from history");
+        assert_eq!(
+            t.snapshot().to_text(),
+            before,
+            "grow restores the prior view from history"
+        );
     }
 
     #[test]
@@ -1127,7 +1208,11 @@ mod tests {
         // loss, vs `resize` losing 12 lines). Contrast with the bottom-anchored
         // `resize` above, which reveals older history at the top on a grow.
         let first_nonempty = |t: &mut Terminal| -> String {
-            t.snapshot().rows_text().into_iter().find(|l| !l.trim().is_empty()).unwrap_or_default()
+            t.snapshot()
+                .rows_text()
+                .into_iter()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or_default()
         };
         let mut t = Terminal::with_scrollback(GridSize::new(6, 20), 1000);
         for i in 0..20 {
@@ -1135,7 +1220,10 @@ mod tests {
         }
         let top_before = first_nonempty(&mut t);
         let hist_before = t.scroll_position().1;
-        assert!(hist_before > 0, "precondition: there is scrollback to (not) reveal");
+        assert!(
+            hist_before > 0,
+            "precondition: there is scrollback to (not) reveal"
+        );
 
         t.resize_conpty(GridSize::new(12, 20)); // grow taller
 
@@ -1169,7 +1257,10 @@ mod tests {
         t.selection_start_kind(0, 8, SelectKind::Word); // 'c' in "second"
         t.selection_update(0, 14); // 'h' in "third"
         let s = t.selection_text().unwrap_or_default();
-        assert_eq!(s, "second third", "dragging expands to full word boundaries");
+        assert_eq!(
+            s, "second third",
+            "dragging expands to full word boundaries"
+        );
     }
 
     #[test]
@@ -1192,7 +1283,7 @@ mod tests {
         let a = snap.cells.iter().find(|c| c.c == 'a').unwrap();
         assert_eq!(a.bg, Rgb::new(0x28, 0x34, 0x57)); // selection_bg
         assert_eq!(a.fg, Rgb::new(0xC0, 0xCA, 0xF5)); // selection_fg
-        // A cell outside the selection keeps the default background.
+                                                      // A cell outside the selection keeps the default background.
         let c = snap.cells.iter().find(|c| c.c == 'c').unwrap();
         assert_eq!(c.bg, Rgb::new(0x1A, 0x1B, 0x26));
     }
@@ -1250,7 +1341,11 @@ mod tests {
         assert_eq!(b.bg, Rgb::new(0x9E, 0xCE, 0x6A), "ANSI green bg");
         // The CR-overwritten 'x' carries the default fg — no SGR leaked across the
         // reset from the prior line.
-        assert_eq!(cell('x').fg, Rgb::new(0xC0, 0xCA, 0xF5), "default fg after reset");
+        assert_eq!(
+            cell('x').fg,
+            Rgb::new(0xC0, 0xCA, 0xF5),
+            "default fg after reset"
+        );
     }
 
     #[test]
@@ -1283,7 +1378,11 @@ mod tests {
         // "line0" scrolled into history long ago, but search still finds it — and
         // it's the oldest retained line, so its absolute line is 0.
         let m = t.search("line0");
-        assert_eq!(m.len(), 1, "exactly one 'line0' (line10..19 don't contain it)");
+        assert_eq!(
+            m.len(),
+            1,
+            "exactly one 'line0' (line10..19 don't contain it)"
+        );
         assert_eq!(m[0].line, 0);
         // A recent line sits at a higher absolute line than the oldest.
         let recent = t.search("line19");
@@ -1325,7 +1424,10 @@ mod tests {
         let mut t = Terminal::new(GridSize::new(2, 80));
         t.advance(b"http://a.com and https://b.org/y");
         let got: Vec<String> = t.snapshot().urls().into_iter().map(|x| x.url).collect();
-        assert_eq!(got, vec!["http://a.com".to_string(), "https://b.org/y".to_string()]);
+        assert_eq!(
+            got,
+            vec!["http://a.com".to_string(), "https://b.org/y".to_string()]
+        );
     }
 
     #[test]
@@ -1350,7 +1452,13 @@ mod tests {
 
         let mut prev = g0;
         for step in [
-            "advance", "scroll", "resize", "select", "select_update", "clear", "to_bottom",
+            "advance",
+            "scroll",
+            "resize",
+            "select",
+            "select_update",
+            "clear",
+            "to_bottom",
         ] {
             match step {
                 "advance" => t.advance(b"hi"),

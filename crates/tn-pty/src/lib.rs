@@ -147,6 +147,13 @@ pub enum HostKeyVerdict {
     AcceptAndSave,
 }
 
+/// Reply from the UI to an SSH password prompt.
+pub struct PasswordReply {
+    pub password: String,
+    /// Cache this password for the current in-memory SSH session only.
+    pub remember: bool,
+}
+
 /// An event emitted by a PTY backend that requires UI interaction.
 pub enum PtyEvent {
     /// The backend needs a password to continue authentication.
@@ -157,7 +164,7 @@ pub enum PtyEvent {
         /// "密码错误,请重试(第 2 次,共 3 次)". `None` on the first ask.
         error: Option<String>,
         /// A channel to send the password back. If dropped without sending, auth fails.
-        reply: std::sync::mpsc::Sender<String>,
+        reply: std::sync::mpsc::Sender<PasswordReply>,
     },
     /// SSH connection progressed to a new phase (B1 progress card). `detail` is a
     /// short human note for the active step (resolved host, key file, …).

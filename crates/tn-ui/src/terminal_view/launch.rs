@@ -147,11 +147,7 @@ impl LaunchSpec {
 
     /// Native PowerShell: run directly with OSC 133 integration. Empty args
     /// default to `-NoLogo`.
-    fn launch_pwsh(
-        command: String,
-        profile_args: &[String],
-        agent: Option<AgentKind>,
-    ) -> Self {
+    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentKind>) -> Self {
         let mut args = profile_args.to_vec();
         if args.is_empty() {
             args.push("-NoLogo".into());
