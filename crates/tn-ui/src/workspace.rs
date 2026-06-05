@@ -2215,6 +2215,11 @@ impl Workspace {
             .child(div().flex_1())
             .when_some(chips_row, |d, c| d.child(c));
 
+        // Connector rows (list mode only); also drives whether the footer advertises
+        // the per-row ★/⊕ actions (hidden when there are no rows to act on).
+        let conn_rows = if self.ssh_save.is_some() { Vec::new() } else { self.ssh_conn_rows() };
+        let has_rows = !conn_rows.is_empty();
+
         // ── panel body: the save-mode name form, or the list of saved + recent rows ──
         let panel_body: gpui::Div = if let Some(d) = &self.ssh_save {
             // A2 save sub-mode: name an endpoint before it's written to config.toml.
@@ -2265,7 +2270,7 @@ impl Workspace {
                 )
         } else {
             // List mode: combined saved profiles (top) + recents, filtered by input.
-            let rows = self.ssh_conn_rows();
+            let rows = &conn_rows;
             let sel = self.ssh_prompt_sel.min(rows.len().saturating_sub(1));
             let list: gpui::Div = if rows.is_empty() {
                 let hint = if self.ssh_prompt_input.trim().is_empty() {
@@ -2379,8 +2384,10 @@ impl Workspace {
 
         let footer_text = if self.ssh_save.is_some() {
             "↵ 保存 · Esc 返回"
-        } else {
+        } else if has_rows {
             "↑↓ 选择 · ↵ 连接 · ★ 收藏 · ⊕ 存为连接 · Esc 取消"
+        } else {
+            "↵ 连接 · Esc 取消"
         };
 
         let panel = crate::style::shadowed(
