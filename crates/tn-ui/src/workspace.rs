@@ -26,8 +26,8 @@ use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::ssh_recents::{AuthBadge, SshRecents};
 use crate::terminal_view::{
-    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected, SshRetryRequested,
-    TerminalView, UsageUpdated,
+    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected, SshRememberPassword,
+    SshRetryRequested, TerminalView, UsageUpdated,
 };
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
@@ -1100,6 +1100,14 @@ impl Workspace {
         // SSH progress/error card 取消 / 关闭 → close this pane.
         cx.subscribe(&view, move |ws, _view, _ev: &SshCloseRequested, cx| {
             ws.close_pane_id(id, cx);
+        })
+        .detach();
+        // 记住密码(仅本会话, B3): cache into this pane's spec (RAM only, never on
+        // disk) so a reconnect/retry reuses it instead of re-prompting.
+        cx.subscribe(&view, move |ws, _view, ev: &SshRememberPassword, _cx| {
+            if let Some(ssh) = ws.pane_specs.get_mut(&id).and_then(|s| s.ssh.as_mut()) {
+                ssh.password = Some(ev.0.clone());
+            }
         })
         .detach();
         self.panes.insert(id, view);

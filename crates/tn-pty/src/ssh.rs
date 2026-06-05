@@ -498,41 +498,51 @@ async fn authenticate(
         }
     }
 
-    // 2) Password — fetch once (config or UI prompt), then try BOTH password
-    //    methods with it. Skip prompting if the server offers no password-style
-    //    method at all (don't ask the user for a secret it would never accept).
+    // 2) Password — up to 3 interactive attempts on the SAME connection (B3:
+    //    in-place retry, no teardown). A config/remembered password is tried once
+    //    (re-prompting can't change it). Each attempt tries BOTH the `password`
+    //    method and keyboard-interactive. Skip entirely if the server offers no
+    //    password-style method (don't ask for a secret it would never accept).
     let wants_pw = server_offers(&methods, russh::MethodKind::Password)
         || server_offers(&methods, russh::MethodKind::KeyboardInteractive);
-    let password = if wants_pw {
-        match &cfg.password {
-            Some(pw) => Some(pw.clone()),
-            None => prompt_password(cfg, event_tx, waker, in_tx).await,
-        }
-    } else {
-        None
-    };
-
-    if let Some(pw) = password.filter(|p| !p.is_empty()) {
-        if server_offers(&methods, russh::MethodKind::Password) {
-            let _ = in_tx
-                .send("\r\n\x1b[36m[SSH]\x1b[0m 尝试密码认证 (password)...".as_bytes().to_vec());
-            if handle
-                .authenticate_password(cfg.user.as_str(), pw.as_str())
-                .await?
-                .success()
-            {
-                return Ok(crate::AuthKind::Password);
+    if wants_pw {
+        let mut last_error: Option<String> = None;
+        for attempt in 1..=3u32 {
+            let password = match &cfg.password {
+                Some(pw) => Some(pw.clone()),
+                None => prompt_password(cfg, event_tx, waker, in_tx, last_error.take()).await,
+            };
+            let Some(pw) = password.filter(|p| !p.is_empty()) else {
+                break; // user cancelled / empty input
+            };
+            if server_offers(&methods, russh::MethodKind::Password) {
+                let _ = in_tx
+                    .send("\r\n\x1b[36m[SSH]\x1b[0m 尝试密码认证 (password)...".as_bytes().to_vec());
+                if handle
+                    .authenticate_password(cfg.user.as_str(), pw.as_str())
+                    .await?
+                    .success()
+                {
+                    return Ok(crate::AuthKind::Password);
+                }
             }
-        }
-        if server_offers(&methods, russh::MethodKind::KeyboardInteractive) {
-            let _ = in_tx.send(
-                "\r\n\x1b[36m[SSH]\x1b[0m 尝试键盘交互认证 (keyboard-interactive)..."
-                    .as_bytes()
-                    .to_vec(),
-            );
-            if try_keyboard_interactive(handle, cfg.user.as_str(), &pw).await? {
-                return Ok(crate::AuthKind::KeyboardInteractive);
+            if server_offers(&methods, russh::MethodKind::KeyboardInteractive) {
+                let _ = in_tx.send(
+                    "\r\n\x1b[36m[SSH]\x1b[0m 尝试键盘交互认证 (keyboard-interactive)..."
+                        .as_bytes()
+                        .to_vec(),
+                );
+                if try_keyboard_interactive(handle, cfg.user.as_str(), &pw).await? {
+                    return Ok(crate::AuthKind::KeyboardInteractive);
+                }
             }
+            // This attempt failed. A config/remembered password won't change by
+            // re-asking — fall through to the error card. An interactively-typed
+            // one gets re-prompted (with a counter) until the 3-try cap.
+            if cfg.password.is_some() || attempt == 3 {
+                break;
+            }
+            last_error = Some(format!("密码错误,请重试(第 {} 次,共 3 次)", attempt + 1));
         }
     }
 
@@ -595,18 +605,21 @@ fn methods_str(methods: &[russh::MethodKind]) -> String {
     methods.iter().map(String::from).collect::<Vec<_>>().join(", ")
 }
 
-/// Prompt the UI for a password and block (off-runtime) on the reply.
+/// Prompt the UI for a password and block (off-runtime) on the reply. `error`
+/// carries a previous-attempt message for the card's red line (B3 retry).
 async fn prompt_password(
     cfg: &SshConfig,
     event_tx: &StdSender<crate::PtyEvent>,
     waker: &Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>,
     in_tx: &StdSender<Vec<u8>>,
+    error: Option<String>,
 ) -> Option<String> {
     let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码...".as_bytes().to_vec());
     let (tx, rx) = std::sync::mpsc::channel();
     if event_tx
         .send(crate::PtyEvent::NeedPassword {
-            prompt: format!("Password for {}@{}:", cfg.user, cfg.host),
+            prompt: format!("{}@{}:{}", cfg.user, cfg.host, cfg.port),
+            error,
             reply: tx,
         })
         .is_err()

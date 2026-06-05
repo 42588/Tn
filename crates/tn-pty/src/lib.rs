@@ -142,6 +142,9 @@ pub enum PtyEvent {
     NeedPassword {
         /// The prompt to display to the user.
         prompt: String,
+        /// A previous-attempt error to show in red (B3 in-place retry), e.g.
+        /// "密码错误,请重试(第 2 次,共 3 次)". `None` on the first ask.
+        error: Option<String>,
         /// A channel to send the password back. If dropped without sending, auth fails.
         reply: std::sync::mpsc::Sender<String>,
     },

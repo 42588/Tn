@@ -52,6 +52,10 @@ const ICON_BODIES: &[(&str, &str)] = &[
     ("star", r#"<path d="M12 4l2.5 5.1 5.6.8-4 3.9.95 5.6L12 16.8 7 19.4l.95-5.6-4-3.9 5.6-.8z"/>"#),
     // save-as-connection (A2): a bookmark with a + inside ("存为连接")
     ("bookmark-plus", r#"<path d="M7 4.5h10a1 1 0 0 1 1 1V20l-6-3.2L6 20V5.5a1 1 0 0 1 1-1z"/><path d="M12 8v5M9.5 10.5h5"/>"#),
+    // SSH connection cards (06-ssh.html): warning triangle, password reveal eye, return key
+    ("alert", r#"<path d="M12 3.8 20.5 19.5a1 1 0 0 1-.9 1.5H4.4a1 1 0 0 1-.9-1.5z"/><path d="M12 9.5v4.5"/><path d="M12 17.3h.01"/>"#),
+    ("eye", r#"<path d="M2.6 12S6 5.6 12 5.6 21.4 12 21.4 12 18 18.4 12 18.4 2.6 12 2.6 12z"/><circle cx="12" cy="12" r="2.7"/>"#),
+    ("enter", r#"<path d="M20 6v5a3 3 0 0 1-3 3H5"/><path d="M8 11l-3 3 3 3"/>"#),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so

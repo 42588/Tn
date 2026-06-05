@@ -76,6 +76,19 @@ pub(crate) struct SshErrorInfo {
     pub offered: String,
 }
 
+/// An in-flight SSH password request (B3 password card): the prompt, an optional
+/// previous-attempt error (in-place retry), and the reply channel.
+pub(crate) struct SshPasswordPrompt {
+    pub prompt: String,
+    pub error: Option<String>,
+    pub reply: std::sync::mpsc::Sender<String>,
+}
+
+/// Emitted when the user checks "记住密码" and submits — the workspace caches the
+/// password in this pane's spec (session RAM only) so a reconnect/retry skips the
+/// prompt (B3).
+pub struct SshRememberPassword(pub String);
+
 use crate::perf::PerfStats;
 use crate::style::{col, cola, HOVER};
 
@@ -325,8 +338,11 @@ pub struct TerminalView {
     perf: PerfStats,
     // SSH password prompt state (M2b). When present, the UI renders a GPUI
     // floating input above the terminal, routing keystrokes to `ssh_password_input`.
-    ssh_password_prompt: Option<(String, std::sync::mpsc::Sender<String>)>,
+    ssh_password_prompt: Option<SshPasswordPrompt>,
     ssh_password_input: String,
+    // B3: reveal (eye) toggle + "remember for this session" checkbox state.
+    ssh_password_reveal: bool,
+    ssh_password_remember: bool,
     // SSH target label (`user@host:port`) shown on the connection cards.
     ssh_target: String,
     // Current SSH phase while connecting (B1 progress card); cleared once the
@@ -606,6 +622,8 @@ impl TerminalView {
             perf: PerfStats::new("pane.render"),
             ssh_password_prompt: None,
             ssh_password_input: String::new(),
+            ssh_password_reveal: false,
+            ssh_password_remember: false,
             ssh_target,
             ssh_progress: None,
             ssh_error: None,
@@ -665,9 +683,12 @@ impl TerminalView {
     /// Process a background event from the PTY backend.
     pub(super) fn handle_pty_event(&mut self, ev: tn_pty::PtyEvent, cx: &mut Context<Self>) {
         match ev {
-            tn_pty::PtyEvent::NeedPassword { prompt, reply } => {
-                self.ssh_password_prompt = Some((prompt, reply));
+            tn_pty::PtyEvent::NeedPassword { prompt, error, reply } => {
+                // A re-prompt (error.is_some()) keeps the connection alive (B3); only
+                // the typed text resets. reveal/remember persist across retries.
+                self.ssh_password_prompt = Some(SshPasswordPrompt { prompt, error, reply });
                 self.ssh_password_input.clear();
+                self.ssh_progress = None; // password card takes over from the progress card
                 cx.notify();
             }
             tn_pty::PtyEvent::SshProgress { phase, detail } => {
@@ -696,6 +717,27 @@ impl TerminalView {
                 // TODO: Auto reconnect (B4 — reconnect banner).
             }
         }
+    }
+
+    /// Submit the typed SSH password (B3): cache it if "记住密码" is checked, send
+    /// it to the backend, and close the card. Shared by Enter and the 连接 button.
+    fn submit_ssh_password(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ssh_password_prompt.take() else { return };
+        let pw = std::mem::take(&mut self.ssh_password_input);
+        if self.ssh_password_remember && !pw.is_empty() {
+            cx.emit(SshRememberPassword(pw.clone()));
+        }
+        let _ = p.reply.send(pw);
+        cx.notify();
+    }
+
+    /// Cancel the SSH password prompt (Esc / 取消): reply empty → auth fails →
+    /// error card.
+    fn cancel_ssh_password(&mut self, cx: &mut Context<Self>) {
+        let Some(p) = self.ssh_password_prompt.take() else { return };
+        let _ = p.reply.send(String::new());
+        self.ssh_password_input.clear();
+        cx.notify();
     }
 
     /// Drop the agent identity + everything that hangs off it (usage, activity-rail
@@ -1162,21 +1204,15 @@ impl TerminalView {
             return;
         }
         // Handle SSH password prompt input intercept
-        if let Some((_, reply)) = self.ssh_password_prompt.as_ref() {
+        if self.ssh_password_prompt.is_some() {
             let keystroke = &event.keystroke;
             let key = keystroke.key.as_str();
             if key == "escape" {
-                let _ = reply.send(String::new());
-                self.ssh_password_prompt = None;
-                self.ssh_password_input.clear();
-                cx.notify();
+                self.cancel_ssh_password(cx);
                 cx.stop_propagation();
                 return;
             } else if key == "enter" {
-                let _ = reply.send(self.ssh_password_input.clone());
-                self.ssh_password_prompt = None;
-                self.ssh_password_input.clear();
-                cx.notify();
+                self.submit_ssh_password(cx);
                 cx.stop_propagation();
                 return;
             } else if key == "backspace" {
@@ -1358,6 +1394,7 @@ impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
 impl gpui::EventEmitter<SshConnected> for TerminalView {}
 impl gpui::EventEmitter<SshRetryRequested> for TerminalView {}
 impl gpui::EventEmitter<SshCloseRequested> for TerminalView {}
+impl gpui::EventEmitter<SshRememberPassword> for TerminalView {}
 
 /// IME / text input (fixes "终端无法输入中文"). gpui only delivers IME-composed text
 /// (pinyin → 中文) through an [`EntityInputHandler`]; without one, only ASCII
@@ -1864,65 +1901,8 @@ impl Render for TerminalView {
             term_area
         };
 
-        let ssh_prompt = self.ssh_password_prompt.as_ref().map(|(prompt, _)| {
-            let mono = self.font_family.clone();
-
-            // 输入区域：遮罩密码 + 光标
-            let input_row = div()
-                .flex().flex_row().items_center()
-                .gap(px(10.)).px(px(16.)).py(px(13.))
-                .text_size(px(14.))
-                .child(div().child(crate::style::icon("lock", 16., self.ui_muted)))
-                .child(
-                    div().flex().flex_row().items_center()
-                        .font_family(mono.clone())
-                        .when(!self.ssh_password_input.is_empty(), |d| {
-                            d.child(div().text_color(col(self.ui_fg))
-                                .child(SharedString::from("•".repeat(self.ssh_password_input.len()))))
-                        })
-                        .child(div().text_color(col(self.ui_muted)).child("▏"))
-                        .when(self.ssh_password_input.is_empty(), |d| {
-                            d.child(div().ml(px(2.)).text_color(col(self.ui_muted)).child("输入密码"))
-                        })
-                );
-
-            // 面板：Calm Glass 材质
-            let panel = crate::style::shadowed(
-                div().flex().flex_col()
-                    .w(px(400.))
-                    .rounded(px(crate::style::R_PANEL))
-                    .overflow_hidden()
-                    .border_1().border_color(rgba(crate::style::RIM))
-                    .bg(gpui::linear_gradient(180.,
-                        gpui::linear_color_stop(cola(self.palette.bg, 0.92), 0.),
-                        gpui::linear_color_stop(rgba(0x161826eb), 1.),
-                    ))
-                    .child(
-                        div().p(px(12.)).text_size(px(12.5))
-                            .text_color(col(self.ui_fg))
-                            .font_weight(FontWeight(560.))
-                            .child(SharedString::from(prompt.clone()))
-                    )
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
-                    .child(input_row)
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
-                    .child(
-                        div().p(px(12.)).text_size(px(12.))
-                            .text_color(col(self.ui_muted))
-                            .child("Enter 提交 · Esc 取消")
-                    ),
-                vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
-            );
-
-            // 全屏遮罩 + 居中
-            div().absolute().size_full()
-                .flex().items_center().justify_center()
-                .bg(rgba(0x0a0b118c))  // scrim
-                .child(panel)
-        });
-
-        // ── SSH connection cards (B1 progress / C1 error). Precedence: a password
-        // prompt wins (it's interactive); then the error card; then progress. ──
+        // ── SSH connection cards (B1 progress / C1 error / B3 password). Only one
+        // is ever active at a time (password > error > progress, gated below). ──
         let card_chrome = |inner: gpui::Div| -> gpui::Div {
             let panel = crate::style::shadowed(
                 inner
@@ -2083,6 +2063,95 @@ impl Render for TerminalView {
                 )
             });
 
+        // B3: password card — masked input + eye reveal + remember checkbox + error
+        // line (in-place retry) + 连接/取消. Reuses the shared card chrome.
+        let ssh_password_card = self.ssh_password_prompt.as_ref().map(|p| {
+            let mono = self.font_family.clone();
+            let revealed = self.ssh_password_reveal;
+            let shown: SharedString = if self.ssh_password_input.is_empty() {
+                SharedString::from("")
+            } else if revealed {
+                SharedString::from(self.ssh_password_input.clone())
+            } else {
+                SharedString::from("•".repeat(self.ssh_password_input.chars().count()))
+            };
+            let input_row = div()
+                .flex().flex_row().items_center().gap(px(10.)).px(px(14.)).py(px(11.))
+                .child(crate::style::icon("lock", 15., self.ui_muted))
+                .child(
+                    div().flex_1().flex().flex_row().items_center().font_family(mono.clone()).text_size(px(14.))
+                        .when(!self.ssh_password_input.is_empty(), |d| {
+                            d.child(div().text_color(col(self.ui_fg)).child(shown))
+                        })
+                        .child(div().text_color(col(self.ui_muted)).child("▏"))
+                        .when(self.ssh_password_input.is_empty(), |d| {
+                            d.child(div().ml(px(2.)).text_color(col(self.ui_muted)).child("输入密码"))
+                        }),
+                )
+                // 👁 reveal toggle
+                .child(
+                    div().flex_none().p(px(2.)).rounded(px(6.)).hover(|s| s.bg(rgba(crate::style::HOVER)))
+                        .child(crate::style::icon("eye", 15., if revealed { self.ui_accent } else { self.ui_muted }))
+                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                            cx.stop_propagation();
+                            this.ssh_password_reveal = !this.ssh_password_reveal;
+                            cx.notify();
+                        })),
+                );
+            // remember checkbox
+            let remembered = self.ssh_password_remember;
+            let remember_row = div()
+                .flex().flex_row().items_center().gap(px(8.)).px(px(14.)).py(px(9.))
+                .child(
+                    div().w(px(16.)).h(px(16.)).flex_none().rounded(px(5.)).flex().items_center().justify_center()
+                        .when(remembered, |d| d.bg(cola(self.ui_accent, 0.9)))
+                        .when(!remembered, |d| d.border_1().border_color(cola(self.ui_muted, 0.6)))
+                        .when(remembered, |d| d.child(crate::style::icon("check", 12., self.palette.bg))),
+                )
+                .child(div().text_size(px(11.5)).text_color(col(self.ui_muted)).child("记住密码(仅本会话)"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.ssh_password_remember = !this.ssh_password_remember;
+                    cx.notify();
+                }));
+            // buttons
+            let connect = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
+                .child(crate::style::icon("enter", 13., self.ui_accent))
+                .child(div().text_size(px(12.)).child("连接"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.submit_ssh_password(cx);
+                }));
+            let cancel = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .child(div().text_size(px(12.)).child("取消"))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.cancel_ssh_password(cx);
+                }));
+            card_chrome(
+                div()
+                    .child(card_header("lock", self.ui_accent, "输入密码", &p.prompt))
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .when_some(p.error.clone(), |d, err| {
+                        d.child(
+                            div().flex().flex_row().items_center().gap(px(6.)).px(px(14.)).pt(px(10.))
+                                .child(crate::style::icon("alert", 13., self.ui_red))
+                                .child(div().text_size(px(11.5)).text_color(col(self.ui_red)).child(SharedString::from(err))),
+                        )
+                    })
+                    .child(input_row)
+                    .child(remember_row)
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.)).child(cancel).child(connect)),
+            )
+        });
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
@@ -2101,7 +2170,7 @@ impl Render for TerminalView {
             .when_some(block_bar, |this, bar| this.child(bar))
             .when_some(ssh_progress_card, |this, p| this.child(p))
             .when_some(ssh_error_card, |this, p| this.child(p))
-            .when_some(ssh_prompt, |this, p| this.child(p))
+            .when_some(ssh_password_card, |this, p| this.child(p))
     }
 }
 
