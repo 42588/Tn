@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(t.name, "Tn Dark");
         assert_eq!(t.appearance, Mode::Dark);
         assert_eq!(t.ansi.red, Color::new(0xF7, 0x76, 0x8E));
-        assert_eq!(t.terminal.background, Color::new(0x1A, 0x1B, 0x26));
+        assert_eq!(t.terminal.background, Color::new(0x11, 0x14, 0x24)); // 深化自 #1a1b26(2026-06-01 抗色带)
         assert_eq!(t.terminal.foreground, Color::new(0xC0, 0xCA, 0xF5));
         assert_eq!(t.ui.accent, Color::new(0x7A, 0xA2, 0xF7));
         assert_eq!(t.ui.window.backdrop, Backdrop::Mica);
