@@ -70,45 +70,57 @@ impl SshConfig {
         }
     }
 
-    /// Parse a `[user@]host[:port]` target, merging with `~/.ssh/config`. `user`
-    /// falls back to the ssh config, then `$USERNAME` / `$USER`, else `"root"`.
+    /// Parse a `[user@]host[:port]` target, merging with `~/.ssh/config`. Explicit
+    /// target pieces win: `root@alias:2222` keeps that user/port while still using
+    /// `HostName` / `IdentityFile` from the alias. `user` falls back to the ssh
+    /// config, then `$USERNAME` / `$USER`, else `"root"`.
     pub fn parse(target: &str, user: Option<&str>) -> Self {
+        let ssh_config = home_dir()
+            .and_then(|home| std::fs::read_to_string(home.join(".ssh").join("config")).ok());
+        Self::parse_with_ssh_config(target, user, ssh_config.as_deref())
+    }
+
+    fn parse_with_ssh_config(target: &str, user: Option<&str>, ssh_config: Option<&str>) -> Self {
         let (target_no_user, inline_user) = match target.split_once('@') {
             Some((u, rest)) if !u.is_empty() => (rest, Some(u)),
             _ => (target, None),
         };
 
-        let (mut host, mut port) = match target_no_user.rsplit_once(':') {
+        let (mut host, mut port, explicit_port) = match target_no_user.rsplit_once(':') {
             Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
-                (h.to_string(), p.parse().unwrap())
+                (h.to_string(), p.parse().unwrap(), true)
             }
-            _ => (target_no_user.to_string(), 22),
+            _ => (target_no_user.to_string(), 22, false),
         };
 
+        let explicit_user = inline_user.is_some() || user.is_some();
         let mut user = inline_user.or(user).map(str::to_string);
         let mut key_path = None;
 
-        if let Some(home) = home_dir() {
-            let config_path = home.join(".ssh").join("config");
-            if let Ok(file) = std::fs::File::open(&config_path) {
-                let mut reader = std::io::BufReader::new(file);
-                if let Ok(ssh_cfg) = ssh2_config::SshConfig::default().parse(&mut reader, ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS) {
-                    let params = ssh_cfg.query(&host);
-                    if let Some(cfg_host) = params.host_name {
-                        host = cfg_host;
-                    }
+        if let Some(content) = ssh_config {
+            let mut reader = std::io::BufReader::new(content.as_bytes());
+            if let Ok(ssh_cfg) = ssh2_config::SshConfig::default()
+                .parse(&mut reader, ssh2_config::ParseRule::ALLOW_UNKNOWN_FIELDS)
+            {
+                let params = ssh_cfg.query(&host);
+                if let Some(cfg_host) = params.host_name {
+                    host = cfg_host;
+                }
+                if !explicit_port {
                     if let Some(cfg_port) = params.port {
                         port = cfg_port;
                     }
+                }
+                if !explicit_user {
                     if let Some(cfg_user) = params.user {
                         user = Some(cfg_user);
                     }
-                    if let Some(keys) = params.identity_file {
-                        if !keys.is_empty() {
-                            // The path might contain ~ which needs expansion, but ssh2-config
-                            // already expands it to absolute path based on home_dir.
-                            key_path = Some(keys[0].clone());
-                        }
+                }
+                if let Some(keys) = params.identity_file {
+                    if !keys.is_empty() {
+                        // The path might contain ~ which needs expansion, but ssh2-config
+                        // already expands it to absolute path based on home_dir.
+                        key_path = Some(keys[0].clone());
                     }
                 }
             }
@@ -118,8 +130,14 @@ impl SshConfig {
             .or_else(|| std::env::var("USERNAME").ok())
             .or_else(|| std::env::var("USER").ok())
             .unwrap_or_else(|| "root".to_string());
-            
-        Self { host, port, user, key_path, password: None }
+
+        Self {
+            host,
+            port,
+            user,
+            key_path,
+            password: None,
+        }
     }
 
     /// Candidate private keys: the explicit path if set, else the usual
@@ -187,7 +205,12 @@ pub fn list_ssh_config_hosts() -> Vec<SshHostEntry> {
                     port = p;
                 }
             }
-            SshHostEntry { alias, host, user, port }
+            SshHostEntry {
+                alias,
+                host,
+                user,
+                port,
+            }
         })
         .collect()
 }
@@ -278,7 +301,10 @@ impl SshBackend {
         std::thread::Builder::new()
             .name("tn-ssh".into())
             .spawn(move || {
-                let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
                     Ok(rt) => rt,
                     Err(e) => {
                         tracing::error!("ssh: tokio runtime: {e}");
@@ -288,8 +314,18 @@ impl SshBackend {
                 };
                 let exit_run = exit_thread.clone();
                 rt.block_on(async move {
-                    if let Err(e) =
-                        run_session(cfg, size, out_rx, resize_rx, kill_rx, in_tx, event_tx, waker_clone, &exit_run).await
+                    if let Err(e) = run_session(
+                        cfg,
+                        size,
+                        out_rx,
+                        resize_rx,
+                        kill_rx,
+                        in_tx,
+                        event_tx,
+                        waker_clone,
+                        &exit_run,
+                    )
+                    .await
                     {
                         tracing::error!("ssh session: {e:#}");
                     }
@@ -299,7 +335,11 @@ impl SshBackend {
             .context("spawn ssh thread")?;
 
         Ok(Self {
-            reader: Some(Box::new(ChannelReader { rx: in_rx, buf: Vec::new(), pos: 0 })),
+            reader: Some(Box::new(ChannelReader {
+                rx: in_rx,
+                buf: Vec::new(),
+                pos: 0,
+            })),
             out_tx,
             resize_tx,
             kill_tx,
@@ -382,7 +422,13 @@ async fn run_session(
             key_rejected: key_rejected.clone(),
         };
 
-        let _ = in_tx.send(format!("\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n", cfg.user, cfg.host, cfg.port).into_bytes());
+        let _ = in_tx.send(
+            format!(
+                "\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n",
+                cfg.user, cfg.host, cfg.port
+            )
+            .into_bytes(),
+        );
         emit_event(
             &event_tx,
             &waker,
@@ -394,8 +440,9 @@ async fn run_session(
 
         let connect_res = tokio::time::timeout(
             Duration::from_secs(15),
-            client::connect(config.clone(), (cfg.host.as_str(), cfg.port), handler)
-        ).await;
+            client::connect(config.clone(), (cfg.host.as_str(), cfg.port), handler),
+        )
+        .await;
 
         let mut handle = match connect_res {
             Ok(Ok(h)) => h,
@@ -433,7 +480,11 @@ async fn run_session(
             }
         };
 
-        let _ = in_tx.send("\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n".as_bytes().to_vec());
+        let _ = in_tx.send(
+            "\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n"
+                .as_bytes()
+                .to_vec(),
+        );
         emit_event(
             &event_tx,
             &waker,
@@ -443,16 +494,37 @@ async fn run_session(
             },
         );
 
-        let mut channel = handle.channel_open_session().await.context("open session")?;
+        let mut channel = handle
+            .channel_open_session()
+            .await
+            .context("open session")?;
         channel
-            .request_pty(false, "xterm-256color", current_size.cols as u32, current_size.rows as u32, 0, 0, &[])
+            .request_pty(
+                false,
+                "xterm-256color",
+                current_size.cols as u32,
+                current_size.rows as u32,
+                0,
+                0,
+                &[],
+            )
             .await
             .context("request pty")?;
         channel.request_shell(true).await.context("request shell")?;
+        // Keystrokes typed while the progress/password/host-key overlays were up
+        // must not replay into the remote shell after connect/reconnect. The UI
+        // swallows them now, but drain defensively for bytes queued before that fix
+        // or from non-keyboard paths.
+        drain_pending_input(&mut out_rx);
 
         // Connected — let the UI record this target as a recent connection (A1),
         // tagged with the method that actually worked.
-        if event_tx.send(crate::PtyEvent::Connected { method: auth_method }).is_ok() {
+        if event_tx
+            .send(crate::PtyEvent::Connected {
+                method: auth_method,
+            })
+            .is_ok()
+        {
             if let Some(w) = waker.lock().unwrap().as_ref() {
                 w();
             }
@@ -494,7 +566,11 @@ async fn run_session(
         if explicit_exit {
             return Ok(());
         } else {
-            let _ = in_tx.send("\r\n\x1b[33m[SSH]\x1b[0m 连接已断开。5 秒后自动重连... (Ctrl+D 取消)\r\n".as_bytes().to_vec());
+            let _ = in_tx.send(
+                "\r\n\x1b[33m[SSH]\x1b[0m 连接已断开。5 秒后自动重连... (Ctrl+D 取消)\r\n"
+                    .as_bytes()
+                    .to_vec(),
+            );
             if event_tx.send(crate::PtyEvent::Disconnected).is_ok() {
                 if let Some(w) = waker.lock().unwrap().as_ref() {
                     w();
@@ -532,7 +608,9 @@ async fn authenticate(
     match handle.authenticate_none(cfg.user.as_str()).await {
         // Passwordless `none` accepted (very rare) — no secret given, badge as key.
         Ok(client::AuthResult::Success) => return Ok(crate::AuthKind::PublicKey),
-        Ok(client::AuthResult::Failure { remaining_methods, .. }) => {
+        Ok(client::AuthResult::Failure {
+            remaining_methods, ..
+        }) => {
             methods = remaining_methods.iter().copied().collect();
             let _ = in_tx.send(
                 format!(
@@ -559,7 +637,11 @@ async fn authenticate(
     if server_offers(&methods, russh::MethodKind::PublicKey) {
         for path in &cfg.key_candidates() {
             let _ = in_tx.send(
-                format!("\r\n\x1b[36m[SSH]\x1b[0m 尝试密钥认证 ({})...", path.display()).into_bytes(),
+                format!(
+                    "\r\n\x1b[36m[SSH]\x1b[0m 尝试密钥认证 ({})...",
+                    path.display()
+                )
+                .into_bytes(),
             );
             let key = match load_secret_key(path, None) {
                 Ok(k) => k,
@@ -596,8 +678,11 @@ async fn authenticate(
                 break; // user cancelled / empty input
             };
             if server_offers(&methods, russh::MethodKind::Password) {
-                let _ = in_tx
-                    .send("\r\n\x1b[36m[SSH]\x1b[0m 尝试密码认证 (password)...".as_bytes().to_vec());
+                let _ = in_tx.send(
+                    "\r\n\x1b[36m[SSH]\x1b[0m 尝试密码认证 (password)..."
+                        .as_bytes()
+                        .to_vec(),
+                );
                 if handle
                     .authenticate_password(cfg.user.as_str(), pw.as_str())
                     .await?
@@ -682,7 +767,11 @@ fn methods_str(methods: &[russh::MethodKind]) -> String {
     if methods.is_empty() {
         return "(未知)".to_string();
     }
-    methods.iter().map(String::from).collect::<Vec<_>>().join(", ")
+    methods
+        .iter()
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Prompt the UI for a password and block (off-runtime) on the reply. `error`
@@ -694,7 +783,11 @@ async fn prompt_password(
     in_tx: &StdSender<Vec<u8>>,
     error: Option<String>,
 ) -> Option<String> {
-    let _ = in_tx.send("\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码...".as_bytes().to_vec());
+    let _ = in_tx.send(
+        "\r\n\x1b[36m[SSH]\x1b[0m 请求输入密码..."
+            .as_bytes()
+            .to_vec(),
+    );
     let (tx, rx) = std::sync::mpsc::channel();
     if event_tx
         .send(crate::PtyEvent::NeedPassword {
@@ -800,17 +893,36 @@ impl client::Handler for ClientHandler {
         }
 
         // First contact with an unrecognized host → ask the user (B2 TOFU).
-        tracing::info!("SSH: unknown host {}:{}, asking to trust (TOFU)", self.host, self.port);
+        tracing::info!(
+            "SSH: unknown host {}:{}, asking to trust (TOFU)",
+            self.host,
+            self.port
+        );
         match self.confirm_host_key(&fingerprint).await {
             crate::HostKeyVerdict::AcceptAndSave => {
-                append_known_host(&known_hosts_path, &self.host, self.port, key);
-                Ok(true)
+                match append_known_host(&known_hosts_path, &self.host, self.port, key) {
+                    Ok(()) => Ok(true),
+                    Err(e) => {
+                        let _ = self.in_tx.send(
+                            format!(
+                                "\r\n\x1b[31m[SSH]\x1b[0m 无法写入 known_hosts({}): {e}\r\n\
+                                 \x1b[33m[SSH]\x1b[0m 未保存主机信任,连接已中止。可取消「记住此主机」后仅信任本次。\r\n",
+                                known_hosts_path.display()
+                            )
+                            .into_bytes(),
+                        );
+                        self.key_rejected.store(true, Ordering::Relaxed);
+                        Ok(false)
+                    }
+                }
             }
             crate::HostKeyVerdict::AcceptOnce => Ok(true),
             crate::HostKeyVerdict::Reject => {
-                let _ = self
-                    .in_tx
-                    .send("\r\n\x1b[33m[SSH]\x1b[0m 已取消:未信任主机指纹。\r\n".as_bytes().to_vec());
+                let _ = self.in_tx.send(
+                    "\r\n\x1b[33m[SSH]\x1b[0m 已取消:未信任主机指纹。\r\n"
+                        .as_bytes()
+                        .to_vec(),
+                );
                 self.key_rejected.store(true, Ordering::Relaxed);
                 Ok(false)
             }
@@ -845,17 +957,33 @@ impl ClientHandler {
     }
 }
 
-fn append_known_host(path: &Path, host: &str, port: u16, key: &ssh_key::PublicKey) {
-    if let Ok(key_str) = key.to_openssh() {
-        let entry = if port == 22 {
-            format!("{} {}\n", host, key_str)
-        } else {
-            format!("[{}]:{} {}\n", host, port, key_str)
-        };
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = file.write_all(entry.as_bytes());
-        }
+fn append_known_host(
+    path: &Path,
+    host: &str,
+    port: u16,
+    key: &ssh_key::PublicKey,
+) -> anyhow::Result<()> {
+    let key_str = key.to_openssh().context("encode public key")?;
+    let entry = if port == 22 {
+        format!("{} {}\n", host, key_str)
+    } else {
+        format!("[{}]:{} {}\n", host, port, key_str)
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    file.write_all(entry.as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(())
+}
+
+fn drain_pending_input(out_rx: &mut UnboundedReceiver<Vec<u8>>) {
+    while out_rx.try_recv().is_ok() {}
 }
 
 /// Sync `Read` end of the remote→local pipe, fed by the session loop's
@@ -913,6 +1041,17 @@ impl Killer for SshKiller {
 mod tests {
     use super::*;
 
+    fn assert_key_path_ends_with(key_path: Option<&PathBuf>, suffix: &str) {
+        let normalized = key_path
+            .expect("key path")
+            .to_string_lossy()
+            .replace('\\', "/");
+        assert!(
+            normalized.ends_with(suffix),
+            "{normalized:?} should end with {suffix:?}"
+        );
+    }
+
     #[test]
     fn parse_host_only_defaults_port_22() {
         let c = SshConfig::parse("example.com", Some("alice"));
@@ -942,6 +1081,41 @@ mod tests {
         assert_eq!(c.user, "admin");
         assert_eq!(c.host, "192.168.1.1");
         assert_eq!(c.port, 2222);
+    }
+
+    #[test]
+    fn parse_ssh_config_alias_fills_missing_pieces() {
+        let cfg = "\
+Host alma
+  HostName 10.0.0.5
+  User deploy
+  Port 2200
+  IdentityFile ~/.ssh/alma_ed25519
+";
+        let c = SshConfig::parse_with_ssh_config("alma", None, Some(cfg));
+        assert_eq!(c.host, "10.0.0.5");
+        assert_eq!(c.port, 2200);
+        assert_eq!(c.user, "deploy");
+        assert_key_path_ends_with(c.key_path.as_ref(), "/.ssh/alma_ed25519");
+    }
+
+    #[test]
+    fn parse_explicit_user_and_port_override_ssh_config_alias() {
+        let cfg = "\
+Host alma
+  HostName 10.0.0.5
+  User deploy
+  Port 2200
+  IdentityFile ~/.ssh/alma_ed25519
+";
+        let c = SshConfig::parse_with_ssh_config("root@alma:2222", Some("ignored"), Some(cfg));
+        assert_eq!(c.host, "10.0.0.5", "alias HostName still resolves");
+        assert_eq!(c.port, 2222, "typed port beats ssh_config Port");
+        assert_eq!(
+            c.user, "root",
+            "inline user beats explicit arg and ssh_config User"
+        );
+        assert_key_path_ends_with(c.key_path.as_ref(), "/.ssh/alma_ed25519");
     }
 
     #[test]
@@ -995,5 +1169,28 @@ Host alma
     #[test]
     fn host_aliases_empty_when_no_host_lines() {
         assert!(parse_host_aliases("# just a comment\nForwardAgent yes\n").is_empty());
+    }
+
+    #[test]
+    fn drain_pending_input_clears_buffered_keystrokes() {
+        let (tx, mut rx) = unbounded_channel();
+        tx.send(b"queued-before-connect".to_vec()).unwrap();
+        tx.send(b"\r".to_vec()).unwrap();
+        drain_pending_input(&mut rx);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn append_known_host_creates_parent_and_writes_port_format() {
+        let dir = std::env::temp_dir().join(format!("tn-known-hosts-{}", std::process::id()));
+        let path = dir.join(".ssh").join("known_hosts");
+        let key = russh::keys::parse_public_key_base64(
+            "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ",
+        )
+        .unwrap();
+        append_known_host(&path, "example.com", 2222, &key).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("[example.com]:2222 ssh-ed25519 "));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

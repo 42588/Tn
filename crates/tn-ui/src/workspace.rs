@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
     AnyElement, App, AppContext, AsyncApp, Context, Entity, FocusHandle, KeyBinding, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Rgba, SharedString,
-    Subscription, WeakEntity, Window, WindowControlArea,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Rgba,
+    SharedString, Subscription, WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -26,8 +26,8 @@ use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::ssh_recents::{AuthBadge, SshRecents};
 use crate::terminal_view::{
-    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected, SshRememberPassword,
-    SshRetryRequested, TerminalView, UsageUpdated,
+    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected,
+    SshRememberPassword, SshRetryRequested, TerminalView, UsageUpdated,
 };
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
@@ -36,8 +36,8 @@ type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
 use crate::style::{
-    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, DIVIDER, HOVER,
-    INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
+    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, DIVIDER, HOVER, INSET, RIM,
+    R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -92,7 +92,11 @@ pub(crate) fn human_tokens(n: u64) -> String {
 /// Short cwd for the tab badge / shell header: last two path components (`proj/tn`).
 pub(crate) fn short_cwd(p: &str) -> String {
     let p = p.trim().replace('\\', "/");
-    let parts: Vec<&str> = p.trim_end_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = p
+        .trim_end_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     match parts.len() {
         0 => p,
         1 => parts[0].to_string(),
@@ -253,7 +257,11 @@ impl Node {
                 } else {
                     vec![old, Node::Leaf(new)]
                 };
-                *self = Node::Split { axis, kids, weights: vec![1.0, 1.0] };
+                *self = Node::Split {
+                    axis,
+                    kids,
+                    weights: vec![1.0, 1.0],
+                };
                 true
             }
             Node::Leaf(_) => false,
@@ -303,7 +311,12 @@ impl Node {
     /// `axis`-matching split — whose subtree holds `target`. Innermost match
     /// wins, so resize is local to the focused pane. Returns true if applied.
     fn resize(&mut self, target: PaneId, axis: Axis, delta: f32) -> bool {
-        if let Node::Split { axis: sa, kids, weights } = self {
+        if let Node::Split {
+            axis: sa,
+            kids,
+            weights,
+        } = self
+        {
             // Recurse first: a deeper matching split is more local.
             for k in kids.iter_mut() {
                 if k.resize(target, axis, delta) {
@@ -383,11 +396,19 @@ const WELCOME_DUMMY: PaneId = PaneId::MAX;
 impl Tab {
     /// A fresh welcome-launchpad tab (no pane — dummy root/focused never touched).
     fn welcome() -> Self {
-        Tab { root: Node::Leaf(WELCOME_DUMMY), focused: WELCOME_DUMMY, welcome: true }
+        Tab {
+            root: Node::Leaf(WELCOME_DUMMY),
+            focused: WELCOME_DUMMY,
+            welcome: true,
+        }
     }
     /// A tab holding a (single, to start) pane tree.
     fn panes(root: Node, focused: PaneId) -> Self {
-        Tab { root, focused, welcome: false }
+        Tab {
+            root,
+            focused,
+            welcome: false,
+        }
     }
 }
 
@@ -479,7 +500,10 @@ pub fn bind_keys(cx: &mut App, config: &Loaded) {
         .map(|a| (a.id.as_str(), a.command.as_str()))
         .collect();
     for kb in &config.config.keybindings {
-        let command = cmd_for_id.get(kb.id.as_str()).copied().unwrap_or(kb.id.as_str());
+        let command = cmd_for_id
+            .get(kb.id.as_str())
+            .copied()
+            .unwrap_or(kb.id.as_str());
         if let Some(b) = binding_for(&kb.keys, command) {
             binds.push(b); // unknown action ids are silently skipped
         }
@@ -620,7 +644,7 @@ pub struct Workspace {
 }
 
 #[derive(Clone, Copy)]
-pub enum SshPromptIntent {
+enum SshPromptIntent {
     Welcome,
     Palette,
     Split(SplitDir),
@@ -737,9 +761,10 @@ impl Workspace {
                     if let Some(pane_id) = ws.ql_rail_pane {
                         // QuickLook was opened from an agent rail card → navigate
                         // within that pane's changed-file list only.
-                        let result = ws.panes.get(&pane_id).and_then(|v| {
-                            v.read(cx).rail_nav(ws.ql_rail_idx, *delta)
-                        });
+                        let result = ws
+                            .panes
+                            .get(&pane_id)
+                            .and_then(|v| v.read(cx).rail_nav(ws.ql_rail_idx, *delta));
                         if let Some((new_idx, path)) = result {
                             ws.ql_rail_idx = new_idx;
                             ws.quick_look.update(cx, |v, cx| {
@@ -749,7 +774,9 @@ impl Workspace {
                     } else {
                         // QuickLook was opened from the explorer → use the old
                         // tree-wide navigation (selects the adjacent file in the tree).
-                        let next = ws.explorer.update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
+                        let next = ws
+                            .explorer
+                            .update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
                         if let Some(path) = next {
                             ws.quick_look.update(cx, |v, cx| {
                                 v.open(path, cx);
@@ -772,7 +799,8 @@ impl Workspace {
                         view.update(cx, |v, cx| v.refresh_changes(cx));
                     }
                     // Also mark the explorer stale so git tags refresh.
-                    ws.explorer.update(cx, |explorer, _cx| explorer.mark_stale());
+                    ws.explorer
+                        .update(cx, |explorer, _cx| explorer.mark_stale());
                     cx.notify();
                 }
             }
@@ -788,16 +816,19 @@ impl Workspace {
             cx.notify();
         })
         .detach();
-        cx.subscribe(&welcome, |ws, _welcome, _ev: &crate::welcome::SshPromptRequested, cx| {
-            ws.ssh_prompt_open = true;
-            ws.ssh_prompt_needs_focus = true;
-            ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
-            ws.ssh_prompt_input.clear();
-            ws.ssh_prompt_sel = 0;
-            ws.ssh_save = None;
-            ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
-            cx.notify();
-        })
+        cx.subscribe(
+            &welcome,
+            |ws, _welcome, _ev: &crate::welcome::SshPromptRequested, cx| {
+                ws.ssh_prompt_open = true;
+                ws.ssh_prompt_needs_focus = true;
+                ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
+                ws.ssh_prompt_input.clear();
+                ws.ssh_prompt_sel = 0;
+                ws.ssh_save = None;
+                ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
+                cx.notify();
+            },
+        )
         .detach();
         let mut ws = Self {
             tabs: Vec::new(),
@@ -974,7 +1005,12 @@ impl Workspace {
     /// (history scrolls out of view) and the layout jitter. So the actual resize
     /// is deferred to release (`on_divider_up`); during the drag a thin ghost line
     /// shows where the seam will land.
-    fn on_divider_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_divider_move(
+        &mut self,
+        ev: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(d) = self.divider_drag.as_mut() {
             d.cur_pos = match d.axis {
                 Axis::Row => f32::from(ev.position.x),
@@ -995,7 +1031,12 @@ impl Workspace {
     fn on_divider_up(&mut self, _ev: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if let Some(d) = self.divider_drag.take() {
             cx.notify();
-            let extent = self.split_extents.borrow().get(&d.path).copied().unwrap_or(0.0);
+            let extent = self
+                .split_extents
+                .borrow()
+                .get(&d.path)
+                .copied()
+                .unwrap_or(0.0);
             if extent <= 1.0 {
                 return;
             }
@@ -1008,7 +1049,9 @@ impl Workspace {
             // Pixel delta → weight units (weights are relative: 1px = sum/extent units).
             let dw = (d.cur_pos - d.start_pos) / extent * sum;
             let w0 = (d.start_weights[d.gap] + dw).clamp(min, pair - min);
-            if let Some(Node::Split { weights, .. }) = self.tabs[self.active].root.at_path_mut(&d.path) {
+            if let Some(Node::Split { weights, .. }) =
+                self.tabs[self.active].root.at_path_mut(&d.path)
+            {
                 if d.gap + 1 < weights.len() {
                     weights[d.gap] = w0;
                     weights[d.gap + 1] = pair - w0;
@@ -1167,7 +1210,8 @@ impl Workspace {
     /// Close a specific pane by `id` (the SSH cards' 取消 / 关闭). Mirrors
     /// [`close_pane`](Self::close_pane) but targets an arbitrary id in whatever tab
     /// holds it, and defers focus to `render`'s focus reconciliation (no `Window`
-    /// in an event callback). The only pane of the only tab is left as-is.
+    /// in an event callback). If this is the last pane in the last tab, fall back
+    /// to the welcome launchpad so SSH cancel/close never leaves a dead card behind.
     fn close_pane_id(&mut self, id: PaneId, cx: &mut Context<Self>) {
         let Some(ti) = self.tabs.iter().position(|t| {
             let mut leaves = Vec::new();
@@ -1183,6 +1227,11 @@ impl Workspace {
                 self.pane_specs.remove(&id);
                 self.tabs.remove(ti);
                 self.active = self.active.min(self.tabs.len() - 1);
+            } else {
+                self.panes.remove(&id);
+                self.pane_specs.remove(&id);
+                self.tabs[ti] = Tab::welcome();
+                self.active = ti;
             }
             cx.notify();
             return;
@@ -1202,7 +1251,9 @@ impl Workspace {
     fn cd_shells_to(&self, dir: &std::path::Path, cx: &Context<Self>) {
         let path = dir.to_string_lossy().to_string();
         for (id, view) in &self.panes {
-            let Some(spec) = self.pane_specs.get(id) else { continue };
+            let Some(spec) = self.pane_specs.get(id) else {
+                continue;
+            };
             let prog = spec.program.to_ascii_lowercase();
             let is_plain_shell = spec.agent.is_none()
                 && spec.ssh.is_none()
@@ -1249,14 +1300,24 @@ impl Workspace {
     }
 
     /// Show/hide the file explorer sidebar (Ctrl+Shift+B).
-    fn toggle_explorer(&mut self, _: &ToggleExplorer, _window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_explorer(
+        &mut self,
+        _: &ToggleExplorer,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.explorer_open = !self.explorer_open;
         cx.notify();
     }
 
     /// Show/hide the Quick Look overlay (Ctrl+Shift+J). On close, return focus to
     /// the active pane (we have a `window` here, so focus directly).
-    fn toggle_quick_look(&mut self, _: &ToggleQuickLook, window: &mut Window, cx: &mut Context<Self>) {
+    fn toggle_quick_look(
+        &mut self,
+        _: &ToggleQuickLook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.quick_look_open = !self.quick_look_open;
         if !self.quick_look_open {
             self.refocus_after_quick_look(window, cx);
@@ -1342,7 +1403,9 @@ impl Workspace {
     /// sub-list (or launch the lone distro), or no-op on the parked SSH placeholder.
     fn activate_palette_sel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.palette_rows();
-        let Some(row) = rows.get(self.palette_sel) else { return };
+        let Some(row) = rows.get(self.palette_sel) else {
+            return;
+        };
         match *row {
             LaunchRow::Profile(i) => self.launch_profile_in_tab(i, window, cx),
             LaunchRow::DrillWsl => {
@@ -1372,7 +1435,11 @@ impl Workspace {
 
     /// Launch the profile at `idx` in a new tab, then close the palette.
     fn launch_profile_in_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(spec) = self.launch_profiles.get(idx).and_then(LaunchSpec::from_profile) else {
+        let Some(spec) = self
+            .launch_profiles
+            .get(idx)
+            .and_then(LaunchSpec::from_profile)
+        else {
             return;
         };
         self.palette_open = false;
@@ -1473,7 +1540,13 @@ impl Workspace {
     }
 
     /// `新会话` split direction (app menu). Maps to a (`Axis`, before?) split.
-    fn split_session(&mut self, dir: SplitDir, spec: LaunchSpec, window: &mut Window, cx: &mut Context<Self>) {
+    fn split_session(
+        &mut self,
+        dir: SplitDir,
+        spec: LaunchSpec,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let active = self.active;
         let new_id = self.spawn_pane_with(cx, spec);
         if self.tabs[active].welcome {
@@ -1482,13 +1555,20 @@ impl Workspace {
         } else {
             // Prefer the target snapshotted at `新会话` invocation (before the
             // launcher overlay stole focus); fall back to the live `focused` field.
-            let target = self.split_target.take().unwrap_or(self.tabs[active].focused);
-            let ok = self.tabs[active].root.split(target, new_id, dir.axis(), dir.before());
+            let target = self
+                .split_target
+                .take()
+                .unwrap_or(self.tabs[active].focused);
+            let ok = self.tabs[active]
+                .root
+                .split(target, new_id, dir.axis(), dir.before());
             if !ok {
                 // `target` wasn't in the active tree (stale/dummy id) — splitting it
                 // would orphan the new pane. Anchor to the first real leaf instead.
                 let fallback = first_leaf(&self.tabs[active].root);
-                self.tabs[active].root.split(fallback, new_id, dir.axis(), dir.before());
+                self.tabs[active]
+                    .root
+                    .split(fallback, new_id, dir.axis(), dir.before());
             }
         }
         self.split_target = None;
@@ -1654,7 +1734,8 @@ impl Workspace {
                     };
                     let mut child_path = path.clone();
                     child_path.push(i);
-                    container = container.child(wrap.child(self.render_node(kid, focused, cx, child_path)));
+                    container =
+                        container.child(wrap.child(self.render_node(kid, focused, cx, child_path)));
                 }
                 // Capture this split's pixel extent (along its axis) so a divider
                 // drag can map pixels → weight (canvas overlays, no mouse handler
@@ -1688,41 +1769,55 @@ impl Workspace {
                     let start_weights = weights.clone();
                     let mut handle = div().absolute();
                     handle = if row {
-                        handle.top(px(0.)).bottom(px(0.)).left(relative(cum)).w(px(8.))
-                    } else {
-                        handle.left(px(0.)).right(px(0.)).top(relative(cum)).h(px(8.))
-                    };
-                    container = container.child(
                         handle
-                            .hover(|s| s.bg(cola(accent, 0.16)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                                    let pos = if row {
-                                        f32::from(ev.position.x)
-                                    } else {
-                                        f32::from(ev.position.y)
-                                    };
-                                    this.divider_drag = Some(DividerDrag {
-                                        path: dpath.clone(),
-                                        gap,
-                                        axis: ax,
-                                        start_weights: start_weights.clone(),
-                                        start_pos: pos,
-                                        cur_pos: pos,
-                                    });
-                                    cx.stop_propagation(); // don't focus a pane
-                                    cx.notify();
-                                }),
-                            ),
-                    );
+                            .top(px(0.))
+                            .bottom(px(0.))
+                            .left(relative(cum))
+                            .w(px(8.))
+                    } else {
+                        handle
+                            .left(px(0.))
+                            .right(px(0.))
+                            .top(relative(cum))
+                            .h(px(8.))
+                    };
+                    container =
+                        container.child(handle.hover(|s| s.bg(cola(accent, 0.16))).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                let pos = if row {
+                                    f32::from(ev.position.x)
+                                } else {
+                                    f32::from(ev.position.y)
+                                };
+                                this.divider_drag = Some(DividerDrag {
+                                    path: dpath.clone(),
+                                    gap,
+                                    axis: ax,
+                                    start_weights: start_weights.clone(),
+                                    start_pos: pos,
+                                    cur_pos: pos,
+                                });
+                                cx.stop_propagation(); // don't focus a pane
+                                cx.notify();
+                            }),
+                        ));
                 }
                 // Live preview: a thin accent line at the seam's target position
                 // while this split is being dragged (weights only commit on release).
                 if let Some(d) = self.divider_drag.as_ref().filter(|d| d.path == path) {
-                    let extent = self.split_extents.borrow().get(&path).copied().unwrap_or(0.0);
+                    let extent = self
+                        .split_extents
+                        .borrow()
+                        .get(&path)
+                        .copied()
+                        .unwrap_or(0.0);
                     let seam: f32 = weights[..=d.gap].iter().sum::<f32>() / sum;
-                    let delta = if extent > 1.0 { (d.cur_pos - d.start_pos) / extent } else { 0.0 };
+                    let delta = if extent > 1.0 {
+                        (d.cur_pos - d.start_pos) / extent
+                    } else {
+                        0.0
+                    };
                     let at = (seam + delta).clamp(0.02, 0.98);
                     let mut pv = div().absolute();
                     pv = if row {
@@ -1812,7 +1907,11 @@ impl Workspace {
         // branch
         bar = bar.child(seg(vec![
             icon("branch", 13., ui.accent).into_any_element(),
-            div().child(SharedString::from(self.branch.clone().unwrap_or_else(|| "—".into()))).into_any_element(),
+            div()
+                .child(SharedString::from(
+                    self.branch.clone().unwrap_or_else(|| "—".into()),
+                ))
+                .into_any_element(),
         ]));
         // sessions (tab count)
         bar = bar.child(sep()).child(seg(vec![
@@ -1874,7 +1973,11 @@ impl Workspace {
                   danger: bool,
                   act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
             let hover_bg = if danger { danger_hover } else { rgba(HOVER) };
-            let fg = if danger { col(self.config.theme.ansi.red) } else { gpui::rgb(0xA6AFD4) }; // .mi = fg-dim
+            let fg = if danger {
+                col(self.config.theme.ansi.red)
+            } else {
+                gpui::rgb(0xA6AFD4)
+            }; // .mi = fg-dim
             div()
                 .flex()
                 .flex_row()
@@ -1921,44 +2024,109 @@ impl Workspace {
                 .border_1()
                 .border_color(rgba(RIM))
                 .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
-                .on_mouse_down(MouseButton::Left, cx.listener(|_this, _e, _w, cx| cx.stop_propagation()))
-                .child(mi("spark", "新会话…", Some("⌃⇧N"), false, Box::new(|this, w, cx| this.new_session(&NewSession, w, cx))))
-                .child(mi("plus", "新标签", Some("⌃⇧T"), false, Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx))))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_this, _e, _w, cx| cx.stop_propagation()),
+                )
+                .child(mi(
+                    "spark",
+                    "新会话…",
+                    Some("⌃⇧N"),
+                    false,
+                    Box::new(|this, w, cx| this.new_session(&NewSession, w, cx)),
+                ))
+                .child(mi(
+                    "plus",
+                    "新标签",
+                    Some("⌃⇧T"),
+                    false,
+                    Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx)),
+                ))
                 .child(sep())
-                .child(mi("folder", "打开文件夹…", None, false, Box::new(|this, _w, cx| this.menu_open_folder(cx))))
-                .child(mi("max", "布局…", None, false, Box::new(|this, _w, cx| this.open_layout_manager(cx))))
-                .child(mi("sidebar", "文件浏览器", Some("⌃⇧B"), false, Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx))))
+                .child(mi(
+                    "folder",
+                    "打开文件夹…",
+                    None,
+                    false,
+                    Box::new(|this, _w, cx| this.menu_open_folder(cx)),
+                ))
+                .child(mi(
+                    "max",
+                    "布局…",
+                    None,
+                    false,
+                    Box::new(|this, _w, cx| this.open_layout_manager(cx)),
+                ))
+                .child(mi(
+                    "sidebar",
+                    "文件浏览器",
+                    Some("⌃⇧B"),
+                    false,
+                    Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx)),
+                ))
                 .child(sep())
                 // 设置 → open config.toml in our own Quick Look editor (Ctrl+S to save).
-                .child(mi("sliders", "设置", None, false, Box::new(|this, _w, cx| {
-                    if let Some(p) = tn_config::config_path() {
-                        this.quick_look.update(cx, |v, cx| {
-                            v.open_for_edit(p, cx);
-                        });
-                        this.quick_look_open = true;
-                    }
-                })))
+                .child(mi(
+                    "sliders",
+                    "设置",
+                    None,
+                    false,
+                    Box::new(|this, _w, cx| {
+                        if let Some(p) = tn_config::config_path() {
+                            this.quick_look.update(cx, |v, cx| {
+                                v.open_for_edit(p, cx);
+                            });
+                            this.quick_look_open = true;
+                        }
+                    }),
+                ))
                 // 主题 — only one theme for now (the default). A real picker comes
                 // when there is more than one theme.
-                .child(mi("moon", "主题 · Tn Dark", None, false, Box::new(|_t, _w, _cx| {})))
+                .child(mi(
+                    "moon",
+                    "主题 · Tn Dark",
+                    None,
+                    false,
+                    Box::new(|_t, _w, _cx| {}),
+                ))
                 // 重载配置 = panic button: reset config files to defaults + reload
                 // (destructive). No ⌃⇧R keycap — that shortcut is the non-destructive
                 // hot-reload (reads your edited config); this menu item RESETS.
-                .child(mi("refresh", "重载配置", None, false, Box::new(|this, w, cx| this.reset_config(w, cx))))
+                .child(mi(
+                    "refresh",
+                    "重载配置",
+                    None,
+                    false,
+                    Box::new(|this, w, cx| this.reset_config(w, cx)),
+                ))
                 .child(sep())
-                .child(mi("info", "关于 Tn", None, false, Box::new(|_t, _w, cx| {
-                    if let Ok(p) = std::env::current_dir() {
-                        let readme = p.join("README.md");
-                        if readme.exists() { cx.open_with_system(&readme); }
-                    }
-                })))
-                .child(mi("power", "退出", Some("⌃⇧Q"), true, Box::new(|_t, _w, cx| {
-                    crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
-                    if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
-                        crate::platform::remove_tray_icon(th.0);
-                    }
-                    cx.quit();
-                }))),
+                .child(mi(
+                    "info",
+                    "关于 Tn",
+                    None,
+                    false,
+                    Box::new(|_t, _w, cx| {
+                        if let Ok(p) = std::env::current_dir() {
+                            let readme = p.join("README.md");
+                            if readme.exists() {
+                                cx.open_with_system(&readme);
+                            }
+                        }
+                    }),
+                ))
+                .child(mi(
+                    "power",
+                    "退出",
+                    Some("⌃⇧Q"),
+                    true,
+                    Box::new(|_t, _w, cx| {
+                        crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+                        if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+                            crate::platform::remove_tray_icon(th.0);
+                        }
+                        cx.quit();
+                    }),
+                )),
             vec![soft_shadow(30.0, 80.0, -24.0, 0.9)], // mockup .appmenu shadow
         );
 
@@ -2026,7 +2194,12 @@ impl Workspace {
         }
         self.reload_config(&ReloadConfig, window, cx);
     }
-    fn on_ssh_prompt_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_ssh_prompt_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = ev.keystroke.key.as_str();
         // Printable ASCII (no modifiers, no IME CJK slip-through) — used by both
         // the filter box and the save-mode name field.
@@ -2167,7 +2340,10 @@ impl Workspace {
                 continue;
             }
             saved_eps.insert((host.to_ascii_lowercase(), user, port));
-            rows.push(SshConnRow::Saved { name: p.name.clone(), target });
+            rows.push(SshConnRow::Saved {
+                name: p.name.clone(),
+                target,
+            });
         }
 
         // Auto-recents, minus any endpoint already covered by a saved profile.
@@ -2198,7 +2374,10 @@ impl Workspace {
                 continue;
             }
             saved_eps.insert((h.host.to_ascii_lowercase(), user, h.port));
-            rows.push(SshConnRow::Config { alias: h.alias.clone(), target });
+            rows.push(SshConnRow::Config {
+                alias: h.alias.clone(),
+                target,
+            });
         }
         rows
     }
@@ -2207,7 +2386,9 @@ impl Workspace {
     /// `config.toml` (A2), then re-read config so the new named connection shows
     /// in the list immediately.
     fn ssh_save_commit(&mut self, cx: &mut Context<Self>) {
-        let Some(draft) = self.ssh_save.take() else { return };
+        let Some(draft) = self.ssh_save.take() else {
+            return;
+        };
         let name = {
             let t = draft.name.trim();
             if t.is_empty() {
@@ -2321,10 +2502,26 @@ impl Workspace {
         });
         let chip = |label: &str, val: String| {
             div()
-                .flex().flex_row().items_center().gap(px(4.))
-                .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(rgba(HOVER)).text_size(px(10.))
-                .child(div().text_color(col(ui.muted)).child(SharedString::from(label.to_string())))
-                .child(div().font_family(mono.clone()).text_color(col(ui.accent)).child(SharedString::from(val)))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(999.))
+                .bg(rgba(HOVER))
+                .text_size(px(10.))
+                .child(
+                    div()
+                        .text_color(col(ui.muted))
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_color(col(ui.accent))
+                        .child(SharedString::from(val)),
+                )
         };
         let chips_row = chips.as_ref().map(|(user, host, port)| {
             let mut r = div().flex().flex_row().items_center().gap(px(5.));
@@ -2342,34 +2539,70 @@ impl Workspace {
         let ssh_err = validate_ssh_target(&typed).err();
         let red = t.ansi.red;
         let err_chip = ssh_err.map(|msg| {
-            div().flex().flex_row().items_center().gap(px(5.))
-                .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(red, 0.12)).text_size(px(10.))
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(999.))
+                .bg(cola(red, 0.12))
+                .text_size(px(10.))
                 .child(icon("alert", 11., red))
                 .child(div().text_color(col(red)).child(SharedString::from(msg)))
         });
 
         let input = div()
-            .flex().flex_row().items_center().gap(px(10.)).px(px(16.)).py(px(13.))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(16.))
+            .py(px(13.))
             .text_size(px(14.))
             .child(div().child(icon("globe", 16., ui.muted)))
             .child(
-                div().flex().flex_row().items_center().font_family(mono.clone())
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .font_family(mono.clone())
                     .when(!self.ssh_prompt_input.is_empty(), |d| {
-                        d.child(div().text_color(col(ui.foreground)).child(SharedString::from(self.ssh_prompt_input.clone())))
+                        d.child(
+                            div()
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(self.ssh_prompt_input.clone())),
+                        )
                     })
-                    .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
+                    .child(
+                        div()
+                            .text_color(col(ui.muted))
+                            .child(SharedString::from("▏")),
+                    ) // caret
                     .when(self.ssh_prompt_input.is_empty(), |d| {
-                        d.child(div().ml(px(2.)).text_color(col(ui.muted)).child(SharedString::from(placeholder)))
+                        d.child(
+                            div()
+                                .ml(px(2.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(placeholder)),
+                        )
                     }),
             )
             .child(div().flex_1())
             // red error chip takes priority over the parse chips when invalid.
             .when_some(err_chip, |d, c| d.child(c))
-            .when(ssh_err.is_none(), |d| d.when_some(chips_row, |d, c| d.child(c)));
+            .when(ssh_err.is_none(), |d| {
+                d.when_some(chips_row, |d, c| d.child(c))
+            });
 
         // Connector rows (list mode only); also drives whether the footer advertises
         // the per-row ★/⊕ actions (hidden when there are no rows to act on).
-        let conn_rows = if self.ssh_save.is_some() { Vec::new() } else { self.ssh_conn_rows() };
+        let conn_rows = if self.ssh_save.is_some() {
+            Vec::new()
+        } else {
+            self.ssh_conn_rows()
+        };
         let has_rows = !conn_rows.is_empty();
 
         // ── panel body: the save-mode name form, or the list of saved + recent rows ──
@@ -2382,41 +2615,105 @@ impl Workspace {
                 AuthBadge::Unknown => None,
             };
             let lbl = |s: &str| {
-                div().min_w(px(40.)).text_size(px(11.)).text_color(col(ui.muted))
+                div()
+                    .min_w(px(40.))
+                    .text_size(px(11.))
+                    .text_color(col(ui.muted))
                     .child(SharedString::from(s.to_string()))
             };
-            div().flex().flex_col()
+            div()
+                .flex()
+                .flex_col()
                 .child(
-                    div().flex().flex_row().items_center().gap(px(10.)).px(px(16.)).py(px(13.))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(16.))
+                        .py(px(13.))
                         .child(icon("bookmark-plus", 16., ui.accent))
-                        .child(div().text_size(px(14.)).text_color(col(ui.foreground)).child(SharedString::from("保存为连接"))),
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from("保存为连接")),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(
-                    div().flex().flex_row().items_center().gap(px(8.)).px(px(16.)).pt(px(13.))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(16.))
+                        .pt(px(13.))
                         .child(lbl("端点"))
-                        .child(div().font_family(mono.clone()).text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(target)))
+                        .child(
+                            div()
+                                .font_family(mono.clone())
+                                .text_size(px(13.))
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(target)),
+                        )
                         .child(div().flex_1())
                         .when_some(badge, |dd, (ic, label, color)| {
                             dd.child(
-                                div().flex().flex_row().items_center().gap(px(5.))
-                                    .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(color, 0.12))
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(5.))
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(999.))
+                                    .bg(cola(color, 0.12))
                                     .child(icon(ic, 11., color))
-                                    .child(div().text_size(px(10.)).text_color(col(color)).child(SharedString::from(label.to_string()))),
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(col(color))
+                                            .child(SharedString::from(label.to_string())),
+                                    ),
                             )
                         }),
                 )
                 .child(
-                    div().flex().flex_row().items_center().gap(px(8.)).px(px(16.)).py(px(13.))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(16.))
+                        .py(px(13.))
                         .child(lbl("名称"))
                         .child(
-                            div().flex().flex_row().items_center().font_family(mono.clone()).text_size(px(14.))
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .font_family(mono.clone())
+                                .text_size(px(14.))
                                 .when(!d.name.is_empty(), |dd| {
-                                    dd.child(div().text_color(col(ui.foreground)).child(SharedString::from(d.name.clone())))
+                                    dd.child(
+                                        div()
+                                            .text_color(col(ui.foreground))
+                                            .child(SharedString::from(d.name.clone())),
+                                    )
                                 })
-                                .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
+                                .child(
+                                    div()
+                                        .text_color(col(ui.muted))
+                                        .child(SharedString::from("▏")),
+                                ) // caret
                                 .when(d.name.is_empty(), |dd| {
-                                    dd.child(div().ml(px(2.)).text_color(col(ui.muted)).child(SharedString::from("给这个连接起个名字…")))
+                                    dd.child(
+                                        div()
+                                            .ml(px(2.))
+                                            .text_color(col(ui.muted))
+                                            .child(SharedString::from("给这个连接起个名字…")),
+                                    )
                                 }),
                         ),
                 )
@@ -2429,30 +2726,84 @@ impl Workspace {
                     // C3 first-connect guide: a short three-line walkthrough shown
                     // when the connector is empty (no saved / recent / config hosts).
                     let step = |ic: &'static str, head: &str, sub: &str| {
-                        div().flex().flex_row().items_start().gap(px(10.))
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(10.))
                             .child(div().mt(px(1.)).child(icon(ic, 14., ui.accent)))
                             .child(
-                                div().flex().flex_col().gap(px(1.))
-                                    .child(div().text_size(px(12.5)).text_color(col(ui.foreground)).child(SharedString::from(head.to_string())))
-                                    .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(sub.to_string()))),
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(1.))
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .text_color(col(ui.foreground))
+                                            .child(SharedString::from(head.to_string())),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(col(ui.muted))
+                                            .child(SharedString::from(sub.to_string())),
+                                    ),
                             )
                     };
-                    div().flex().flex_col().gap(px(12.)).px(px(16.)).py(px(15.))
-                        .child(div().text_size(px(12.)).text_color(col(ui.muted)).child(SharedString::from("首次连接 — 三步上手")))
-                        .child(step("globe", "1 · 输入地址", "user@host:port,例 root@192.168.1.1:22(端口默认 22 可省)"))
-                        .child(step("key", "2 · 自动认证", "优先用 ~/.ssh 里的密钥;无密钥则弹密码框(可记住本次会话)"))
-                        .child(step("bookmark-plus", "3 · 记住连接", "连上后自动进「最近」,再点 ⊕ 命名存为常用连接"))
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.))
+                        .px(px(16.))
+                        .py(px(15.))
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from("首次连接 — 三步上手")),
+                        )
+                        .child(step(
+                            "globe",
+                            "1 · 输入地址",
+                            "user@host:port,例 root@192.168.1.1:22(端口默认 22 可省)",
+                        ))
+                        .child(step(
+                            "key",
+                            "2 · 自动认证",
+                            "优先用 ~/.ssh 里的密钥;无密钥则弹密码框(可记住本次会话)",
+                        ))
+                        .child(step(
+                            "bookmark-plus",
+                            "3 · 记住连接",
+                            "连上后自动进「最近」,再点 ⊕ 命名存为常用连接",
+                        ))
                 } else {
-                    div().px(px(14.)).py(px(13.)).text_size(px(12.)).text_color(col(ui.muted))
+                    div()
+                        .px(px(14.))
+                        .py(px(13.))
+                        .text_size(px(12.))
+                        .text_color(col(ui.muted))
                         .child(SharedString::from("无匹配 · 按 Enter 连接所输入的地址"))
                 }
             } else {
-                let mut col_div = div().flex().flex_col().p(px(6.)).max_h(px(360.)).overflow_hidden();
+                let mut col_div = div()
+                    .flex()
+                    .flex_col()
+                    .p(px(6.))
+                    .max_h(px(360.))
+                    .overflow_hidden();
                 for (i, row_data) in rows.iter().enumerate() {
                     let is_sel = i == sel;
                     let base = || {
-                        div().flex().flex_row().items_center().gap(px(11.))
-                            .px(px(11.)).py(px(9.)).rounded(px(9.))
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(11.))
+                            .px(px(11.))
+                            .py(px(9.))
+                            .rounded(px(9.))
                             .when(is_sel, |d| d.bg(rgba(HOVER)))
                             .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
                     };
@@ -2460,25 +2811,69 @@ impl Workspace {
                         SshConnRow::Saved { name, target } => {
                             let conn_target = target.clone();
                             base()
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| {
-                                    this.ssh_connect(&conn_target, w, cx);
-                                }))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _e, w, cx| {
+                                        this.ssh_connect(&conn_target, w, cx);
+                                    }),
+                                )
                                 // accent dot marker (named/saved), aligned to the recents' star column
-                                .child(div().w(px(14.)).flex().justify_center().flex_none()
-                                    .child(div().w(px(8.)).h(px(8.)).rounded(px(999.)).bg(col(ui.accent))))
                                 .child(
-                                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
-                                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(name.clone())))
-                                        .child(div().font_family(mono.clone()).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(target.clone()))),
+                                    div().w(px(14.)).flex().justify_center().flex_none().child(
+                                        div()
+                                            .w(px(8.))
+                                            .h(px(8.))
+                                            .rounded(px(999.))
+                                            .bg(col(ui.accent)),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(1.))
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(col(ui.foreground))
+                                                .child(SharedString::from(name.clone())),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(mono.clone())
+                                                .text_size(px(11.))
+                                                .text_color(col(ui.muted))
+                                                .child(SharedString::from(target.clone())),
+                                        ),
                                 )
                                 .child(div().flex_1())
                                 .child(
-                                    div().flex().flex_row().items_center()
-                                        .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(ui.accent, 0.12))
-                                        .child(div().text_size(px(10.)).text_color(col(ui.accent)).child(SharedString::from("已保存"))),
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(999.))
+                                        .bg(cola(ui.accent, 0.12))
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(col(ui.accent))
+                                                .child(SharedString::from("已保存")),
+                                        ),
                                 )
                         }
-                        SshConnRow::Recent { host, user, port, target, favorite, auth, last_used } => {
+                        SshConnRow::Recent {
+                            host,
+                            user,
+                            port,
+                            target,
+                            favorite,
+                            auth,
+                            last_used,
+                        } => {
                             let (host, user, port, favorite, auth) =
                                 (host.clone(), user.clone(), *port, *favorite, *auth);
                             let target = target.clone();
@@ -2486,13 +2881,21 @@ impl Workspace {
                             // ⭐ star toggles favorite without triggering the row's connect.
                             let (fav_host, fav_user) = (host.clone(), user.clone());
                             let star = div()
-                                .child(icon("star", 14., if favorite { t.ansi.yellow } else { ui.muted }))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
-                                    cx.stop_propagation();
-                                    this.ssh_recents.toggle_favorite(&fav_host, &fav_user, port);
-                                    this.ssh_recents.save();
-                                    cx.notify();
-                                }));
+                                .child(icon(
+                                    "star",
+                                    14.,
+                                    if favorite { t.ansi.yellow } else { ui.muted },
+                                ))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _e, _w, cx| {
+                                        cx.stop_propagation();
+                                        this.ssh_recents
+                                            .toggle_favorite(&fav_host, &fav_user, port);
+                                        this.ssh_recents.save();
+                                        cx.notify();
+                                    }),
+                                );
                             let badge = match auth {
                                 AuthBadge::Key => Some(("key", "密钥", t.ansi.green)),
                                 AuthBadge::Password => Some(("lock", "密码", t.ansi.yellow)),
@@ -2502,61 +2905,137 @@ impl Workspace {
                             let (save_host, save_user) = (host.clone(), user.clone());
                             let save_btn = div()
                                 .child(icon("bookmark-plus", 14., ui.muted))
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, _w, cx| {
-                                    cx.stop_propagation();
-                                    this.ssh_save = Some(SshSaveDraft {
-                                        host: save_host.clone(),
-                                        user: save_user.clone(),
-                                        port,
-                                        auth,
-                                        name: save_host.clone(),
-                                    });
-                                    cx.notify();
-                                }));
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _e, _w, cx| {
+                                        cx.stop_propagation();
+                                        this.ssh_save = Some(SshSaveDraft {
+                                            host: save_host.clone(),
+                                            user: save_user.clone(),
+                                            port,
+                                            auth,
+                                            name: save_host.clone(),
+                                        });
+                                        cx.notify();
+                                    }),
+                                );
                             let conn_target = target.clone();
                             base()
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| {
-                                    this.ssh_connect(&conn_target, w, cx);
-                                }))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _e, w, cx| {
+                                        this.ssh_connect(&conn_target, w, cx);
+                                    }),
+                                )
                                 .child(star)
                                 .child(
-                                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
-                                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(host.clone())))
-                                        .child(div().font_family(mono.clone()).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(target.clone()))),
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(1.))
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(col(ui.foreground))
+                                                .child(SharedString::from(host.clone())),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(mono.clone())
+                                                .text_size(px(11.))
+                                                .text_color(col(ui.muted))
+                                                .child(SharedString::from(target.clone())),
+                                        ),
                                 )
                                 .child(div().flex_1())
                                 .when_some(badge, |d, (ic, label, color)| {
                                     d.child(
-                                        div().flex().flex_row().items_center().gap(px(5.))
-                                            .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(cola(color, 0.12))
+                                        div()
+                                            .flex()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(5.))
+                                            .px(px(8.))
+                                            .py(px(2.))
+                                            .rounded(px(999.))
+                                            .bg(cola(color, 0.12))
                                             .child(icon(ic, 11., color))
-                                            .child(div().text_size(px(10.)).text_color(col(color)).child(SharedString::from(label.to_string()))),
+                                            .child(
+                                                div()
+                                                    .text_size(px(10.))
+                                                    .text_color(col(color))
+                                                    .child(SharedString::from(label.to_string())),
+                                            ),
                                     )
                                 })
                                 .child(save_btn)
                                 // relative time — faint(无 token,同 .meta)
-                                .child(div().min_w(px(46.)).text_size(px(10.5)).text_color(gpui::rgb(0x474E72)).child(SharedString::from(when)))
+                                .child(
+                                    div()
+                                        .min_w(px(46.))
+                                        .text_size(px(10.5))
+                                        .text_color(gpui::rgb(0x474E72))
+                                        .child(SharedString::from(when)),
+                                )
                         }
                         SshConnRow::Config { alias, target } => {
                             // A4: connect via the alias so ssh-config rules apply.
                             let conn_alias = alias.clone();
                             base()
-                                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| {
-                                    this.ssh_connect(&conn_alias, w, cx);
-                                }))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _e, w, cx| {
+                                        this.ssh_connect(&conn_alias, w, cx);
+                                    }),
+                                )
                                 // hollow dot marker = an endpoint we haven't dialed yet
-                                .child(div().w(px(14.)).flex().justify_center().flex_none()
-                                    .child(div().w(px(8.)).h(px(8.)).rounded(px(999.)).border_1().border_color(col(ui.muted))))
                                 .child(
-                                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
-                                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(SharedString::from(alias.clone())))
-                                        .child(div().font_family(mono.clone()).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(target.clone()))),
+                                    div().w(px(14.)).flex().justify_center().flex_none().child(
+                                        div()
+                                            .w(px(8.))
+                                            .h(px(8.))
+                                            .rounded(px(999.))
+                                            .border_1()
+                                            .border_color(col(ui.muted)),
+                                    ),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(1.))
+                                        .min_w(px(0.))
+                                        .child(
+                                            div()
+                                                .text_size(px(13.))
+                                                .text_color(col(ui.foreground))
+                                                .child(SharedString::from(alias.clone())),
+                                        )
+                                        .child(
+                                            div()
+                                                .font_family(mono.clone())
+                                                .text_size(px(11.))
+                                                .text_color(col(ui.muted))
+                                                .child(SharedString::from(target.clone())),
+                                        ),
                                 )
                                 .child(div().flex_1())
                                 .child(
-                                    div().flex().flex_row().items_center()
-                                        .px(px(8.)).py(px(2.)).rounded(px(999.)).bg(rgba(HOVER))
-                                        .child(div().text_size(px(10.)).text_color(col(ui.muted)).child(SharedString::from("ssh-config"))),
+                                    div()
+                                        .flex()
+                                        .flex_row()
+                                        .items_center()
+                                        .px(px(8.))
+                                        .py(px(2.))
+                                        .rounded(px(999.))
+                                        .bg(rgba(HOVER))
+                                        .child(
+                                            div()
+                                                .text_size(px(10.))
+                                                .text_color(col(ui.muted))
+                                                .child(SharedString::from("ssh-config")),
+                                        ),
                                 )
                         }
                     };
@@ -2564,7 +3043,9 @@ impl Workspace {
                 }
                 col_div
             };
-            div().flex().flex_col()
+            div()
+                .flex()
+                .flex_col()
                 .child(input)
                 .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(list)
@@ -2579,8 +3060,14 @@ impl Workspace {
         };
 
         let panel = crate::style::shadowed(
-            div().flex().flex_col().w(px(560.)).rounded(px(R_PANEL)).overflow_hidden()
-                .border_1().border_color(rgba(RIM))
+            div()
+                .flex()
+                .flex_col()
+                .w(px(560.))
+                .rounded(px(R_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
                 .bg(linear_gradient(
                     180.,
                     linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
@@ -2589,36 +3076,59 @@ impl Workspace {
                 .child(panel_body)
                 .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(
-                    div().flex().flex_row().items_center().gap(px(8.))
-                        .px(px(14.)).py(px(9.)).text_size(px(11.)).text_color(col(ui.muted))
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(14.))
+                        .py(px(9.))
+                        .text_size(px(11.))
+                        .text_color(col(ui.muted))
                         .child(SharedString::from(footer_text)),
                 ),
             vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
         );
 
-        let pl = if self.explorer_open { self.explorer_width + 23. } else { 12. };
+        let pl = if self.explorer_open {
+            self.explorer_width + 23.
+        } else {
+            12.
+        };
 
         Some(
             div()
-                .absolute().size_full().flex().flex_col().items_center().justify_center()
-                .pl(px(pl)).pr(px(12.))
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .pl(px(pl))
+                .pr(px(12.))
                 .bg(rgba(0x0a0b118c))
                 .track_focus(&self.ssh_prompt_focus)
                 .on_key_down(cx.listener(Self::on_ssh_prompt_key))
-                .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, w, cx| {
-                    this.ssh_prompt_open = false;
-                    this.ssh_prompt_intent = None;
-                    this.ssh_save = None;
-                    this.refocus_active(w, cx);
-                    cx.notify();
-                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, w, cx| {
+                        this.ssh_prompt_open = false;
+                        this.ssh_prompt_intent = None;
+                        this.ssh_save = None;
+                        this.refocus_active(w, cx);
+                        cx.notify();
+                    }),
+                )
                 .child(
                     div()
-                        .on_mouse_down(MouseButton::Left, cx.listener(|this, _e, w, cx| {
-                            cx.stop_propagation();
-                            this.ssh_prompt_focus.focus(w);
-                            cx.notify();
-                        }))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, w, cx| {
+                                cx.stop_propagation();
+                                this.ssh_prompt_focus.focus(w);
+                                cx.notify();
+                            }),
+                        )
                         .child(panel),
                 ),
         )
@@ -2638,7 +3148,11 @@ impl Workspace {
 
         // ── .pinput: leading icon (term, or a clickable ‹ back when drilled into WSL) +
         // query / placeholder + caret (mockup .pinput) ──
-        let placeholder = if self.palette_wsl { "WSL 发行版 / 搜索…" } else { "启动会话 / 搜索…" };
+        let placeholder = if self.palette_wsl {
+            "WSL 发行版 / 搜索…"
+        } else {
+            "启动会话 / 搜索…"
+        };
         let lead = if self.palette_wsl {
             div()
                 .rounded(px(6.))
@@ -2679,7 +3193,11 @@ impl Workspace {
                                 .child(SharedString::from(self.palette_query.clone())),
                         )
                     })
-                    .child(div().text_color(col(ui.muted)).child(SharedString::from("▏"))) // caret
+                    .child(
+                        div()
+                            .text_color(col(ui.muted))
+                            .child(SharedString::from("▏")),
+                    ) // caret
                     .when(self.palette_query.is_empty(), |d| {
                         d.child(
                             div()
@@ -2693,9 +3211,12 @@ impl Workspace {
         let row_divs = rows.iter().enumerate().map(|(i, row)| {
             let is_sel = i == sel;
             let card = row_card(t, &self.launch_profiles, row); // identity = tiles/.dot
-            // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
+                                                                // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
             let meta = match row {
-                LaunchRow::Profile(pi) => self.launch_profiles[*pi].command.clone().unwrap_or_default(),
+                LaunchRow::Profile(pi) => self.launch_profiles[*pi]
+                    .command
+                    .clone()
+                    .unwrap_or_default(),
                 _ => card.sub.clone(),
             };
             div()
@@ -2715,12 +3236,22 @@ impl Workspace {
                         this.activate_palette_sel(w, cx);
                     }),
                 )
-                .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(card.accent))) // .dot 7px
+                .child(
+                    div()
+                        .w(px(7.))
+                        .h(px(7.))
+                        .rounded_full()
+                        .bg(col(card.accent)),
+                ) // .dot 7px
                 .child(
                     div()
                         .text_size(px(13.)) // mockup .prow font-size 13
                         // .prow color = fg-dim(#A6AFD4, 无 token) → 选中 fg
-                        .text_color(if is_sel { col(ui.foreground) } else { gpui::rgb(0xA6AFD4) })
+                        .text_color(if is_sel {
+                            col(ui.foreground)
+                        } else {
+                            gpui::rgb(0xA6AFD4)
+                        })
                         .child(SharedString::from(card.name)),
                 )
                 .child(div().flex_1())
@@ -2750,7 +3281,14 @@ impl Workspace {
                 ))
                 .child(input)
                 .child(div().h(px(1.)).bg(rgba(0xffffff0f))) // .pinput border-bottom 白 .06
-                .child(div().flex().flex_col().p(px(6.)).gap(px(2.)).children(row_divs)), // .plist padding 6
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .p(px(6.))
+                        .gap(px(2.))
+                        .children(row_divs),
+                ), // .plist padding 6
             vec![soft_shadow(40.0, 120.0, -30.0, 0.9)], // mockup .palette box-shadow
         );
 
@@ -2763,9 +3301,9 @@ impl Workspace {
                 .items_center()
                 .bg(rgba(0x0a0b118c)) // mockup .scrim rgba(10,11,17,.55)(无 token)
                 .track_focus(&self.palette_focus)
-                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
-                    this.on_palette_key(ev, w, cx)
-                }))
+                .on_key_down(
+                    cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_palette_key(ev, w, cx)),
+                )
                 .child(div().h(px(110.))) // top spacer (clears the title + tab bar)
                 .child(panel),
         )
@@ -2852,9 +3390,15 @@ impl Workspace {
     /// distros (or split the lone one), or no-op on the parked SSH placeholder.
     fn activate_split_sel(&mut self, dir: SplitDir, window: &mut Window, cx: &mut Context<Self>) {
         let rows = self.split_rows();
-        let Some(row) = rows.get(self.split_sel) else { return };
+        let Some(row) = rows.get(self.split_sel) else {
+            return;
+        };
         let launch = |this: &mut Self, idx: usize, window: &mut Window, cx: &mut Context<Self>| {
-            if let Some(spec) = this.launch_profiles.get(idx).and_then(LaunchSpec::from_profile) {
+            if let Some(spec) = this
+                .launch_profiles
+                .get(idx)
+                .and_then(LaunchSpec::from_profile)
+            {
                 this.split_launcher_open = false;
                 this.split_wsl = false;
                 this.split_session(dir, spec, window, cx);
@@ -2924,8 +3468,18 @@ impl Workspace {
                                 cx.notify();
                             }),
                         )
-                        .child(div().text_size(px(18.)).text_color(col(ui.accent)).child(arrow))
-                        .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(label))
+                        .child(
+                            div()
+                                .text_size(px(18.))
+                                .text_color(col(ui.accent))
+                                .child(arrow),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(col(ui.muted))
+                                .child(label),
+                        )
                 };
                 let center = div()
                     .w(px(74.))
@@ -2937,16 +3491,45 @@ impl Workspace {
                     .bg(cola(ui.accent, 0.10))
                     .border_1()
                     .border_color(cola(ui.accent, 0.3))
-                    .child(div().text_size(px(11.)).text_color(col(ui.muted)).child("当前"));
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(col(ui.muted))
+                            .child("当前"),
+                    );
                 let spacer = || div().w(px(74.));
                 div()
                     .flex()
                     .flex_col()
                     .items_center()
                     .gap(px(6.))
-                    .child(div().flex().flex_row().gap(px(6.)).child(spacer()).child(dir_tile(SplitDir::Up)).child(spacer()))
-                    .child(div().flex().flex_row().gap(px(6.)).child(dir_tile(SplitDir::Left)).child(center).child(dir_tile(SplitDir::Right)))
-                    .child(div().flex().flex_row().gap(px(6.)).child(spacer()).child(dir_tile(SplitDir::Down)).child(spacer()))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.))
+                            .child(spacer())
+                            .child(dir_tile(SplitDir::Up))
+                            .child(spacer()),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.))
+                            .child(dir_tile(SplitDir::Left))
+                            .child(center)
+                            .child(dir_tile(SplitDir::Right)),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(6.))
+                            .child(spacer())
+                            .child(dir_tile(SplitDir::Down))
+                            .child(spacer()),
+                    )
             }
             // ── phase 2: pick the launcher (aggregated: profiles + WSL card + SSH;
             // drilling into WSL swaps in the distros) ──
@@ -2973,7 +3556,13 @@ impl Workspace {
                                 this.activate_split_sel(dir, w, cx);
                             }),
                         )
-                        .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(card.accent)))
+                        .child(
+                            div()
+                                .w(px(7.))
+                                .h(px(7.))
+                                .rounded_full()
+                                .bg(col(card.accent)),
+                        )
                         .child(
                             div()
                                 .text_size(px(12.5))
@@ -2986,15 +3575,30 @@ impl Workspace {
         };
 
         let (title, hint) = if self.split_wsl {
-            ("新会话 · 选择 WSL 发行版", "↑↓ 选择 · Enter 启动 · Esc 返回")
+            (
+                "新会话 · 选择 WSL 发行版",
+                "↑↓ 选择 · Enter 启动 · Esc 返回",
+            )
         } else {
             match self.split_dir {
                 None => ("新会话 · 选择分屏位置", "方向键 / 点击选择 · Esc 取消"),
                 Some(d) => match d {
-                    SplitDir::Left => ("新会话 · 左侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                    SplitDir::Right => ("新会话 · 右侧分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                    SplitDir::Up => ("新会话 · 上方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
-                    SplitDir::Down => ("新会话 · 下方分屏 · 选择启动器", "↑↓ 选择 · Enter 启动 · Esc 返回"),
+                    SplitDir::Left => (
+                        "新会话 · 左侧分屏 · 选择启动器",
+                        "↑↓ 选择 · Enter 启动 · Esc 返回",
+                    ),
+                    SplitDir::Right => (
+                        "新会话 · 右侧分屏 · 选择启动器",
+                        "↑↓ 选择 · Enter 启动 · Esc 返回",
+                    ),
+                    SplitDir::Up => (
+                        "新会话 · 上方分屏 · 选择启动器",
+                        "↑↓ 选择 · Enter 启动 · Esc 返回",
+                    ),
+                    SplitDir::Down => (
+                        "新会话 · 下方分屏 · 选择启动器",
+                        "↑↓ 选择 · Enter 启动 · Esc 返回",
+                    ),
                 },
             }
         };
@@ -3017,8 +3621,18 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap(px(1.))
-                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child(title))
-                        .child(div().text_size(px(11.)).text_color(col(ui.muted)).child(hint)),
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(col(ui.foreground))
+                                .child(title),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.))
+                                .text_color(col(ui.muted))
+                                .child(hint),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(rgba(RIM)))
                 .child(div().p_2().child(body)),
@@ -3034,7 +3648,9 @@ impl Workspace {
                 .items_center()
                 .bg(rgba(0x0a0b11cc))
                 .track_focus(&self.split_focus)
-                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_split_key(ev, w, cx)))
+                .on_key_down(
+                    cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_split_key(ev, w, cx)),
+                )
                 .child(div().h(px(120.)))
                 .child(panel),
         )
@@ -3047,8 +3663,14 @@ impl Workspace {
     fn tab_to_layout(&self) -> Option<LayoutNode> {
         fn walk(node: &Node, specs: &HashMap<PaneId, LaunchSpec>) -> Option<LayoutNode> {
             match node {
-                Node::Leaf(id) => specs.get(id).map(|s| LayoutNode::Pane(LayoutPane::from_spec(s))),
-                Node::Split { axis, kids, weights } => {
+                Node::Leaf(id) => specs
+                    .get(id)
+                    .map(|s| LayoutNode::Pane(LayoutPane::from_spec(s))),
+                Node::Split {
+                    axis,
+                    kids,
+                    weights,
+                } => {
                     let kids: Vec<_> = kids.iter().filter_map(|k| walk(k, specs)).collect();
                     if kids.is_empty() {
                         return None;
@@ -3078,7 +3700,11 @@ impl Workspace {
                 } else {
                     vec![1.0; kids.len()]
                 };
-                Node::Split { axis: if *row { Axis::Row } else { Axis::Col }, kids, weights }
+                Node::Split {
+                    axis: if *row { Axis::Row } else { Axis::Col },
+                    kids,
+                    weights,
+                }
             }
         }
     }
@@ -3104,7 +3730,9 @@ impl Workspace {
     /// Load a slot into the **active tab** (owner's choice: replace this tab). Kills
     /// the tab's current panes and re-spawns the saved structure.
     fn load_layout(&mut self, slot: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(layout) = self.layouts.slots.get(slot).cloned().flatten() else { return };
+        let Some(layout) = self.layouts.slots.get(slot).cloned().flatten() else {
+            return;
+        };
         let active = self.active;
         let mut old = Vec::new();
         if !self.tabs[active].welcome {
@@ -3138,19 +3766,29 @@ impl Workspace {
         let can_save = self.tab_to_layout().is_some(); // active tab has real panes
 
         // A small pill button (label + click action). `accent` = filled/primary look.
-        let pill = |label: &'static str, accent: bool, act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
-            let (fg, bg) = if accent { (col(ui.accent), cola(ui.accent, 0.14)) } else { (gpui::rgb(0xA6AFD4), rgba(INSET)) };
-            div()
-                .px(px(9.))
-                .py(px(3.))
-                .rounded(px(7.))
-                .text_size(px(11.))
-                .text_color(fg)
-                .bg(bg)
-                .hover(|s| s.bg(rgba(HOVER)))
-                .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e, w, cx| act(this, w, cx)))
-                .child(label)
-        };
+        let pill =
+            |label: &'static str,
+             accent: bool,
+             act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
+                let (fg, bg) = if accent {
+                    (col(ui.accent), cola(ui.accent, 0.14))
+                } else {
+                    (gpui::rgb(0xA6AFD4), rgba(INSET))
+                };
+                div()
+                    .px(px(9.))
+                    .py(px(3.))
+                    .rounded(px(7.))
+                    .text_size(px(11.))
+                    .text_color(fg)
+                    .bg(bg)
+                    .hover(|s| s.bg(rgba(HOVER)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e, w, cx| act(this, w, cx)),
+                    )
+                    .child(label)
+            };
 
         let rows = (0..SLOTS).map(|i| {
             let filled = self.layouts.slots.get(i).and_then(|s| s.as_ref());
@@ -3167,13 +3805,39 @@ impl Workspace {
                 .px(px(10.))
                 .rounded(px(8.))
                 .hover(|s| s.bg(rgba(INSET)))
-                .child(div().w(px(40.)).text_size(px(12.5)).text_color(col(ui.foreground)).child(SharedString::from(format!("槽 {}", i + 1))))
-                .child(div().w(px(56.)).text_size(px(11.)).text_color(col(ui.muted)).child(SharedString::from(status)))
+                .child(
+                    div()
+                        .w(px(40.))
+                        .text_size(px(12.5))
+                        .text_color(col(ui.foreground))
+                        .child(SharedString::from(format!("槽 {}", i + 1))),
+                )
+                .child(
+                    div()
+                        .w(px(56.))
+                        .text_size(px(11.))
+                        .text_color(col(ui.muted))
+                        .child(SharedString::from(status)),
+                )
                 .child(div().flex_1())
-                .when(can_save, |d| d.child(pill("保存", true, Box::new(move |this, _w, cx| this.save_layout(i, cx)))))
+                .when(can_save, |d| {
+                    d.child(pill(
+                        "保存",
+                        true,
+                        Box::new(move |this, _w, cx| this.save_layout(i, cx)),
+                    ))
+                })
                 .when(filled.is_some(), |d| {
-                    d.child(pill("加载", false, Box::new(move |this, w, cx| this.load_layout(i, w, cx))))
-                        .child(pill("删除", false, Box::new(move |this, _w, cx| this.delete_layout(i, cx))))
+                    d.child(pill(
+                        "加载",
+                        false,
+                        Box::new(move |this, w, cx| this.load_layout(i, w, cx)),
+                    ))
+                    .child(pill(
+                        "删除",
+                        false,
+                        Box::new(move |this, _w, cx| this.delete_layout(i, cx)),
+                    ))
                 })
         });
 
@@ -3200,8 +3864,18 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap(px(1.))
-                        .child(div().text_size(px(13.)).text_color(col(ui.foreground)).child("布局"))
-                        .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(hint)),
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(col(ui.foreground))
+                                .child("布局"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(col(ui.muted))
+                                .child(hint),
+                        ),
                 )
                 .child(div().h(px(1.)).bg(rgba(RIM)))
                 .child(div().p_1().flex().flex_col().gap(px(1.)).children(rows)),
@@ -3249,11 +3923,14 @@ impl Render for Workspace {
         // so Alt-Tab away doesn't yank focus back. Registered once (needs `&mut Window`).
         if self.focus_out_sub.is_none() {
             let anchor = self.workspace_focus.clone();
-            self.focus_out_sub = Some(window.on_focus_out(&self.workspace_focus, cx, move |_ev, window, _cx| {
-                if window.is_window_active() {
-                    anchor.focus(window);
-                }
-            }));
+            self.focus_out_sub =
+                Some(
+                    window.on_focus_out(&self.workspace_focus, cx, move |_ev, window, _cx| {
+                        if window.is_window_active() {
+                            anchor.focus(window);
+                        }
+                    }),
+                );
         }
         // Reveal the window once, after this first frame is built (the window was
         // opened hidden). Reading the HWND here is read-only (safe); the actual
@@ -3286,7 +3963,8 @@ impl Render for Workspace {
         // grab sometimes failed to land on the first frame (踩过的坑). `focus()` is
         // idempotent — it early-returns when already focused — so this can't loop; the
         // `_needs_focus` flag is still consulted so the very first frame always grabs.
-        if self.palette_open && (self.palette_needs_focus || !self.palette_focus.is_focused(window)) {
+        if self.palette_open && (self.palette_needs_focus || !self.palette_focus.is_focused(window))
+        {
             self.palette_needs_focus = false;
             self.palette_focus.focus(window);
         }
@@ -3350,7 +4028,9 @@ impl Render for Workspace {
             let mut leaves = Vec::new();
             collect_leaves(&self.tabs[active].root, &mut leaves);
             if let Some(id) = leaves.into_iter().find(|id| {
-                self.panes.get(id).is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
+                self.panes
+                    .get(id)
+                    .is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
             }) {
                 self.tabs[active].focused = id;
             } else {
@@ -3362,8 +4042,8 @@ impl Render for Workspace {
                 // last-focused pane (we don't clear `focused`). BUT don't steal from the
                 // explorer: it's also under the Workspace context, so its keyboard nav
                 // already keeps shortcuts live — re-parking would break it (它也要焦点).
-                let explorer_focused = self.explorer_open
-                    && self.explorer.read(cx).focus_handle().is_focused(window);
+                let explorer_focused =
+                    self.explorer_open && self.explorer.read(cx).focus_handle().is_focused(window);
                 if !explorer_focused && !self.workspace_focus.is_focused(window) {
                     self.workspace_focus.focus(window);
                 }
@@ -3386,7 +4066,8 @@ impl Render for Workspace {
             {
                 let new_root = std::path::PathBuf::from(&cwd);
                 if self.explorer.read(cx).root() != new_root {
-                    self.explorer.update(cx, |e, cx| e.follow_root(new_root, cx));
+                    self.explorer
+                        .update(cx, |e, cx| e.follow_root(new_root, cx));
                 }
             }
         }
@@ -3416,90 +4097,95 @@ impl Render for Workspace {
             .flex_row()
             .items_center()
             .gap_1()
-            .children(tab_info.into_iter().enumerate().map(|(i, (label, panes, agent))| {
-                let is_active = i == active;
-                let dot = self.agent_color(agent);
-                // Accent bar/icon color: agent identity, or UI accent for shells.
-                let accent_c = if agent.is_some() { dot } else { ui.accent };
-                div()
-                    .relative()
-                    .flex()
-                    .items_center()
-                    .gap(px(7.)) // §16 .tab gap:7px(原 gap_2=8)
-                    .h(px(34.)) // §16 .tab height:34px(原 py_1 无固定高)
-                    .px(px(14.)) // §16 .tab padding:0 14px(原 px_3=12)
-                    .rounded_t(px(R_CARD)) // §16 .tab radius:11 11 0 0(仅上,原四角)
-                    .text_size(px(12.5)) // §16 .tab font-size:12.5px(原 12.0)
-                    .font_weight(gpui::FontWeight(520.)) // §16 .tab font-weight:520(原未设)
-                    // Active tab = a glass pill (inset + rim + sheen) with a thin
-                    // agent-color accent bar at the top. Inactive sits flat and
-                    // lifts a touch on hover. No glow.
-                    .when(is_active, |d| {
-                        // Use the theme's tab_active_bg to match the card pane background
-                        d.text_color(col(ui.foreground))
-                            .bg(col(ui.tab_active_bg))
-                            // ::after 强调色条(agent 色),left/right 13,top 0,2px
-                            .child(
-                                div()
-                                    .absolute()
-                                    .top(px(0.))
-                                    .left(px(13.))
-                                    .right(px(13.))
-                                    .h(px(2.))
-                                    .rounded_full()
-                                    .bg(col(accent_c)),
-                            )
-                    })
-                    .when(!is_active, |d| {
-                        d.border_1()
-                            .border_color(rgba(0x00000000))
-                            .text_color(col(ui.tab_inactive_fg))
-                            .hover(|s| s.bg(rgba(INSET)))
-                    })
-                    // Type icon in agent identity color: spark for agents
-                    // (Claude coral / Codex teal), terminal glyph (accent) for
-                    // a plain shell. See docs/产品设计 §6.2 tab agent accent.
-                    .child(if agent.is_some() {
-                        icon("spark", 13., dot)
-                    } else {
-                        icon("term", 13., ui.accent)
-                    })
-                    .child(label)
-                    .when(panes > 1, |d| {
-                        d.child(
-                            div()
-                                .text_size(px(10.0))
-                                .text_color(col(ui.muted))
-                                .child(format!("\u{2317}{panes}")),
-                        )
-                    })
-                    // Close button: kills the tab's process(es). stop_propagation
-                    // so it closes the tab instead of just activating it.
-                    .child(
+            .children(
+                tab_info
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (label, panes, agent))| {
+                        let is_active = i == active;
+                        let dot = self.agent_color(agent);
+                        // Accent bar/icon color: agent identity, or UI accent for shells.
+                        let accent_c = if agent.is_some() { dot } else { ui.accent };
                         div()
-                            .ml_1()
-                            .px_1()
-                            .rounded_md()
+                            .relative()
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .hover(|s| s.bg(rgba(HOVER)))
-                            .child(icon("close", 12., ui.muted))
+                            .gap(px(7.)) // §16 .tab gap:7px(原 gap_2=8)
+                            .h(px(34.)) // §16 .tab height:34px(原 py_1 无固定高)
+                            .px(px(14.)) // §16 .tab padding:0 14px(原 px_3=12)
+                            .rounded_t(px(R_CARD)) // §16 .tab radius:11 11 0 0(仅上,原四角)
+                            .text_size(px(12.5)) // §16 .tab font-size:12.5px(原 12.0)
+                            .font_weight(gpui::FontWeight(520.)) // §16 .tab font-weight:520(原未设)
+                            // Active tab = a glass pill (inset + rim + sheen) with a thin
+                            // agent-color accent bar at the top. Inactive sits flat and
+                            // lifts a touch on hover. No glow.
+                            .when(is_active, |d| {
+                                // Use the theme's tab_active_bg to match the card pane background
+                                d.text_color(col(ui.foreground))
+                                    .bg(col(ui.tab_active_bg))
+                                    // ::after 强调色条(agent 色),left/right 13,top 0,2px
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top(px(0.))
+                                            .left(px(13.))
+                                            .right(px(13.))
+                                            .h(px(2.))
+                                            .rounded_full()
+                                            .bg(col(accent_c)),
+                                    )
+                            })
+                            .when(!is_active, |d| {
+                                d.border_1()
+                                    .border_color(rgba(0x00000000))
+                                    .text_color(col(ui.tab_inactive_fg))
+                                    .hover(|s| s.bg(rgba(INSET)))
+                            })
+                            // Type icon in agent identity color: spark for agents
+                            // (Claude coral / Codex teal), terminal glyph (accent) for
+                            // a plain shell. See docs/产品设计 §6.2 tab agent accent.
+                            .child(if agent.is_some() {
+                                icon("spark", 13., dot)
+                            } else {
+                                icon("term", 13., ui.accent)
+                            })
+                            .child(label)
+                            .when(panes > 1, |d| {
+                                d.child(
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(col(ui.muted))
+                                        .child(format!("\u{2317}{panes}")),
+                                )
+                            })
+                            // Close button: kills the tab's process(es). stop_propagation
+                            // so it closes the tab instead of just activating it.
+                            .child(
+                                div()
+                                    .ml_1()
+                                    .px_1()
+                                    .rounded_md()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(rgba(HOVER)))
+                                    .child(icon("close", 12., ui.muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _ev, window, cx| {
+                                            cx.stop_propagation();
+                                            this.close_tab_index(i, window, cx);
+                                        }),
+                                    ),
+                            )
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener(move |this, _ev, window, cx| {
-                                    cx.stop_propagation();
-                                    this.close_tab_index(i, window, cx);
+                                    this.activate_tab(i, window, cx);
                                 }),
-                            ),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _ev, window, cx| {
-                            this.activate_tab(i, window, cx);
-                        }),
-                    )
-            }))
+                            )
+                    }),
+            )
             .child(
                 div()
                     .w(px(29.)) // §16 .newtab 29×29
@@ -3563,7 +4249,8 @@ impl Render for Workspace {
             )
             .child(
                 // mockup .brand .caret 13×13 · muted · opacity .55 → 1 when open
-                crate::assets::icon("chev-d", 13.).text_color(cola(ui.muted, if menu_open { 1.0 } else { 0.55 })),
+                crate::assets::icon("chev-d", 13.)
+                    .text_color(cola(ui.muted, if menu_open { 1.0 } else { 0.55 })),
             );
 
         // Window controls: the OS performs the action from the marked region
@@ -3625,86 +4312,84 @@ impl Render for Workspace {
         // The explorer toggles via Ctrl+Shift+B; the file view is no longer a
         // docked column but a floating Quick Look overlay (built below) that pops
         // over the terminal hugging the tree's right edge.
-        let body = div()
-            .flex_1()
-            .min_h(px(0.)) // let the flex child be bounded by the window, not its content
-            // No overflow_hidden (mockup .work doesn't clip): panes clip their own
-            // content + min_h 0 bounds them, so dropping it lets each pane's drop
-            // shadow bleed into the gaps and through the translucent status bar —
-            // the "float". The OS window is the only hard clip.
-            // mockup .work:padding 5px 12px 11px · gap 11(原 p_1/gap_2 偏挤)
-            .pt(px(5.))
-            .px(px(12.))
-            .pb(px(11.))
-            .flex()
-            .flex_row()
-            .gap(px(11.))
-            // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
-            // Width is adjustable by dragging the right edge (same look-and-feel
-            // as split-pane dividers).
-            .when(self.explorer_open, |d| {
-                let accent = self.config.theme.agents.claude;
-                let ew = self.explorer_width;
-                d.child(
-                    div()
-                        .w(px(ew))
-                        .flex_none()
-                        .min_h(px(0.))
-                        .flex()
-                        .flex_col()
-                        .relative()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_h(px(0.))
-                                .child(self.explorer.clone()),
-                        )
-                        // Drag handle on the right edge; sits in the inter-column
-                        // gap so it doesn't occlude the tree.
-                        .child(
-                            div()
-                                .absolute()
-                                .top(px(0.))
-                                .bottom(px(0.))
-                                .right(px(-4.)) // spill 4 px into the gap
-                                .w(px(8.))
-                                .cursor_col_resize()
-                                .hover(|s| s.bg(cola(accent, 0.16)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                                        this.explorer_drag = Some(ExplorerDrag {
-                                            start_x: f32::from(ev.position.x),
-                                            start_width: ew,
-                                        });
-                                        cx.stop_propagation();
-                                        cx.notify();
-                                    }),
-                                ),
-                        ),
-                )
-            })
-            .child(
-                // No overflow_hidden: leaf panes clip their own content, so the
-                // center column lets their shadows bleed into the surrounding gaps.
-                // A welcome (new) tab shows the launchpad instead of a pane tree.
-                div()
-                    .flex_1()
-                    .min_w(px(0.))
-                    .min_h(px(0.))
-                    .child(if self.tabs[active].welcome {
-                        self.welcome.clone().into_any_element()
-                    } else {
-                        self.render_node(&self.tabs[active].root, focused, cx, Vec::new())
-                    }),
-            );
+        let body =
+            div()
+                .flex_1()
+                .min_h(px(0.)) // let the flex child be bounded by the window, not its content
+                // No overflow_hidden (mockup .work doesn't clip): panes clip their own
+                // content + min_h 0 bounds them, so dropping it lets each pane's drop
+                // shadow bleed into the gaps and through the translucent status bar —
+                // the "float". The OS window is the only hard clip.
+                // mockup .work:padding 5px 12px 11px · gap 11(原 p_1/gap_2 偏挤)
+                .pt(px(5.))
+                .px(px(12.))
+                .pb(px(11.))
+                .flex()
+                .flex_row()
+                .gap(px(11.))
+                // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
+                // Width is adjustable by dragging the right edge (same look-and-feel
+                // as split-pane dividers).
+                .when(self.explorer_open, |d| {
+                    let accent = self.config.theme.agents.claude;
+                    let ew = self.explorer_width;
+                    d.child(
+                        div()
+                            .w(px(ew))
+                            .flex_none()
+                            .min_h(px(0.))
+                            .flex()
+                            .flex_col()
+                            .relative()
+                            .child(div().flex_1().min_h(px(0.)).child(self.explorer.clone()))
+                            // Drag handle on the right edge; sits in the inter-column
+                            // gap so it doesn't occlude the tree.
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top(px(0.))
+                                    .bottom(px(0.))
+                                    .right(px(-4.)) // spill 4 px into the gap
+                                    .w(px(8.))
+                                    .cursor_col_resize()
+                                    .hover(|s| s.bg(cola(accent, 0.16)))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                                            this.explorer_drag = Some(ExplorerDrag {
+                                                start_x: f32::from(ev.position.x),
+                                                start_width: ew,
+                                            });
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        }),
+                                    ),
+                            ),
+                    )
+                })
+                .child(
+                    // No overflow_hidden: leaf panes clip their own content, so the
+                    // center column lets their shadows bleed into the surrounding gaps.
+                    // A welcome (new) tab shows the launchpad instead of a pane tree.
+                    div().flex_1().min_w(px(0.)).min_h(px(0.)).child(
+                        if self.tabs[active].welcome {
+                            self.welcome.clone().into_any_element()
+                        } else {
+                            self.render_node(&self.tabs[active].root, focused, cx, Vec::new())
+                        },
+                    ),
+                );
 
         // Quick Look 速览浮层:绝对定位浮在工作区之上,贴文件树右缘(explorer 开 → 锚到
         // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
             // Anchored to the explorer's right edge (body pad 12 + width + gap).
-            let left = if self.explorer_open { self.explorer_width + 20. } else { 40. };
+            let left = if self.explorer_open {
+                self.explorer_width + 20.
+            } else {
+                40.
+            };
             // Click-away scrim over the **workspace body** (terminal area) — NOT the
             // explorer / titlebar / status bar. A click on the bare terminal used to
             // `focus_pane` and steal focus to the shell mid-edit (the「焦点漏到底层
@@ -3713,7 +4398,11 @@ impl Render for Workspace {
             // swallowed by its own root (see `quick_look.rs` inner `on_mouse_down`),
             // and the explorer stays clickable (scrim starts at its right edge) so
             // 点树里另一个文件仍能换预览。
-            let scrim_left = if self.explorer_open { self.explorer_width + 14. } else { 0. };
+            let scrim_left = if self.explorer_open {
+                self.explorer_width + 14.
+            } else {
+                0.
+            };
             div()
                 .absolute()
                 .top(px(46.)) // below the titlebar
@@ -3775,12 +4464,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::new_session))
             .on_action(cx.listener(|_this, _: &Quit, _w, cx| {
-                    crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
-                    if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
-                        crate::platform::remove_tray_icon(th.0);
-                    }
-                    cx.quit();
-                }))
+                crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+                    crate::platform::remove_tray_icon(th.0);
+                }
+                cx.quit();
+            }))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
             // thin handle) recomputes weights; mouse-up anywhere ends it.
@@ -3827,7 +4516,14 @@ mod tests {
     #[test]
     fn validate_ssh_target_accepts_good_targets() {
         // C2: well-formed targets (and empty input) pass.
-        for ok in ["", "host", "user@host", "host:22", "root@10.0.0.5:2222", "alma"] {
+        for ok in [
+            "",
+            "host",
+            "user@host",
+            "host:22",
+            "root@10.0.0.5:2222",
+            "alma",
+        ] {
             assert!(validate_ssh_target(ok).is_ok(), "{ok:?} should be ok");
         }
         // A non-numeric suffix stays part of the host (matches SshConfig::parse).
@@ -3847,14 +4543,20 @@ mod tests {
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {
         let weights = vec![1.0; kids.len()];
-        Node::Split { axis, kids, weights }
+        Node::Split {
+            axis,
+            kids,
+            weights,
+        }
     }
 
     #[test]
     fn resize_adjusts_matching_axis_only() {
         let mut n = split(Axis::Row, vec![Node::Leaf(0), Node::Leaf(1)]);
         assert!(n.resize(1, Axis::Row, 0.5));
-        let Node::Split { weights, .. } = &n else { panic!() };
+        let Node::Split { weights, .. } = &n else {
+            panic!()
+        };
         assert_eq!(weights[1], 1.5);
         assert_eq!(weights[0], 1.0);
         // Wrong axis is a no-op.
@@ -3866,9 +4568,13 @@ mod tests {
         let inner = split(Axis::Row, vec![Node::Leaf(1), Node::Leaf(2)]);
         let mut n = split(Axis::Row, vec![Node::Leaf(0), inner]);
         assert!(n.resize(2, Axis::Row, 0.3));
-        let Node::Split { weights, kids, .. } = &n else { panic!() };
+        let Node::Split { weights, kids, .. } = &n else {
+            panic!()
+        };
         assert_eq!(weights, &vec![1.0, 1.0]); // outer untouched
-        let Node::Split { weights: iw, .. } = &kids[1] else { panic!() };
+        let Node::Split { weights: iw, .. } = &kids[1] else {
+            panic!()
+        };
         assert!((iw[1] - 1.3).abs() < 1e-6); // inner pane grew
     }
 
@@ -3878,19 +4584,38 @@ mod tests {
         // before=true (left/up) → new pane BEFORE target.
         let mut n = Node::Leaf(0);
         assert!(n.split(0, 1, Axis::Row, false)); // split right
-        let Node::Split { kids, .. } = &n else { panic!() };
-        assert!(matches!((&kids[0], &kids[1]), (Node::Leaf(0), Node::Leaf(1))), "right → [0,1]");
+        let Node::Split { kids, .. } = &n else {
+            panic!()
+        };
+        assert!(
+            matches!((&kids[0], &kids[1]), (Node::Leaf(0), Node::Leaf(1))),
+            "right → [0,1]"
+        );
 
         let mut n = Node::Leaf(0);
         assert!(n.split(0, 1, Axis::Row, true)); // split left
-        let Node::Split { kids, .. } = &n else { panic!() };
-        assert!(matches!((&kids[0], &kids[1]), (Node::Leaf(1), Node::Leaf(0))), "left → [1,0]");
+        let Node::Split { kids, .. } = &n else {
+            panic!()
+        };
+        assert!(
+            matches!((&kids[0], &kids[1]), (Node::Leaf(1), Node::Leaf(0))),
+            "left → [1,0]"
+        );
 
         // Aligned n-ary insert respects before/after position.
         let mut n = split(Axis::Row, vec![Node::Leaf(0), Node::Leaf(1)]);
         assert!(n.split(1, 2, Axis::Row, true)); // insert 2 before pane 1
-        let Node::Split { kids, .. } = &n else { panic!() };
-        let ids: Vec<_> = kids.iter().map(|k| matches!(k, Node::Leaf(_)).then(|| if let Node::Leaf(i) = k { *i } else { 0 }).unwrap()).collect();
+        let Node::Split { kids, .. } = &n else {
+            panic!()
+        };
+        let ids: Vec<_> = kids
+            .iter()
+            .map(|k| {
+                matches!(k, Node::Leaf(_))
+                    .then(|| if let Node::Leaf(i) = k { *i } else { 0 })
+                    .unwrap()
+            })
+            .collect();
         assert_eq!(ids, vec![0, 2, 1], "before pane 1 → [0,2,1]");
 
         // SplitDir mapping
@@ -3906,7 +4631,9 @@ mod tests {
         for _ in 0..20 {
             n.resize(0, Axis::Col, -0.2);
         }
-        let Node::Split { weights, .. } = &n else { panic!() };
+        let Node::Split { weights, .. } = &n else {
+            panic!()
+        };
         assert!(weights[0] >= 0.1 - 1e-6);
     }
 
@@ -3916,16 +4643,32 @@ mod tests {
         let inner = split(Axis::Col, vec![Node::Leaf(1), Node::Leaf(2)]);
         let mut n = split(Axis::Row, vec![Node::Leaf(0), inner]);
         // [] = root split (Row); [1] = the inner split (Col); [0] = a leaf.
-        assert!(matches!(n.at_path_mut(&[]), Some(Node::Split { axis: Axis::Row, .. })));
-        assert!(matches!(n.at_path_mut(&[1]), Some(Node::Split { axis: Axis::Col, .. })));
+        assert!(matches!(
+            n.at_path_mut(&[]),
+            Some(Node::Split {
+                axis: Axis::Row,
+                ..
+            })
+        ));
+        assert!(matches!(
+            n.at_path_mut(&[1]),
+            Some(Node::Split {
+                axis: Axis::Col,
+                ..
+            })
+        ));
         assert!(matches!(n.at_path_mut(&[0]), Some(Node::Leaf(0))));
         // A divider drag sets the inner split's weights via this path.
         if let Some(Node::Split { weights, .. }) = n.at_path_mut(&[1]) {
             weights[0] = 2.0;
             weights[1] = 0.5;
         }
-        let Node::Split { kids, .. } = &n else { panic!() };
-        let Node::Split { weights: iw, .. } = &kids[1] else { panic!() };
+        let Node::Split { kids, .. } = &n else {
+            panic!()
+        };
+        let Node::Split { weights: iw, .. } = &kids[1] else {
+            panic!()
+        };
         assert_eq!(iw, &vec![2.0, 0.5]);
         // Out-of-range / through-a-leaf paths are None.
         assert!(n.at_path_mut(&[9]).is_none());

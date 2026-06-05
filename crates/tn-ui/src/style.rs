@@ -9,8 +9,8 @@
 //! colors (`tn_core::Rgb`) via the [`Rgb8`] trait — both are just 8-bit RGB.
 
 use gpui::{
-    div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba,
-    BoxShadow, Div, Rgba, Svg,
+    div, hsla, linear_color_stop, linear_gradient, point, prelude::*, px, rgb, rgba, BoxShadow,
+    Div, Rgba, Svg,
 };
 
 // Calm Glass white-on-glass overlay tokens (alpha-only — depth from layered
@@ -33,7 +33,6 @@ pub(crate) const G1_TOP: u32 = 0x222a4675; // rgba(34,42,70,0.46) → a=round(.4
 #[allow(dead_code)]
 pub(crate) const G1_BOT: u32 = 0x10142694; // rgba(16,20,38,0.58) → a=round(.58×255)=148=0x94
 pub(crate) const G1_MID: u32 = 0x191f3685; // rgba(25,31,54,0.52) ← midpoint of G1_TOP + G1_BOT
-
 
 /// UI sans-serif for chrome (tabs / headers / status); paired with the mono
 /// terminal/code font. Ships on Windows 10/11.
@@ -70,7 +69,12 @@ pub(crate) fn col(c: impl Rgb8) -> Rgba {
 /// material shows through, instead of being filled opaque. See 产品设计 §6.1.
 pub(crate) fn cola(c: impl Rgb8, a: f32) -> Rgba {
     let (r, g, b) = c.channels();
-    Rgba { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }
+    Rgba {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a,
+    }
 }
 
 /// A soft, contained drop shadow (depth without glow — Calm Glass). A negative
@@ -133,35 +137,21 @@ pub(crate) fn specular_wash(focused: bool, accent: impl Rgb8) -> Div {
         linear_color_stop(rgba(0xffffff03), 0.), // 顶端极弱高光
         linear_color_stop(rgba(0x00000000), 0.85), // 在 85% 高度处羽化消隐完毕
     );
-    let d = div()
-        .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .size_full();
+    let d = div().absolute().top(px(0.)).left(px(0.)).size_full();
     if focused {
-        d.child(
-            div()
-                .absolute()
-                .size_full()
-                .bg(base_glow)
-        )
-        .child(
+        d.child(div().absolute().size_full().bg(base_glow)).child(
             // ── 宽幅对角线氛围光 (Wide-span Diagonal Glow) ──
             // 将对角线氛围光从 0% 延伸到 100% 满幅，使色彩过渡丝滑、极其柔和
-            div()
-                .absolute()
-                .size_full()
-                .bg(linear_gradient(
-                    135.,
-                    linear_color_stop(cola(accent, 0.03), 0.), // 稍微弱化起始强度
-                    linear_color_stop(rgba(0x00000000), 1.0), // 在对角线终点 100% 处完全羽化
-                ))
+            div().absolute().size_full().bg(linear_gradient(
+                135.,
+                linear_color_stop(cola(accent, 0.03), 0.), // 稍微弱化起始强度
+                linear_color_stop(rgba(0x00000000), 1.0),  // 在对角线终点 100% 处完全羽化
+            )),
         )
     } else {
         d.bg(base_glow)
     }
 }
-
 
 /// mockup `.pane` / `.pane.active` box-shadow stack: an outer 1px **dark hairline**
 /// (`0 0 0 1px rgba(0,0,0,.28)`) that crisply *cuts* the pane out of the backdrop,
@@ -217,18 +207,18 @@ pub(crate) fn glass_pane(inner: Div, focused: bool, accent: impl Rgb8) -> Div {
         .bg(linear_gradient(
             180.,
             linear_color_stop(rgba(0x0000002b), 0.), // ~.17 at very top
-            linear_color_stop(rgba(0x00000000), 1.),  // → transparent at 4px
+            linear_color_stop(rgba(0x00000000), 1.), // → transparent at 4px
         ));
 
-    let wrapped = div()
-        .size_full()
-        .relative()
-        .child(inner)
-        .child(top_glaze);
+    let wrapped = div().size_full().relative().child(inner).child(top_glaze);
 
     // ── Gradient edge ring ──
     // 顶端冷白高亮 (32% / 17%) + 底端强调色回光 (28% / 15%) — 强化边缘折射与品质感
-    let top = if focused { rgba(0xffffff24) } else { rgba(0xffffff0f) }; // .14 / .06 (softer highlights)
+    let top = if focused {
+        rgba(0xffffff24)
+    } else {
+        rgba(0xffffff0f)
+    }; // .14 / .06 (softer highlights)
     let edge = linear_gradient(
         180.,
         linear_color_stop(top, 0.),
@@ -333,8 +323,8 @@ pub(crate) fn quicklook_fill(bg: impl Rgb8) -> gpui::Background {
 /// 同样把硬 1px 暗线换成 3px 软暗晕(避接缝,见 `pane_shadows`),再叠多层柔投影。
 pub(crate) fn quicklook_shadows() -> Vec<BoxShadow> {
     vec![
-        soft_shadow(0.0, 3.0, 0.0, 0.16),    // 软暗晕切出背景(代 mockup 0 0 0 1px rgba(0,0,0,.36), reduced to .16)
-        soft_shadow(2.0, 6.0, -2.0, 0.6),    // mockup 0 2px 6px -2px rgba(0,0,0,.6)
+        soft_shadow(0.0, 3.0, 0.0, 0.16), // 软暗晕切出背景(代 mockup 0 0 0 1px rgba(0,0,0,.36), reduced to .16)
+        soft_shadow(2.0, 6.0, -2.0, 0.6), // mockup 0 2px 6px -2px rgba(0,0,0,.6)
         soft_shadow(30.0, 72.0, -24.0, 0.86), // mockup 0 30px 72px -24px rgba(0,0,0,.86)
         soft_shadow(72.0, 132.0, -50.0, 0.96), // mockup 0 72px 132px -50px rgba(0,0,0,.96)
     ]
@@ -360,11 +350,7 @@ pub(crate) fn quicklook_frame(inner: Div, accent: impl Rgb8) -> Div {
             linear_color_stop(rgba(0x00000000), 1.),
         ));
 
-    let wrapped = div()
-        .size_full()
-        .relative()
-        .child(inner)
-        .child(top_glaze);
+    let wrapped = div().size_full().relative().child(inner).child(top_glaze);
 
     let edge = linear_gradient(
         180.,
@@ -372,7 +358,12 @@ pub(crate) fn quicklook_frame(inner: Div, accent: impl Rgb8) -> Div {
         linear_color_stop(cola(accent, 0.15), 1.), // bottom accent .15 (原 .06)
     );
     shadowed(
-        div().size_full().rounded(px(R_PANEL)).p(px(1.)).bg(edge).child(wrapped),
+        div()
+            .size_full()
+            .rounded(px(R_PANEL))
+            .p(px(1.))
+            .bg(edge)
+            .child(wrapped),
         quicklook_shadows(),
     )
 }
@@ -402,8 +393,7 @@ mod token_drift {
     /// `design/mockup.html`, resolved from this crate (`crates/tn-ui`) up to repo root.
     fn mockup_html() -> String {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/mockup.html");
-        std::fs::read_to_string(path)
-            .unwrap_or_else(|e| panic!("read {path}: {e}"))
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"))
     }
 
     /// The body between `:root {` and the next `}` — where the CSS vars live.
@@ -462,8 +452,16 @@ mod token_drift {
     /// constant, with `AA == round(a*255)`.
     fn assert_white(css: &str, token: u32, what: &str) {
         let (r, g, b, a) = rgba_alpha(css);
-        assert_eq!((r, g, b), (255, 255, 255), "{what}: expected white base ({css})");
-        assert_eq!(token >> 8, 0xffffff, "{what}: token {token:#010x} rgb must be white");
+        assert_eq!(
+            (r, g, b),
+            (255, 255, 255),
+            "{what}: expected white base ({css})"
+        );
+        assert_eq!(
+            token >> 8,
+            0xffffff,
+            "{what}: token {token:#010x} rgb must be white"
+        );
         let want = (a * 255.0).round() as u32;
         assert_eq!(
             token & 0xff,
@@ -504,31 +502,75 @@ mod token_drift {
         let t = Theme::tn_dark();
 
         // ── colors: mockup --var == theme token (设计稿为准) ──
-        assert_color(css_var(root, "--fg"), t.ui.foreground, "--fg → ui.foreground");
+        assert_color(
+            css_var(root, "--fg"),
+            t.ui.foreground,
+            "--fg → ui.foreground",
+        );
         assert_color(css_var(root, "--muted"), t.ui.muted, "--muted → ui.muted");
-        assert_color(css_var(root, "--accent"), t.ui.accent, "--accent → ui.accent");
-        assert_color(css_var(root, "--violet"), t.ui.accent_alt, "--violet → ui.accent_alt");
-        assert_color(css_var(root, "--green"), t.ansi.green, "--green → ansi.green");
+        assert_color(
+            css_var(root, "--accent"),
+            t.ui.accent,
+            "--accent → ui.accent",
+        );
+        assert_color(
+            css_var(root, "--violet"),
+            t.ui.accent_alt,
+            "--violet → ui.accent_alt",
+        );
+        assert_color(
+            css_var(root, "--green"),
+            t.ansi.green,
+            "--green → ansi.green",
+        );
         assert_color(css_var(root, "--red"), t.ansi.red, "--red → ansi.red");
-        assert_color(css_var(root, "--yellow"), t.ansi.yellow, "--yellow → ansi.yellow");
+        assert_color(
+            css_var(root, "--yellow"),
+            t.ansi.yellow,
+            "--yellow → ansi.yellow",
+        );
         assert_color(css_var(root, "--cyan"), t.ansi.cyan, "--cyan → ansi.cyan");
-        assert_color(css_var(root, "--claude"), t.agents.claude, "--claude → agents.claude");
-        assert_color(css_var(root, "--codex"), t.agents.codex, "--codex → agents.codex");
+        assert_color(
+            css_var(root, "--claude"),
+            t.agents.claude,
+            "--claude → agents.claude",
+        );
+        assert_color(
+            css_var(root, "--codex"),
+            t.agents.codex,
+            "--codex → agents.codex",
+        );
 
         // ── white-overlay material tokens: mockup alpha == style.rs constant ──
         assert_white(css_var(root, "--rim"), RIM, "--rim → RIM");
         assert_white(css_var(root, "--sheen"), SHEEN, "--sheen → SHEEN");
         assert_white(css_var(root, "--g2"), INSET, "--g2 → INSET");
         assert_white(css_var(root, "--g3"), HOVER, "--g3 → HOVER");
-        assert_white(css_var(root, "--g3"), DIVIDER, "--g3 → DIVIDER (= chip/hover .06)");
+        assert_white(
+            css_var(root, "--g3"),
+            DIVIDER,
+            "--g3 → DIVIDER (= chip/hover .06)",
+        );
 
         // ── pane glass gradient: mockup --g1 two rgba stops == G1_TOP / G1_BOT ──
         assert_g1(css_var(root, "--g1"), G1_TOP, G1_BOT);
 
         // ── corner radii ──
-        assert_eq!(px_val(css_var(root, "--r-win")), R_WINDOW, "--r-win → R_WINDOW");
-        assert_eq!(px_val(css_var(root, "--r-pane")), R_PANEL, "--r-pane → R_PANEL");
-        assert_eq!(px_val(css_var(root, "--r-card")), R_CARD, "--r-card → R_CARD");
+        assert_eq!(
+            px_val(css_var(root, "--r-win")),
+            R_WINDOW,
+            "--r-win → R_WINDOW"
+        );
+        assert_eq!(
+            px_val(css_var(root, "--r-pane")),
+            R_PANEL,
+            "--r-pane → R_PANEL"
+        );
+        assert_eq!(
+            px_val(css_var(root, "--r-card")),
+            R_CARD,
+            "--r-card → R_CARD"
+        );
     }
 
     /// `design/calm-glass.css`(面板共享样式表)的 `:root` 必须与 `mockup.html`
@@ -590,11 +632,6 @@ mod spec_gen {
     use super::*;
     use std::fmt::Write as _;
     use tn_config::{Color, Theme};
-
-    fn mockup() -> String {
-        let p = concat!(env!("CARGO_MANIFEST_DIR"), "/../../design/mockup.html");
-        std::fs::read_to_string(p).unwrap_or_else(|e| panic!("read {p}: {e}"))
-    }
 
     /// `design/calm-glass.css` — the shared stylesheet every panel `<link>`s, and
     /// the authoritative source for §16.2 component specs: it carries *all*
@@ -681,15 +718,27 @@ mod spec_gen {
 
     /// Layout/type properties worth copying verbatim.
     const PROPS: &[&str] = &[
-        "height", "width", "min-width", "padding", "gap", "border-radius",
-        "font-size", "font-weight", "color", "background", "border",
+        "height",
+        "width",
+        "min-width",
+        "padding",
+        "gap",
+        "border-radius",
+        "font-size",
+        "font-weight",
+        "color",
+        "background",
+        "border",
     ];
 
     fn hex(c: Color) -> String {
         format!("#{:02X}{:02X}{:02X}", c.r, c.g, c.b)
     }
     fn white(token: u32) -> String {
-        format!("0x{token:08x}（白 @ {:.0}%）", (token & 0xff) as f32 / 255.0 * 100.0)
+        format!(
+            "0x{token:08x}（白 @ {:.0}%）",
+            (token & 0xff) as f32 / 255.0 * 100.0
+        )
     }
 
     fn build(css: &str) -> String {
@@ -737,26 +786,71 @@ mod spec_gen {
         o.push_str("\n### 16.2 组件规格（calm-glass.css 逐类精确值,`var()` 已解析）\n\n");
         let classes = [
             // ① 窗口外壳
-            "win", "titlebar", "brand", "caret", "tab", "newtab", "wctl",
-            "appmenu", "mi", "sep", "status", "seg2",
+            "win",
+            "titlebar",
+            "brand",
+            "caret",
+            "tab",
+            "newtab",
+            "wctl",
+            "appmenu",
+            "mi",
+            "sep",
+            "status",
+            "seg2",
             // ② 工作区 + 窗格
-            "work", "pane", "phead", "cwd", "chip",
+            "work",
+            "pane",
+            "phead",
+            "cwd",
+            "chip",
             // ③ 资源管理器
-            "tree", "tnode", "tag",
+            "tree",
+            "tnode",
+            "tag",
             // agent 头 + 用量环 + 活动栏
-            "agenthead", "who", "nm", "model", "usage", "tok", "cost", "ring", "lbl",
-            "arail", "astat", "alabel", "achip", "afile", "adiff", "ahint",
+            "agenthead",
+            "who",
+            "nm",
+            "model",
+            "usage",
+            "tok",
+            "cost",
+            "ring",
+            "lbl",
+            "arail",
+            "astat",
+            "alabel",
+            "achip",
+            "afile",
+            "adiff",
+            "ahint",
             // 终端 / shell / block
-            "body", "block",
+            "body",
+            "block",
             // 速览 Quick Look
-            "quicklook", "vh", "code", "qlfoot",
+            "quicklook",
+            "vh",
+            "code",
+            "qlfoot",
             // 欢迎 launchpad
-            "welcome", "recent", "rrow", "whints",
+            "welcome",
+            "recent",
+            "rrow",
+            "whints",
             // 浮层:命令面板 / Quick Terminal
-            "scrim", "palette", "prow", "quick", "launcher", "tiles", "tile",
+            "scrim",
+            "palette",
+            "prow",
+            "quick",
+            "launcher",
+            "tiles",
+            "tile",
         ];
         for cls in classes {
-            let Some(body) = rule_body(&style, cls) else { continue };
+            let Some(body) = rule_body(&style, cls) else {
+                continue;
+            };
             let rows: Vec<(String, String)> = body
                 .split(';')
                 .filter_map(|d| {
@@ -766,7 +860,10 @@ mod spec_gen {
                         // collapse multi-line / repeated whitespace so a wrapped CSS
                         // value (e.g. a two-line gradient) renders on one tidy row.
                         let v = resolve(v, &root);
-                        (p.to_string(), v.split_whitespace().collect::<Vec<_>>().join(" "))
+                        (
+                            p.to_string(),
+                            v.split_whitespace().collect::<Vec<_>>().join(" "),
+                        )
                     })
                 })
                 .collect();
@@ -792,12 +889,20 @@ mod spec_gen {
         // exercise: the generated body must carry the token registry + component specs.
         assert!(body.contains("--fg"), "token registry missing");
         assert!(body.contains("**`.pane`**"), "component specs missing");
-        assert!(body.len() > 800, "spec suspiciously short ({} bytes)", body.len());
+        assert!(
+            body.len() > 800,
+            "spec suspiciously short ({} bytes)",
+            body.len()
+        );
 
         // the host doc must keep the markers so §16 can be spliced in.
         let doc = std::fs::read_to_string(DOC).unwrap_or_else(|e| panic!("read {DOC}: {e}"));
-        let si = doc.find(MARK_START).expect("样式还原手册.md missing SPEC:AUTO-START");
-        let ei = doc.find(MARK_END).expect("样式还原手册.md missing SPEC:AUTO-END");
+        let si = doc
+            .find(MARK_START)
+            .expect("样式还原手册.md missing SPEC:AUTO-START");
+        let ei = doc
+            .find(MARK_END)
+            .expect("样式还原手册.md missing SPEC:AUTO-END");
         assert!(si < ei, "SPEC markers out of order");
 
         // TN_GEN_SPEC=1 → splice the generated body between the markers (idempotent).
@@ -864,8 +969,10 @@ mod no_hardcoded_theme_colors {
             let mut from = 0;
             while let Some(i) = code[from..].find(pat) {
                 let start = from + i + pat.len();
-                let hex: String =
-                    code[start..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                let hex: String = code[start..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_hexdigit())
+                    .collect();
                 from = start;
                 if let Ok(v) = u32::from_str_radix(&hex, 16) {
                     out.push(if is_rgba { v >> 8 } else { v }); // rgba → drop alpha byte

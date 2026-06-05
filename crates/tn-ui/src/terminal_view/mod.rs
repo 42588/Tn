@@ -22,10 +22,10 @@ use std::time::{Instant, SystemTime};
 
 use futures::channel::mpsc;
 use gpui::{
-    canvas, div, point, prelude::*, px, relative, rgba, size, AsyncApp, Bounds,
-    ClipboardItem, Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, FontWeight,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
+    canvas, div, point, prelude::*, px, relative, rgba, size, AsyncApp, Bounds, ClipboardItem,
+    Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
+    ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
 use tn_ai::{AgentKind, AiUsage};
 use tn_blocks::BlockModel;
@@ -143,10 +143,22 @@ pub(crate) fn palette_from(theme: &tn_config::Theme) -> Palette {
     let t = &theme.terminal;
     Palette {
         ansi: [
-            c(a.black), c(a.red), c(a.green), c(a.yellow),
-            c(a.blue), c(a.magenta), c(a.cyan), c(a.white),
-            c(a.bright_black), c(a.bright_red), c(a.bright_green), c(a.bright_yellow),
-            c(a.bright_blue), c(a.bright_magenta), c(a.bright_cyan), c(a.bright_white),
+            c(a.black),
+            c(a.red),
+            c(a.green),
+            c(a.yellow),
+            c(a.blue),
+            c(a.magenta),
+            c(a.cyan),
+            c(a.white),
+            c(a.bright_black),
+            c(a.bright_red),
+            c(a.bright_green),
+            c(a.bright_yellow),
+            c(a.bright_blue),
+            c(a.bright_magenta),
+            c(a.bright_cyan),
+            c(a.bright_white),
         ],
         fg: c(t.foreground),
         bg: c(t.background),
@@ -472,6 +484,22 @@ impl TerminalView {
                 fallback_pwsh(pty_size)
             }))
         };
+        // Starts false: the first read's false->true transition sends the first
+        // wake. SSH backend-only events use the same path so password/TOFU cards
+        // appear even when no terminal bytes arrive.
+        let dirty = Arc::new(AtomicBool::new(false));
+        // Reader/backend -> foreground wake channel. `dirty` dedupes so at most one wake
+        // is in flight; the foreground drains it and notifies once per frame.
+        let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
+        {
+            let dirty = dirty.clone();
+            let wake_tx = wake_tx.clone();
+            pty.set_waker(Box::new(move || {
+                if !dirty.swap(true, Ordering::Relaxed) {
+                    let _ = wake_tx.unbounded_send(());
+                }
+            }));
+        }
         let reader = pty.take_reader().expect("pty reader");
         let writer: SharedWriter = Arc::new(Mutex::new(pty.writer().expect("pty writer")));
         let (writer_tx, writer_rx) = std::sync::mpsc::channel::<Vec<u8>>();
@@ -511,12 +539,6 @@ impl TerminalView {
         term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
         let blocks = Arc::new(Mutex::new(BlockModel::new()));
-        // Starts false: the first read's false->true transition sends the first
-        // wake. GPUI still paints the initial (empty) frame when the window opens.
-        let dirty = Arc::new(AtomicBool::new(false));
-        // Reader -> foreground wake channel. `dirty` dedupes so at most one wake
-        // is in flight; the foreground drains it and notifies once per frame.
-        let (wake_tx, wake_rx) = mpsc::unbounded::<()>();
         let title = Arc::new(Mutex::new(None));
         let agent_exited = Arc::new(AtomicBool::new(false));
         let bell = Arc::new(AtomicBool::new(false));
@@ -714,10 +736,18 @@ impl TerminalView {
     /// Process a background event from the PTY backend.
     pub(super) fn handle_pty_event(&mut self, ev: tn_pty::PtyEvent, cx: &mut Context<Self>) {
         match ev {
-            tn_pty::PtyEvent::NeedPassword { prompt, error, reply } => {
+            tn_pty::PtyEvent::NeedPassword {
+                prompt,
+                error,
+                reply,
+            } => {
                 // A re-prompt (error.is_some()) keeps the connection alive (B3); only
                 // the typed text resets. reveal/remember persist across retries.
-                self.ssh_password_prompt = Some(SshPasswordPrompt { prompt, error, reply });
+                self.ssh_password_prompt = Some(SshPasswordPrompt {
+                    prompt,
+                    error,
+                    reply,
+                });
                 self.ssh_password_input.clear();
                 self.ssh_progress = None; // password card takes over from the progress card
                 cx.notify();
@@ -735,15 +765,31 @@ impl TerminalView {
                 });
                 cx.notify();
             }
-            tn_pty::PtyEvent::SshFailed { kind, detail, offered } => {
+            tn_pty::PtyEvent::SshFailed {
+                kind,
+                detail,
+                offered,
+            } => {
                 // C1 error card: stop the progress card, show the actionable error.
                 self.ssh_progress = None;
-                self.ssh_error = Some(SshErrorInfo { kind, detail, offered });
+                self.ssh_error = Some(SshErrorInfo {
+                    kind,
+                    detail,
+                    offered,
+                });
                 cx.notify();
             }
-            tn_pty::PtyEvent::NeedHostKeyConfirm { host, fingerprint, reply } => {
+            tn_pty::PtyEvent::NeedHostKeyConfirm {
+                host,
+                fingerprint,
+                reply,
+            } => {
                 // B2 TOFU: pause on the trust panel (the progress card hides).
-                self.ssh_hostkey = Some(SshHostKeyPrompt { host, fingerprint, reply });
+                self.ssh_hostkey = Some(SshHostKeyPrompt {
+                    host,
+                    fingerprint,
+                    reply,
+                });
                 self.ssh_hostkey_remember = true;
                 self.ssh_progress = None;
                 cx.notify();
@@ -771,7 +817,9 @@ impl TerminalView {
     /// Submit the typed SSH password (B3): cache it if "记住密码" is checked, send
     /// it to the backend, and close the card. Shared by Enter and the 连接 button.
     fn submit_ssh_password(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.ssh_password_prompt.take() else { return };
+        let Some(p) = self.ssh_password_prompt.take() else {
+            return;
+        };
         let pw = std::mem::take(&mut self.ssh_password_input);
         if self.ssh_password_remember && !pw.is_empty() {
             cx.emit(SshRememberPassword(pw.clone()));
@@ -780,19 +828,24 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Cancel the SSH password prompt (Esc / 取消): reply empty → auth fails →
-    /// error card.
+    /// Cancel the SSH password prompt (Esc / 取消): release the backend prompt and
+    /// ask the workspace to close this SSH pane, matching the other SSH cards.
     fn cancel_ssh_password(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.ssh_password_prompt.take() else { return };
+        let Some(p) = self.ssh_password_prompt.take() else {
+            return;
+        };
         let _ = p.reply.send(String::new());
         self.ssh_password_input.clear();
+        cx.emit(SshCloseRequested);
         cx.notify();
     }
 
     /// Trust the pending host key (B2): save to known_hosts if "记住" is checked,
     /// else accept for this session only.
     fn trust_host_key(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.ssh_hostkey.take() else { return };
+        let Some(p) = self.ssh_hostkey.take() else {
+            return;
+        };
         let verdict = if self.ssh_hostkey_remember {
             tn_pty::HostKeyVerdict::AcceptAndSave
         } else {
@@ -802,10 +855,14 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// Reject the pending host key (B2): abort the connection.
+    /// Reject the pending host key (B2): abort the connection and close this SSH
+    /// pane, matching the card's "取消" label.
     fn reject_host_key(&mut self, cx: &mut Context<Self>) {
-        let Some(p) = self.ssh_hostkey.take() else { return };
+        let Some(p) = self.ssh_hostkey.take() else {
+            return;
+        };
         let _ = p.reply.send(tn_pty::HostKeyVerdict::Reject);
+        cx.emit(SshCloseRequested);
         cx.notify();
     }
 
@@ -885,7 +942,9 @@ impl TerminalView {
         if self.agent.is_none() {
             return;
         }
-        let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else { return };
+        let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else {
+            return;
+        };
 
         // Bump generation. If we don't have any ready data yet, show the Loading skeleton.
         self.rail_generation = self.rail_generation.wrapping_add(1);
@@ -906,7 +965,8 @@ impl TerminalView {
                         let files = crate::gitutil::changes_for(&root);
                         let _ = tx.send((files, root));
                     });
-                    rx.await.unwrap_or_else(|_| (Vec::new(), std::path::PathBuf::new()))
+                    rx.await
+                        .unwrap_or_else(|_| (Vec::new(), std::path::PathBuf::new()))
                 })
                 .await;
             // ── Back on UI thread: only apply if still current ──
@@ -953,11 +1013,7 @@ impl TerminalView {
 
     /// Navigate the activity rail by `delta` (-1 = previous, +1 = next) from
     /// `current_idx`, wrapping around. Returns `(new_index, absolute_path)`.
-    pub fn rail_nav(
-        &self,
-        current_idx: usize,
-        delta: i32,
-    ) -> Option<(usize, std::path::PathBuf)> {
+    pub fn rail_nav(&self, current_idx: usize, delta: i32) -> Option<(usize, std::path::PathBuf)> {
         if let RailState::Ready { files, root } = &self.rail_state {
             if files.is_empty() {
                 return None;
@@ -980,7 +1036,10 @@ impl TerminalView {
         let m = self.blocks.lock().unwrap();
         m.current()
             .and_then(|b| b.cwd.as_ref().map(|s| s.to_string()))
-            .or_else(|| m.last_finished().and_then(|b| b.cwd.as_ref().map(|s| s.to_string())))
+            .or_else(|| {
+                m.last_finished()
+                    .and_then(|b| b.cwd.as_ref().map(|s| s.to_string()))
+            })
     }
 
     /// This pane's effective working directory: OSC 7 cwd first,
@@ -1019,7 +1078,17 @@ impl TerminalView {
     /// Write raw bytes to the PTY (the shell's stdin), as if typed. Used by the
     /// scripted demo driver.
     pub fn send_bytes(&self, bytes: &[u8]) {
+        if self.ssh_input_blocked() {
+            return;
+        }
         let _ = self.writer_tx.send(bytes.to_vec());
+    }
+
+    fn ssh_input_blocked(&self) -> bool {
+        self.ssh_hostkey.is_some()
+            || self.ssh_password_prompt.is_some()
+            || self.ssh_error.is_some()
+            || self.ssh_progress.is_some()
     }
 
     /// Demo: scroll the viewport by `lines` (positive = back into history).
@@ -1049,6 +1118,9 @@ impl TerminalView {
     /// Paste clipboard text into the PTY, wrapped in bracketed-paste markers
     /// when the program enabled DEC 2004. Newlines are normalized to CR.
     fn paste(&mut self, cx: &mut Context<Self>) {
+        if self.ssh_input_blocked() {
+            return;
+        }
         let Some(text) = cx.read_from_clipboard().and_then(|i| i.text()) else {
             return;
         };
@@ -1091,7 +1163,7 @@ impl TerminalView {
 
     /// Re-run a command block: type its command line back into the shell.
     fn rerun_command(&self, cmd: &str, cx: &mut Context<Self>) {
-        if cmd.is_empty() {
+        if cmd.is_empty() || self.ssh_input_blocked() {
             return;
         }
         {
@@ -1112,7 +1184,8 @@ impl TerminalView {
         }
         let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap())?;
         // Chrome tokens (mockup .block uses --fg/--muted/--accent), + ANSI green/red for status.
-        let pal = block_view::BarPalette::new(self.ui_fg, self.ui_muted, self.ui_accent, &self.palette);
+        let pal =
+            block_view::BarPalette::new(self.ui_fg, self.ui_muted, self.ui_accent, &self.palette);
         let mut bar = block_view::bar_base(&data, &pal);
         if !data.command.is_empty() {
             let copy_cmd = data.command.clone();
@@ -1161,7 +1234,12 @@ impl TerminalView {
         )
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let (row, col) = self.cell_at(event.position);
         // Click count picks the granularity: 1 = cell, 2 = word, 3+ = line
         // (待优化清单 §3.5). A following drag extends by that same granularity.
@@ -1170,12 +1248,20 @@ impl TerminalView {
             2 => SelectKind::Word,
             _ => SelectKind::Line,
         };
-        self.terminal.lock().unwrap().selection_start_kind(row, col, kind);
+        self.terminal
+            .lock()
+            .unwrap()
+            .selection_start_kind(row, col, kind);
         self.selecting = true;
         cx.notify();
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.scrollbar_drag.is_some() {
             // 防粘连:鼠标在元素外松开时 on_mouse_up 收不到 → 拖动态残留、滚动条跟着鼠标走。
             // 兜底——左键一旦已松(pressed_button != Left)即清除拖动、不再跟随(同 Quick Look)。
@@ -1205,15 +1291,17 @@ impl TerminalView {
         if track_h <= 0.0 || total <= 0.0 {
             return;
         }
-        let thumb_top = f32::from(b.origin.y)
-            + (history.saturating_sub(offset)) as f32 / total * track_h;
+        let thumb_top =
+            f32::from(b.origin.y) + (history.saturating_sub(offset)) as f32 / total * track_h;
         self.scrollbar_drag = Some(cursor_y - thumb_top);
         cx.notify();
     }
 
     /// Map the dragged thumb position to a scrollback offset and apply it.
     fn drag_scrollbar(&mut self, cursor_y: f32, cx: &mut Context<Self>) {
-        let Some(grab_dy) = self.scrollbar_drag else { return };
+        let Some(grab_dy) = self.scrollbar_drag else {
+            return;
+        };
         let b = *self.content_bounds.borrow();
         let track_h = f32::from(b.size.height);
         if track_h <= 0.0 {
@@ -1222,7 +1310,9 @@ impl TerminalView {
         let (_, history) = self.terminal.lock().unwrap().scroll_position();
         let total = (history + self.size.rows) as f32;
         let frac = ((cursor_y - f32::from(b.origin.y) - grab_dy) / track_h).clamp(0.0, 1.0);
-        let offset = (history as f32 - frac * total).round().clamp(0.0, history as f32) as usize;
+        let offset = (history as f32 - frac * total)
+            .round()
+            .clamp(0.0, history as f32) as usize;
         self.terminal.lock().unwrap().scroll_to_offset(offset);
         cx.notify();
     }
@@ -1277,9 +1367,13 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
-        // SSH progress card (B1): Esc = cancel the in-flight connection.
-        if self.ssh_progress.is_some() && event.keystroke.key.as_str() == "escape" {
-            cx.emit(SshCloseRequested);
+        // SSH progress card (B1): Esc = cancel the in-flight connection; all
+        // other keys are swallowed so they can't queue and replay into the remote
+        // shell once it opens.
+        if self.ssh_progress.is_some() {
+            if event.keystroke.key.as_str() == "escape" {
+                cx.emit(SshCloseRequested);
+            }
             cx.stop_propagation();
             return;
         }
@@ -1300,7 +1394,10 @@ impl TerminalView {
                 cx.notify();
                 cx.stop_propagation();
                 return;
-            } else if !keystroke.modifiers.control && !keystroke.modifiers.alt && !keystroke.modifiers.platform {
+            } else if !keystroke.modifiers.control
+                && !keystroke.modifiers.alt
+                && !keystroke.modifiers.platform
+            {
                 if let Some(c) = &keystroke.key_char {
                     if !c.is_empty() && c.chars().count() == 1 {
                         self.ssh_password_input.push_str(c);
@@ -1329,7 +1426,8 @@ impl TerminalView {
             return;
         }
         // Paste: Ctrl+Shift+V or Shift+Insert (both reserved from the encoder).
-        if (m.control && m.shift && key == "v") || (m.shift && !m.control && !m.alt && key == "insert")
+        if (m.control && m.shift && key == "v")
+            || (m.shift && !m.control && !m.alt && key == "insert")
         {
             self.paste(cx);
             cx.stop_propagation();
@@ -1436,7 +1534,12 @@ impl TerminalView {
     /// Mouse wheel: scroll the scrollback buffer on the main screen; on the
     /// alternate screen (vim/less/...) translate it into arrow keys so the app
     /// scrolls its own buffer.
-    fn on_scroll(&mut self, event: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_scroll(
+        &mut self,
+        event: &ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Lines toward older output are positive.
         let lines = match event.delta {
             ScrollDelta::Lines(p) => p.y,
@@ -1447,6 +1550,9 @@ impl TerminalView {
         }
         let mode = self.terminal.lock().unwrap().input_mode();
         if mode.alt_screen {
+            if self.ssh_input_blocked() {
+                return;
+            }
             let up = lines > 0.0;
             let arrow: &[u8] = match (up, mode.app_cursor) {
                 (true, false) => b"\x1b[A",
@@ -1493,7 +1599,12 @@ impl EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         // We only expose the in-progress composition as addressable text.
-        let units: Vec<u16> = self.ime_marked.as_deref().unwrap_or("").encode_utf16().collect();
+        let units: Vec<u16> = self
+            .ime_marked
+            .as_deref()
+            .unwrap_or("")
+            .encode_utf16()
+            .collect();
         let start = range.start.min(units.len());
         let end = range.end.min(units.len());
         *adjusted = Some(start..end);
@@ -1508,8 +1619,15 @@ impl EntityInputHandler for TerminalView {
     ) -> Option<UTF16Selection> {
         // Caret at the end of the composition (0 when not composing) — anchors the
         // IME candidate window via `bounds_for_range`.
-        let end = self.ime_marked.as_deref().map(|s| s.encode_utf16().count()).unwrap_or(0);
-        Some(UTF16Selection { range: end..end, reversed: false })
+        let end = self
+            .ime_marked
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
     }
 
     fn marked_text_range(
@@ -1518,7 +1636,9 @@ impl EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
         // `Some` ⇒ gpui knows we're composing and feeds keys to the IME (events.rs).
-        self.ime_marked.as_deref().map(|s| 0..s.encode_utf16().count())
+        self.ime_marked
+            .as_deref()
+            .map(|s| 0..s.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -1567,7 +1687,11 @@ impl EntityInputHandler for TerminalView {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         // Place the IME candidate window at the cursor cell (grid is inset BODY_PAD).
-        let (row, col) = self.render_cache.as_ref().map(|c| c.cursor).unwrap_or((0, 0));
+        let (row, col) = self
+            .render_cache
+            .as_ref()
+            .map(|c| c.cursor)
+            .unwrap_or((0, 0));
         let x = f32::from(element_bounds.origin.x) + BODY_PAD_X + col as f32 * self.cell_width;
         let y = f32::from(element_bounds.origin.y) + BODY_PAD_Y + row as f32 * self.line_height;
         Some(Bounds {
@@ -1618,7 +1742,11 @@ impl Render for TerminalView {
             if new_size != self.size {
                 self.size = new_size;
                 self.terminal.lock().unwrap().resize_conpty(new_size);
-                let _ = self.pty.lock().unwrap().resize(PtySize::new(rows_n as u16, cols as u16));
+                let _ = self
+                    .pty
+                    .lock()
+                    .unwrap()
+                    .resize(PtySize::new(rows_n as u16, cols as u16));
             }
         }
 
@@ -1649,9 +1777,27 @@ impl Render for TerminalView {
             t0.map(|t| t.elapsed())
         };
         self.perf.record(cache_hit, rebuild);
-        let (rows, (cur_row, cur_col), cursor_shape, cursor_visible, scroll_offset, scroll_history, fg, bg) = {
+        let (
+            rows,
+            (cur_row, cur_col),
+            cursor_shape,
+            cursor_visible,
+            scroll_offset,
+            scroll_history,
+            fg,
+            bg,
+        ) = {
             let c = self.render_cache.as_ref().unwrap();
-            (c.rows.clone(), c.cursor, c.cursor_shape, c.cursor_visible, c.scroll_offset, c.scroll_history, c.fg, c.bg)
+            (
+                c.rows.clone(),
+                c.cursor,
+                c.cursor_shape,
+                c.cursor_visible,
+                c.scroll_offset,
+                c.scroll_history,
+                c.fg,
+                c.bg,
+            )
         };
         let bounds_cell = self.content_bounds.clone();
         // Captured into the canvas paint closure to register the IME input handler
@@ -1669,8 +1815,8 @@ impl Render for TerminalView {
         // Hidden when the app hides it (vim) or the viewport is scrolled off the row.
         let focused = self.focus_handle.is_focused(window);
         self.focused = focused; // cache for the blink task (only blinks when focused)
-        // 失焦不可能在合成中:顺手清掉可能残留的 IME preedit,避免它跨焦点切换时卡在
-        // 光标处删不掉(与 on_key 的残留兜底互为双保险;修「偶尔删不掉的符号」)。
+                                // 失焦不可能在合成中:顺手清掉可能残留的 IME preedit,避免它跨焦点切换时卡在
+                                // 光标处删不掉(与 on_key 的残留兜底互为双保险;修「偶尔删不掉的符号」)。
         if !focused {
             self.ime_marked = None;
         }
@@ -1707,19 +1853,23 @@ impl Render for TerminalView {
                 self.cursor_px = target_px;
             }
         }
-        
+
         // Exponential decay for smooth chasing (replaces fixed duration ease_out)
         let (mut cur_x, mut cur_y) = self.cursor_px;
         let dx = target_px.0 - cur_x;
         let dy = target_px.1 - cur_y;
-        
+
         if dx.abs() > 0.5 || dy.abs() > 0.5 {
             // Lerp by a factor per frame. At 60fps, 0.4 is a nice fast ease.
             cur_x += dx * 0.4;
             cur_y += dy * 0.4;
             // When close enough, snap to target
-            if (cur_x - target_px.0).abs() < 0.5 { cur_x = target_px.0; }
-            if (cur_y - target_px.1).abs() < 0.5 { cur_y = target_px.1; }
+            if (cur_x - target_px.0).abs() < 0.5 {
+                cur_x = target_px.0;
+            }
+            if (cur_y - target_px.1).abs() < 0.5 {
+                cur_y = target_px.1;
+            }
         } else {
             cur_x = target_px.0;
             cur_y = target_px.1;
@@ -1730,7 +1880,8 @@ impl Render for TerminalView {
         let mut width_offset = 0.0;
         let mut height_offset = 0.0;
         if let Some(start) = self.cursor_anim_start {
-            let t = (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+            let t =
+                (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
             if t >= 1.0 {
                 self.cursor_anim_start = None;
             } else {
@@ -1772,15 +1923,20 @@ impl Render for TerminalView {
         });
         // (force_hide_cursor 已在上方光标动画前算出:ConPTY 常丢 `\e[?25l`,Claude/Ink
         // 自绘虚拟光标,这里据此剔除物理光标,避免"双光标"重影。)
-        let cursor_el = (cursor_visible && !force_hide_cursor
+        let cursor_el = (cursor_visible
+            && !force_hide_cursor
             && (draw_solid || !focused)
             && cur_row < self.size.rows
             && cur_col < self.size.cols)
             .then(|| {
                 let is_block = cursor_shape == tn_core::CursorShape::Block;
                 let is_underline = cursor_shape == tn_core::CursorShape::Underline;
-                
-                let anim_w = (if is_block || is_underline { self.cell_width } else { 2.0 }) + width_offset;
+
+                let anim_w = (if is_block || is_underline {
+                    self.cell_width
+                } else {
+                    2.0
+                }) + width_offset;
                 let anim_h = self.line_height + height_offset;
                 let anim_x = cur_x - width_offset / 2.0;
                 let anim_y = cur_y - height_offset / 2.0;
@@ -1801,10 +1957,18 @@ impl Render for TerminalView {
                         // dimmed). The block sits over the grid glyph and hides it.
                         base.bg(col(self.palette.cursor))
                             .text_color(col(bg))
-                            .when_some(cursor_char, |d, ch| d.child(SharedString::from(ch.to_string())))
+                            .when_some(cursor_char, |d, ch| {
+                                d.child(SharedString::from(ch.to_string()))
+                            })
                     } else if is_underline {
                         // Underline cursor: a thin bar at the bottom
-                        div().absolute().left(px(anim_x)).top(px(anim_y + anim_h - 2.0)).w(px(anim_w)).h(px(2.0)).bg(col(self.palette.cursor))
+                        div()
+                            .absolute()
+                            .left(px(anim_x))
+                            .top(px(anim_y + anim_h - 2.0))
+                            .w(px(anim_w))
+                            .h(px(2.0))
+                            .bg(col(self.palette.cursor))
                     } else {
                         // Beam cursor: a thin bar on the left
                         base.bg(col(self.palette.cursor))
@@ -1812,9 +1976,16 @@ impl Render for TerminalView {
                 } else {
                     // Unfocused: a slim, calmer outline (thinner presence than a full block).
                     if is_block {
-                        base.border_1().border_color(cola(self.palette.cursor, 0.55))
+                        base.border_1()
+                            .border_color(cola(self.palette.cursor, 0.55))
                     } else if is_underline {
-                        div().absolute().left(px(anim_x)).top(px(anim_y + anim_h - 2.0)).w(px(anim_w)).h(px(2.0)).bg(cola(self.palette.cursor, 0.55))
+                        div()
+                            .absolute()
+                            .left(px(anim_x))
+                            .top(px(anim_y + anim_h - 2.0))
+                            .w(px(anim_w))
+                            .h(px(2.0))
+                            .bg(cola(self.palette.cursor, 0.55))
                     } else {
                         base.bg(cola(self.palette.cursor, 0.55))
                     }
@@ -1890,81 +2061,84 @@ impl Render for TerminalView {
         // Terminal area: the canvas captures THIS region's bounds (so the grid
         // fits the space above the block bar) and hosts the row runs. Mouse +
         // scroll handlers live here so clicks on the bar don't start selections.
-        let term_area = div()
-            .relative()
-            .flex_1()
-            .min_h(px(0.))
-            .min_w(px(0.)) // mockup .abody .body min-width:0(agent 面板正文与活动栏同处 flex 行)
-            .overflow_hidden()
-            .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
-                this.on_scroll(ev, window, cx)
-            }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, window, cx| this.on_mouse_down(ev, window, cx)),
-            )
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
-                this.on_mouse_move(ev, window, cx)
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, ev: &MouseUpEvent, window, cx| this.on_mouse_up(ev, window, cx)),
-            )
-            .child(
-                canvas(
-                    move |bounds, _window, _cx| *bounds_cell.borrow_mut() = bounds,
-                    // Register the per-frame IME/text input handler so composed text
-                    // (中文) reaches `replace_text_in_range`. No-op unless focused.
-                    move |bounds, _state, window, cx| {
-                        window.handle_input(
-                            &ime_focus,
-                            ElementInputHandler::new(bounds, ime_entity.clone()),
-                            cx,
-                        );
-                    },
+        let term_area =
+            div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.)) // mockup .abody .body min-width:0(agent 面板正文与活动栏同处 flex 行)
+                .overflow_hidden()
+                .on_scroll_wheel(cx.listener(|this, ev: &ScrollWheelEvent, window, cx| {
+                    this.on_scroll(ev, window, cx)
+                }))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                        this.on_mouse_down(ev, window, cx)
+                    }),
                 )
-                .absolute()
-                .size_full(),
-            )
-            .child(
-                // Grid inset from the content edge by BODY_PAD (mockup .body padding);
-                // absolute so it shares the cursor's coordinate origin exactly.
-                div()
+                .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                    this.on_mouse_move(ev, window, cx)
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|this, ev: &MouseUpEvent, window, cx| {
+                        this.on_mouse_up(ev, window, cx)
+                    }),
+                )
+                .child(
+                    canvas(
+                        move |bounds, _window, _cx| *bounds_cell.borrow_mut() = bounds,
+                        // Register the per-frame IME/text input handler so composed text
+                        // (中文) reaches `replace_text_in_range`. No-op unless focused.
+                        move |bounds, _state, window, cx| {
+                            window.handle_input(
+                                &ime_focus,
+                                ElementInputHandler::new(bounds, ime_entity.clone()),
+                                cx,
+                            );
+                        },
+                    )
                     .absolute()
-                    .left(px(BODY_PAD_X))
-                    .top(px(BODY_PAD_Y))
-                    .flex()
-                    .flex_col()
-                    .children(rows.iter().map(|runs| {
-                        div()
-                            .flex()
-                            .flex_row()
-                            .h(px(self.line_height))
-                            .children(runs.iter().map(|r| {
-                                div()
-                                    // **Force the run box to its exact grid span**
-                                    // (`cols × cell_width`) so cells stay aligned even
-                                    // when a glyph's font advance ≠ cell_width — i.e.
-                                    // CJK in a fallback font (CaskaydiaCove has no CJK).
-                                    // Without this the row flex-flowed by natural glyph
-                                    // width and Chinese drifted / spaced wrong. `flex_none`
-                                    // + `overflow_hidden` keep the width authoritative.
-                                    .flex_none()
-                                    .w(px(r.cols as f32 * self.cell_width))
-                                    .overflow_hidden()
-                                    // 默认底色留空 → 透出面板 g1 玻璃(mockup:正文落在玻璃上);
-                                    // 仅非默认底(选区/上色/反显)才实绘。
-                                    .when(r.bg != bg, |d| d.bg(col(r.bg)))
-                                    .text_color(col(r.fg))
-                                    .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
-                                    .child(SharedString::from(r.text.to_string()))
-                            }))
-                    })),
-            )
-            .when_some(cursor_el, |this, c| this.child(c))
-            .when_some(ime_preedit, |this, p| this.child(p))
-            .when_some(scrollbar, |this, s| this.child(s))
-            .when_some(bell_overlay, |this, o| this.child(o));
+                    .size_full(),
+                )
+                .child(
+                    // Grid inset from the content edge by BODY_PAD (mockup .body padding);
+                    // absolute so it shares the cursor's coordinate origin exactly.
+                    div()
+                        .absolute()
+                        .left(px(BODY_PAD_X))
+                        .top(px(BODY_PAD_Y))
+                        .flex()
+                        .flex_col()
+                        .children(rows.iter().map(|runs| {
+                            div().flex().flex_row().h(px(self.line_height)).children(
+                                runs.iter().map(|r| {
+                                    div()
+                                        // **Force the run box to its exact grid span**
+                                        // (`cols × cell_width`) so cells stay aligned even
+                                        // when a glyph's font advance ≠ cell_width — i.e.
+                                        // CJK in a fallback font (CaskaydiaCove has no CJK).
+                                        // Without this the row flex-flowed by natural glyph
+                                        // width and Chinese drifted / spaced wrong. `flex_none`
+                                        // + `overflow_hidden` keep the width authoritative.
+                                        .flex_none()
+                                        .w(px(r.cols as f32 * self.cell_width))
+                                        .overflow_hidden()
+                                        // 默认底色留空 → 透出面板 g1 玻璃(mockup:正文落在玻璃上);
+                                        // 仅非默认底(选区/上色/反显)才实绘。
+                                        .when(r.bg != bg, |d| d.bg(col(r.bg)))
+                                        .text_color(col(r.fg))
+                                        .when(r.bold, |d| d.font_weight(FontWeight::BOLD))
+                                        .child(SharedString::from(r.text.to_string()))
+                                }),
+                            )
+                        })),
+                )
+                .when_some(cursor_el, |this, c| this.child(c))
+                .when_some(ime_preedit, |this, p| this.child(p))
+                .when_some(scrollbar, |this, s| this.child(s))
+                .when_some(bell_overlay, |this, o| this.child(o));
 
         // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
         // 普通 shell:正文满宽，不再预留 212px 占位槽。
@@ -1986,8 +2160,13 @@ impl Render for TerminalView {
         let card_chrome = |inner: gpui::Div| -> gpui::Div {
             let panel = crate::style::shadowed(
                 inner
-                    .flex().flex_col().w(px(420.)).rounded(px(crate::style::R_PANEL))
-                    .overflow_hidden().border_1().border_color(rgba(crate::style::RIM))
+                    .flex()
+                    .flex_col()
+                    .w(px(420.))
+                    .rounded(px(crate::style::R_PANEL))
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(rgba(crate::style::RIM))
                     .bg(gpui::linear_gradient(
                         180.,
                         gpui::linear_color_stop(cola(self.palette.bg, 0.92), 0.),
@@ -1996,21 +2175,54 @@ impl Render for TerminalView {
                     .on_mouse_down(gpui::MouseButton::Left, |_e, _w, cx| cx.stop_propagation()),
                 vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
             );
-            div().absolute().size_full().flex().items_center().justify_center()
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
                 .bg(rgba(0x0a0b118c))
                 .child(panel)
         };
         let card_header = |icon_name: &'static str, accent: Rgb, title: &str, subtitle: &str| {
-            div().flex().flex_row().items_center().gap(px(11.)).p(px(14.))
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(11.))
+                .p(px(14.))
                 .child(
-                    div().w(px(34.)).h(px(34.)).flex_none().rounded(px(9.))
-                        .flex().items_center().justify_center().bg(cola(accent, 0.16))
+                    div()
+                        .w(px(34.))
+                        .h(px(34.))
+                        .flex_none()
+                        .rounded(px(9.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(cola(accent, 0.16))
                         .child(crate::style::icon(icon_name, 17., accent)),
                 )
                 .child(
-                    div().flex().flex_col().gap(px(1.)).min_w(px(0.))
-                        .child(div().text_size(px(13.5)).font_weight(FontWeight(600.)).text_color(col(self.ui_fg)).child(SharedString::from(title.to_string())))
-                        .child(div().font_family(self.font_family.clone()).text_size(px(11.)).text_color(col(self.ui_muted)).child(SharedString::from(subtitle.to_string()))),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .min_w(px(0.))
+                        .child(
+                            div()
+                                .text_size(px(13.5))
+                                .font_weight(FontWeight(600.))
+                                .text_color(col(self.ui_fg))
+                                .child(SharedString::from(title.to_string())),
+                        )
+                        .child(
+                            div()
+                                .font_family(self.font_family.clone())
+                                .text_size(px(11.))
+                                .text_color(col(self.ui_muted))
+                                .child(SharedString::from(subtitle.to_string())),
+                        ),
                 )
         };
 
@@ -2020,58 +2232,121 @@ impl Render for TerminalView {
             && self.ssh_error.is_none()
             && self.ssh_hostkey.is_none()
             && self.ssh_conn != Some(SshConnState::Reconnecting))
-            .then_some(self.ssh_progress.as_ref())
-            .flatten()
-            .map(|(phase, detail)| {
-                let cur = phase.ordinal();
-                let steps = [
-                    (tn_pty::SshPhase::Connecting, "建立连接"),
-                    (tn_pty::SshPhase::Authenticating, "认证"),
-                    (tn_pty::SshPhase::OpeningShell, "打开远程 shell"),
-                ];
-                let mut steps_col = div().flex().flex_col().gap(px(8.)).px(px(14.)).pb(px(6.));
-                for (p, label) in steps {
-                    let o = p.ordinal();
-                    let marker = if o < cur {
-                        div().w(px(14.)).flex().justify_center().flex_none()
-                            .child(crate::style::icon("check", 14., self.ui_green))
-                    } else if o == cur {
-                        div().w(px(14.)).flex().justify_center().items_center().flex_none()
-                            .child(div().w(px(8.)).h(px(8.)).rounded(px(999.)).bg(col(self.ui_accent)))
-                    } else {
-                        div().w(px(14.)).flex().justify_center().items_center().flex_none()
-                            .child(div().w(px(7.)).h(px(7.)).rounded(px(999.)).bg(cola(self.ui_muted, 0.5)))
-                    };
-                    let txt = if o <= cur { self.ui_fg } else { self.ui_muted };
-                    let detail_owned = detail.clone();
-                    steps_col = steps_col.child(
-                        div().flex().flex_row().items_center().gap(px(9.))
-                            .child(marker)
-                            .child(div().text_size(px(12.5)).text_color(col(txt)).child(SharedString::from(label.to_string())))
-                            .when(o == cur && !detail_owned.is_empty(), |d| {
-                                d.child(div().font_family(self.font_family.clone()).text_size(px(11.)).text_color(col(self.ui_muted)).child(SharedString::from(detail_owned)))
-                            }),
-                    );
-                }
-                let cancel = div()
-                    .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                    .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
-                    .hover(|s| s.bg(rgba(crate::style::INSET)))
-                    .child(crate::style::icon("close", 13., self.ui_muted))
-                    .child(div().text_size(px(12.)).child(SharedString::from("取消")))
-                    .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
+        .then_some(self.ssh_progress.as_ref())
+        .flatten()
+        .map(|(phase, detail)| {
+            let cur = phase.ordinal();
+            let steps = [
+                (tn_pty::SshPhase::Connecting, "建立连接"),
+                (tn_pty::SshPhase::Authenticating, "认证"),
+                (tn_pty::SshPhase::OpeningShell, "打开远程 shell"),
+            ];
+            let mut steps_col = div().flex().flex_col().gap(px(8.)).px(px(14.)).pb(px(6.));
+            for (p, label) in steps {
+                let o = p.ordinal();
+                let marker = if o < cur {
+                    div()
+                        .w(px(14.))
+                        .flex()
+                        .justify_center()
+                        .flex_none()
+                        .child(crate::style::icon("check", 14., self.ui_green))
+                } else if o == cur {
+                    div()
+                        .w(px(14.))
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .flex_none()
+                        .child(
+                            div()
+                                .w(px(8.))
+                                .h(px(8.))
+                                .rounded(px(999.))
+                                .bg(col(self.ui_accent)),
+                        )
+                } else {
+                    div()
+                        .w(px(14.))
+                        .flex()
+                        .justify_center()
+                        .items_center()
+                        .flex_none()
+                        .child(
+                            div()
+                                .w(px(7.))
+                                .h(px(7.))
+                                .rounded(px(999.))
+                                .bg(cola(self.ui_muted, 0.5)),
+                        )
+                };
+                let txt = if o <= cur { self.ui_fg } else { self.ui_muted };
+                let detail_owned = detail.clone();
+                steps_col = steps_col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.))
+                        .child(marker)
+                        .child(
+                            div()
+                                .text_size(px(12.5))
+                                .text_color(col(txt))
+                                .child(SharedString::from(label.to_string())),
+                        )
+                        .when(o == cur && !detail_owned.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .font_family(self.font_family.clone())
+                                    .text_size(px(11.))
+                                    .text_color(col(self.ui_muted))
+                                    .child(SharedString::from(detail_owned)),
+                            )
+                        }),
+                );
+            }
+            let cancel = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(12.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .bg(rgba(crate::style::HOVER))
+                .text_color(col(self.ui_fg))
+                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .child(crate::style::icon("close", 13., self.ui_muted))
+                .child(div().text_size(px(12.)).child(SharedString::from("取消")))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|_this, _e, _w, cx| {
                         cx.stop_propagation();
                         cx.emit(SshCloseRequested);
-                    }));
-                card_chrome(
-                    div()
-                        .child(card_header("globe", self.ui_accent, "正在连接", &self.ssh_target))
-                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
-                        .child(steps_col)
-                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
-                        .child(div().flex().flex_row().justify_end().p(px(11.)).child(cancel)),
-                )
-            });
+                    }),
+                );
+            card_chrome(
+                div()
+                    .child(card_header(
+                        "globe",
+                        self.ui_accent,
+                        "正在连接",
+                        &self.ssh_target,
+                    ))
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(steps_col)
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .p(px(11.))
+                            .child(cancel),
+                    ),
+            )
+        });
 
         // C1: actionable error card.
         let ssh_error_card = self
@@ -2162,79 +2437,174 @@ impl Render for TerminalView {
                 SharedString::from("•".repeat(self.ssh_password_input.chars().count()))
             };
             let input_row = div()
-                .flex().flex_row().items_center().gap(px(10.)).px(px(14.)).py(px(11.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .px(px(14.))
+                .py(px(11.))
                 .child(crate::style::icon("lock", 15., self.ui_muted))
                 .child(
-                    div().flex_1().flex().flex_row().items_center().font_family(mono.clone()).text_size(px(14.))
+                    div()
+                        .flex_1()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .font_family(mono.clone())
+                        .text_size(px(14.))
                         .when(!self.ssh_password_input.is_empty(), |d| {
                             d.child(div().text_color(col(self.ui_fg)).child(shown))
                         })
                         .child(div().text_color(col(self.ui_muted)).child("▏"))
                         .when(self.ssh_password_input.is_empty(), |d| {
-                            d.child(div().ml(px(2.)).text_color(col(self.ui_muted)).child("输入密码"))
+                            d.child(
+                                div()
+                                    .ml(px(2.))
+                                    .text_color(col(self.ui_muted))
+                                    .child("输入密码"),
+                            )
                         }),
                 )
                 // 👁 reveal toggle
                 .child(
-                    div().flex_none().p(px(2.)).rounded(px(6.)).hover(|s| s.bg(rgba(crate::style::HOVER)))
-                        .child(crate::style::icon("eye", 15., if revealed { self.ui_accent } else { self.ui_muted }))
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                            cx.stop_propagation();
-                            this.ssh_password_reveal = !this.ssh_password_reveal;
-                            cx.notify();
-                        })),
+                    div()
+                        .flex_none()
+                        .p(px(2.))
+                        .rounded(px(6.))
+                        .hover(|s| s.bg(rgba(crate::style::HOVER)))
+                        .child(crate::style::icon(
+                            "eye",
+                            15.,
+                            if revealed {
+                                self.ui_accent
+                            } else {
+                                self.ui_muted
+                            },
+                        ))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| {
+                                cx.stop_propagation();
+                                this.ssh_password_reveal = !this.ssh_password_reveal;
+                                cx.notify();
+                            }),
+                        ),
                 );
             // remember checkbox
             let remembered = self.ssh_password_remember;
             let remember_row = div()
-                .flex().flex_row().items_center().gap(px(8.)).px(px(14.)).py(px(9.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(14.))
+                .py(px(9.))
                 .child(
-                    div().w(px(16.)).h(px(16.)).flex_none().rounded(px(5.)).flex().items_center().justify_center()
+                    div()
+                        .w(px(16.))
+                        .h(px(16.))
+                        .flex_none()
+                        .rounded(px(5.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
                         .when(remembered, |d| d.bg(cola(self.ui_accent, 0.9)))
-                        .when(!remembered, |d| d.border_1().border_color(cola(self.ui_muted, 0.6)))
-                        .when(remembered, |d| d.child(crate::style::icon("check", 12., self.palette.bg))),
+                        .when(!remembered, |d| {
+                            d.border_1().border_color(cola(self.ui_muted, 0.6))
+                        })
+                        .when(remembered, |d| {
+                            d.child(crate::style::icon("check", 12., self.palette.bg))
+                        }),
                 )
-                .child(div().text_size(px(11.5)).text_color(col(self.ui_muted)).child("记住密码(仅本会话)"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
-                    this.ssh_password_remember = !this.ssh_password_remember;
-                    cx.notify();
-                }));
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(col(self.ui_muted))
+                        .child("记住密码(仅本会话)"),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.ssh_password_remember = !this.ssh_password_remember;
+                        cx.notify();
+                    }),
+                );
             // buttons
             let connect = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(12.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .bg(cola(self.ui_accent, 0.16))
+                .text_color(col(self.ui_accent))
                 .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
                 .child(crate::style::icon("enter", 13., self.ui_accent))
                 .child(div().text_size(px(12.)).child("连接"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
-                    this.submit_ssh_password(cx);
-                }));
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.submit_ssh_password(cx);
+                    }),
+                );
             let cancel = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(12.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .bg(rgba(crate::style::HOVER))
+                .text_color(col(self.ui_fg))
                 .hover(|s| s.bg(rgba(crate::style::INSET)))
                 .child(div().text_size(px(12.)).child("取消"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
-                    this.cancel_ssh_password(cx);
-                }));
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.cancel_ssh_password(cx);
+                    }),
+                );
             card_chrome(
                 div()
                     .child(card_header("lock", self.ui_accent, "输入密码", &p.prompt))
                     .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
                     .when_some(p.error.clone(), |d, err| {
                         d.child(
-                            div().flex().flex_row().items_center().gap(px(6.)).px(px(14.)).pt(px(10.))
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .px(px(14.))
+                                .pt(px(10.))
                                 .child(crate::style::icon("alert", 13., self.ui_red))
-                                .child(div().text_size(px(11.5)).text_color(col(self.ui_red)).child(SharedString::from(err))),
+                                .child(
+                                    div()
+                                        .text_size(px(11.5))
+                                        .text_color(col(self.ui_red))
+                                        .child(SharedString::from(err)),
+                                ),
                         )
                     })
                     .child(input_row)
                     .child(remember_row)
                     .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
-                    .child(div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.)).child(cancel).child(connect)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .justify_end()
+                            .p(px(11.))
+                            .child(cancel)
+                            .child(connect),
+                    ),
             )
         });
 
@@ -2308,24 +2678,47 @@ impl Render for TerminalView {
                 format!("与 {} 的连接已断开,即将自动重连…", self.ssh_target)
             };
             div()
-                .flex().flex_row().items_center().gap(px(8.)).px(px(13.)).py(px(7.)).flex_none()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(13.))
+                .py(px(7.))
+                .flex_none()
                 .bg(cola(self.ui_yellow, 0.12))
                 .child(crate::style::icon("refresh", 13., self.ui_yellow))
-                .child(div().flex_1().text_size(px(11.5)).text_color(col(self.ui_yellow)).child(SharedString::from(msg)))
                 .child(
-                    div().px(px(9.)).py(px(3.)).rounded(px(7.)).text_size(px(11.)).text_color(col(self.ui_fg))
-                        .bg(rgba(crate::style::HOVER)).hover(|s| s.bg(rgba(crate::style::INSET)))
+                    div()
+                        .flex_1()
+                        .text_size(px(11.5))
+                        .text_color(col(self.ui_yellow))
+                        .child(SharedString::from(msg)),
+                )
+                .child(
+                    div()
+                        .px(px(9.))
+                        .py(px(3.))
+                        .rounded(px(7.))
+                        .text_size(px(11.))
+                        .text_color(col(self.ui_fg))
+                        .bg(rgba(crate::style::HOVER))
+                        .hover(|s| s.bg(rgba(crate::style::INSET)))
                         .child("取消")
-                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
-                            cx.stop_propagation();
-                            cx.emit(SshCloseRequested);
-                        })),
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|_this, _e, _w, cx| {
+                                cx.stop_propagation();
+                                cx.emit(SshCloseRequested);
+                            }),
+                        ),
                 )
         });
 
         div()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)))
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
+            )
             .size_full()
             .flex()
             .flex_col()
@@ -2362,10 +2755,10 @@ mod tests {
             .expect("a profile")
     }
 
-
     #[test]
     fn wsl_profile_launches_wsl_exe_with_distro() {
-        let p = first_profile("[[profiles]]\nname = \"Ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
+        let p =
+            first_profile("[[profiles]]\nname = \"Ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
         let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
         assert_eq!(spec.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
@@ -2402,7 +2795,10 @@ mod tests {
     #[test]
     fn ssh_profile_without_host_is_none() {
         let p = first_profile("[[profiles]]\nname=\"box\"\nkind=\"ssh\"\nuser=\"alice\"\n");
-        assert!(LaunchSpec::from_profile(&p).is_none(), "no host -> not launchable");
+        assert!(
+            LaunchSpec::from_profile(&p).is_none(),
+            "no host -> not launchable"
+        );
     }
 
     #[test]
@@ -2422,8 +2818,15 @@ mod tests {
         let spec = LaunchSpec::from_profile(&p).expect("claude is launchable");
         assert_eq!(spec.program, "powershell.exe", "hosted inside pwsh");
         assert!(!spec.integrate_pwsh);
-        assert_eq!(spec.agent, Some(AgentKind::ClaudeCode), "agent inferred from command");
-        assert!(spec.args.contains(&"-NoExit".to_string()), "persistent keeps -NoExit");
+        assert_eq!(
+            spec.agent,
+            Some(AgentKind::ClaudeCode),
+            "agent inferred from command"
+        );
+        assert!(
+            spec.args.contains(&"-NoExit".to_string()),
+            "persistent keeps -NoExit"
+        );
         assert!(
             spec.args.iter().any(|a| a.contains("& 'claude'")),
             "command hosted via call operator, got {:?}",
@@ -2443,7 +2846,10 @@ mod tests {
         let p = first_profile("[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\n");
         let spec = LaunchSpec::from_profile_ephemeral(&p).expect("codex is launchable");
         assert_eq!(spec.agent, Some(AgentKind::Codex));
-        assert!(!spec.args.contains(&"-NoExit".to_string()), "ephemeral drops -NoExit");
+        assert!(
+            !spec.args.contains(&"-NoExit".to_string()),
+            "ephemeral drops -NoExit"
+        );
         assert!(spec.args.iter().any(|a| a.contains("& 'codex'")));
         // No sentinel: the ephemeral pane exits pwsh outright (ProcessExited),
         // so it needn't (and shouldn't) emit the title marker.
@@ -2472,6 +2878,9 @@ mod tests {
             // `g` drops here, normally, even though the closure panicked.
         };
         assert!(caught.is_err(), "the panic was caught, not propagated");
-        assert!(m.lock().is_ok(), "the lock must survive a caught panic un-poisoned");
+        assert!(
+            m.lock().is_ok(),
+            "the lock must survive a caught panic un-poisoned"
+        );
     }
 }
