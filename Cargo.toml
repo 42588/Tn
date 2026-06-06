@@ -6,6 +6,7 @@ members = [
     "crates/tn-config",
     "crates/tn-shell",
     "crates/tn-blocks",
+    "crates/tn-agent",
     "crates/tn-ai",
     "crates/tn-cli",
     "crates/tn-ui",
@@ -26,6 +27,7 @@ tn-pty = { path = "crates/tn-pty" }
 tn-config = { path = "crates/tn-config" }
 tn-shell = { path = "crates/tn-shell" }
 tn-blocks = { path = "crates/tn-blocks" }
+tn-agent = { path = "crates/tn-agent" }
 tn-ai = { path = "crates/tn-ai" }
 tn-ui = { path = "crates/tn-ui" }
 

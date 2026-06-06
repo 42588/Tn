@@ -1,0 +1,11 @@
+[package]
+name = "tn-agent"
+description = "Agent Host platform (headless): agent-agnostic core — AgentId / descriptor / capabilities / runtime / event / adapter trait / registry + the unified usage + pricing model. No concrete-agent knowledge, no GPUI. Built-in Claude/Codex adapters live in tn-ai."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tn-config.workspace = true
+serde = { workspace = true }
