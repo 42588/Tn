@@ -27,7 +27,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
-use tn_agent::{AgentId, AgentRegistry, AiUsage};
+use tn_agent::{AgentCapabilities, AgentEvent, AgentId, AgentRegistry, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
@@ -358,6 +358,11 @@ pub struct TerminalView {
     agent_label: Option<SharedString>,
     agent_short: Option<SharedString>,
     agent_manages_cursor: bool,
+    // Declared capabilities of the current agent (descriptor) → which Universal
+    // Agent Surface slots render: `usage` gates the header ring/pill, `git_diff`
+    // the activity rail. A config-level agent (no adapter) hosts as a terminal
+    // with the rail but no usage. All-false for a plain shell.
+    agent_caps: AgentCapabilities,
     ui_accent: Rgb,
     // Chrome text colors for pane headers (mockup .phead/.nm/.model use ui.*, not
     // the terminal palette). fg-dim has no theme token → literal in header.rs.
@@ -454,6 +459,8 @@ struct AgentView {
     short: SharedString,
     /// The agent paints its own cursor (Ink TUI) → hide ours.
     manages_cursor: bool,
+    /// Declared capabilities → which surface slots render.
+    caps: AgentCapabilities,
     usage_mode: tn_config::BillingMode,
 }
 
@@ -598,21 +605,30 @@ impl TerminalView {
         // capabilities + cursor quirk) and adapter (usage telemetry). Everything
         // below reads the descriptor/adapter — no concrete agent is named.
         let registry = crate::agent_host::agent_registry(cx);
-        // Resolve the agent's presentation + starting usage-pill mode once.
-        let (agent_accent, agent_label, agent_short, agent_manages_cursor, usage_mode) = match &agent
-        {
-            Some(id) => {
-                let v = Self::resolve_agent_view(id, &config, &registry, ui_accent, billing_mode);
-                (
-                    v.accent,
-                    Some(v.label),
-                    Some(v.short),
-                    v.manages_cursor,
-                    v.usage_mode,
-                )
-            }
-            None => (ui_accent, None, None, false, tn_config::BillingMode::default()),
-        };
+        // Resolve the agent's presentation + capabilities + starting pill mode once.
+        let (agent_accent, agent_label, agent_short, agent_manages_cursor, agent_caps, usage_mode) =
+            match &agent {
+                Some(id) => {
+                    let v =
+                        Self::resolve_agent_view(id, &config, &registry, ui_accent, billing_mode);
+                    (
+                        v.accent,
+                        Some(v.label),
+                        Some(v.short),
+                        v.manages_cursor,
+                        v.caps,
+                        v.usage_mode,
+                    )
+                }
+                None => (
+                    ui_accent,
+                    None,
+                    None,
+                    false,
+                    AgentCapabilities::default(),
+                    tn_config::BillingMode::default(),
+                ),
+            };
         // For launched agents: stash the launch cwd so refresh_changes has a fallback
         // when the blocks model returns no cwd (no shell integration -> no OSC 7).
         let rail_cwd = if launch.file_namespace == FileNamespace::Host {
@@ -705,6 +721,7 @@ impl TerminalView {
             agent_label,
             agent_short,
             agent_manages_cursor,
+            agent_caps,
             ui_accent,
             ui_fg,
             ui_muted,
@@ -938,6 +955,38 @@ impl TerminalView {
         self.agent_label = None;
         self.agent_short = None;
         self.agent_manages_cursor = false;
+        self.agent_caps = AgentCapabilities::default();
+    }
+
+    /// Reduce one [`AgentEvent`] into this pane's view state — the single funnel
+    /// for all agent telemetry/lifecycle, so producers (the usage poller, the
+    /// shell-agent sync, the exit watcher) speak `AgentEvent` instead of poking
+    /// fields directly. Keeps the UI's agent input to one stream (the Agent Host
+    /// contract) without disturbing the off-thread poll cadence.
+    pub(super) fn reduce_agent_event(&mut self, ev: AgentEvent, cx: &mut Context<Self>) {
+        match ev {
+            AgentEvent::UsageUpdated(u) => {
+                self.usage = Some(u);
+                cx.emit(UsageUpdated); // relabel tab + repaint status bar
+            }
+            AgentEvent::DiffChanged => self.refresh_changes(cx),
+            AgentEvent::SessionEnded => {
+                self.clear_agent();
+                cx.emit(UsageUpdated);
+            }
+            // Reserved variants — no surface slot renders them yet (no status
+            // pill, transcript, or permission UI). CwdChanged feeds only this
+            // pane's context (runtime ≠ namespace); the git watcher already
+            // tracks the cwd, so nothing global here.
+            AgentEvent::StatusChanged(_)
+            | AgentEvent::CwdChanged(_)
+            | AgentEvent::ModelChanged(_)
+            | AgentEvent::TranscriptAppended(_)
+            | AgentEvent::PermissionRequested(_)
+            | AgentEvent::ErrorReported(_)
+            | AgentEvent::SessionStarted => {}
+        }
+        cx.notify();
     }
 
     /// Resolve an agent id's presentation (accent / label / own-cursor quirk) and
@@ -972,6 +1021,7 @@ impl TerminalView {
             label: SharedString::from(desc.label.clone()),
             short: SharedString::from(desc.short.clone()),
             manages_cursor: desc.manages_own_cursor,
+            caps: desc.capabilities,
             usage_mode,
         }
     }
@@ -1014,6 +1064,7 @@ impl TerminalView {
                 self.agent_label = Some(v.label);
                 self.agent_short = Some(v.short);
                 self.agent_manages_cursor = v.manages_cursor;
+                self.agent_caps = v.caps;
                 self.usage_mode = v.usage_mode;
                 // Bind usage to the session this just-typed command starts (created
                 // ~now); the grace in resolve_pane_session absorbs detection lag.
@@ -2273,7 +2324,9 @@ impl Render for TerminalView {
         // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
         // 普通 shell:正文满宽，不再预留 212px 占位槽。
         // 敲 claude/codex 切 agent 态时发生一次 resize 重排，比永久浪费 212px 更划算。
-        let body_region = if self.agent.is_some() {
+        // The activity rail is a capability slot (`git_diff`): an agent that
+        // declares it gets「本次改动」; one that doesn't hosts full-width.
+        let body_region = if self.agent.is_some() && self.agent_caps.git_diff {
             div()
                 .flex_1()
                 .min_h(px(0.))

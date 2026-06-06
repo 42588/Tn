@@ -124,7 +124,10 @@ impl TerminalView {
             .child(avatar)
             .child(who)
             .child(div().flex_1());
-        if let Some(u) = &self.usage {
+        // Usage ring/pill is a capability slot: only agents that declare `usage`
+        // (i.e. have a telemetry adapter) show it. A config-level agent hosts
+        // without it instead of showing an empty ring.
+        if let Some(u) = self.usage.as_ref().filter(|_| self.agent_caps.usage) {
             let pct = (u.context_frac() * 100.0).round() as u32;
             // This pane's chosen display mode (WYSIWYG): API always shows the
             // dollar estimate ($0.00 for an unpriced/proxy model like `moonbridge`),

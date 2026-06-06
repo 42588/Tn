@@ -487,11 +487,14 @@ impl TerminalView {
                     // (`spawn_change_watcher` → `refresh_changes`, 变化即刷新).
                     if let Some(usage) = usage_opt {
                         current_usage = Some(usage.clone());
+                        // Funnel through the AgentEvent reducer (the single UI input
+                        // path) rather than poking `usage` directly.
                         if this
                             .update(cx, |v, cx| {
-                                v.usage = Some(usage);
-                                cx.emit(UsageUpdated);
-                                cx.notify();
+                                v.reduce_agent_event(
+                                    tn_agent::AgentEvent::UsageUpdated(usage),
+                                    cx,
+                                );
                             })
                             .is_err()
                         {
