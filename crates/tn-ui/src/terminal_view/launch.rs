@@ -4,7 +4,7 @@
 //! see [`LaunchSpec::from_profile`]. Pure data + selection logic, no GPUI — the
 //! view ([`super::TerminalView::new`]) consumes a `LaunchSpec` to pick a backend.
 
-use tn_agent::{AgentId, AgentRegistry};
+use tn_agent::{AgentId, AgentRegistry, AgentRuntimeKind};
 
 use super::AGENT_EXIT_SENTINEL;
 
@@ -110,6 +110,22 @@ pub struct LaunchSpec {
 }
 
 impl LaunchSpec {
+    /// Where this pane's process/protocol runs — the [`AgentRuntimeKind`], derived
+    /// from the existing fields (SSH backend → `SshPty`; WSL namespace → `WslPty`;
+    /// else a local ConPTY → `LocalPty`). Kept **distinct from** `file_namespace`
+    /// (file-I/O namespace): an SSH-runtime agent still can't drive Explorer/Quick
+    /// Look until a remote FS is wired (runtime ≠ namespace). The enum is open for
+    /// future non-PTY runtimes; only the PTY family is produced this round.
+    pub fn runtime(&self) -> AgentRuntimeKind {
+        if self.ssh.is_some() {
+            AgentRuntimeKind::SshPty
+        } else if matches!(self.file_namespace, FileNamespace::Wsl { .. }) {
+            AgentRuntimeKind::WslPty
+        } else {
+            AgentRuntimeKind::LocalPty
+        }
+    }
+
     /// Default local PowerShell pane, with OSC 133 shell integration.
     pub fn pwsh() -> Self {
         Self {

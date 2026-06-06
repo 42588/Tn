@@ -470,6 +470,15 @@ impl TerminalView {
         // later) is reliably newer — that's how the usage poller binds to THIS
         // pane's session and never a pre-existing one (see spawn_usage_poller).
         let launched_at = SystemTime::now();
+        // Where this pane runs (AgentRuntimeKind) — distinct from its file
+        // namespace. PTY family only for now; logged so "which runtime hosts this
+        // agent" is visible without assuming a local process.
+        tracing::debug!(
+            program = %launch.program,
+            runtime = ?launch.runtime(),
+            namespace = ?launch.file_namespace,
+            "spawning pane",
+        );
         let size = GridSize::new(ROWS, COLS);
         let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
         // Pick the backend: a remote SSH session, or a local ConPTY. A bad
@@ -3012,6 +3021,26 @@ mod tests {
         assert_eq!(spec.args, vec!["-NoLogo".to_string()]); // empty args defaulted
         assert!(spec.ssh.is_none());
         assert!(spec.agent.is_none());
+    }
+
+    #[test]
+    fn launch_runtime_reflects_backend() {
+        use tn_agent::AgentRuntimeKind;
+        // LocalPty for a plain/native pwsh; WslPty for a WSL namespace; SshPty when
+        // an SSH backend is present. Runtime is derived, distinct from FileNamespace.
+        assert_eq!(LaunchSpec::pwsh().runtime(), AgentRuntimeKind::LocalPty);
+        let wsl = LaunchSpec::from_profile(
+            &first_profile("[[profiles]]\nname=\"U\"\nkind=\"wsl\"\ndistro=\"Ubuntu\"\n"),
+            &reg(),
+        )
+        .unwrap();
+        assert_eq!(wsl.runtime(), AgentRuntimeKind::WslPty);
+        let ssh = LaunchSpec::from_profile(
+            &first_profile("[[profiles]]\nname=\"b\"\nkind=\"ssh\"\nhost=\"h\"\nuser=\"u\"\n"),
+            &reg(),
+        )
+        .unwrap();
+        assert_eq!(ssh.runtime(), AgentRuntimeKind::SshPty);
     }
 
     #[test]

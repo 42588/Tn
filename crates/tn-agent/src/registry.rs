@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::{AgentAdapter, AgentDescriptor, AgentId};
+use crate::{AgentAdapter, AgentDescriptor, AgentId, GenericAdapter};
 
 /// Holds the registered agent adapters and resolves agents by id or by command.
 #[derive(Clone, Default)]
@@ -27,6 +27,20 @@ impl AgentRegistry {
     pub fn with(mut self, adapter: Arc<dyn AgentAdapter>) -> Self {
         self.register(adapter);
         self
+    }
+
+    /// Register a config-declared agent (`[[agents]]`) as a no-telemetry
+    /// [`GenericAdapter`]. A **no-op if the id is already registered** — a built-in
+    /// (telemetry-carrying) adapter wins over a config manifest of the same id, so
+    /// a user manifest can't downgrade Claude/Codex to "no usage".
+    pub fn register_manifest(&mut self, manifest: &tn_config::AgentManifest) {
+        let id = AgentId::new(manifest.id.clone());
+        if self.get(&id).is_some() {
+            return;
+        }
+        self.register(Arc::new(GenericAdapter::new(AgentDescriptor::from_manifest(
+            manifest,
+        ))));
     }
 
     /// The descriptor for `id`, if registered.

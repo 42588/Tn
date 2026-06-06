@@ -58,3 +58,23 @@ pub trait AgentAdapter: Send + Sync {
         false
     }
 }
+
+/// An adapter with identity only — no telemetry. Used for config-declared agents
+/// (`[[agents]]`, the config-level tier) and as the base an external (sidecar /
+/// JSON-RPC) adapter would extend. Every observation method uses the trait
+/// default, so the agent hosts as a terminal but reports no usage.
+pub struct GenericAdapter {
+    descriptor: AgentDescriptor,
+}
+
+impl GenericAdapter {
+    pub fn new(descriptor: AgentDescriptor) -> Self {
+        Self { descriptor }
+    }
+}
+
+impl AgentAdapter for GenericAdapter {
+    fn descriptor(&self) -> &AgentDescriptor {
+        &self.descriptor
+    }
+}

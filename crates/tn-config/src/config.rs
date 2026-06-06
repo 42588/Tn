@@ -25,6 +25,10 @@ pub struct Config {
     pub quick_terminal: QuickTerminal,
     #[serde(default)]
     pub profiles: Vec<Profile>,
+    /// User-declared agent types (`[[agents]]`) — identity + capabilities for the
+    /// Agent Host, so a new agent appears in Tn from config alone (no code change).
+    #[serde(default)]
+    pub agents: Vec<AgentManifest>,
     #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
@@ -225,6 +229,35 @@ pub struct Profile {
     pub glyph: Option<String>,
 }
 
+/// A user-declared agent type (`[[agents]]`): identity + presentation + capability
+/// flags. Lets a new agent enter the Agent Host from config alone — launcher tile,
+/// header accent, and capability slots — without a code change (the "config-level"
+/// access tier). Telemetry (usage) still needs a built-in or external adapter; a
+/// config-only agent hosts as a terminal (+ activity rail). `capabilities` lists the
+/// enabled slots beyond the always-on `terminal` + `cwd_sync` + `git_diff` baseline
+/// (e.g. `["usage", "transcript"]`).
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+pub struct AgentManifest {
+    pub id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub short: Option<String>,
+    /// Command substrings that identify this agent (defaults to `[id]`).
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub accent: Option<Color>,
+    #[serde(default)]
+    pub glyph: Option<String>,
+    /// The agent paints its own cursor (Ink TUI) → the terminal hides its block.
+    #[serde(default)]
+    pub manages_own_cursor: bool,
+    /// Extra capability slots enabled beyond the terminal baseline.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
 /// A named action (`[[actions]]`): `{ id, command }`. A command may carry args
 /// in later revisions; for now it's the action name.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -355,6 +388,21 @@ mod tests {
         assert_eq!(c.general.billing_for("claude"), Some(BillingMode::Subscription));
         assert_eq!(c.general.billing_for("codex"), Some(BillingMode::Tokens));
         assert_eq!(c.general.billing_for("gemini"), None);
+    }
+
+    #[test]
+    fn agents_manifest_parses_and_defaults_empty() {
+        // No `[[agents]]` → empty (built-ins come from code, not config).
+        assert!(Config::default().agents.is_empty());
+        let c = Config::from_toml_str(
+            "[[agents]]\nid = \"gemini\"\nlabel = \"Gemini CLI\"\naliases = [\"gemini\"]\ncapabilities = [\"usage\"]\nmanages_own_cursor = true\n",
+        )
+        .expect("agent manifest parses");
+        assert_eq!(c.agents.len(), 1);
+        assert_eq!(c.agents[0].id, "gemini");
+        assert_eq!(c.agents[0].label.as_deref(), Some("Gemini CLI"));
+        assert!(c.agents[0].manages_own_cursor);
+        assert_eq!(c.agents[0].capabilities, vec!["usage".to_string()]);
     }
 
     #[test]

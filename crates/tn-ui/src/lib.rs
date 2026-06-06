@@ -129,9 +129,15 @@ pub fn run() {
                 .expect("Failed to load embedded CaskaydiaCove Nerd Font");
             // ──────────────────────────────────────────────────────────────────
 
-            // Install the app-wide agent registry (built-in Claude/Codex) before
-            // any pane is built — the UI resolves all agent identity through it.
-            cx.set_global(agent_host::AgentHost(tn_ai::builtin_registry()));
+            // Install the app-wide agent registry before any pane is built — the
+            // UI resolves all agent identity through it. Built-in Claude/Codex
+            // first, then user `[[agents]]` manifests (config-level agents; a
+            // manifest can't override a built-in id — see `register_manifest`).
+            let mut registry = tn_ai::builtin_registry();
+            for manifest in &config.config.agents {
+                registry.register_manifest(manifest);
+            }
+            cx.set_global(agent_host::AgentHost(registry));
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let main_config = config.clone();

@@ -82,6 +82,50 @@ impl AgentDescriptor {
         self.command_aliases.iter().any(|a| lc.contains(a.as_str()))
     }
 
+    /// Build a descriptor from a user config manifest (`[[agents]]`) — the
+    /// config-level access tier. `terminal` + `cwd_sync` + `git_diff` are always
+    /// on (the baseline a hosted agent gets); `manifest.capabilities` lists extra
+    /// slots to enable (unknown names ignored). Aliases default to `[id]`.
+    pub fn from_manifest(m: &tn_config::AgentManifest) -> Self {
+        let label = m.label.clone().unwrap_or_else(|| m.id.clone());
+        let short = m.short.clone().unwrap_or_else(|| label.clone());
+        let mut capabilities = AgentCapabilities::terminal_only();
+        for c in &m.capabilities {
+            match c.as_str() {
+                "terminal" => capabilities.terminal = true,
+                "usage" => capabilities.usage = true,
+                "transcript" => capabilities.transcript = true,
+                "cwd_sync" => capabilities.cwd_sync = true,
+                "git_diff" => capabilities.git_diff = true,
+                "permission_prompts" => capabilities.permission_prompts = true,
+                "tool_calls" => capabilities.tool_calls = true,
+                "checkpoints" => capabilities.checkpoints = true,
+                _ => {} // unknown capability name → ignored
+            }
+        }
+        let command_aliases = if m.aliases.is_empty() {
+            vec![m.id.to_ascii_lowercase()]
+        } else {
+            m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect()
+        };
+        Self {
+            id: AgentId::new(m.id.clone()),
+            label,
+            short,
+            command_aliases,
+            accent: m.accent,
+            glyph: m.glyph.clone(),
+            default_args: Vec::new(),
+            capabilities,
+            runtime_support: vec![
+                AgentRuntimeKind::LocalPty,
+                AgentRuntimeKind::WslPty,
+                AgentRuntimeKind::SshPty,
+            ],
+            manages_own_cursor: m.manages_own_cursor,
+        }
+    }
+
     /// A generic descriptor for a config-declared agent with no built-in adapter:
     /// terminal-only capabilities, name-derived labels, no usage, all PTY runtimes.
     /// This is the "declare a command in TOML → it appears as an agent" path.

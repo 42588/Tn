@@ -24,7 +24,7 @@ pub mod pricing;
 mod registry;
 mod usage;
 
-pub use adapter::{AgentAdapter, SessionRef};
+pub use adapter::{AgentAdapter, GenericAdapter, SessionRef};
 pub use descriptor::{AgentCapabilities, AgentDescriptor, AgentRuntimeKind};
 pub use event::{AgentEvent, AgentStatus};
 pub use id::AgentId;
@@ -109,5 +109,63 @@ mod tests {
         let reg = AgentRegistry::new();
         assert_eq!(reg.match_command("claude"), None);
         assert_eq!(reg.descriptors().count(), 0);
+    }
+
+    #[test]
+    fn descriptor_from_manifest_maps_fields_and_caps() {
+        let m = tn_config::AgentManifest {
+            id: "gemini".into(),
+            label: Some("Gemini CLI".into()),
+            short: None,
+            aliases: vec!["gemini".into(), "gmn".into()],
+            accent: Some(tn_config::Color::new(0x44, 0x88, 0xFF)),
+            glyph: None,
+            manages_own_cursor: true,
+            capabilities: vec!["usage".into(), "transcript".into(), "bogus".into()],
+        };
+        let d = AgentDescriptor::from_manifest(&m);
+        assert_eq!(d.id, AgentId::new("gemini"));
+        assert_eq!(d.label, "Gemini CLI");
+        assert_eq!(d.short, "Gemini CLI"); // short defaults to label
+        assert_eq!(d.command_aliases, vec!["gemini".to_string(), "gmn".to_string()]);
+        assert!(d.manages_own_cursor);
+        // baseline always-on + listed extras; unknown ("bogus") ignored.
+        assert!(d.capabilities.terminal && d.capabilities.cwd_sync && d.capabilities.git_diff);
+        assert!(d.capabilities.usage && d.capabilities.transcript);
+        assert!(!d.capabilities.tool_calls);
+        assert!(d.matches_command("gmn-run"));
+    }
+
+    #[test]
+    fn register_manifest_adds_generic_but_never_overrides_builtin() {
+        let claude_builtin = desc("claude", "claude");
+        let mut reg = AgentRegistry::new().with(Arc::new(StubAdapter(claude_builtin)));
+        // A manifest for a NEW id registers a generic (no-usage) agent.
+        let gemini = tn_config::AgentManifest {
+            id: "gemini".into(),
+            label: None,
+            short: None,
+            aliases: vec![],
+            accent: None,
+            glyph: None,
+            manages_own_cursor: false,
+            capabilities: vec![],
+        };
+        reg.register_manifest(&gemini);
+        assert_eq!(reg.match_command("gemini"), Some(AgentId::new("gemini")));
+        assert!(!reg.get(&AgentId::new("gemini")).unwrap().capabilities.usage);
+        // A manifest re-declaring an existing id is a no-op (built-in wins).
+        let shadow = tn_config::AgentManifest {
+            id: "claude".into(),
+            label: Some("Shadowed".into()),
+            short: None,
+            aliases: vec![],
+            accent: None,
+            glyph: None,
+            manages_own_cursor: false,
+            capabilities: vec![],
+        };
+        reg.register_manifest(&shadow);
+        assert_eq!(reg.get(&AgentId::new("claude")).unwrap().label, "claude");
     }
 }
