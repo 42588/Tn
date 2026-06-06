@@ -143,8 +143,8 @@ impl LaunchSpec {
     /// Derive from a config profile if it carries a command (shell + agent).
     /// WSL/SSH profiles (no command yet, M2) return `None`.
     ///
-    /// Native pwsh runs directly (with integration). Any other command (Claude /
-    /// Codex / scripts) is **hosted inside pwsh** via `-NoExit -Command "& '…'"`,
+    /// Native pwsh runs directly (with integration). Any other command (agent /
+    /// scripts) is **hosted inside pwsh** via `-NoExit -Command "& '…'"`,
     /// because on Windows those are extensionless npm shims that `CreateProcessW`
     /// can't execute directly — pwsh resolves them via PATH + PATHEXT, and the
     /// shell survives the agent's exit (back to a prompt).
@@ -154,7 +154,7 @@ impl LaunchSpec {
 
     /// Like [`from_profile`](Self::from_profile), but the pwsh hosting a non-pwsh
     /// agent omits `-NoExit`, so exiting the agent exits the PTY. The quick
-    /// terminal uses this so "exit claude" returns to its launcher instead of
+    /// terminal uses this so exiting an agent returns to its launcher instead of
     /// leaving a lingering pwsh prompt under a stale agent header.
     pub fn from_profile_ephemeral(p: &tn_config::Profile, reg: &AgentRegistry) -> Option<Self> {
         Self::from_profile_inner(p, reg, false)
@@ -172,7 +172,7 @@ impl LaunchSpec {
                 let command = p.command.clone()?;
                 // Agent identity (launch-intent signal the status bar reads): an
                 // explicit `agent = "..."` wins — matched against registered command
-                // aliases (so `"claude"` → the claude id), else taken as a literal
+                // aliases (so `"agent"` → the agent id), else taken as a literal
                 // open id (a config-declared agent). With no explicit field, infer
                 // from the command via the registry. No per-agent arm here.
                 let agent = p
@@ -257,7 +257,7 @@ impl LaunchSpec {
     /// because Windows can't `CreateProcessW` an extensionless npm shim. With
     /// `persist` we keep `-NoExit` so the shell survives the agent's exit (back to
     /// a prompt); without it, pwsh exits when the agent does (the quick terminal's
-    /// "exit claude → launcher" path).
+    /// agent-exit → launcher path).
     fn launch_hosted(
         command: String,
         profile_args: &[String],

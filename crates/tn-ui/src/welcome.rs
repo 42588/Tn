@@ -1,6 +1,6 @@
 //! Welcome launchpad (panels/05) — the default content of a **new tab**: a
 //! centered glass card inviting you to start a session, with launch tiles (the
-//! discovered profiles: Claude / Codex / pwsh / WSL …) + keyboard hints. Empty =
+//! discovered profiles: configured Agent / pwsh / WSL …) + keyboard hints. Empty =
 //! an invitation to start a session, not a wall of widgets.
 //!
 //! It's a Calm Glass pane like the terminal panes / explorer (chrome, not a node
@@ -8,7 +8,7 @@
 //! index; the workspace spawns that pane into the tab (welcome → panes).
 //!
 //! The "最近" (recent projects) row from the prototype is 待端口 — it needs a
-//! recent-sessions data source (claude/codex session cwd + mtime), tracked
+//! recent-sessions data source (agent session cwd + mtime), tracked
 //! separately so we don't fake it.
 
 use std::sync::Arc;
@@ -27,7 +27,7 @@ use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R
 // render the same per-profile identity (color + icon + sub-label). These free fns
 // are the single source so the three can't drift.
 
-/// A launch profile's detected agent (Claude / Codex), from its `agent` field or
+/// A launch profile's detected agent, from its `agent` field or
 /// its command's first token. `None` = a plain shell / WSL / SSH.
 /// Whether a profile launches an agent — for the launch-surface grouping
 /// (agents-on-top). Registry-free: a declared `agent` field or `kind = "agent"`.
@@ -46,7 +46,7 @@ pub(crate) fn launch_agent_of(p: &Profile, reg: &AgentRegistry) -> Option<AgentI
         .or_else(|| p.command.as_deref().and_then(|c| reg.match_command(c)))
 }
 
-/// A profile's identity accent (mockup `.tile.claude/.codex/.sh/.wsl` / `.dot`):
+/// A profile's identity accent (mockup `.tile.agent/.sh/.wsl` / `.dot`):
 /// explicit `accent`, else the agent's themed/descriptor accent / WSL violet /
 /// shell blue. Agent accent = theme `[agents.<id>]` override, then the agent
 /// descriptor's default, then the UI accent.
@@ -72,7 +72,7 @@ pub(crate) fn launch_tile_accent(
     }
 }
 
-/// Tile sub-label (mockup `.td`: "Claude Code" / "PowerShell" / "Ubuntu"). For an
+/// Tile sub-label (mockup `.td`: "Agent" / "PowerShell" / "Ubuntu"). For an
 /// agent it's the descriptor label (built-in or generic); else WSL distro / SSH
 /// host / a shell-kind label.
 pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<&AgentId>, reg: &AgentRegistry) -> String {
@@ -116,7 +116,7 @@ pub(crate) struct CardId {
     pub accent: tn_config::Color,
 }
 
-/// Card identity for a launchable shell/agent profile (Claude / Codex / pwsh / …).
+/// Card identity for a launchable shell/agent profile (Agent / pwsh / …).
 pub(crate) fn profile_card(t: &tn_config::Theme, p: &Profile, reg: &AgentRegistry) -> CardId {
     let agent = launch_agent_of(p, reg);
     CardId {
@@ -259,6 +259,17 @@ pub struct LaunchRequested(pub usize);
 /// Emitted when the SSH tile is clicked to request the interactive SSH connector prompt.
 pub struct SshPromptRequested;
 
+/// Emitted by the「+ 添加 Agent」tile → workspace opens the agent editor (add mode).
+pub struct AddAgentRequested;
+
+/// Emitted by a custom agent tile's ✎ → workspace opens the editor (edit mode).
+/// Carries the profile index into the view's profile list.
+pub struct EditAgentRequested(pub usize);
+
+/// Emitted by a custom agent tile's ✕ → workspace deletes that agent.
+/// Carries the profile index into the view's profile list.
+pub struct DeleteAgentRequested(pub usize);
+
 pub struct WelcomeView {
     config: Arc<Loaded>,
     profiles: Vec<Profile>,
@@ -336,14 +347,99 @@ impl WelcomeView {
             )
     }
 
-    /// A profile launch tile → emits [`LaunchRequested`] for its index.
+    /// A profile launch tile → emits [`LaunchRequested`] for its index. A
+    /// user-created agent (declared in config `[[agents]]`) also gets inline
+    /// ✎/✕ affordances so it's editable/removable without touching config.toml.
     fn tile(&self, i: usize, p: &Profile, cx: &mut Context<Self>) -> Div {
         let reg = crate::agent_host::agent_registry(cx);
-        self.card_tile(
+        let card = self.card_tile(
             profile_card(&self.config.theme, p, &reg),
             move |_this, _e, _w, cx| cx.emit(LaunchRequested(i)),
             cx,
-        )
+        );
+        if self.is_managed_agent(p) {
+            card.relative().child(self.agent_tile_actions(i, cx))
+        } else {
+            card
+        }
+    }
+
+    /// Whether this profile is a user-created agent (its `agent` id is declared in
+    /// config `[[agents]]`) → gets the inline edit/delete affordances. The shipped
+    /// generic "agent" qualifies too — it's just a config entry like any other.
+    fn is_managed_agent(&self, p: &Profile) -> bool {
+        p.kind == ProfileKind::Agent
+            && p.agent
+                .as_deref()
+                .is_some_and(|id| self.config.config.agents.iter().any(|a| a.id == id))
+    }
+
+    /// The「+ 添加 Agent」tile (always present in the agents row) → opens the
+    /// in-app agent editor so a new CLI can be added without editing config.toml.
+    fn add_agent_tile(&self, cx: &mut Context<Self>) -> Div {
+        let card = CardId {
+            name: "添加 Agent".into(),
+            sub: "自定义 CLI".into(),
+            glyph: "plus",
+            accent: self.config.theme.ui.accent,
+        };
+        self.card_tile(card, |_this, _e, _w, cx| cx.emit(AddAgentRequested), cx)
+    }
+
+    /// The inline ✎ (edit) / ✕ (delete) cluster at a custom agent tile's top-right.
+    /// Each button `stop_propagation`s so it doesn't also launch the tile.
+    fn agent_tile_actions(&self, i: usize, cx: &mut Context<Self>) -> Div {
+        let ui = &self.config.theme.ui;
+        let red = self.config.theme.ansi.red;
+        div()
+            .absolute()
+            .top(px(8.))
+            .right(px(8.))
+            .flex()
+            .flex_row()
+            .gap(px(4.))
+            .child(
+                div()
+                    .w(px(20.))
+                    .h(px(20.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(INSET))
+                    .border_1()
+                    .border_color(rgba(RIM))
+                    .hover(|s| s.border_color(cola(ui.accent, 0.5)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_t, _e, _w, cx| {
+                            cx.stop_propagation();
+                            cx.emit(EditAgentRequested(i));
+                        }),
+                    )
+                    .child(icon("pen", 11., ui.muted)),
+            )
+            .child(
+                div()
+                    .w(px(20.))
+                    .h(px(20.))
+                    .rounded(px(6.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(rgba(INSET))
+                    .border_1()
+                    .border_color(rgba(RIM))
+                    .hover(|s| s.border_color(cola(red, 0.5)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_t, _e, _w, cx| {
+                            cx.stop_propagation();
+                            cx.emit(DeleteAgentRequested(i));
+                        }),
+                    )
+                    .child(icon("close", 11., ui.muted)),
+            )
     }
 
     /// The aggregated WSL tile: drill into the distro sub-grid (or launch the lone one).
@@ -420,12 +516,15 @@ impl WelcomeView {
 
 impl gpui::EventEmitter<LaunchRequested> for WelcomeView {}
 impl gpui::EventEmitter<SshPromptRequested> for WelcomeView {}
+impl gpui::EventEmitter<AddAgentRequested> for WelcomeView {}
+impl gpui::EventEmitter<EditAgentRequested> for WelcomeView {}
+impl gpui::EventEmitter<DeleteAgentRequested> for WelcomeView {}
 
 impl Render for WelcomeView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &self.config.theme.ui;
 
-        // Grouped for a clean two-row launchpad: agents (Claude/Codex) on top, shells +
+        // Grouped for a clean two-row launchpad: configured agents on top, shells +
         // WSL + SSH below (用户要的排版). Drilling into WSL shows a Back tile + the
         // distros in one wrapping row.
         let row = || {
@@ -461,12 +560,15 @@ impl Render for WelcomeView {
                     LaunchEntry::SshPrompt => others.push(self.ssh_tile(cx)), // SSH → bottom
                 }
             }
+            // The「+ 添加 Agent」tile closes the agents row — always offered, so the
+            // launchpad is the entry point for adding a custom CLI (no config.toml).
+            agents.push(self.add_agent_tile(cx));
             div()
                 .w(px(560.)) // §16 .welcome .tiles width 560
                 .flex()
                 .flex_col()
                 .gap(px(11.))
-                .when(!agents.is_empty(), |d| d.child(row().children(agents)))
+                .child(row().children(agents)) // always non-empty (≥ the 添加 tile)
                 .child(row().children(others))
         };
 
@@ -621,14 +723,12 @@ mod tests {
                 None,
                 Some("powershell.exe"),
             ),
-            prof("Claude", ProfileKind::Agent, None, None, Some("claude")),
-            prof("Codex", ProfileKind::Agent, None, None, Some("codex")),
+            prof("Agent", ProfileKind::Agent, None, None, Some("agent")),
         ];
         let e = launch_entries(&profiles);
-        // agents (Claude=1, Codex=2) lead, then the pwsh shell (0), then SSH placeholder.
+        // The generic Agent tile leads, then the pwsh shell, then SSH placeholder.
         assert!(matches!(e[0], LaunchEntry::Profile(1)));
-        assert!(matches!(e[1], LaunchEntry::Profile(2)));
-        assert!(matches!(e[2], LaunchEntry::Profile(0)));
-        assert!(matches!(e[3], LaunchEntry::SshPrompt));
+        assert!(matches!(e[1], LaunchEntry::Profile(0)));
+        assert!(matches!(e[2], LaunchEntry::SshPrompt));
     }
 }

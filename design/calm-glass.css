@@ -334,7 +334,7 @@ body {
 .palette .plist{ padding:6px; max-height:320px; overflow:hidden; }
 .prow{ display:flex; align-items:center; gap:10px; padding:9px 12px; border-radius:9px; font-size:13px; color:var(--fg-dim); }
 .prow .dot{ width:7px; height:7px; border-radius:50%; flex:0 0 auto; }
-.prow .dot.claude{ background:var(--claude); } .prow .dot.codex{ background:var(--codex); } .prow .dot.sh{ background:var(--accent); }
+.prow .dot.agent{ background:var(--accent); } .prow .dot.claude{ background:var(--claude); } .prow .dot.codex{ background:var(--codex); } .prow .dot.sh{ background:var(--accent); }
 .prow .meta{ margin-left:auto; color:var(--faint); font-family:var(--mono); font-size:11px; }
 .prow.sel{ background:var(--g3); color:var(--fg); }
 
@@ -350,13 +350,15 @@ body {
   background:var(--g2); border:1px solid var(--rim); }
 .tile .ic{ width:30px; height:30px; border-radius:9px; display:flex; align-items:center; justify-content:center; }
 .tile .ic .i{ width:18px; height:18px; }
+.tile.agent .ic{ background:rgba(122,162,247,0.14); color:var(--accent); }
 .tile.claude .ic{ background:rgba(240,145,109,0.14); color:var(--claude); }
 .tile.codex .ic{ background:rgba(115,218,202,0.14); color:var(--codex); }
 .tile.sh .ic{ background:rgba(122,162,247,0.14); color:var(--accent); }
 .tile.wsl .ic{ background:rgba(187,154,247,0.14); color:var(--violet); }
+.tile.ssh .ic{ background:rgba(122,162,247,0.14); color:var(--accent); }
 .tile .tn{ font-size:13px; font-weight:640; color:var(--fg); }
 .tile .td{ font-size:11px; color:var(--muted); }
-.tile.sel{ border-color:rgba(240,145,109,0.4); background:var(--g3); }
+.tile.sel{ border-color:rgba(122,162,247,0.4); background:var(--g3); }
 
 /* ===================== welcome / empty state ===================== */
 .welcome{ flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; padding:32px 40px; }

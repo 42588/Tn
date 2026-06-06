@@ -55,6 +55,19 @@ pub fn profiles_toml_fragment(profiles: &[Profile]) -> Result<String, toml::ser:
     toml::to_string(&Fragment { profiles })
 }
 
+/// Serialize `agents` as one or more `[[agents]]` TOML blocks — used to **append**
+/// a user-created agent (the in-app "添加 Agent" form) to an existing `config.toml`
+/// without rewriting (and losing the comments in) the rest of the file. `None`
+/// fields are omitted by the TOML serializer, so a minimal agent emits just its
+/// `id` / `aliases` / `manages_own_cursor` / `capabilities`.
+pub fn agents_toml_fragment(agents: &[AgentManifest]) -> Result<String, toml::ser::Error> {
+    #[derive(Serialize)]
+    struct Fragment<'a> {
+        agents: &'a [AgentManifest],
+    }
+    toml::to_string(&Fragment { agents })
+}
+
 /// How a pane's usage pill presents its readout. Clicking the pill cycles
 /// through the concrete modes **per pane** (runtime, in memory); these values are
 /// the *starting* mode for a new pane, chosen by config.
@@ -292,11 +305,12 @@ mod tests {
         let c = Config::from_toml_str(DEFAULT_CONFIG_TOML).expect("default config.toml parses");
         assert_eq!(c.font.family, "CaskaydiaCove Nerd Font");
         assert_eq!(c.appearance.theme, "Tn Dark");
-        // Template ships example profiles + keybindings.
+        // Template ships one generic Agent profile (no Claude/Codex tiles) + keybindings.
         assert!(c
             .profiles
             .iter()
-            .any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("claude")));
+            .any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("agent")));
+        assert!(c.agents.iter().any(|a| a.id == "agent"));
         assert!(c.keybindings.iter().any(|k| k.id == "new_tab"));
         // Quick Terminal section parses and matches its documented defaults.
         assert!(c.quick_terminal.enabled);

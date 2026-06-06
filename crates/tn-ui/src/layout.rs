@@ -3,7 +3,7 @@
 //! arrangement can be recalled later.
 //!
 //! A running shell session can't be serialized — loading a layout **re-spawns**
-//! each pane from its launcher (Claude / Codex / pwsh / WSL), not its session
+//! each pane from its launcher (Agent / pwsh / WSL), not its session
 //! content. The serializable tree ([`LayoutNode`]) mirrors `workspace::Node`, but
 //! its leaves carry a [`LayoutPane`] (enough to rebuild a `LaunchSpec`) instead of
 //! a live `PaneId`. Persisted as JSON at `%APPDATA%\Tn\layouts.json`.
@@ -29,7 +29,7 @@ pub struct LayoutPane {
     pub args: Vec<String>,
     #[serde(default)]
     pub integrate_pwsh: bool,
-    /// The launch-intent agent id (`"claude"` / `"codex"` / any registered id), or
+    /// The launch-intent agent id (for example `"agent"` or any registered id), or
     /// `None` for a plain shell. Stored as the raw `AgentId` string — open by design.
     #[serde(default)]
     pub agent: Option<String>,

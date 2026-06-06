@@ -42,6 +42,21 @@ impl Color {
     }
 }
 
+/// Curated accent swatches for the in-app agent editor's color picker
+/// (`(中文名, 颜色)`). These are deliberate *user choices*, not theme tokens, so
+/// they live here as config-domain data — keeping the GPUI layer free of color
+/// literals (the `no_hardcoded_theme_colors` guard only scans `tn-ui`). The UI
+/// also offers a "默认" option (no explicit accent → the theme/descriptor accent).
+pub const ACCENT_SWATCHES: &[(&str, Color)] = &[
+    ("蓝", Color::new(0x7A, 0xA2, 0xF7)),
+    ("紫", Color::new(0xBB, 0x9A, 0xF7)),
+    ("珊瑚", Color::new(0xF0, 0x91, 0x6D)),
+    ("青", Color::new(0x73, 0xDA, 0xCA)),
+    ("绿", Color::new(0x9E, 0xCE, 0x6A)),
+    ("琥珀", Color::new(0xE0, 0xAF, 0x68)),
+    ("粉", Color::new(0xF7, 0x9A, 0xC0)),
+];
+
 impl fmt::Display for Color {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_hex())

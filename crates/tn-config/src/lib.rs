@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub use color::{Color, ColorError};
+pub use color::{Color, ColorError, ACCENT_SWATCHES};
 pub use config::{
     Action, AgentManifest, Appearance, BillingMode, Config, Font, General, Keybinding, Profile,
     ProfileKind, DEFAULT_CONFIG_TOML,
@@ -127,6 +127,32 @@ pub fn append_profile(profile: &Profile) -> std::io::Result<()> {
 pub fn append_profile_to(path: &Path, profile: &Profile) -> std::io::Result<()> {
     let fragment = config::profiles_toml_fragment(std::slice::from_ref(profile))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    append_fragment_to(path, &fragment)
+}
+
+/// Append a `[[agents]]` manifest to the user's `config.toml`, preserving
+/// existing comments/format. The in-app "添加 Agent" form uses this so a
+/// user-created agent (identity + capabilities for the Agent Host) survives
+/// restarts and stays hand-editable. Errors if no config directory resolves.
+pub fn append_agent(manifest: &AgentManifest) -> std::io::Result<()> {
+    let path = config_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config directory"))?;
+    append_agent_to(&path, manifest)
+}
+
+/// [`append_agent`] targeting an explicit file — testable without touching the
+/// real config location.
+pub fn append_agent_to(path: &Path, manifest: &AgentManifest) -> std::io::Result<()> {
+    let fragment = config::agents_toml_fragment(std::slice::from_ref(manifest))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    append_fragment_to(path, &fragment)
+}
+
+/// Append a serialized `[[…]]` block to `path` after a blank line (so it never
+/// merges into a preceding table; a fresh array-of-tables header at EOF is valid
+/// regardless of what precedes it). Creates the file + parent dir if absent.
+/// Shared by [`append_profile_to`] / [`append_agent_to`].
+fn append_fragment_to(path: &Path, fragment: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
@@ -135,7 +161,7 @@ pub fn append_profile_to(path: &Path, profile: &Profile) -> std::io::Result<()> 
         text.push('\n');
     }
     text.push('\n');
-    text.push_str(&fragment);
+    text.push_str(fragment);
     fs::write(path, text)
 }
 
@@ -163,11 +189,33 @@ pub fn remove_profile_from(path: &Path, profile: &Profile) -> std::io::Result<bo
     Ok(true)
 }
 
+/// Remove the first `[[agents]]` block whose `id` matches, preserving unrelated
+/// text/comments. Returns `Ok(true)` when a block was removed. The in-app agent
+/// editor uses this to delete a custom agent (or replace one when editing).
+pub fn remove_agent(id: &str) -> std::io::Result<bool> {
+    let path = config_path()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no config directory"))?;
+    remove_agent_from(&path, id)
+}
+
+/// [`remove_agent`] targeting an explicit file — testable without touching the
+/// real config location.
+pub fn remove_agent_from(path: &Path, id: &str) -> std::io::Result<bool> {
+    let text = fs::read_to_string(path)?;
+    let Some(range) = find_agent_block(&text, id)? else {
+        return Ok(false);
+    };
+    let mut out = text;
+    out.replace_range(range, "");
+    fs::write(path, out)?;
+    Ok(true)
+}
+
 fn find_profile_block(
     text: &str,
     needle: &Profile,
 ) -> std::io::Result<Option<std::ops::Range<usize>>> {
-    for range in profile_block_ranges(text) {
+    for range in block_ranges(text, "[[profiles]]") {
         let block = &text[range.clone()];
         let parsed = Config::from_toml_str(block)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -176,7 +224,21 @@ fn find_profile_block(
             .iter()
             .any(|p| profile_identity_eq(p, needle))
         {
-            return Ok(Some(trim_profile_block_range(text, range)));
+            return Ok(Some(trim_block_range(text, range)));
+        }
+    }
+    Ok(None)
+}
+
+/// First `[[agents]]` block declaring `id` (parsed per-block so we match on the
+/// real `id` key, not a substring). Mirror of [`find_profile_block`].
+fn find_agent_block(text: &str, id: &str) -> std::io::Result<Option<std::ops::Range<usize>>> {
+    for range in block_ranges(text, "[[agents]]") {
+        let block = &text[range.clone()];
+        let parsed = Config::from_toml_str(block)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if parsed.agents.iter().any(|a| a.id == id) {
+            return Ok(Some(trim_block_range(text, range)));
         }
     }
     Ok(None)
@@ -186,13 +248,16 @@ fn profile_identity_eq(a: &Profile, b: &Profile) -> bool {
     a.name == b.name && a.kind == b.kind && a.host == b.host && a.user == b.user
 }
 
-fn profile_block_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+/// Byte ranges of each top-level array-of-tables block with the given `header`
+/// (`[[profiles]]` / `[[agents]]`): from a header line to the next top-level `[`
+/// (any table / array header). Shared by the comment-preserving block removers.
+fn block_ranges(text: &str, header: &str) -> Vec<std::ops::Range<usize>> {
     let mut ranges = Vec::new();
     let mut current: Option<usize> = None;
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
         let trimmed = line.trim_start();
-        if trimmed.starts_with("[[profiles]]") {
+        if trimmed.starts_with(header) {
             if let Some(start) = current.replace(pos) {
                 ranges.push(start..pos);
             }
@@ -209,7 +274,7 @@ fn profile_block_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     ranges
 }
 
-fn trim_profile_block_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
+fn trim_block_range(text: &str, range: std::ops::Range<usize>) -> std::ops::Range<usize> {
     // A2 append writes a blank separator before each saved profile. Remove that
     // single separator too so delete does not leave a growing trail of blank
     // lines, but keep user comments immediately above the block.
@@ -427,6 +492,98 @@ theme = "Tn Dark"
         assert!(!parsed.profiles.iter().any(|p| p.name == "drop"));
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn append_agent_preserves_existing_and_parses_back() {
+        // The in-app "添加 Agent" form appends an `[[agents]]` manifest; it must
+        // keep user edits/comments and round-trip (incl. a CJK label + accent).
+        let dir = unique_temp();
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(&cfg, "# my header\n[font]\nsize = 18.0\n").unwrap();
+
+        let m = AgentManifest {
+            id: "qwen".into(),
+            label: Some("通义千问".into()),
+            short: Some("Qwen".into()),
+            aliases: vec!["qwen".into()],
+            accent: Some(Color::new(0x73, 0xDA, 0xCA)),
+            glyph: Some("spark".into()),
+            manages_own_cursor: true,
+            capabilities: Vec::new(),
+        };
+        append_agent_to(&cfg, &m).unwrap();
+
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("# my header")); // comment preserved
+        let parsed = Config::from_toml_str(&text).expect("still valid toml after append");
+        assert_eq!(parsed.font.size, 18.0); // user edit preserved
+        let saved = parsed
+            .agents
+            .iter()
+            .find(|a| a.id == "qwen")
+            .expect("agent appended");
+        assert_eq!(saved.label.as_deref(), Some("通义千问"));
+        assert_eq!(saved.accent, Some(Color::new(0x73, 0xDA, 0xCA)));
+        assert!(saved.manages_own_cursor);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_agent_preserves_comments_and_other_agents() {
+        let dir = unique_temp();
+        fs::create_dir_all(&dir).unwrap();
+        let cfg = dir.join("config.toml");
+        fs::write(
+            &cfg,
+            r#"# keep me
+[[agents]]
+id = "keep"
+label = "Keep"
+
+# drop only the next agent
+[[agents]]
+id = "drop"
+label = "Drop"
+
+[[profiles]]
+name = "P"
+kind = "agent"
+agent = "keep"
+command = "keep"
+"#,
+        )
+        .unwrap();
+
+        assert!(remove_agent_from(&cfg, "drop").unwrap());
+        let text = fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("# drop only the next agent")); // comment kept
+        assert!(text.contains("id = \"keep\""));
+        assert!(!text.contains("id = \"drop\""));
+        assert!(text.contains("[[profiles]]")); // unrelated block untouched
+        let parsed = Config::from_toml_str(&text).expect("valid toml after remove");
+        assert!(parsed.agents.iter().any(|a| a.id == "keep"));
+        assert!(!parsed.agents.iter().any(|a| a.id == "drop"));
+
+        // Removing a non-existent id is a no-op (Ok(false)).
+        assert!(!remove_agent_from(&cfg, "nope").unwrap());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accent_swatches_are_nonempty_and_distinct() {
+        // The agent editor's color picker reads these; ensure they exist and the
+        // labels are unique (so two swatches never read identically).
+        assert!(!ACCENT_SWATCHES.is_empty());
+        let mut labels: Vec<&str> = ACCENT_SWATCHES.iter().map(|(l, _)| *l).collect();
+        labels.sort_unstable();
+        let n = labels.len();
+        labels.dedup();
+        assert_eq!(labels.len(), n, "swatch labels must be distinct");
     }
 
     #[test]

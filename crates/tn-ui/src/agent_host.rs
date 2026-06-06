@@ -1,5 +1,5 @@
 //! The app-wide [`AgentRegistry`] as a GPUI global. Built once at startup
-//! (default = built-in Claude/Codex via `tn_ai::builtin_registry`) and read
+//! (default = config-declared agents; optional telemetry adapters can be registered) and read
 //! wherever the UI resolves an agent's identity, presentation, capabilities, or
 //! usage adapter — so no UI code names a concrete agent (the Agent Host model).
 //!

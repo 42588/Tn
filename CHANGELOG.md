@@ -28,5 +28,18 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 ### Removed
 - **闭合 `AgentKind` 枚举 + 其 kind-dispatch API**(`resolve_session`/`session_mtimes`/`parse_session`/`update_session`/`detect_subscription`/`agent_kind_for_command` 等)全删——agent 身份与解析全部走 `AgentId` + adapter。
 
+## [Unreleased] — 应用内 Agent 编辑器(2026-06)
+
+把「加 agent」从手编 `config.toml` `[[agents]]` 升级为应用内现代交互(用户反馈:编辑配置太极客)。建立在 Agent Host 平台之上 —— 编辑器只产出 config 数据,平台零改动。
+
+### Added
+- **欢迎页 launchpad「+ 添加 Agent」磁贴 + 居中玻璃浮层编辑器**(`workspace::render_agent_form`):收集 名称 / 命令 / 颜色(`tn_config::ACCENT_SWATCHES` 预设)/「由 Agent 自绘光标(Ink TUI)」开关 + 实时磁贴预览;`Tab` 切字段 · `Enter` 保存 · `Esc` 取消 · 点外关闭。名称字段支持中文(IME,复用 `EntityInputHandler` 多路复用,与 SSH 重命名同源),命令字段 ASCII(IME 关)。
+- **自定义磁贴 hover ✎/✕**(`welcome::agent_tile_actions`):编辑预填表单回写、删除抹掉 `[[agents]]`+`[[profiles]]`(`EditAgentRequested`/`DeleteAgentRequested`/`AddAgentRequested` 事件回 workspace)。
+- **保存即生效(无需重启)**:`workspace::reload_agents` 重读 config → 重建 `AgentRegistry` global → 刷新 `launch_profiles` → 重建 welcome(`subscribe_welcome` 复用订阅),新磁贴立即出现。
+- **tn-config 持久化**:`append_agent[_to]` / `remove_agent[_from]`(块级追加/删除,保注释,泛化的 `block_ranges`)+ `agents_toml_fragment` + `ACCENT_SWATCHES` 颜色预设。
+- **id 派生**:`slugify`(名称→命令首词,deduped)生成稳定 `AgentId`;命令首词进 `aliases` → 「shell 里敲它自动切 Agent 态」即时可用。诚实:config-only agent = generic(无用量遥测,需内置/外部 adapter)。
+- **设计真源**:[`design/panels/04-overlays.html`](design/panels/04-overlays.html) 新增编辑器原型。
+
 ### 后续(未做)
 - 外部进程 adapter **实时** stdio/JSON-RPC 通道(目前只定契约 + 最小实现)· 非 PTY 运行时 · AgentEvent transcript/permission/tool-call/status 渲染槽。
+- Agent 编辑器:capability 勾选(usage 等,需先接 adapter,否则误导)· 命令参数/cwd 字段 · 编辑器内中文搜索 · 在 Quick Terminal/分屏启动器也暴露「+ 添加」。

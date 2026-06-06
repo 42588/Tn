@@ -137,13 +137,119 @@ pub(crate) fn is_launchable(p: &tn_config::Profile) -> bool {
     }
 }
 
+fn is_removed_builtin_agent_profile(
+    p: &tn_config::Profile,
+    declared_agents: &std::collections::HashSet<String>,
+) -> bool {
+    if p.kind != tn_config::ProfileKind::Agent {
+        return false;
+    }
+    let id = p
+        .agent
+        .as_deref()
+        .or(p.command.as_deref())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(id.as_str(), "claude" | "codex") && !declared_agents.contains(&id)
+}
+
+fn is_launchable_agent_profile(p: &tn_config::Profile) -> bool {
+    (p.kind == tn_config::ProfileKind::Agent || p.agent.is_some())
+        && p.command.as_deref().is_some_and(|c| !c.is_empty())
+}
+
+fn generic_agent_profile() -> tn_config::Profile {
+    tn_config::Profile {
+        name: "Agent".into(),
+        kind: tn_config::ProfileKind::Agent,
+        command: Some("agent".into()),
+        args: Vec::new(),
+        cwd: None,
+        distro: None,
+        host: None,
+        user: None,
+        agent: Some("agent".into()),
+        accent: None,
+        glyph: Some("spark".into()),
+    }
+}
+
+/// Lowercase ascii-alnum slug (`"Gemini CLI"` → `"gemini-cli"`): non-alnum runs
+/// collapse to one `-`, trimmed. Empty when the input has no ascii alnum (e.g. a
+/// purely-CJK name) — callers fall back to another source. Used to derive a
+/// stable `AgentId` from the agent editor's name/command.
+fn slugify(s: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for ch in s.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            dash = false;
+        } else if !out.is_empty() && !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    out.trim_matches('-').to_string()
+}
+
+/// First non-empty slug among `candidates`, else `"agent"`.
+fn first_nonempty_slug(candidates: &[&str]) -> String {
+    candidates
+        .iter()
+        .map(|c| slugify(c))
+        .find(|s| !s.is_empty())
+        .unwrap_or_else(|| "agent".to_string())
+}
+
+/// `base`, or `base-2`/`base-3`/… if already taken — a unique agent id.
+fn unique_agent_id(base: &str, existing: &std::collections::HashSet<String>) -> String {
+    if !existing.contains(base) {
+        return base.to_string();
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|c| !existing.contains(c))
+        .expect("infinite range yields a free id")
+}
+
+/// A short display label (first whitespace word, capped) for the header `short`.
+fn short_name(name: &str) -> String {
+    name.split_whitespace()
+        .next()
+        .unwrap_or(name)
+        .chars()
+        .take(16)
+        .collect()
+}
+
 /// The launcher's profiles: the configured `[[profiles]]` plus every installed
 /// WSL distro not already covered by a config profile — so users get *all* their
 /// distros without editing config (the default config ships only one). Shells
 /// out to `wsl.exe` once (cache the result; don't call per render). Docker's
 /// internal `docker-desktop*` distros are skipped (not interactive shells).
 pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
-    let mut profiles = config.config.profiles.clone();
+    let declared_agents: std::collections::HashSet<String> = config
+        .config
+        .agents
+        .iter()
+        .map(|a| a.id.to_ascii_lowercase())
+        .collect();
+    let removed_builtin_agent = config
+        .config
+        .profiles
+        .iter()
+        .any(|p| is_removed_builtin_agent_profile(p, &declared_agents));
+    let mut profiles: Vec<_> = config
+        .config
+        .profiles
+        .iter()
+        .filter(|p| !is_removed_builtin_agent_profile(p, &declared_agents))
+        .cloned()
+        .collect();
+    if removed_builtin_agent && !profiles.iter().any(is_launchable_agent_profile) {
+        profiles.push(generic_agent_profile());
+    }
     let configured: std::collections::HashSet<String> = profiles
         .iter()
         .filter(|p| p.kind == tn_config::ProfileKind::Wsl)
@@ -655,9 +761,10 @@ pub struct Workspace {
     ssh_prompt_focus: FocusHandle,
     ssh_prompt_needs_focus: bool,
     ssh_prompt_intent: Option<SshPromptIntent>,
-    /// Tracks whether we have currently disabled IME for the SSH prompt (to
-    /// avoid redundant `ImmAssociateContextEx` calls on every render frame).
-    ssh_ime_disabled: bool,
+    /// Tracks whether IME is currently disabled by an overlay (the SSH target
+    /// box, or the agent editor's command field — both ASCII), to avoid redundant
+    /// `ImmAssociateContextEx` calls every render frame.
+    ime_disabled: bool,
     /// Remembered SSH endpoints (A1). The connector lists these for one-keystroke
     /// reconnect; a successful connect upserts the target here.
     ssh_recents: SshRecents,
@@ -671,6 +778,63 @@ pub struct Workspace {
     /// section. Refreshed each time the connector opens (the file is tiny and
     /// rarely changes mid-session).
     ssh_config_hosts: Vec<tn_pty::SshHostEntry>,
+
+    // ── 添加/编辑 Agent overlay (the in-app agent editor — no more hand-editing
+    // config.toml `[[agents]]`). A config-level (generic) agent: terminal +
+    // activity rail, no usage telemetry (that needs a built-in/external adapter).
+    /// The agent editor overlay is open.
+    agent_form_open: bool,
+    /// The working draft (name / command / accent index / cursor ownership).
+    agent_form: AgentForm,
+    /// Which text field of the editor is being edited.
+    agent_form_field: AgentField,
+    /// IME preedit buffer for the **name** field (the command field is ASCII, so
+    /// IME is disabled while it's focused). Mirrors `ssh_rename_marked`.
+    agent_form_marked: Option<String>,
+    /// `Some` when **editing** an existing agent (carries the id + the old profile
+    /// name to replace in config); `None` when **adding** a new one.
+    agent_form_edit: Option<AgentEdit>,
+    agent_form_focus: FocusHandle,
+    agent_form_needs_focus: bool,
+}
+
+/// Which text field of the 添加/编辑 Agent overlay is active.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AgentField {
+    Name,
+    Command,
+}
+
+/// The working draft of the 添加/编辑 Agent overlay.
+#[derive(Clone, Default)]
+struct AgentForm {
+    name: String,
+    command: String,
+    /// Picker index into [`tn_config::ACCENT_SWATCHES`] (default `0`).
+    accent_idx: usize,
+    /// The agent paints its own cursor (Ink TUI) → the terminal hides its block.
+    /// Default on (most agent CLIs are Ink-based).
+    manages_cursor: bool,
+}
+
+impl AgentForm {
+    /// The picked accent (`accent_idx` indexes [`tn_config::ACCENT_SWATCHES`];
+    /// clamps to the first swatch if somehow out of range).
+    fn accent(&self) -> tn_config::Color {
+        tn_config::ACCENT_SWATCHES
+            .get(self.accent_idx)
+            .or_else(|| tn_config::ACCENT_SWATCHES.first())
+            .map(|(_, c)| *c)
+            .expect("ACCENT_SWATCHES is non-empty")
+    }
+}
+
+/// Context for **editing** an existing agent (vs adding): the id to preserve and
+/// the old profile name, so save can replace the right config blocks.
+#[derive(Clone)]
+struct AgentEdit {
+    old_id: String,
+    old_profile_name: String,
 }
 
 #[derive(Clone, Copy)]
@@ -839,26 +1003,10 @@ impl Workspace {
         // Welcome launchpad (new-tab default): clicking a tile launches that
         // profile into the active tab (welcome → panes).
         let welcome = cx.new(|cx| WelcomeView::new(cx, config.clone(), launch_profiles.clone()));
-        cx.subscribe(&welcome, |ws, _welcome, ev: &LaunchRequested, cx| {
-            ws.launch_in_active_tab(ev.0, cx);
-            cx.notify();
-        })
-        .detach();
-        cx.subscribe(
-            &welcome,
-            |ws, _welcome, _ev: &crate::welcome::SshPromptRequested, cx| {
-                ws.ssh_prompt_open = true;
-                ws.ssh_prompt_needs_focus = true;
-                ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
-                ws.ssh_prompt_input.clear();
-                ws.ssh_prompt_sel = 0;
-                ws.ssh_rename = None;
-                ws.ssh_rename_marked = None;
-                ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
-                cx.notify();
-            },
-        )
-        .detach();
+        // Welcome launchpad events: launch a tile, open the SSH connector, or
+        // add/edit/delete a custom agent (the in-app agent editor). Shared with
+        // `reload_agents` so the recreated launchpad re-attaches identically.
+        Self::subscribe_welcome(&welcome, cx);
         let mut ws = Self {
             tabs: Vec::new(),
             active: 0,
@@ -908,12 +1056,19 @@ impl Workspace {
             ssh_prompt_focus: cx.focus_handle(),
             ssh_prompt_needs_focus: false,
             ssh_prompt_intent: None,
-            ssh_ime_disabled: false,
+            ime_disabled: false,
             ssh_recents: SshRecents::load(),
             ssh_prompt_sel: 0,
             ssh_rename: None,
             ssh_rename_marked: None,
             ssh_config_hosts: tn_pty::list_ssh_config_hosts(),
+            agent_form_open: false,
+            agent_form: AgentForm::default(),
+            agent_form_field: AgentField::Name,
+            agent_form_marked: None,
+            agent_form_edit: None,
+            agent_form_focus: cx.focus_handle(),
+            agent_form_needs_focus: false,
         };
         // First tab: the welcome launchpad on a normal launch. But the headless
         // self-test (TN_AUTOQUIT) + scripted demo (TN_DEMO) drive the *first pane*
@@ -1811,7 +1966,7 @@ impl Workspace {
                 // 8px hit strip that only tints faintly on hover (no persistent
                 // line — the panes' own rims already delineate them). Added last
                 // so they sit on top of the panes + canvas.
-                let accent = self.config.theme.agents.claude;
+                let accent = self.config.theme.ui.accent;
                 let mut cum = 0.0_f32;
                 for gap in 0..kids.len().saturating_sub(1) {
                     cum += weights[gap] / sum;
@@ -1899,9 +2054,9 @@ impl Workspace {
     }
 
     /// Bottom status bar (M4) — the mockup's multi-segment readout: branch ·
-    /// sessions · per-agent context % (Claude + Codex) · … · viewer file·lang ·
+    /// sessions · per-agent context % · … · viewer file·lang ·
     /// encoding · theme. The per-agent ctx is aggregated across panes (one
-    /// segment per agent kind present); detailed tokens/cost live in the pane's
+    /// segment per agent present); detailed tokens/cost live in the pane's
     /// agent header (R2).
     fn render_status_bar(&self, cx: &Context<Self>) -> gpui::Div {
         let t = &self.config.theme;
@@ -3810,6 +3965,828 @@ impl Workspace {
                 .child(panel),
         )
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // 添加/编辑 Agent overlay — the in-app agent editor (no more hand-editing
+    // config.toml `[[agents]]`). A config-level (generic) agent: it appears in
+    // the launchpad / header / capability slots, hosts a terminal + activity
+    // rail, but has **no usage telemetry** (that needs a built-in/external
+    // adapter — we don't fake a usage ring for it).
+    // ════════════════════════════════════════════════════════════════════
+
+    /// The agent editor's **name** field is the active IME target (Chinese names).
+    fn agent_name_is_ime_target(&self) -> bool {
+        self.agent_form_open && self.agent_form_field == AgentField::Name
+    }
+
+    /// Whether *some* overlay text field currently accepts IME composition.
+    fn ime_target_active(&self) -> bool {
+        self.agent_name_is_ime_target() || self.ssh_rename.is_some()
+    }
+
+    /// The IME preedit buffer for whichever field is composing (agent name / SSH rename).
+    fn active_ime_marked(&self) -> Option<&str> {
+        if self.agent_name_is_ime_target() {
+            self.agent_form_marked.as_deref()
+        } else {
+            self.ssh_rename_marked.as_deref()
+        }
+    }
+
+    /// Wire the welcome launchpad's events to the workspace. Shared by `new()` and
+    /// [`reload_agents`](Self::reload_agents) (which recreates the launchpad after a
+    /// config change) so both attach the identical set of subscriptions.
+    fn subscribe_welcome(welcome: &Entity<WelcomeView>, cx: &mut Context<Self>) {
+        cx.subscribe(welcome, |ws, _welcome, ev: &LaunchRequested, cx| {
+            ws.launch_in_active_tab(ev.0, cx);
+            cx.notify();
+        })
+        .detach();
+        cx.subscribe(
+            welcome,
+            |ws, _welcome, _ev: &crate::welcome::SshPromptRequested, cx| {
+                ws.ssh_prompt_open = true;
+                ws.ssh_prompt_needs_focus = true;
+                ws.ssh_prompt_intent = Some(SshPromptIntent::Welcome);
+                ws.ssh_prompt_input.clear();
+                ws.ssh_prompt_sel = 0;
+                ws.ssh_rename = None;
+                ws.ssh_rename_marked = None;
+                ws.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
+                cx.notify();
+            },
+        )
+        .detach();
+        cx.subscribe(
+            welcome,
+            |ws, _welcome, _ev: &crate::welcome::AddAgentRequested, cx| {
+                ws.open_add_agent(cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            welcome,
+            |ws, _welcome, ev: &crate::welcome::EditAgentRequested, cx| {
+                ws.open_edit_agent(ev.0, cx);
+            },
+        )
+        .detach();
+        cx.subscribe(
+            welcome,
+            |ws, _welcome, ev: &crate::welcome::DeleteAgentRequested, cx| {
+                ws.delete_agent(ev.0, cx);
+            },
+        )
+        .detach();
+    }
+
+    /// Open the editor to **add** a new agent (empty draft, Ink cursor on).
+    fn open_add_agent(&mut self, cx: &mut Context<Self>) {
+        self.agent_form = AgentForm {
+            name: String::new(),
+            command: String::new(),
+            accent_idx: 0,
+            manages_cursor: true,
+        };
+        self.agent_form_field = AgentField::Name;
+        self.agent_form_marked = None;
+        self.agent_form_edit = None;
+        self.agent_form_open = true;
+        self.agent_form_needs_focus = true;
+        cx.notify();
+    }
+
+    /// Open the editor to **edit** the agent launched by `launch_profiles[idx]`,
+    /// prefilling the draft from its profile + `[[agents]]` manifest.
+    fn open_edit_agent(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.launch_profiles.get(idx).cloned() else {
+            return;
+        };
+        let id = p
+            .agent
+            .clone()
+            .or_else(|| p.command.clone())
+            .unwrap_or_default();
+        let manifest = self.config.config.agents.iter().find(|a| a.id == id).cloned();
+        let accent = p.accent.or_else(|| manifest.as_ref().and_then(|m| m.accent));
+        let accent_idx = accent
+            .and_then(|c| tn_config::ACCENT_SWATCHES.iter().position(|(_, sc)| *sc == c))
+            .unwrap_or(0);
+        let manages = manifest.as_ref().map(|m| m.manages_own_cursor).unwrap_or(true);
+        let label = manifest
+            .as_ref()
+            .and_then(|m| m.label.clone())
+            .unwrap_or_else(|| p.name.clone());
+        self.agent_form = AgentForm {
+            name: label,
+            command: p.command.clone().unwrap_or_default(),
+            accent_idx,
+            manages_cursor: manages,
+        };
+        self.agent_form_field = AgentField::Name;
+        self.agent_form_marked = None;
+        self.agent_form_edit = Some(AgentEdit {
+            old_id: id,
+            old_profile_name: p.name.clone(),
+        });
+        self.agent_form_open = true;
+        self.agent_form_needs_focus = true;
+        cx.notify();
+    }
+
+    fn close_agent_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.agent_form_open = false;
+        self.agent_form_marked = None;
+        self.agent_form_edit = None;
+        self.refocus_active(window, cx);
+        cx.notify();
+    }
+
+    /// Persist a delete: drop the `[[agents]]` manifest by id + the matching
+    /// `[[profiles]]` block (comment-preserving, in tn-config).
+    fn remove_agent_persisted(&self, id: &str, profile_name: &str) {
+        if let Err(e) = tn_config::remove_agent(id) {
+            tracing::error!(error = %e, id, "remove agent manifest failed");
+        }
+        let old_profile = tn_config::Profile {
+            name: profile_name.to_string(),
+            kind: tn_config::ProfileKind::Agent,
+            command: None,
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: None,
+            user: None,
+            agent: None,
+            accent: None,
+            glyph: None,
+        };
+        if let Err(e) = tn_config::remove_profile(&old_profile) {
+            tracing::error!(error = %e, "remove agent profile failed");
+        }
+    }
+
+    /// Validate + persist the draft (write `[[agents]]` + `[[profiles]]`,
+    /// replacing the old blocks when editing), then re-register the registry +
+    /// refresh the launchpad so the tile appears immediately (no restart).
+    fn save_agent_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.agent_form.name.trim().to_string();
+        let command = self.agent_form.command.trim().to_string();
+        if name.is_empty() || command.is_empty() {
+            return; // both required (the 保存 button is dimmed; this is the belt)
+        }
+        let accent = self.agent_form.accent();
+        let manages = self.agent_form.manages_cursor;
+
+        // id: reuse when editing; else slugify (name → command first word), deduped.
+        let id = if let Some(edit) = &self.agent_form_edit {
+            edit.old_id.clone()
+        } else {
+            let existing: std::collections::HashSet<String> = self
+                .config
+                .config
+                .agents
+                .iter()
+                .map(|a| a.id.clone())
+                .collect();
+            let base = first_nonempty_slug(&[
+                name.as_str(),
+                command.split_whitespace().next().unwrap_or(""),
+            ]);
+            unique_agent_id(&base, &existing)
+        };
+        let alias = command
+            .split_whitespace()
+            .next()
+            .unwrap_or(command.as_str())
+            .to_string();
+        let manifest = tn_config::AgentManifest {
+            id: id.clone(),
+            label: Some(name.clone()),
+            short: Some(short_name(&name)),
+            aliases: vec![alias],
+            accent: Some(accent),
+            glyph: Some("spark".into()),
+            manages_own_cursor: manages,
+            capabilities: Vec::new(),
+        };
+        let profile = tn_config::Profile {
+            name: name.clone(),
+            kind: tn_config::ProfileKind::Agent,
+            command: Some(command),
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: None,
+            user: None,
+            agent: Some(id.clone()),
+            accent: Some(accent),
+            glyph: Some("spark".into()),
+        };
+
+        // Editing → remove the old blocks first (id may be unchanged; remove +
+        // re-append keeps a single entry, comments preserved).
+        if let Some(edit) = self.agent_form_edit.clone() {
+            self.remove_agent_persisted(&edit.old_id, &edit.old_profile_name);
+        }
+        if let Err(e) = tn_config::append_agent(&manifest) {
+            tracing::error!(error = %e, "save_agent_form: append agent failed");
+        }
+        if let Err(e) = tn_config::append_profile(&profile) {
+            tracing::error!(error = %e, "save_agent_form: append profile failed");
+        }
+
+        self.agent_form_open = false;
+        self.agent_form_marked = None;
+        self.agent_form_edit = None;
+        self.reload_agents(cx);
+        self.refocus_active(window, cx);
+    }
+
+    /// Delete the custom agent launched by `launch_profiles[idx]` (welcome tile ✕).
+    fn delete_agent(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.launch_profiles.get(idx).cloned() else {
+            return;
+        };
+        let id = p
+            .agent
+            .clone()
+            .or_else(|| p.command.clone())
+            .unwrap_or_default();
+        self.remove_agent_persisted(&id, &p.name);
+        if self.agent_form_open {
+            self.agent_form_open = false;
+            self.agent_form_edit = None;
+            self.agent_form_marked = None;
+        }
+        self.reload_agents(cx);
+    }
+
+    /// Delete the agent currently open in the editor (the 删除 button).
+    fn delete_current_agent(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.agent_form_edit.clone() else {
+            return;
+        };
+        self.remove_agent_persisted(&edit.old_id, &edit.old_profile_name);
+        self.agent_form_open = false;
+        self.agent_form_edit = None;
+        self.agent_form_marked = None;
+        self.reload_agents(cx);
+        self.refocus_active(window, cx);
+    }
+
+    /// Reload config from disk, rebuild the agent registry global, and recreate
+    /// the welcome launchpad (re-subscribing) so a just-added/edited/deleted
+    /// agent shows immediately — no restart.
+    fn reload_agents(&mut self, cx: &mut Context<Self>) {
+        self.config = Arc::new(tn_config::load());
+        let mut registry = tn_agent::AgentRegistry::new();
+        for m in &self.config.config.agents {
+            registry.register_manifest(m);
+        }
+        cx.set_global(crate::agent_host::AgentHost(registry));
+        self.launch_profiles = discover_profiles(&self.config);
+        let welcome =
+            cx.new(|cx| WelcomeView::new(cx, self.config.clone(), self.launch_profiles.clone()));
+        Self::subscribe_welcome(&welcome, cx);
+        self.welcome = welcome;
+        cx.notify();
+    }
+
+    fn on_agent_form_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = ev.keystroke.key.as_str();
+        // Printable ASCII (no modifiers, no IME CJK slip-through). Chinese in the
+        // name field arrives via the IME path (EntityInputHandler), not here.
+        let printable = |ev: &KeyDownEvent| -> Option<String> {
+            ev.keystroke
+                .key_char
+                .as_ref()
+                .filter(|c| {
+                    !ev.keystroke.modifiers.control
+                        && !ev.keystroke.modifiers.alt
+                        && !ev.keystroke.modifiers.platform
+                        && c.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+                })
+                .cloned()
+        };
+        match key {
+            "escape" => self.close_agent_form(window, cx),
+            "tab" => {
+                self.agent_form_field = match self.agent_form_field {
+                    AgentField::Name => AgentField::Command,
+                    AgentField::Command => AgentField::Name,
+                };
+                self.agent_form_marked = None;
+                cx.notify();
+            }
+            "enter" => self.save_agent_form(window, cx),
+            "backspace" => {
+                // Delete the IME preedit first (name field), else the field text.
+                if self.agent_form_field == AgentField::Name
+                    && self.agent_form_marked.take().is_some()
+                {
+                    cx.notify();
+                } else {
+                    match self.agent_form_field {
+                        AgentField::Name => {
+                            self.agent_form.name.pop();
+                        }
+                        AgentField::Command => {
+                            self.agent_form.command.pop();
+                        }
+                    }
+                    cx.notify();
+                }
+            }
+            _ => {
+                if let Some(c) = printable(ev) {
+                    match self.agent_form_field {
+                        AgentField::Name => self.agent_form.name.push_str(&c),
+                        AgentField::Command => self.agent_form.command.push_str(&c),
+                    }
+                    cx.notify();
+                }
+            }
+        }
+        cx.stop_propagation();
+    }
+
+    /// A labeled text input row of the agent editor; clicking focuses that field.
+    /// The active field shows the caret (+ IME preedit, accent-colored, for the
+    /// name field).
+    fn agent_field_row(
+        &self,
+        label: &str,
+        value: String,
+        marked: String,
+        placeholder: &str,
+        field: AgentField,
+        ime: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let ui = &self.config.theme.ui;
+        let accent = self.agent_form.accent();
+        let active = self.agent_form_field == field;
+        let mono = SharedString::from(self.config.font().family.clone());
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(14.))
+            .py(px(11.))
+            .rounded(px(R_CARD))
+            .bg(rgba(INSET))
+            .border_1()
+            .border_color(if active { cola(accent, 0.5) } else { rgba(RIM) })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _e, w, cx| {
+                    cx.stop_propagation();
+                    this.agent_form_field = field;
+                    this.agent_form_marked = None;
+                    this.agent_form_focus.focus(w);
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(52.))
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from(label.to_string())),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .overflow_hidden()
+                    .font_family(mono)
+                    .text_size(px(13.5))
+                    .when(!value.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(col(ui.foreground))
+                                .child(SharedString::from(value.clone())),
+                        )
+                    })
+                    .when(active && ime && !marked.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .text_color(col(accent))
+                                .child(SharedString::from(marked.clone())),
+                        )
+                    })
+                    .when(active, |d| {
+                        d.child(div().text_color(col(ui.muted)).child(SharedString::from("▏")))
+                    })
+                    .when(value.is_empty() && marked.is_empty(), |d| {
+                        d.child(
+                            div()
+                                .ml(px(2.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(placeholder.to_string())),
+                        )
+                    }),
+            )
+    }
+
+    /// The 添加/编辑 Agent overlay, or `None` when closed: a dim scrim + a centered
+    /// Calm Glass panel (name / command inputs · color swatches · Ink-cursor
+    /// toggle · live preview · 取消/删除/保存).
+    fn render_agent_form(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.agent_form_open {
+            return None;
+        }
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let editing = self.agent_form_edit.is_some();
+        let accent = self.agent_form.accent();
+        let name = self.agent_form.name.clone();
+        let name_marked = self.agent_form_marked.clone().unwrap_or_default();
+        let command = self.agent_form.command.clone();
+        let can_save = !name.trim().is_empty() && !command.trim().is_empty();
+        let title = if editing { "编辑 Agent" } else { "添加 Agent" };
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(16.))
+            .pt(px(15.))
+            .pb(px(3.))
+            .child(
+                div()
+                    .w(px(28.))
+                    .h(px(28.))
+                    .rounded(px(8.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(cola(accent, 0.16))
+                    .child(icon("spark", 17., accent)),
+            )
+            .child(
+                div()
+                    .text_size(px(15.))
+                    .font_weight(gpui::FontWeight(680.))
+                    .text_color(col(ui.foreground))
+                    .child(SharedString::from(title)),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from("配置即数据 · 终端托管")),
+            );
+
+        let fields = div()
+            .flex()
+            .flex_col()
+            .gap(px(9.))
+            .px(px(16.))
+            .py(px(8.))
+            .child(self.agent_field_row(
+                "名称",
+                name.clone(),
+                name_marked,
+                "例:Gemini CLI",
+                AgentField::Name,
+                true,
+                cx,
+            ))
+            .child(self.agent_field_row(
+                "命令",
+                command.clone(),
+                String::new(),
+                "例:gemini",
+                AgentField::Command,
+                false,
+                cx,
+            ))
+            .child(
+                div()
+                    .text_size(px(10.5))
+                    .text_color(col(ui.muted))
+                    .pl(px(2.))
+                    .child(SharedString::from(
+                        "命令首词用于「在 shell 里敲它自动切 Agent 态」。无用量遥测(需内置/外部 adapter)。",
+                    )),
+            );
+
+        // Color swatches (curated presets; the selected one is ringed).
+        let mut swatches = div().flex().flex_row().items_center().gap(px(9.)).flex_wrap();
+        for (i, (_, c)) in tn_config::ACCENT_SWATCHES.iter().enumerate() {
+            let sel = self.agent_form.accent_idx == i;
+            let c = *c;
+            swatches = swatches.child(
+                div()
+                    .w(px(24.))
+                    .h(px(24.))
+                    .rounded(px(999.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_2()
+                    .border_color(if sel { col(ui.foreground) } else { cola(c, 0.0) })
+                    .child(div().w(px(15.)).h(px(15.)).rounded(px(999.)).bg(col(c)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e, _w, cx| {
+                            cx.stop_propagation();
+                            this.agent_form.accent_idx = i;
+                            cx.notify();
+                        }),
+                    ),
+            );
+        }
+        let color_row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .px(px(16.))
+            .py(px(6.))
+            .child(
+                div()
+                    .w(px(52.))
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from("颜色")),
+            )
+            .child(swatches);
+
+        // Ink-cursor toggle.
+        let on = self.agent_form.manages_cursor;
+        let toggle = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .px(px(16.))
+            .py(px(6.))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.agent_form.manages_cursor = !this.agent_form.manages_cursor;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .rounded(px(5.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(if on { cola(accent, 0.9) } else { rgba(INSET) })
+                    .border_1()
+                    .border_color(if on { cola(accent, 0.9) } else { rgba(RIM) })
+                    .when(on, |d| d.child(icon("check", 13., ui.chrome_bg))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(col(ui.foreground))
+                            .child(SharedString::from("由 Agent 自绘光标(Ink TUI)")),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(col(ui.muted))
+                            .child(SharedString::from(
+                                "Claude/Gemini 等 TUI 自管光标;关掉则终端画块光标",
+                            )),
+                    ),
+            );
+
+        // Live preview chip.
+        let preview_name = if name.trim().is_empty() {
+            "未命名 Agent".to_string()
+        } else {
+            name.clone()
+        };
+        let preview = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .px(px(16.))
+            .py(px(6.))
+            .child(
+                div()
+                    .w(px(52.))
+                    .flex_none()
+                    .text_size(px(12.))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from("预览")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(10.))
+                    .py(px(6.))
+                    .rounded(px(R_CARD))
+                    .bg(rgba(INSET))
+                    .border_1()
+                    .border_color(cola(accent, 0.3))
+                    .child(
+                        div()
+                            .w(px(22.))
+                            .h(px(22.))
+                            .rounded(px(7.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(cola(accent, 0.16))
+                            .child(icon("spark", 14., accent)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .font_weight(gpui::FontWeight(620.))
+                            .text_color(col(ui.foreground))
+                            .child(SharedString::from(preview_name)),
+                    ),
+            );
+
+        // Buttons: [spacer] (删除) 取消 保存/添加.
+        let red = t.ansi.red;
+        let cancel_btn = div()
+            .px(px(14.))
+            .py(px(7.))
+            .rounded(px(R_CARD))
+            .bg(rgba(INSET))
+            .border_1()
+            .border_color(rgba(RIM))
+            .text_size(px(12.5))
+            .text_color(col(ui.foreground))
+            .hover(|s| s.bg(rgba(HOVER)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, w, cx| {
+                    cx.stop_propagation();
+                    this.close_agent_form(w, cx);
+                }),
+            )
+            .child(SharedString::from("取消"));
+        let save_btn = div()
+            .px(px(16.))
+            .py(px(7.))
+            .rounded(px(R_CARD))
+            .bg(if can_save { cola(accent, 0.9) } else { rgba(INSET) })
+            .border_1()
+            .border_color(if can_save { cola(accent, 0.9) } else { rgba(RIM) })
+            .text_size(px(12.5))
+            .font_weight(gpui::FontWeight(640.))
+            .text_color(if can_save {
+                col(ui.chrome_bg)
+            } else {
+                col(ui.muted)
+            })
+            .when(can_save, |d| d.hover(|s| s.bg(col(accent))))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, w, cx| {
+                    cx.stop_propagation();
+                    this.save_agent_form(w, cx);
+                }),
+            )
+            .child(SharedString::from(if editing { "保存" } else { "添加" }));
+        let mut buttons = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .px(px(16.))
+            .pt(px(8.))
+            .pb(px(14.))
+            .child(div().flex_1());
+        if editing {
+            buttons = buttons.child(
+                div()
+                    .px(px(12.))
+                    .py(px(7.))
+                    .rounded(px(R_CARD))
+                    .bg(rgba(INSET))
+                    .border_1()
+                    .border_color(cola(red, 0.4))
+                    .text_size(px(12.5))
+                    .text_color(col(red))
+                    .hover(|s| s.bg(cola(red, 0.12)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, w, cx| {
+                            cx.stop_propagation();
+                            this.delete_current_agent(w, cx);
+                        }),
+                    )
+                    .child(SharedString::from("删除")),
+            );
+        }
+        buttons = buttons.child(cancel_btn).child(save_btn);
+
+        let ime_focus = self.agent_form_focus.clone();
+        let ime_entity = cx.entity();
+        let name_field_active = self.agent_form_field == AgentField::Name;
+
+        let panel = shadowed(
+            div()
+                .relative()
+                .flex()
+                .flex_col()
+                .w(px(460.))
+                .max_w(relative(0.92))
+                .max_h(relative(0.9))
+                .rounded(px(R_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
+                    linear_color_stop(rgba(0x161826eb), 1.),
+                ))
+                .child(header)
+                .child(fields)
+                .child(color_row)
+                .child(toggle)
+                .child(preview)
+                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
+                .child(buttons)
+                .when(name_field_active, |d| {
+                    d.child(
+                        canvas(
+                            |_bounds, _window, _cx| {},
+                            move |bounds, _state, window, cx| {
+                                window.handle_input(
+                                    &ime_focus,
+                                    ElementInputHandler::new(bounds, ime_entity.clone()),
+                                    cx,
+                                );
+                            },
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                }),
+            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)],
+        );
+
+        let pl = if self.explorer_open {
+            self.explorer_width + 23.
+        } else {
+            12.
+        };
+
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .pl(px(pl))
+                .pr(px(12.))
+                .bg(rgba(0x0a0b118c))
+                .track_focus(&self.agent_form_focus)
+                .on_key_down(cx.listener(Self::on_agent_form_key))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, w, cx| {
+                        this.close_agent_form(w, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, w, cx| {
+                                cx.stop_propagation();
+                                this.agent_form_focus.focus(w);
+                                cx.notify();
+                            }),
+                        )
+                        .child(panel),
+                ),
+        )
+    }
 }
 
 impl EntityInputHandler for Workspace {
@@ -3821,8 +4798,7 @@ impl EntityInputHandler for Workspace {
         _cx: &mut Context<Self>,
     ) -> Option<String> {
         let units: Vec<u16> = self
-            .ssh_rename_marked
-            .as_deref()
+            .active_ime_marked()
             .unwrap_or("")
             .encode_utf16()
             .collect();
@@ -3838,10 +4814,11 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        self.ssh_rename.as_ref()?;
+        if !self.ime_target_active() {
+            return None;
+        }
         let end = self
-            .ssh_rename_marked
-            .as_deref()
+            .active_ime_marked()
             .map(|s| s.encode_utf16().count())
             .unwrap_or(0);
         Some(UTF16Selection {
@@ -3855,13 +4832,16 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<std::ops::Range<usize>> {
-        self.ssh_rename_marked
-            .as_deref()
+        self.active_ime_marked()
             .map(|s| 0..s.encode_utf16().count())
     }
 
     fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.ssh_rename_marked = None;
+        if self.agent_name_is_ime_target() {
+            self.agent_form_marked = None;
+        } else {
+            self.ssh_rename_marked = None;
+        }
         cx.notify();
     }
 
@@ -3872,10 +4852,15 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(draft) = self.ssh_rename.as_mut() {
-            draft.name.push_str(text);
+        if self.agent_name_is_ime_target() {
+            self.agent_form.name.push_str(text);
+            self.agent_form_marked = None;
+        } else {
+            if let Some(draft) = self.ssh_rename.as_mut() {
+                draft.name.push_str(text);
+            }
+            self.ssh_rename_marked = None;
         }
-        self.ssh_rename_marked = None;
         cx.notify();
     }
 
@@ -3887,7 +4872,12 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.ssh_rename_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        let marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        if self.agent_name_is_ime_target() {
+            self.agent_form_marked = marked;
+        } else {
+            self.ssh_rename_marked = marked;
+        }
         cx.notify();
     }
 
@@ -3898,10 +4888,18 @@ impl EntityInputHandler for Workspace {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        // Where the IME candidate window anchors, relative to the registered
+        // canvas (the open overlay's panel): near the name row for the agent
+        // editor, near the rename row for the SSH connector.
+        let (dx, dy) = if self.agent_form_open {
+            (96., 92.)
+        } else {
+            (72., 112.)
+        };
         Some(Bounds {
             origin: gpui::point(
-                element_bounds.origin.x + px(72.),
-                element_bounds.origin.y + px(112.),
+                element_bounds.origin.x + px(dx),
+                element_bounds.origin.y + px(dy),
             ),
             size: gpui::size(px(220.), px(28.)),
         })
@@ -3999,14 +4997,22 @@ impl Render for Workspace {
             self.ssh_prompt_needs_focus = false;
             self.ssh_prompt_focus.focus(window);
         }
-        // IME control: disable IME for the SSH target filter (ASCII host/user/port),
-        // but re-enable it while renaming a favorite so Chinese nicknames work.
-        let ssh_should_disable_ime = self.ssh_prompt_open && self.ssh_rename.is_none();
-        if ssh_should_disable_ime != self.ssh_ime_disabled {
+        if self.agent_form_open
+            && (self.agent_form_needs_focus || !self.agent_form_focus.is_focused(window))
+        {
+            self.agent_form_needs_focus = false;
+            self.agent_form_focus.focus(window);
+        }
+        // IME control: disable IME for ASCII overlay fields (the SSH target filter,
+        // the agent editor's command field), but keep it on for the SSH favorite
+        // rename + the agent editor's name field so Chinese names work.
+        let disable_ime = (self.ssh_prompt_open && self.ssh_rename.is_none())
+            || (self.agent_form_open && self.agent_form_field == AgentField::Command);
+        if disable_ime != self.ime_disabled {
             if let Some(hwnd) = crate::platform::hwnd_of(window) {
-                crate::platform::set_ime_enabled(hwnd, !ssh_should_disable_ime);
+                crate::platform::set_ime_enabled(hwnd, !disable_ime);
             }
-            self.ssh_ime_disabled = ssh_should_disable_ime;
+            self.ime_disabled = disable_ime;
         }
         // Quick Look closed via its own keyboard (Esc/Space) — return focus to the
         // file list (or active pane) now (the event callback had no `window`).
@@ -4036,7 +5042,8 @@ impl Render for Workspace {
             || self.split_launcher_open
             || self.layout_manager_open
             || self.quick_look_open
-            || self.ssh_prompt_open;
+            || self.ssh_prompt_open
+            || self.agent_form_open;
         if !overlay_focused && !self.tabs[active].welcome {
             let mut leaves = Vec::new();
             collect_leaves(&self.tabs[active].root, &mut leaves);
@@ -4158,7 +5165,7 @@ impl Render for Workspace {
                                     .hover(|s| s.bg(rgba(INSET)))
                             })
                             // Type icon in agent identity color: spark for agents
-                            // (Claude coral / Codex teal), terminal glyph (accent) for
+                            // agent accent, terminal glyph (accent) for
                             // a plain shell. See docs/产品设计 §6.2 tab agent accent.
                             .child(if agent_dot.is_some() {
                                 icon("spark", 13., dot)
@@ -4347,7 +5354,7 @@ impl Render for Workspace {
                 // Width is adjustable by dragging the right edge (same look-and-feel
                 // as split-pane dividers).
                 .when(self.explorer_open, |d| {
-                    let accent = self.config.theme.agents.claude;
+                    let accent = self.config.theme.ui.accent;
                     let ew = self.explorer_width;
                     d.child(
                         div()
@@ -4455,6 +5462,7 @@ impl Render for Workspace {
         let layout_manager = self.render_layout_manager(cx);
         let app_menu = self.render_app_menu(cx);
         let ssh_prompt = self.render_ssh_prompt(cx);
+        let agent_form = self.render_agent_form(cx);
 
         let root = div()
             // Full-window focus anchor: clicking anywhere (except the panes + the
@@ -4514,7 +5522,8 @@ impl Render for Workspace {
             .when_some(split_launcher, |d, s| d.child(s))
             .when_some(layout_manager, |d, l| d.child(l))
             .when_some(app_menu, |d, m| d.child(m))
-            .when_some(ssh_prompt, |d, s| d.child(s));
+            .when_some(ssh_prompt, |d, s| d.child(s))
+            .when_some(agent_form, |d, f| d.child(f));
 
         // No render-data cache here (tab labels/cwd live in the child panes and
         // change without signalling the workspace, so a cache would risk stale
@@ -4572,6 +5581,150 @@ mod tests {
             Some((None, "host:notaport".to_string(), None))
         );
         assert_eq!(parse_ssh_target_chips(""), None);
+    }
+
+    #[test]
+    fn discover_profiles_hides_removed_builtin_agent_tiles() {
+        let mut loaded = tn_config::Loaded::builtin();
+        loaded.config.profiles = vec![
+            tn_config::Profile {
+                name: "Claude".into(),
+                kind: tn_config::ProfileKind::Agent,
+                command: Some("claude".into()),
+                args: Vec::new(),
+                cwd: None,
+                distro: None,
+                host: None,
+                user: None,
+                agent: Some("claude".into()),
+                accent: None,
+                glyph: None,
+            },
+            tn_config::Profile {
+                name: "Codex".into(),
+                kind: tn_config::ProfileKind::Agent,
+                command: Some("codex".into()),
+                args: Vec::new(),
+                cwd: None,
+                distro: None,
+                host: None,
+                user: None,
+                agent: Some("codex".into()),
+                accent: None,
+                glyph: None,
+            },
+            tn_config::Profile {
+                name: "Agent".into(),
+                kind: tn_config::ProfileKind::Agent,
+                command: Some("agent".into()),
+                args: Vec::new(),
+                cwd: None,
+                distro: None,
+                host: None,
+                user: None,
+                agent: Some("agent".into()),
+                accent: None,
+                glyph: None,
+            },
+        ];
+        loaded.config.agents = vec![tn_config::AgentManifest {
+            id: "agent".into(),
+            label: Some("Agent".into()),
+            short: Some("Agent".into()),
+            aliases: vec!["agent".into()],
+            accent: None,
+            glyph: Some("spark".into()),
+            manages_own_cursor: false,
+            capabilities: Vec::new(),
+        }];
+
+        let profiles = discover_profiles(&loaded);
+        assert!(profiles.iter().any(|p| p.name == "Agent"));
+        assert!(!profiles.iter().any(|p| p.name == "Claude"));
+        assert!(!profiles.iter().any(|p| p.name == "Codex"));
+    }
+
+    #[test]
+    fn discover_profiles_migrates_old_builtin_agent_tiles_to_generic_agent() {
+        let mut loaded = tn_config::Loaded::builtin();
+        loaded.config.agents.clear();
+        loaded.config.profiles = vec![
+            tn_config::Profile {
+                name: "Claude".into(),
+                kind: tn_config::ProfileKind::Agent,
+                command: Some("claude".into()),
+                args: Vec::new(),
+                cwd: None,
+                distro: None,
+                host: None,
+                user: None,
+                agent: Some("claude".into()),
+                accent: None,
+                glyph: None,
+            },
+            tn_config::Profile {
+                name: "Codex".into(),
+                kind: tn_config::ProfileKind::Agent,
+                command: Some("codex".into()),
+                args: Vec::new(),
+                cwd: None,
+                distro: None,
+                host: None,
+                user: None,
+                agent: Some("codex".into()),
+                accent: None,
+                glyph: None,
+            },
+        ];
+
+        let profiles = discover_profiles(&loaded);
+        assert_eq!(
+            profiles
+                .iter()
+                .filter(|p| p.kind == tn_config::ProfileKind::Agent)
+                .count(),
+            1
+        );
+        let agent = profiles.iter().find(|p| p.name == "Agent").unwrap();
+        assert_eq!(agent.agent.as_deref(), Some("agent"));
+        assert_eq!(agent.command.as_deref(), Some("agent"));
+        assert!(!profiles.iter().any(|p| p.name == "Claude"));
+        assert!(!profiles.iter().any(|p| p.name == "Codex"));
+    }
+
+    #[test]
+    fn slugify_lowercases_and_collapses_nonalnum() {
+        assert_eq!(slugify("Gemini CLI"), "gemini-cli");
+        assert_eq!(slugify("  Qwen-Code  "), "qwen-code");
+        assert_eq!(slugify("npx @sourcegraph/amp"), "npx-sourcegraph-amp");
+        assert_eq!(slugify("通义千问"), ""); // no ascii alnum → empty (caller falls back)
+        assert_eq!(slugify("---"), "");
+    }
+
+    #[test]
+    fn first_nonempty_slug_falls_back_through_candidates() {
+        // CJK name slugs to empty → fall back to the command's first word (the
+        // caller passes `command.split_whitespace().next()`, so it's a bare token).
+        assert_eq!(first_nonempty_slug(&["通义千问", "qwen"]), "qwen");
+        // Both empty → the generic "agent".
+        assert_eq!(first_nonempty_slug(&["通义", "—"]), "agent");
+        assert_eq!(first_nonempty_slug(&["Gemini CLI", "gemini"]), "gemini-cli");
+    }
+
+    #[test]
+    fn unique_agent_id_suffixes_on_collision() {
+        let mut existing = std::collections::HashSet::new();
+        existing.insert("gemini".to_string());
+        existing.insert("gemini-2".to_string());
+        assert_eq!(unique_agent_id("gemini", &existing), "gemini-3");
+        assert_eq!(unique_agent_id("aider", &existing), "aider"); // free → unchanged
+    }
+
+    #[test]
+    fn short_name_takes_first_word_capped() {
+        assert_eq!(short_name("Gemini CLI"), "Gemini");
+        assert_eq!(short_name("Qwen"), "Qwen");
+        assert_eq!(short_name("aaaaaaaaaaaaaaaaaaaa").len(), 16); // capped
     }
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {

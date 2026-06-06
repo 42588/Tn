@@ -3,9 +3,9 @@
 //! A separate borderless, topmost GPUI window (`WindowKind::PopUp`) that slides in
 //! from the configured edge on a global hotkey (see [`crate::platform`]), takes
 //! focus, and (optionally) slides away when it loses focus. On summon with no live
-//! session it shows a **launcher** (Claude / Codex / pwsh — the command-bearing
+//! session it shows a **launcher** (configured Agent / pwsh — the command-bearing
 //! `[[profiles]]`, mirroring the workspace command palette); the picked session is
-//! a normal [`TerminalView`], so an agent gets its usual header + live usage ring.
+//! a normal [`TerminalView`], so an agent gets its usual header and capability slots.
 //! Once launched, the session persists across hides; a small "switch" chip reopens
 //! the launcher to pick a different one.
 //!
@@ -181,7 +181,7 @@ impl QuickTerminal {
     }
 
     /// The launcher's tiles grouped into visual **rows**: a bare launcher shows agents
-    /// (Claude/Codex) on top and shells + WSL + SSH below (用户要的两行排版); a drill
+    /// configured agents on top and shells + WSL + SSH below (用户要的两行排版); a drill
     /// shows the WSL distros in one row. Render, card sizing, and keyboard nav all read
     /// this so `picker_sel` (a flat index across the rows) stays consistent.
     fn picker_rows(&self) -> Vec<Vec<PickerItem>> {

@@ -7424,6 +7424,7 @@ dependencies = [
  "serde_json",
  "smol_str 0.3.6",
  "sysinfo 0.36.1",
+ "tn-agent",
  "tn-ai",
  "tn-blocks",
  "tn-config",

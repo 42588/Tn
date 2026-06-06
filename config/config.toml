@@ -26,7 +26,7 @@ theme = "Tn Dark"             # 主题名 = %APPDATA%\Tn\themes\*.toml 里的 na
 # backdrop = "mica"          # mica | acrylic | solid,覆盖主题窗口质感(暂未启用)
 
 # Quick Terminal —— Quake/Guake 式下拉悬浮终端(M5)。全局热键随时唤出/隐藏,
-# 边缘滑入,失焦自动隐藏;最适合不打断当前工作就召唤 Claude/Codex。见 docs/架构蓝图.md §8 M5。
+# 边缘滑入,失焦自动隐藏;最适合不打断当前工作就召唤通用 Agent 或 shell。见 docs/架构蓝图.md §8 M5。
 [quick_terminal]
 enabled        = true            # 是否注册全局热键
 hotkey         = "ctrl+alt+space" # 切换热键:modifier(ctrl/alt/shift/win)用 + 连接 + 单个键
@@ -35,7 +35,16 @@ height_percent = 45.0            # 占工作区高度的百分比(top/bottom/cen
 width_percent  = 60.0            # 占工作区宽度的百分比(left/right/center 用)
 animation_ms   = 150             # 滑入/滑出动画时长(毫秒;0 = 不动画)
 autohide       = true            # 失焦时自动隐藏
-# profile      = "Claude"        # 在其中启动的 [[profiles]] 名;省略 = 默认 pwsh
+# profile      = "Agent"        # 在其中启动的 [[profiles]] 名;省略 = 默认 pwsh
+
+[[agents]]
+id = "agent"
+label = "Agent"
+short = "Agent"
+aliases = ["agent"]
+accent = "#7AA2F7"
+glyph = "spark"
+capabilities = []
 
 # 会话启动器条目 —— 配置即数据(见 docs/产品设计.md §6)。
 # M4 命令面板消费;当前版本仅解析保存,不影响运行。
@@ -51,20 +60,11 @@ kind   = "wsl"
 distro = "Ubuntu"
 
 [[profiles]]
-name    = "Claude"
+name    = "Agent"
 kind    = "agent"
-agent   = "claude"
-command = "claude"
-accent  = "#F0916D"
-glyph   = "✻"
-
-[[profiles]]
-name    = "Codex"
-kind    = "agent"
-agent   = "codex"
-command = "codex"
-accent  = "#73DACA"
-glyph   = "✾"
+agent   = "agent"
+command = "agent"
+glyph   = "spark"
 
 # 远程 SSH 主机示例(M2b)。去掉注释并改成你的主机即可在命令面板/Quick Terminal 启动。
 # kind="ssh" + host(可写 "host:port",默认端口 22)+ user(省略 = $USERNAME)。
