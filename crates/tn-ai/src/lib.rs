@@ -1,12 +1,18 @@
-//! AI agent usage + detection (M4) — headless.
+//! Built-in agent adapters (Claude Code / Codex) for the Agent Host — headless.
 //!
-//! Parses local agent session logs into token / context-window / cost usage
-//! **without the agent's cooperation**: Claude Code writes
+//! These are the platform's two **seed** [`tn_agent::AgentAdapter`]s: they parse
+//! local agent session logs into token / context-window / cost usage **without
+//! the agent's cooperation** — Claude Code writes
 //! `~/.claude/projects/<proj>/<session>.jsonl` (one JSON object per line;
 //! assistant lines carry `message.usage`), Codex writes
-//! `$CODEX_HOME/sessions/**/rollout-*.jsonl`. No GPUI, no UI — the parsing is
-//! fully unit-testable from string fixtures; the tn-ui layer renders the
-//! [`AiUsage`] as a context ring / status bar (see docs/产品设计.md §5).
+//! `$CODEX_HOME/sessions/**/rollout-*.jsonl`. No GPUI, no UI — fully unit-testable
+//! from string fixtures; the platform ([`tn_agent`]) and UI know nothing of these
+//! agents, resolving everything through the registry. The closed `AgentKind` enum
+//! is gone — identity is the open [`tn_agent::AgentId`].
+//!
+//! [`builtin_registry`] is **not** wired into the default app registry (the Agent
+//! Host ships agent-less); it's the reusable seed for tests and for a user who
+//! re-registers Claude/Codex with telemetry.
 
 mod adapter;
 mod claude;
@@ -21,31 +27,10 @@ pub use claude::{
 pub use codex::{
     codex_sessions_dir, latest_codex_session_file, parse_codex_session, usage_for_cwd_codex,
 };
-pub use detect::{
-    adapter_session_mtimes, agent_kind_for_command, detect_subscription, parse_session,
-    resolve_pane_session, resolve_session, resolve_session_for_pane, session_mtimes,
-    update_session, usage_for_cwd as usage_for_cwd_any, SessionRef,
-};
+pub use detect::{adapter_session_mtimes, resolve_pane_session};
 
-// The usage + pricing model moved to the `tn-agent` platform crate (it's the
-// agent-agnostic contract, not Claude/Codex-specific). Re-exported here so
-// existing `tn_ai::{AiUsage, Pricing, pricing_for, pricing}` paths keep working
-// — `claude.rs`/`codex.rs` reference `crate::pricing` / `crate::AiUsage`.
+// The usage + pricing model lives in the `tn-agent` platform crate (the
+// agent-agnostic contract). Re-exported so `tn_ai::{AiUsage, Pricing,
+// pricing_for, pricing}` keep working — `claude.rs`/`codex.rs` reference
+// `crate::pricing` / `crate::AiUsage`.
 pub use tn_agent::{pricing, pricing_for, AiUsage, Pricing};
-
-/// Which agent CLI a session belongs to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AgentKind {
-    ClaudeCode,
-    Codex,
-}
-
-impl AgentKind {
-    /// Short display label for the status bar / pane chrome.
-    pub fn label(self) -> &'static str {
-        match self {
-            AgentKind::ClaudeCode => "Claude",
-            AgentKind::Codex => "Codex",
-        }
-    }
-}
