@@ -11,6 +11,18 @@
 M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段,**新里程碑在上**),尚未打新 tag。
 **唯一未完成:M2 的 SSH**——已编译 + headless 单测,owner 决定暂停(parked),等有远程登录需求再做端到端。
 
+## [Unreleased] — 面板解耦:per-pane 工作区上下文(2026-06)
+
+让每个终端窗格拥有自己的「工作区上下文」,文件树状态不再被全局单例串台;「打开文件夹」只影响当前焦点 pane。
+
+### Added
+- **per-pane 文件树状态(展开态 + 选中文件)**:`ExplorerSnapshot`(`crates/tn-ui/src/explorer.rs`)+ `ExplorerView::snapshot()`/`switch_pane()`;Workspace 按 `PaneId` 存 `explorer_states` 快照、`explorer_pane` 记当前展示的 pane。焦点在分屏 pane 间切换时保存旧 pane、恢复新 pane 的展开/选中,各 pane 文件树互不串台;同 pane 内 `cd` 仍走 `follow_root`(保留子目录展开态)。快照在保存时惰性裁掉已关闭 pane,无需逐 `remove` 钩子。纯函数 `snapshot_under_root` 把恢复过滤到新 root 内(headless 单测覆盖)。
+
+### Changed
+- **「打开文件夹」收敛到焦点 pane**:`cd_panes_to_root`(广播给所有非 agent pane)→ `cd_pane_to_root(id, …)`(单 pane);`menu_open_folder` 只 `cd` + `set_rail_root` 当前焦点 pane,其它 pane 保持各自目录,agent pane 永不被 `cd`。SSH pane 点「打开文件夹」本轮**禁用 + echo 提示**(远端浏览需 SFTP / 远端 FS 后端,后续支持),不把本机路径塞进远端 shell。
+
+> Agent 身份/用量环/「本次改动」/git watcher 早已 per-pane(在 `TerminalView` 上),本轮只验证不回归。逐项见 [docs/架构蓝图.md](docs/架构蓝图.md);坑 + 操作见 [CLAUDE.md](CLAUDE.md)。
+
 ## [Unreleased] — Agent Host 平台化(2026-06)
 
 把「Claude/Codex 特判」重构为**对具体 agent 零知识的 Agent Host 平台**,分 P0–P6 落地(每阶段独立编译 + 测试绿)。

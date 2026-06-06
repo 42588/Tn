@@ -21,7 +21,7 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::explorer::{ExplorerRoot, ExplorerView, OpenFile};
+use crate::explorer::{ExplorerRoot, ExplorerSnapshot, ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
@@ -672,6 +672,14 @@ pub struct Workspace {
     explorer_width: f32,
     /// Active explorer-width drag (mouse), if any.
     explorer_drag: Option<ExplorerDrag>,
+    /// Per-pane explorer view state (expansion + selection). The single
+    /// `explorer` entity renders one pane at a time; switching focus saves the
+    /// outgoing pane's snapshot here and restores the incoming pane's, so each
+    /// split pane keeps its own tree expansion + selected file (面板解耦). Pruned
+    /// lazily on save (entries for closed panes dropped) — no per-`remove` hooks.
+    explorer_states: HashMap<PaneId, ExplorerSnapshot>,
+    /// Which pane the `explorer` is currently showing (None until first focus).
+    explorer_pane: Option<PaneId>,
     /// Quick Look 速览浮层(贴树右缘、浮于终端之上)+ whether it's shown
     /// (auto-opens on clicking a file in the explorer; only rendered when it
     /// actually has a file loaded).
@@ -1021,6 +1029,8 @@ impl Workspace {
             explorer_open: true,
             explorer_width: 224.0,
             explorer_drag: None,
+            explorer_states: HashMap::new(),
+            explorer_pane: None,
             quick_look,
             quick_look_open: false,
             ql_refocus_pane: false,
@@ -1441,38 +1451,43 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Send `cd <dir>` to every terminal pane, mapping the explorer root to each pane's namespace.
-    fn cd_panes_to_root(&self, root: &ExplorerRoot, cx: &Context<Self>) {
-        for (id, view) in &self.panes {
-            let Some(spec) = self.pane_specs.get(id) else {
-                continue;
-            };
-            if spec.agent.is_some() {
-                continue;
-            }
-            let Some(target_path) = root.path_for_namespace(&spec.file_namespace) else {
-                continue;
-            };
-            let prog = spec.program.to_ascii_lowercase();
-            let is_cmd = prog.contains("cmd");
-
-            let line = if spec.ssh.is_some() || spec.file_namespace == FileNamespace::Ssh {
-                format!("cd \"{target_path}\"\r")
-            } else if matches!(spec.file_namespace, FileNamespace::Wsl { .. }) {
-                format!("cd \"{target_path}\"\r")
-            } else if is_cmd {
-                if !is_host_process_path(std::path::Path::new(&target_path)) {
-                    continue;
-                }
-                format!("cd /d \"{target_path}\"\r")
-            } else {
-                if !is_host_process_path(std::path::Path::new(&target_path)) {
-                    continue;
-                }
-                format!("cd \"{target_path}\"\r")
-            };
-            view.read(cx).send_bytes(line.as_bytes());
+    /// Send `cd <dir>` to a *single* pane, mapping the explorer root to that
+    /// pane's namespace. Scoped to one pane (not broadcast to all) so opening a
+    /// folder only redirects the pane the user is focused on — agent panes are
+    /// left untouched (their cwd is self-managed) and other panes keep their own
+    /// directory (面板解耦:同步收敛到目标 pane).
+    fn cd_pane_to_root(&self, id: PaneId, root: &ExplorerRoot, cx: &Context<Self>) {
+        let Some(spec) = self.pane_specs.get(&id) else {
+            return;
+        };
+        if spec.agent.is_some() {
+            return;
         }
+        let Some(view) = self.panes.get(&id) else {
+            return;
+        };
+        let Some(target_path) = root.path_for_namespace(&spec.file_namespace) else {
+            return;
+        };
+        let prog = spec.program.to_ascii_lowercase();
+        let is_cmd = prog.contains("cmd");
+
+        let line = if spec.ssh.is_some() || spec.file_namespace == FileNamespace::Ssh {
+            format!("cd \"{target_path}\"\r")
+        } else if matches!(spec.file_namespace, FileNamespace::Wsl { .. }) {
+            format!("cd \"{target_path}\"\r")
+        } else if is_cmd {
+            if !is_host_process_path(std::path::Path::new(&target_path)) {
+                return;
+            }
+            format!("cd /d \"{target_path}\"\r")
+        } else {
+            if !is_host_process_path(std::path::Path::new(&target_path)) {
+                return;
+            }
+            format!("cd \"{target_path}\"\r")
+        };
+        view.read(cx).send_bytes(line.as_bytes());
     }
 
     fn focus_pane(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
@@ -2354,26 +2369,51 @@ impl Workspace {
     }
 
     /// App menu「打开文件夹」: native folder picker → re-root the explorer tree
-    /// **and** `cd` every plain shell pane into the chosen folder.
+    /// **and** `cd` the *focused* pane into the chosen folder. Scoped to the one
+    /// pane the user is on — other panes keep their own directory, and agent panes
+    /// are never `cd`'d (面板解耦:同步收敛到目标 pane).
     fn menu_open_folder(&mut self, cx: &mut Context<Self>) {
+        // Target = the pane the user is focused on. Capture it now (sync) so the
+        // async picker callback re-roots / cds the right pane.
+        let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else {
+            return;
+        };
+        // SSH pane: remote directory browsing needs an SFTP / remote-FS backend
+        // (not built yet). Don't pop a native picker that returns a *local* path
+        // and shove it into the remote shell — show a hint and bail (本轮禁用 + 提示).
+        let is_ssh = self
+            .pane_specs
+            .get(&target)
+            .is_some_and(|s| s.ssh.is_some() || s.file_namespace == FileNamespace::Ssh);
+        if is_ssh {
+            if let Some(view) = self.panes.get(&target) {
+                view.read(cx).send_bytes(
+                    "echo 'Tn: 远端目录浏览需要 SFTP / 远端文件后端(后续支持),本次已跳过'\r"
+                        .as_bytes(),
+                );
+            }
+            return;
+        }
         let recv = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
             multiple: false,
             prompt: None,
         });
-        let explorer = self.explorer.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             if let Ok(Ok(Some(paths))) = recv.await {
                 if let Some(p) = paths.into_iter().next() {
                     let picked_root = ExplorerRoot::from_accessible_path(p.clone());
-                    let _ =
-                        explorer.update(cx, |e, cx| e.set_browser_root(picked_root.clone(), cx));
                     let _ = this.update(cx, |ws, cx| {
                         ws.explorer_open = true;
-                        ws.cd_panes_to_root(&picked_root, cx);
+                        // The explorer now shows the target pane; explicit「打开文件夹」
+                        // = fresh tree (set_browser_root clears expansion/selection).
+                        ws.explorer_pane = Some(target);
+                        ws.explorer
+                            .update(cx, |e, cx| e.set_browser_root(picked_root.clone(), cx));
+                        ws.cd_pane_to_root(target, &picked_root, cx);
                         if let Some(path) = picked_root.path_buf() {
-                            for view in ws.panes.values() {
+                            if let Some(view) = ws.panes.get(&target) {
                                 view.update(cx, |v, cx| v.set_rail_root(&path, cx));
                             }
                         }
@@ -5072,14 +5112,38 @@ impl Render for Workspace {
         let focused = self.tabs[active].focused;
         let ui = &self.config.theme.ui;
 
-        // Explorer always follows the focused pane's effective cwd, so `cd`
-        // (OSC 7) or switching focus to another split pane instantly redirects
-        // the file list. Compare before calling follow_root so we only rebuild
-        // when the path actually changed (never every frame). follow_root keeps
-        // the expansion state, so `cd` into a subdir — or back out — doesn't
-        // collapse the tree (子目录保留展开态). Skip welcome tabs (no panes).
+        // Explorer follows the focused pane's effective cwd. Two distinct cases,
+        // each with its own tree-state policy (面板解耦):
+        //   • Focus moved to a *different* pane → save the outgoing pane's view
+        //     snapshot (expansion + selection) and restore the incoming pane's
+        //     via `switch_pane`, so each split pane keeps its own tree state.
+        //   • Same pane, cwd changed (OSC 7 `cd`) → `follow_root`, which keeps the
+        //     expansion for the direct ancestry (子目录保留展开态).
+        // Compare roots before re-rooting so we only rebuild when the path
+        // actually changed (never every frame). Skip welcome tabs (no panes).
         if !self.tabs[active].welcome {
-            if let Some(new_root) = self
+            if Some(focused) != self.explorer_pane {
+                // Focus switched panes — stash the old pane's state, load the new.
+                if let Some(prev) = self.explorer_pane {
+                    if self.panes.contains_key(&prev) {
+                        let snap = self.explorer.read(cx).snapshot();
+                        self.explorer_states.insert(prev, snap);
+                    }
+                    // Drop snapshots for panes that have since been closed.
+                    self.explorer_states
+                        .retain(|id, _| self.panes.contains_key(id));
+                }
+                if let Some(new_root) = self
+                    .panes
+                    .get(&focused)
+                    .and_then(|v| explorer_root_for_pane(&v.read(cx)))
+                {
+                    let snap = self.explorer_states.get(&focused).cloned();
+                    self.explorer
+                        .update(cx, |e, cx| e.switch_pane(new_root, snap, cx));
+                }
+                self.explorer_pane = Some(focused);
+            } else if let Some(new_root) = self
                 .panes
                 .get(&focused)
                 .and_then(|v| explorer_root_for_pane(&v.read(cx)))

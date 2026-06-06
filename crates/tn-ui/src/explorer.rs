@@ -83,6 +83,23 @@ fn selection_under_root(selected: &Option<PathBuf>, root: &Path) -> Option<PathB
     selected.clone().filter(|p| p.starts_with(root))
 }
 
+/// Filter a restored pane snapshot to stay inside `root_path`: keep expanded
+/// entries under the root (or its direct ancestors, so the path down to the root
+/// re-opens) and a selection only while it still points inside. Pure so the
+/// pane-switch restore logic is headless-testable without a gpui `Context`.
+fn snapshot_under_root(
+    snap: ExplorerSnapshot,
+    root_path: &Path,
+) -> (HashSet<PathBuf>, Option<PathBuf>) {
+    let expanded = snap
+        .expanded
+        .into_iter()
+        .filter(|p| p.starts_with(root_path) || root_path.starts_with(p))
+        .collect();
+    let selected = selection_under_root(&snap.selected, root_path);
+    (expanded, selected)
+}
+
 /// Directories that are noise in a source tree — never listed.
 const IGNORED: &[&str] = &[".git", "target", "node_modules", ".idea", ".vs"];
 /// Cap the visible tree so a huge repo can't blow up a render pass.
@@ -230,6 +247,19 @@ fn windows_drive_to_wsl_mount(path: &Path) -> Option<String> {
     } else {
         None
     }
+}
+
+/// A per-pane snapshot of the explorer's *view* state (not the root — that is
+/// derived from the pane's live cwd). The workspace stashes one of these per
+/// `PaneId` so switching focus between split panes restores each pane's own tree
+/// expansion + selection instead of carrying a single global state across panes.
+/// Scroll is intentionally *not* captured: the tree rebuilds asynchronously on a
+/// different root, so a raw pixel offset would point at the wrong rows; restoring
+/// the selection (and re-scrolling to it) is the meaningful, robust behavior.
+#[derive(Clone, Default)]
+pub struct ExplorerSnapshot {
+    expanded: HashSet<PathBuf>,
+    selected: Option<PathBuf>,
 }
 
 /// One rendered tree row (a directory or a file at some depth).
@@ -471,6 +501,52 @@ impl ExplorerView {
         } else {
             self.expanded.clear();
             self.selected = None;
+        }
+        self._change_watcher = watcher_root
+            .as_deref()
+            .and_then(|path| Self::spawn_change_watcher(path, cx));
+        self.git_status.clear();
+        self.read_error = None;
+        self.rebuild(cx);
+    }
+
+    /// Capture this pane's current view state (expansion + selection) so the
+    /// workspace can restore it when focus returns to the same pane.
+    pub fn snapshot(&self) -> ExplorerSnapshot {
+        ExplorerSnapshot {
+            expanded: self.expanded.clone(),
+            selected: self.selected.clone(),
+        }
+    }
+
+    /// Switch the tree to a *different pane* (focus moved between split panes).
+    /// Unlike [`follow_root`](Self::follow_root) — which keeps expansion across a
+    /// same-pane `cd` — this restores the target pane's own saved view state, or
+    /// starts clean when the pane has none yet (first time it gets focus). The
+    /// root comes from the pane's live cwd; expansion/selection are filtered to
+    /// stay inside that root so a stale snapshot can't point outside the tree.
+    pub fn switch_pane(
+        &mut self,
+        root: ExplorerRoot,
+        snap: Option<ExplorerSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        if !root.is_browsable() {
+            return;
+        }
+        let watcher_root = root.path_buf();
+        self.root = root.clone();
+        match (snap, root.path()) {
+            (Some(snap), Some(root_path)) => {
+                let (expanded, selected) = snapshot_under_root(snap, root_path);
+                self.expanded = expanded;
+                self.selected = selected;
+            }
+            // No saved state (or a rootless namespace): start clean.
+            _ => {
+                self.expanded.clear();
+                self.selected = None;
+            }
         }
         self._change_watcher = watcher_root
             .as_deref()
@@ -1048,6 +1124,43 @@ mod tests {
         // The root itself counts as under-root (component-wise starts_with).
         let at_root = Some(PathBuf::from("D:/proj/crates"));
         assert_eq!(selection_under_root(&at_root, &root), at_root);
+    }
+
+    #[test]
+    fn snapshot_restore_filters_to_new_root() {
+        // Restoring a pane's saved tree state when focus returns: expanded dirs
+        // under the new root survive (and ancestors of the root, so the path down
+        // re-opens), entries outside are pruned, and the selection is kept only
+        // while it points inside the root (面板解耦 per-pane state).
+        let root = PathBuf::from("D:/proj/crates");
+        let snap = ExplorerSnapshot {
+            expanded: HashSet::from([
+                PathBuf::from("D:/proj/crates/tn-ui"), // under root → keep
+                PathBuf::from("D:/proj"),              // ancestor of root → keep
+                PathBuf::from("D:/other/x"),           // unrelated → drop
+            ]),
+            selected: Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs")),
+        };
+        let (expanded, selected) = snapshot_under_root(snap, &root);
+        assert!(expanded.contains(&PathBuf::from("D:/proj/crates/tn-ui")));
+        assert!(expanded.contains(&PathBuf::from("D:/proj")));
+        assert!(!expanded.contains(&PathBuf::from("D:/other/x")));
+        assert_eq!(expanded.len(), 2);
+        assert_eq!(selected, Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs")));
+    }
+
+    #[test]
+    fn snapshot_restore_drops_out_of_root_selection() {
+        // A selection saved while the pane was elsewhere must not leak into a
+        // different root (it'd highlight an invisible row).
+        let root = PathBuf::from("D:/proj/crates");
+        let snap = ExplorerSnapshot {
+            expanded: HashSet::new(),
+            selected: Some(PathBuf::from("D:/proj/docs/readme.md")),
+        };
+        let (expanded, selected) = snapshot_under_root(snap, &root);
+        assert!(expanded.is_empty());
+        assert_eq!(selected, None, "selection outside new root is dropped");
     }
 
     #[test]
