@@ -14,6 +14,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
+use tn_agent::{AgentAdapter, SessionRef as AgentSessionRef};
+
 use crate::{claude, codex, AgentKind, AiUsage};
 
 /// A resolved session log: which agent wrote it, where, and when last touched.
@@ -122,6 +124,28 @@ pub fn resolve_session_for_pane(
     session_ref(kind, path)
 }
 
+/// Agent-agnostic launch baseline (the adapter form of [`session_mtimes`]): the
+/// `(path, mtime)` snapshot a pane captures at launch, keyed for stale→fresh.
+pub fn adapter_session_mtimes(adapter: &dyn AgentAdapter) -> HashMap<PathBuf, SystemTime> {
+    adapter.sessions_with_mtime().into_iter().collect()
+}
+
+/// Agent-agnostic pane session binder (the adapter form of
+/// [`resolve_session_for_pane`]). Same stale→fresh [`pick_pane_session`]
+/// algorithm, but the session list comes from the adapter instead of a `match`
+/// on [`AgentKind`] — so a third agent needs no new arm here. Returns a
+/// [`tn_agent::SessionRef`] (path + mtime); the owning agent is implied by the
+/// adapter the caller passed.
+pub fn resolve_pane_session(
+    adapter: &dyn AgentAdapter,
+    launched_at: SystemTime,
+    baseline: &HashMap<PathBuf, SystemTime>,
+) -> Option<AgentSessionRef> {
+    let path = pick_pane_session(adapter.sessions_with_mtime(), launched_at, baseline)?;
+    let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
+    Some(AgentSessionRef { path, mtime })
+}
+
 /// Parse a session file's text for the given agent.
 pub fn parse_session(kind: AgentKind, text: &str) -> Option<AiUsage> {
     match kind {
@@ -166,7 +190,7 @@ fn home_dir() -> Option<PathBuf> {
 /// Claude Code writes `~/.claude/.credentials.json` with a `claudeAiOauth` object
 /// carrying `subscriptionType` (e.g. `"pro"`) when logged in as a member; an
 /// API-key user has no such OAuth block.
-fn claude_is_subscription() -> bool {
+pub(crate) fn claude_is_subscription() -> bool {
     let Some(home) = home_dir() else { return false };
     let path = home.join(".claude").join(".credentials.json");
     let Ok(text) = std::fs::read_to_string(path) else {
@@ -183,7 +207,7 @@ fn claude_is_subscription() -> bool {
 
 /// Codex writes `~/.codex/auth.json` with `auth_mode`: `"ApiKey"` for a metered
 /// key, otherwise a ChatGPT (subscription) login.
-fn codex_is_subscription() -> bool {
+pub(crate) fn codex_is_subscription() -> bool {
     let Some(home) = home_dir() else { return false };
     let path = home.join(".codex").join("auth.json");
     let Ok(text) = std::fs::read_to_string(path) else {

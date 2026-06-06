@@ -7324,6 +7324,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tn-agent",
+ "tn-config",
 ]
 
 [[package]]

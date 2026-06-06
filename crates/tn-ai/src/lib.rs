@@ -8,10 +8,12 @@
 //! fully unit-testable from string fixtures; the tn-ui layer renders the
 //! [`AiUsage`] as a context ring / status bar (see docs/产品设计.md §5).
 
+mod adapter;
 mod claude;
 mod codex;
 mod detect;
 
+pub use adapter::{builtin_registry, ClaudeAdapter, CodexAdapter};
 pub use claude::{
     claude_projects_dir, encode_project_dir, latest_session_file, parse_claude_session,
     usage_for_cwd,
@@ -20,9 +22,9 @@ pub use codex::{
     codex_sessions_dir, latest_codex_session_file, parse_codex_session, usage_for_cwd_codex,
 };
 pub use detect::{
-    agent_kind_for_command, detect_subscription, parse_session, resolve_session,
-    resolve_session_for_pane, session_mtimes, update_session, usage_for_cwd as usage_for_cwd_any,
-    SessionRef,
+    adapter_session_mtimes, agent_kind_for_command, detect_subscription, parse_session,
+    resolve_pane_session, resolve_session, resolve_session_for_pane, session_mtimes,
+    update_session, usage_for_cwd as usage_for_cwd_any, SessionRef,
 };
 
 // The usage + pricing model moved to the `tn-agent` platform crate (it's the
