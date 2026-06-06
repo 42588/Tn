@@ -148,10 +148,20 @@ pub struct UiColors {
 }
 
 /// AI agent accent colors. `[agents]`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+///
+/// Built-in `claude`/`codex` stay named for back-compat with existing themes;
+/// any **other** agent id gets an accent via `[agents] <id> = "#RRGGBB"` (captured
+/// in [`by_id`](Self::by_id)). Prefer [`accent_for`](Self::accent_for) over the
+/// named fields — it's the agent-agnostic lookup the UI uses, falling back to the
+/// agent descriptor's default accent when the theme specifies none.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct AgentColors {
     pub claude: Color,
     pub codex: Color,
+    /// Accents for additional agents, keyed by `AgentId` string. Populated from
+    /// any `[agents]` key that isn't `claude`/`codex`.
+    #[serde(flatten, default)]
+    pub by_id: std::collections::HashMap<String, Color>,
 }
 
 impl Default for AgentColors {
@@ -159,6 +169,21 @@ impl Default for AgentColors {
         Self {
             claude: Color::new(0xF0, 0x91, 0x6D),
             codex: Color::new(0x73, 0xDA, 0xCA),
+            by_id: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl AgentColors {
+    /// The theme's accent override for an agent id, if any. `None` means "no
+    /// theme opinion" → the caller uses the agent descriptor's default accent.
+    /// Built-in `claude`/`codex` always return their (possibly themed) named
+    /// field; other ids read the [`by_id`](Self::by_id) map.
+    pub fn accent_for(&self, id: &str) -> Option<Color> {
+        match id {
+            "claude" => Some(self.claude),
+            "codex" => Some(self.codex),
+            other => self.by_id.get(other).copied(),
         }
     }
 }
@@ -213,6 +238,26 @@ mod tests {
         assert_eq!(t.ui.window.backdrop, Backdrop::Mica);
         assert!((t.ui.window.opacity - 0.96).abs() < 1e-6);
         assert_eq!(t.agents.claude, Color::new(0xF0, 0x91, 0x6D));
+    }
+
+    #[test]
+    fn agent_accents_open_to_arbitrary_ids() {
+        // Built-in claude/codex stay named; a third agent gets an accent via an
+        // arbitrary `[agents]` key, captured (flattened) into `by_id` and read by
+        // `accent_for`.
+        let a: AgentColors =
+            toml::from_str("claude=\"#f0916d\"\ncodex=\"#73daca\"\ngemini=\"#4488ff\"\n")
+                .expect("agent colors parse");
+        assert_eq!(a.accent_for("claude"), Some(Color::new(0xF0, 0x91, 0x6D)));
+        assert_eq!(a.accent_for("codex"), Some(Color::new(0x73, 0xDA, 0xCA)));
+        assert_eq!(a.accent_for("gemini"), Some(Color::new(0x44, 0x88, 0xFF)));
+        assert_eq!(a.by_id.len(), 1); // only the non-builtin key lands in by_id
+        // An agent with no theme entry → None (caller uses the descriptor default).
+        assert_eq!(a.accent_for("aider"), None);
+        // Defaults still hold when only builtins are present.
+        let d = AgentColors::default();
+        assert_eq!(d.accent_for("claude"), Some(Color::new(0xF0, 0x91, 0x6D)));
+        assert_eq!(d.accent_for("gemini"), None);
     }
 
     #[test]

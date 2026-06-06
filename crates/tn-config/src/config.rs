@@ -97,6 +97,11 @@ pub struct General {
     pub claude_billing: Option<BillingMode>,
     #[serde(default)]
     pub codex_billing: Option<BillingMode>,
+    /// Agent-agnostic per-id billing overrides, keyed by `AgentId` string
+    /// (`[general.billing] gemini = "subscription"`). Wins over the legacy
+    /// `claude_billing`/`codex_billing` fields. Prefer [`billing_for`](Self::billing_for).
+    #[serde(default)]
+    pub billing: std::collections::HashMap<String, BillingMode>,
 }
 
 impl Default for General {
@@ -107,7 +112,21 @@ impl Default for General {
             billing_mode: BillingMode::default(),
             claude_billing: None,
             codex_billing: None,
+            billing: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl General {
+    /// Starting billing-mode override for an agent id: the agent-agnostic
+    /// `[general.billing]` map wins, then the legacy `claude_billing` /
+    /// `codex_billing` fields, else `None` (inherit the global `billing_mode`).
+    pub fn billing_for(&self, id: &str) -> Option<BillingMode> {
+        self.billing.get(id).copied().or_else(|| match id {
+            "claude" => self.claude_billing,
+            "codex" => self.codex_billing,
+            _ => None,
+        })
     }
 }
 
@@ -332,5 +351,22 @@ mod tests {
         assert_eq!(c.general.billing_mode, BillingMode::Auto); // inherited
         assert_eq!(c.general.claude_billing, Some(BillingMode::Subscription));
         assert_eq!(c.general.codex_billing, Some(BillingMode::Tokens));
+        // The agent-agnostic accessor reads the legacy fields by id.
+        assert_eq!(c.general.billing_for("claude"), Some(BillingMode::Subscription));
+        assert_eq!(c.general.billing_for("codex"), Some(BillingMode::Tokens));
+        assert_eq!(c.general.billing_for("gemini"), None);
+    }
+
+    #[test]
+    fn billing_open_to_arbitrary_ids_and_overrides_legacy() {
+        // `[general.billing]` keys any agent id; it also wins over the legacy
+        // claude_billing field for the same agent.
+        let c = Config::from_toml_str(
+            "[general]\nclaude_billing = \"tokens\"\n[general.billing]\nclaude = \"subscription\"\ngemini = \"api\"\n",
+        )
+        .expect("per-id billing parses");
+        assert_eq!(c.general.billing_for("claude"), Some(BillingMode::Subscription)); // map wins
+        assert_eq!(c.general.billing_for("gemini"), Some(BillingMode::Api));
+        assert_eq!(c.general.billing_for("aider"), None);
     }
 }
