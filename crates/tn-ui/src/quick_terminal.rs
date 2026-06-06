@@ -31,13 +31,13 @@ use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::platform;
 use crate::ssh_recents::{AuthBadge, SshRecents};
-use crate::style::{col, cola, icon, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
+use crate::style::{col, cola, icon, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
 use crate::terminal_view::{
     FileNamespace, LaunchSpec, ProcessExited, SshCloseRequested, SshConnected, SshRememberPassword,
     SshRetryRequested, TerminalView, UsageUpdated,
 };
 use crate::welcome::{
-    launch_agent_of, launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
+    launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
     LaunchEntry,
 };
 
@@ -198,8 +198,8 @@ impl QuickTerminal {
         for e in launch_entries(&self.launch_profiles) {
             match e {
                 LaunchEntry::Profile(i) => {
-                    if launch_agent_of(&self.launch_profiles[i]).is_some() {
-                        agents.push(PickerItem::Launch(i)); // Claude / Codex → top row
+                    if crate::welcome::is_agent_profile(&self.launch_profiles[i]) {
+                        agents.push(PickerItem::Launch(i)); // agents → top row
                     } else {
                         others.push(PickerItem::Launch(i)); // pwsh → bottom row
                     }
@@ -228,10 +228,13 @@ impl QuickTerminal {
     }
 
     /// The card identity (name / sub / glyph / accent) for a picker tile.
-    fn item_card(&self, item: &PickerItem) -> CardId {
+    fn item_card(&self, item: &PickerItem, cx: &gpui::App) -> CardId {
         let t = &self.config.theme;
         match item {
-            PickerItem::Launch(i) => profile_card(t, &self.launch_profiles[*i]),
+            PickerItem::Launch(i) => {
+                let reg = crate::agent_host::agent_registry(cx);
+                profile_card(t, &self.launch_profiles[*i], &reg)
+            }
             PickerItem::Pwsh => CardId {
                 name: "PowerShell".into(),
                 sub: "powershell.exe".into(),
@@ -335,10 +338,11 @@ impl QuickTerminal {
 
     /// Launch the profile at `idx` (ephemeral) as the hosted session.
     fn launch_profile(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let reg = crate::agent_host::agent_registry(cx);
         let spec = self
             .launch_profiles
             .get(idx)
-            .and_then(LaunchSpec::from_profile_ephemeral)
+            .and_then(|p| LaunchSpec::from_profile_ephemeral(p, &reg))
             .unwrap_or_else(LaunchSpec::pwsh);
         self.launch_spec(spec, cx);
     }
@@ -897,7 +901,7 @@ impl QuickTerminal {
             for item in row {
                 let i = flat;
                 flat += 1;
-                let c = self.item_card(item);
+                let c = self.item_card(item, cx);
                 tiles.push(self.launcher_tile(i, i == sel, c.name, c.sub, c.glyph, c.accent, cx));
             }
             row_divs.push(
@@ -1000,32 +1004,76 @@ impl QuickTerminal {
         }
         let t = &self.config.theme;
         let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
         let typed = self.ssh_prompt_input.trim().to_string();
         let ssh_err = (!typed.is_empty())
             .then(|| crate::workspace::validate_ssh_target(&typed).err())
             .flatten();
         let rows = self.ssh_rows();
         let sel = self.ssh_prompt_sel.min(rows.len().saturating_sub(1));
+        let placeholder = "user@host[:port]";
 
-        let input_text = if self.ssh_prompt_input.is_empty() {
-            "user@host[:port]".to_string()
-        } else {
-            self.ssh_prompt_input.clone()
+        let chips = crate::workspace::parse_ssh_target_chips(&typed);
+        let has_error = ssh_err.is_some();
+        let chip = |label: &str, val: String| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(999.))
+                .bg(rgba(HOVER))
+                .text_size(px(10.))
+                .child(
+                    div()
+                        .text_color(col(ui.muted))
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(
+                    div()
+                        .font_family(mono.clone())
+                        .text_color(col(ui.accent))
+                        .child(SharedString::from(val)),
+                )
         };
-        let input_color = if self.ssh_prompt_input.is_empty() {
-            col(ui.muted)
-        } else if ssh_err.is_some() {
-            col(t.ansi.red)
-        } else {
-            col(ui.foreground)
-        };
+        let chips_row = chips.as_ref().map(|(user, host, port)| {
+            let mut row = div().flex().flex_row().items_center().gap(px(5.));
+            if let Some(user) = user {
+                row = row.child(chip("user", user.clone()));
+            }
+            row = row.child(chip("host", host.clone()));
+            if let Some(port) = port {
+                row = row.child(chip("port", port.clone()));
+            }
+            row
+        });
+        let err_chip = ssh_err.map(|msg| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(999.))
+                .bg(cola(t.ansi.red, 0.12))
+                .text_size(px(10.))
+                .child(icon("alert", 11., t.ansi.red))
+                .child(
+                    div()
+                        .text_color(col(t.ansi.red))
+                        .child(SharedString::from(msg)),
+                )
+        });
 
         let mut list = div().px(px(22.)).pb(px(13.)).flex().flex_col().gap(px(7.));
 
         if rows.is_empty() {
             let copy = if typed.is_empty() {
                 "输入 user@host 后回车，或在 ~/.ssh/config 添加 Host alias"
-            } else if ssh_err.is_some() {
+            } else if has_error {
                 "目标格式需要先修正"
             } else {
                 "没有匹配的记录；回车连接当前输入"
@@ -1315,7 +1363,7 @@ impl QuickTerminal {
                         .py(px(10.))
                         .rounded(px(10.))
                         .border_1()
-                        .border_color(if ssh_err.is_some() {
+                        .border_color(if has_error {
                             cola(t.ansi.red, 0.50)
                         } else {
                             rgba(RIM)
@@ -1328,25 +1376,37 @@ impl QuickTerminal {
                         .child(icon("external", 15., ui.accent))
                         .child(
                             div()
-                                .font_family(UI_SANS)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .min_w(px(0.))
+                                .font_family(mono.clone())
                                 .text_size(px(13.))
-                                .text_color(input_color)
-                                .child(SharedString::from(input_text)),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(col(ui.muted))
-                                .child(SharedString::from("▏")),
+                                .when(!self.ssh_prompt_input.is_empty(), |d| {
+                                    d.child(
+                                        div().text_color(col(ui.foreground)).child(
+                                            SharedString::from(self.ssh_prompt_input.clone()),
+                                        ),
+                                    )
+                                })
+                                .child(
+                                    div()
+                                        .text_color(col(ui.muted))
+                                        .child(SharedString::from("▏")),
+                                )
+                                .when(self.ssh_prompt_input.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .ml(px(2.))
+                                            .text_color(col(ui.muted))
+                                            .child(SharedString::from(placeholder)),
+                                    )
+                                }),
                         )
                         .child(div().flex_1())
-                        .when_some(ssh_err, |d, msg| {
-                            d.child(
-                                div()
-                                    .text_size(px(10.5))
-                                    .text_color(col(t.ansi.red))
-                                    .child(SharedString::from(msg)),
-                            )
+                        .when_some(err_chip, |d, chip| d.child(chip))
+                        .when(!has_error, |d| {
+                            d.when_some(chips_row, |d, chips| d.child(chips))
                         }),
                 )
                 .child(list)

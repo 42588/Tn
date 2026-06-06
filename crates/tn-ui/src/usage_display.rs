@@ -5,26 +5,22 @@
 //! *starting* mode from config and the next mode on a click — no globals, no I/O
 //! beyond the one auth probe `auto` needs.
 
-use tn_ai::AgentKind;
 use tn_config::BillingMode;
 
-/// The starting display mode for a fresh pane of `agent`: the per-agent config
-/// override if set, else the global default; `Auto` is resolved to a concrete
-/// mode by detecting the agent's login (subscription → `%`, metered API → `$`).
+/// The starting display mode for a fresh agent pane: the per-agent config
+/// `override_mode` if set, else the global default; `Auto` is resolved to a
+/// concrete mode from `is_subscription` (subscription → `%`, metered API → `$`).
+/// Agent-agnostic — the caller resolves the override (via `General::billing_for`)
+/// and the subscription flag (via the agent's adapter), so no agent is named here.
 /// Never returns `Auto` — a pane always starts on something concrete.
 pub(crate) fn starting_mode(
-    agent: AgentKind,
     global: BillingMode,
-    claude_override: Option<BillingMode>,
-    codex_override: Option<BillingMode>,
+    override_mode: Option<BillingMode>,
+    is_subscription: bool,
 ) -> BillingMode {
-    let configured = match agent {
-        AgentKind::ClaudeCode => claude_override.unwrap_or(global),
-        AgentKind::Codex => codex_override.unwrap_or(global),
-    };
-    match configured {
+    match override_mode.unwrap_or(global) {
         BillingMode::Auto => {
-            if tn_ai::detect_subscription(agent) {
+            if is_subscription {
                 BillingMode::Subscription
             } else {
                 BillingMode::Api
@@ -58,31 +54,30 @@ mod tests {
     }
 
     #[test]
-    fn starting_mode_prefers_agent_override_then_global() {
+    fn starting_mode_prefers_override_then_global() {
         // Explicit per-agent override wins over the global default.
         assert_eq!(
-            starting_mode(
-                AgentKind::Codex,
-                BillingMode::Api,
-                None,
-                Some(BillingMode::Tokens)
-            ),
+            starting_mode(BillingMode::Api, Some(BillingMode::Tokens), false),
             BillingMode::Tokens
         );
-        // The other agent's override doesn't leak across.
+        // No override → the global passes straight through.
         assert_eq!(
-            starting_mode(
-                AgentKind::Codex,
-                BillingMode::Subscription,
-                Some(BillingMode::Tokens),
-                None
-            ),
+            starting_mode(BillingMode::Subscription, None, false),
             BillingMode::Subscription
         );
-        // A concrete global with no overrides passes straight through.
+        // A concrete global with no override passes straight through.
         assert_eq!(
-            starting_mode(AgentKind::ClaudeCode, BillingMode::Tokens, None, None),
+            starting_mode(BillingMode::Tokens, None, true),
             BillingMode::Tokens
+        );
+        // `Auto` resolves from the subscription flag.
+        assert_eq!(
+            starting_mode(BillingMode::Auto, None, true),
+            BillingMode::Subscription
+        );
+        assert_eq!(
+            starting_mode(BillingMode::Auto, None, false),
+            BillingMode::Api
         );
     }
 }

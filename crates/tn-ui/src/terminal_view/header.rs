@@ -8,7 +8,6 @@ use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AnyElement, App, Context, Div,
     FontWeight, MouseButton, Overflow, SharedString, WeakEntity,
 };
-use tn_ai::AgentKind;
 use tn_config::BillingMode;
 use tn_core::Rgb;
 
@@ -16,14 +15,11 @@ use super::TerminalView;
 use crate::style::{col, cola, glass_card, icon, HOVER, INSET, R_CARD, UI_SANS};
 
 impl TerminalView {
-    /// This pane's identity accent: Claude coral / Codex teal, or the UI accent
-    /// for a plain shell.
+    /// This pane's identity accent: the agent's resolved accent, or the UI accent
+    /// for a plain shell. Resolved on agent change into `agent_accent` (no per-agent
+    /// match in the render path).
     fn agent_accent(&self) -> Rgb {
-        match self.agent {
-            Some(AgentKind::ClaudeCode) => self.claude_accent,
-            Some(AgentKind::Codex) => self.codex_accent,
-            None => self.ui_accent,
-        }
+        self.agent_accent
     }
 
     /// Effective billing display mode for THIS pane's agent: a per-agent override
@@ -70,12 +66,14 @@ impl TerminalView {
     /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
     /// indicator — we can't observe the agent's think state from the PTY, so we
     /// don't fake one (Calm Glass: honest chrome).
-    fn render_agent_header(&self, agent: AgentKind, weak: WeakEntity<Self>) -> Div {
+    fn render_agent_header(&self, weak: WeakEntity<Self>) -> Div {
         let accent = self.agent_accent();
-        let name = match agent {
-            AgentKind::ClaudeCode => "Claude Code",
-            AgentKind::Codex => "Codex",
-        };
+        // The agent's display name comes from its descriptor (resolved into
+        // `agent_label` on agent change); fall back to a neutral label defensively.
+        let name = self
+            .agent_label
+            .clone()
+            .unwrap_or_else(|| SharedString::from("Agent"));
         let model = self
             .usage
             .as_ref()
@@ -86,7 +84,7 @@ impl TerminalView {
                 .text_size(px(13.))
                 .font_weight(FontWeight(680.)) // §16 .nm weight 680
                 .text_color(col(self.ui_fg)) // §16 .nm color = fg
-                .child(SharedString::from(name)),
+                .child(name),
         );
         if let Some(m) = model {
             who = who.child(
@@ -592,7 +590,7 @@ impl TerminalView {
     /// (that re-leases the pane mid-render → panic).
     pub(super) fn render_pane_header(&self, weak: WeakEntity<Self>) -> Option<Div> {
         Some(match self.agent {
-            Some(a) => self.render_agent_header(a, weak),
+            Some(_) => self.render_agent_header(weak),
             None => self.render_shell_header(),
         })
     }

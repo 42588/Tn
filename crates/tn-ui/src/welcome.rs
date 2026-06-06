@@ -17,7 +17,7 @@ use gpui::{
     div, prelude::*, px, rgba, Context, Div, FocusHandle, FontWeight, MouseButton, MouseDownEvent,
     SharedString,
 };
-use tn_ai::{agent_kind_for_command, AgentKind};
+use tn_agent::{AgentId, AgentRegistry};
 use tn_config::{Loaded, Profile, ProfileKind};
 
 use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
@@ -29,51 +29,73 @@ use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R
 
 /// A launch profile's detected agent (Claude / Codex), from its `agent` field or
 /// its command's first token. `None` = a plain shell / WSL / SSH.
-pub(crate) fn launch_agent_of(p: &Profile) -> Option<AgentKind> {
+/// Whether a profile launches an agent — for the launch-surface grouping
+/// (agents-on-top). Registry-free: a declared `agent` field or `kind = "agent"`.
+/// The card itself resolves the descriptor for display; this only sorts.
+pub(crate) fn is_agent_profile(p: &Profile) -> bool {
+    p.agent.is_some() || matches!(p.kind, ProfileKind::Agent)
+}
+
+pub(crate) fn launch_agent_of(p: &Profile, reg: &AgentRegistry) -> Option<AgentId> {
+    // Same launch-intent resolution as `LaunchSpec::from_profile`: explicit
+    // `agent = "..."` matched against registered aliases then taken literally,
+    // else inferred from the command — agent-agnostic, no per-agent arm.
     p.agent
         .as_deref()
-        .and_then(agent_kind_for_command)
-        .or_else(|| p.command.as_deref().and_then(agent_kind_for_command))
+        .map(|a| reg.match_command(a).unwrap_or_else(|| AgentId::new(a)))
+        .or_else(|| p.command.as_deref().and_then(|c| reg.match_command(c)))
 }
 
 /// A profile's identity accent (mockup `.tile.claude/.codex/.sh/.wsl` / `.dot`):
-/// explicit `accent`, else Claude coral / Codex teal / WSL violet / shell blue.
+/// explicit `accent`, else the agent's themed/descriptor accent / WSL violet /
+/// shell blue. Agent accent = theme `[agents.<id>]` override, then the agent
+/// descriptor's default, then the UI accent.
 pub(crate) fn launch_tile_accent(
     t: &tn_config::Theme,
     p: &Profile,
-    agent: Option<AgentKind>,
+    agent: Option<&AgentId>,
+    reg: &AgentRegistry,
 ) -> tn_config::Color {
-    p.accent.unwrap_or(match (agent, p.kind) {
-        (Some(AgentKind::ClaudeCode), _) => t.agents.claude,
-        (Some(AgentKind::Codex), _) => t.agents.codex,
-        (_, ProfileKind::Wsl) => t.ui.accent_alt, // violet
-        _ => t.ui.accent,                         // blue
-    })
+    if let Some(a) = p.accent {
+        return a;
+    }
+    if let Some(id) = agent {
+        return t
+            .agents
+            .accent_for(id.as_str())
+            .or_else(|| reg.get(id).and_then(|d| d.accent))
+            .unwrap_or(t.ui.accent);
+    }
+    match p.kind {
+        ProfileKind::Wsl => t.ui.accent_alt, // violet
+        _ => t.ui.accent,                    // blue
+    }
 }
 
-/// Tile sub-label (mockup `.td`: "Claude Code" / "PowerShell" / "Ubuntu").
-pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<AgentKind>) -> String {
-    match agent {
-        Some(AgentKind::ClaudeCode) => "Claude Code".into(),
-        Some(AgentKind::Codex) => "Codex".into(),
-        None => match p.kind {
-            ProfileKind::Wsl => p
-                .distro
-                .clone()
-                .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| "WSL".into()),
-            ProfileKind::Ssh => p.host.clone().unwrap_or_else(|| "SSH".into()),
-            _ => {
-                let c = p.command.clone().unwrap_or_default().to_ascii_lowercase();
-                if c.contains("pwsh") || c.contains("powershell") {
-                    "PowerShell".into()
-                } else if c.contains("cmd") {
-                    "Command Prompt".into()
-                } else {
-                    p.command.clone().unwrap_or_else(|| "shell".into())
-                }
+/// Tile sub-label (mockup `.td`: "Claude Code" / "PowerShell" / "Ubuntu"). For an
+/// agent it's the descriptor label (built-in or generic); else WSL distro / SSH
+/// host / a shell-kind label.
+pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<&AgentId>, reg: &AgentRegistry) -> String {
+    if let Some(id) = agent {
+        return reg.descriptor_or_generic(id, &p.name).label;
+    }
+    match p.kind {
+        ProfileKind::Wsl => p
+            .distro
+            .clone()
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| "WSL".into()),
+        ProfileKind::Ssh => p.host.clone().unwrap_or_else(|| "SSH".into()),
+        _ => {
+            let c = p.command.clone().unwrap_or_default().to_ascii_lowercase();
+            if c.contains("pwsh") || c.contains("powershell") {
+                "PowerShell".into()
+            } else if c.contains("cmd") {
+                "Command Prompt".into()
+            } else {
+                p.command.clone().unwrap_or_else(|| "shell".into())
             }
-        },
+        }
     }
 }
 
@@ -95,13 +117,13 @@ pub(crate) struct CardId {
 }
 
 /// Card identity for a launchable shell/agent profile (Claude / Codex / pwsh / …).
-pub(crate) fn profile_card(t: &tn_config::Theme, p: &Profile) -> CardId {
-    let agent = launch_agent_of(p);
+pub(crate) fn profile_card(t: &tn_config::Theme, p: &Profile, reg: &AgentRegistry) -> CardId {
+    let agent = launch_agent_of(p, reg);
     CardId {
         name: p.name.clone(),
-        sub: launch_tile_sub(p, agent),
+        sub: launch_tile_sub(p, agent.as_ref(), reg),
         glyph: if agent.is_some() { "spark" } else { "term" },
-        accent: launch_tile_accent(t, p, agent),
+        accent: launch_tile_accent(t, p, agent.as_ref(), reg),
     }
 }
 
@@ -152,9 +174,11 @@ pub(crate) fn launch_entries(profiles: &[Profile]) -> Vec<LaunchEntry> {
         match p.kind {
             ProfileKind::Wsl => wsl.push(i),
             ProfileKind::Ssh => {} // folded into the SSH prompt launcher
-            // Agents (Claude / Codex) lead, then plain shells — the headline use case
-            // first, so welcome/launcher read agents-on-top (用户要的排版).
-            _ if launch_agent_of(p).is_some() => agents.push(LaunchEntry::Profile(i)),
+            // Agents lead, then plain shells — the headline use case first, so
+            // welcome/launcher read agents-on-top (用户要的排版). Grouping is by the
+            // profile's declared `agent` field (registry-free; the card itself
+            // resolves the descriptor for display).
+            _ if is_agent_profile(p) => agents.push(LaunchEntry::Profile(i)),
             _ => shells.push(LaunchEntry::Profile(i)),
         }
     }
@@ -215,9 +239,14 @@ pub(crate) fn launch_rows(profiles: &[Profile], wsl_drill: bool, query: &str) ->
 }
 
 /// The [`CardId`] for a flat launch row (palette / split-launcher rendering).
-pub(crate) fn row_card(t: &tn_config::Theme, profiles: &[Profile], row: &LaunchRow) -> CardId {
+pub(crate) fn row_card(
+    t: &tn_config::Theme,
+    profiles: &[Profile],
+    row: &LaunchRow,
+    reg: &AgentRegistry,
+) -> CardId {
     match row {
-        LaunchRow::Profile(i) => profile_card(t, &profiles[*i]),
+        LaunchRow::Profile(i) => profile_card(t, &profiles[*i], reg),
         LaunchRow::DrillWsl => wsl_card(t, wsl_distros(profiles).len()),
         LaunchRow::SshPrompt => ssh_card(t),
     }
@@ -309,8 +338,9 @@ impl WelcomeView {
 
     /// A profile launch tile → emits [`LaunchRequested`] for its index.
     fn tile(&self, i: usize, p: &Profile, cx: &mut Context<Self>) -> Div {
+        let reg = crate::agent_host::agent_registry(cx);
         self.card_tile(
-            profile_card(&self.config.theme, p),
+            profile_card(&self.config.theme, p, &reg),
             move |_this, _e, _w, cx| cx.emit(LaunchRequested(i)),
             cx,
         )
@@ -421,8 +451,8 @@ impl Render for WelcomeView {
                     LaunchEntry::Profile(i) => {
                         let p = self.profiles[i].clone();
                         let tile = self.tile(i, &p, cx);
-                        if launch_agent_of(&p).is_some() {
-                            agents.push(tile); // Claude / Codex → top row
+                        if is_agent_profile(&p) {
+                            agents.push(tile); // agents → top row
                         } else {
                             others.push(tile); // PowerShell → bottom row
                         }

@@ -18,7 +18,6 @@ use futures::channel::mpsc;
 use futures::future::{select, Either};
 use futures::StreamExt;
 use gpui::{AsyncApp, Context, WeakEntity};
-use tn_ai::AgentKind;
 use tn_blocks::BlockModel;
 use tn_core::{TermEvent, Terminal};
 use tn_pty::PtyBackend;
@@ -383,18 +382,19 @@ impl TerminalView {
     /// [`UsageUpdated`] on change so the workspace status bar repaints.
     pub(super) fn spawn_usage_poller(
         cx: &mut Context<Self>,
-        kind: AgentKind,
+        adapter: std::sync::Arc<dyn tn_agent::AgentAdapter>,
         launched_at: SystemTime,
     ) {
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // Baseline mtimes at launch: any session already fresh now is a
             // concurrent (someone else's) one; ours flips stale→fresh later.
+            let adapter_b = adapter.clone();
             let baseline = std::sync::Arc::new(
                 exec.spawn(async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
                     std::thread::spawn(move || {
-                        let _ = tx.send(tn_ai::session_mtimes(kind));
+                        let _ = tx.send(tn_ai::adapter_session_mtimes(&*adapter_b));
                     });
                     rx.await.unwrap_or_default()
                 })
@@ -415,6 +415,7 @@ impl TerminalView {
                 let baseline2 = baseline.clone();
                 let prev_offset = file_offset;
                 let prev_usage_clone = current_usage.clone();
+                let adapter_i = adapter.clone();
                 let res = exec
                     .spawn(async move {
                         let (tx, rx) = futures::channel::oneshot::channel();
@@ -425,8 +426,8 @@ impl TerminalView {
                                 let path = match pinned2 {
                                     Some(p) => p,
                                     None => {
-                                        tn_ai::resolve_session_for_pane(
-                                            kind,
+                                        tn_ai::resolve_pane_session(
+                                            &*adapter_i,
                                             launched_at,
                                             &baseline2,
                                         )?
@@ -452,8 +453,7 @@ impl TerminalView {
                                     let valid_delta = &delta[..valid_bytes];
                                     let new_offset = prev_offset + valid_bytes as u64;
                                     let new_usage = if valid_bytes > 0 {
-                                        tn_ai::update_session(
-                                            kind,
+                                        adapter_i.update_usage(
                                             valid_delta,
                                             prev_usage_clone.unwrap(),
                                         )
@@ -467,7 +467,7 @@ impl TerminalView {
                                     let valid_bytes = text.rfind('\n').map(|i| i + 1).unwrap_or(0);
                                     let valid_text = &text[..valid_bytes];
                                     let new_offset = valid_bytes as u64;
-                                    let u = tn_ai::parse_session(kind, valid_text)?;
+                                    let u = adapter_i.parse_usage(valid_text)?;
                                     (new_offset, u)
                                 };
                                 Some((path, mtime, Some(usage), next_offset))

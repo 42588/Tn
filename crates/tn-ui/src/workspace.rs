@@ -32,6 +32,7 @@ use crate::terminal_view::{
     UsageUpdated,
 };
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
+use tn_agent::AgentId;
 
 type PaneId = u64;
 
@@ -744,6 +745,26 @@ pub(crate) fn validate_ssh_target(typed: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+pub(crate) fn parse_ssh_target_chips(
+    typed: &str,
+) -> Option<(Option<String>, String, Option<String>)> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return None;
+    }
+    let (user, rest) = match typed.split_once('@') {
+        Some((u, r)) if !u.is_empty() => (Some(u.to_string()), r),
+        _ => (None, typed),
+    };
+    let (host, port) = match rest.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
+            (h.to_string(), Some(p.to_string()))
+        }
+        _ => (rest.to_string(), None),
+    };
+    Some((user, host, port))
+}
+
 impl Workspace {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let explorer = cx.new(|cx| ExplorerView::new(cx, config.clone()));
@@ -930,10 +951,11 @@ impl Workspace {
     /// Launch the profile at `index` (welcome tile click) into the active tab,
     /// turning a welcome tab into a pane tree.
     fn launch_in_active_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let reg = crate::agent_host::agent_registry(cx);
         let spec = self
             .launch_profiles
             .get(index)
-            .and_then(LaunchSpec::from_profile)
+            .and_then(|p| LaunchSpec::from_profile(p, &reg))
             .unwrap_or_else(LaunchSpec::pwsh);
         let id = self.spawn_pane_with(cx, spec);
         if let Some(tab) = self.tabs.get_mut(self.active) {
@@ -1462,10 +1484,11 @@ impl Workspace {
 
     /// Launch the profile at `idx` in a new tab, then close the palette.
     fn launch_profile_in_tab(&mut self, idx: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let reg = crate::agent_host::agent_registry(cx);
         let Some(spec) = self
             .launch_profiles
             .get(idx)
-            .and_then(LaunchSpec::from_profile)
+            .and_then(|p| LaunchSpec::from_profile(p, &reg))
         else {
             return;
         };
@@ -1691,7 +1714,7 @@ impl Workspace {
                 // the 1px gradient-border ring shows through (see `glass_pane`).
                 // The TerminalView fills it + rounds its own corners to match; gpui
                 // clips rectangularly so inner surfaces round themselves.
-                let accent = self.agent_color(view.read(cx).agent());
+                let accent = self.agent_color(view.read(cx).agent().as_ref(), cx);
                 let inner = div()
                     .size_full()
                     .relative() // anchor the absolute specular layer
@@ -1859,12 +1882,18 @@ impl Workspace {
         }
     }
 
-    /// Accent color for an agent (Claude coral / Codex teal / muted shell).
-    fn agent_color(&self, agent: Option<tn_ai::AgentKind>) -> tn_config::Color {
+    /// Accent color for an agent: theme `[agents.<id>]` override → descriptor
+    /// default → muted (shell). Agent-agnostic, resolved through the registry.
+    fn agent_color(&self, agent: Option<&AgentId>, cx: &App) -> tn_config::Color {
         let t = &self.config.theme;
         match agent {
-            Some(tn_ai::AgentKind::ClaudeCode) => t.agents.claude,
-            Some(tn_ai::AgentKind::Codex) => t.agents.codex,
+            Some(id) => {
+                let reg = crate::agent_host::agent_registry(cx);
+                t.agents
+                    .accent_for(id.as_str())
+                    .or_else(|| reg.get(id).and_then(|d| d.accent))
+                    .unwrap_or(t.ui.muted)
+            }
             None => t.ui.muted,
         }
     }
@@ -1878,17 +1907,17 @@ impl Workspace {
         let t = &self.config.theme;
         let ui = &t.ui;
 
-        // Aggregate context % per agent kind across all panes.
-        let mut claude_pct: Option<u32> = None;
-        let mut codex_pct: Option<u32> = None;
+        // Aggregate context % per agent across all panes (first pane per agent id
+        // wins). Agent-agnostic: one segment per distinct agent present, in the
+        // order encountered — no fixed Claude/Codex slots.
+        let mut agent_pcts: Vec<(AgentId, u32)> = Vec::new();
         for v in self.panes.values() {
             let v = v.read(cx);
-            if let (Some(a), Some(u)) = (v.agent(), v.usage()) {
-                let pct = (u.context_frac() * 100.0).round() as u32;
-                match a {
-                    tn_ai::AgentKind::ClaudeCode => claude_pct.get_or_insert(pct),
-                    tn_ai::AgentKind::Codex => codex_pct.get_or_insert(pct),
-                };
+            if let (Some(id), Some(u)) = (v.agent(), v.usage()) {
+                if !agent_pcts.iter().any(|(a, _)| a == &id) {
+                    let pct = (u.context_frac() * 100.0).round() as u32;
+                    agent_pcts.push((id, pct));
+                }
             }
         }
 
@@ -1945,17 +1974,11 @@ impl Workspace {
             num(self.tabs.len().to_string()),
             div().child("sessions").into_any_element(),
         ]));
-        // per-agent context readouts
-        if let Some(p) = claude_pct {
+        // per-agent context readouts (one segment per distinct agent present)
+        for (id, p) in &agent_pcts {
+            let accent = self.agent_color(Some(id), cx);
             bar = bar.child(sep()).child(seg(vec![
-                icon("spark", 12., t.agents.claude).into_any_element(),
-                div().child("ctx").into_any_element(),
-                num(format!("{p}%")),
-            ]));
-        }
-        if let Some(p) = codex_pct {
-            bar = bar.child(sep()).child(seg(vec![
-                icon("spark", 12., t.agents.codex).into_any_element(),
+                icon("spark", 12., accent).into_any_element(),
                 div().child("ctx").into_any_element(),
                 num(format!("{p}%")),
             ]));
@@ -2475,19 +2498,7 @@ impl Workspace {
         let typed = self.ssh_prompt_input.trim().to_string();
 
         // ── live-parse chips: cheap user@host:port split (no IO) for the input row ──
-        let chips = (!typed.is_empty()).then(|| {
-            let (user, rest) = match typed.split_once('@') {
-                Some((u, r)) if !u.is_empty() => (Some(u.to_string()), r),
-                _ => (None, typed.as_str()),
-            };
-            let (host, port) = match rest.rsplit_once(':') {
-                Some((h, p)) if !h.is_empty() && p.parse::<u16>().is_ok() => {
-                    (h.to_string(), Some(p.to_string()))
-                }
-                _ => (rest.to_string(), None),
-            };
-            (user, host, port)
-        });
+        let chips = parse_ssh_target_chips(&typed);
         let chip = |label: &str, val: String| {
             div()
                 .flex()
@@ -3101,9 +3112,10 @@ impl Workspace {
                     }),
             );
 
+        let reg = crate::agent_host::agent_registry(cx);
         let row_divs = rows.iter().enumerate().map(|(i, row)| {
             let is_sel = i == sel;
-            let card = row_card(t, &self.launch_profiles, row); // identity = tiles/.dot
+            let card = row_card(t, &self.launch_profiles, row, &reg); // identity = tiles/.dot
                                                                 // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
             let meta = match row {
                 LaunchRow::Profile(pi) => self.launch_profiles[*pi]
@@ -3287,10 +3299,11 @@ impl Workspace {
             return;
         };
         let launch = |this: &mut Self, idx: usize, window: &mut Window, cx: &mut Context<Self>| {
+            let reg = crate::agent_host::agent_registry(cx);
             if let Some(spec) = this
                 .launch_profiles
                 .get(idx)
-                .and_then(LaunchSpec::from_profile)
+                .and_then(|p| LaunchSpec::from_profile(p, &reg))
             {
                 this.split_launcher_open = false;
                 this.split_wsl = false;
@@ -3430,9 +3443,10 @@ impl Workspace {
             Some(dir) => {
                 let rows = self.split_rows();
                 let sel = self.split_sel.min(rows.len().saturating_sub(1));
+                let reg = crate::agent_host::agent_registry(cx);
                 let row_divs = rows.iter().enumerate().map(|(i, row)| {
                     let is_sel = i == sel;
-                    let card = row_card(t, &self.launch_profiles, row);
+                    let card = row_card(t, &self.launch_profiles, row, &reg);
                     div()
                         .flex()
                         .flex_row()
@@ -4073,7 +4087,9 @@ impl Render for Workspace {
         // Each tab labels itself with its focused pane's OSC title, falling back
         // to "Term N", and carries that pane's agent for an identity dot.
         // Precomputed so the click closures below own `cx` freely.
-        let tab_info: Vec<(String, usize, Option<tn_ai::AgentKind>)> = self
+        // Carry the resolved identity-dot color (Some = an agent pane) so the
+        // render closures below don't need `cx`/the registry — agent-agnostic.
+        let tab_info: Vec<(String, usize, Option<tn_config::Color>)> = self
             .tabs
             .iter()
             .enumerate()
@@ -4086,7 +4102,8 @@ impl Render for Workspace {
                     .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
                     .unwrap_or_else(|| "shell".into());
                 let agent = pane.and_then(|v| v.read(cx).agent());
-                (label, tab.root.leaf_count(), agent)
+                let dot = agent.as_ref().map(|id| self.agent_color(Some(id), cx));
+                (label, tab.root.leaf_count(), dot)
             })
             .collect();
 
@@ -4099,11 +4116,12 @@ impl Render for Workspace {
                 tab_info
                     .into_iter()
                     .enumerate()
-                    .map(|(i, (label, panes, agent))| {
+                    .map(|(i, (label, panes, agent_dot))| {
                         let is_active = i == active;
-                        let dot = self.agent_color(agent);
+                        // `agent_dot` = the agent's resolved accent (Some = agent pane).
+                        let dot = agent_dot.unwrap_or(ui.muted);
                         // Accent bar/icon color: agent identity, or UI accent for shells.
-                        let accent_c = if agent.is_some() { dot } else { ui.accent };
+                        let accent_c = agent_dot.unwrap_or(ui.accent);
                         div()
                             .relative()
                             .flex()
@@ -4142,7 +4160,7 @@ impl Render for Workspace {
                             // Type icon in agent identity color: spark for agents
                             // (Claude coral / Codex teal), terminal glyph (accent) for
                             // a plain shell. See docs/产品设计 §6.2 tab agent accent.
-                            .child(if agent.is_some() {
+                            .child(if agent_dot.is_some() {
                                 icon("spark", 13., dot)
                             } else {
                                 icon("term", 13., ui.accent)
@@ -4537,6 +4555,23 @@ mod tests {
         assert!(validate_ssh_target("host:0").is_err()); // port 0
         assert!(validate_ssh_target("host:70000").is_err()); // > 65535
         assert!(validate_ssh_target(":22").is_err()); // no host
+    }
+
+    #[test]
+    fn parse_ssh_target_chips_splits_display_parts() {
+        assert_eq!(
+            parse_ssh_target_chips("root@192.168.1.1:2222"),
+            Some((
+                Some("root".to_string()),
+                "192.168.1.1".to_string(),
+                Some("2222".to_string())
+            ))
+        );
+        assert_eq!(
+            parse_ssh_target_chips("host:notaport"),
+            Some((None, "host:notaport".to_string(), None))
+        );
+        assert_eq!(parse_ssh_target_chips(""), None);
     }
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {

@@ -5,6 +5,7 @@
 //! local shells. Set `TN_AUTOQUIT=1` for the headless self-test (the first pane
 //! drives a command, dumps the grid, then quits).
 
+mod agent_host;
 mod assets;
 mod block_view;
 mod explorer;
@@ -127,6 +128,10 @@ pub fn run() {
                 ])
                 .expect("Failed to load embedded CaskaydiaCove Nerd Font");
             // ──────────────────────────────────────────────────────────────────
+
+            // Install the app-wide agent registry (built-in Claude/Codex) before
+            // any pane is built — the UI resolves all agent identity through it.
+            cx.set_global(agent_host::AgentHost(tn_ai::builtin_registry()));
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let main_config = config.clone();

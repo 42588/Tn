@@ -27,7 +27,7 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
-use tn_ai::{AgentKind, AiUsage};
+use tn_agent::{AgentId, AgentRegistry, AiUsage};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
@@ -282,8 +282,9 @@ pub struct TerminalView {
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
     // AI usage for this pane (M4): the agent it hosts + its latest usage
-    // snapshot, polled off-thread from the agent's session log.
-    agent: Option<AgentKind>,
+    // snapshot, polled off-thread from the agent's session log. `AgentId` is the
+    // open identity resolved through the registry — no closed enum.
+    agent: Option<AgentId>,
     usage: Option<AiUsage>,
     // Activity-rail「本次改动」state machine (mockup `.arail`).
     // Replaces ad-hoc `Vec` + `Option<PathBuf>` — the render path reads this
@@ -337,19 +338,26 @@ pub struct TerminalView {
     // `[appearance]` bell prefs, resolved once at construction.
     visual_bell: bool,
     audio_bell: bool,
-    // Config-resolved STARTING usage-pill mode per agent (`[general].billing_mode`
-    // + optional `claude_billing`/`codex_billing`). Kept so a shell-typed agent
-    // (sync_shell_agent) can compute its starting mode when it appears.
+    // Loaded config kept so a shell-typed agent (sync_shell_agent) can re-resolve
+    // its billing override (`General::billing_for`) and themed accent when it
+    // appears at runtime — agent-agnostic, via the AgentId, no per-agent field.
+    config: Arc<Loaded>,
+    // Global starting usage-pill mode (`[general].billing_mode`); per-agent override
+    // is resolved on demand from `config` by AgentId.
     billing_mode: tn_config::BillingMode,
-    claude_billing: Option<tn_config::BillingMode>,
-    codex_billing: Option<tn_config::BillingMode>,
     // Live per-pane usage-pill display mode ($ / % / tokens). Starts from the
     // config default for this pane's agent (auto-resolved via usage_display) and
     // is cycled in memory when the user clicks the pill — independent per pane.
     usage_mode: tn_config::BillingMode,
-    // Theme accents for the per-pane header (Claude coral / Codex teal / UI blue).
-    claude_accent: Rgb,
-    codex_accent: Rgb,
+    // Resolved agent presentation, recomputed whenever `agent` changes (construction,
+    // sync_shell_agent, clear_agent) from the descriptor + theme — so the render path
+    // never names a concrete agent. `agent_accent` falls back to `ui_accent` for a
+    // plain shell; `agent_label` is the descriptor label; `agent_manages_cursor` is
+    // the Ink-cursor quirk (replaces the Claude-only `force_hide_cursor`).
+    agent_accent: Rgb,
+    agent_label: Option<SharedString>,
+    agent_short: Option<SharedString>,
+    agent_manages_cursor: bool,
     ui_accent: Rgb,
     // Chrome text colors for pane headers (mockup .phead/.nm/.model use ui.*, not
     // the terminal palette). fg-dim has no theme token → literal in header.rs.
@@ -433,6 +441,20 @@ fn shell_name_of(program: &str) -> String {
 fn fallback_pwsh(size: PtySize) -> LocalPty {
     LocalPty::spawn(&SpawnSpec::program("powershell.exe").arg("-NoLogo"), size)
         .expect("fallback pwsh spawn failed")
+}
+
+/// Resolved per-pane agent presentation (from descriptor + theme), produced by
+/// [`TerminalView::resolve_agent_view`] and cached on the view so the render path
+/// never re-resolves or names a concrete agent.
+struct AgentView {
+    accent: Rgb,
+    /// Full descriptor label for the agent header (e.g. "Claude Code").
+    label: SharedString,
+    /// Short descriptor label for the tab (e.g. "Claude").
+    short: SharedString,
+    /// The agent paints its own cursor (Ink TUI) → hide ours.
+    manages_cursor: bool,
+    usage_mode: tn_config::BillingMode,
 }
 
 impl TerminalView {
@@ -527,8 +549,6 @@ impl TerminalView {
         // Build the engine with the configured scrollback + theme palette.
         let palette = palette_from(&config.theme);
         let to_rgb = |c: tn_config::Color| Rgb::new(c.r, c.g, c.b);
-        let claude_accent = to_rgb(config.theme.agents.claude);
-        let codex_accent = to_rgb(config.theme.agents.codex);
         let ui_accent = to_rgb(config.theme.ui.accent);
         let ui_fg = to_rgb(config.theme.ui.foreground);
         let ui_muted = to_rgb(config.theme.ui.muted);
@@ -543,8 +563,6 @@ impl TerminalView {
         let visual_bell = config.config.appearance.visual_bell;
         let audio_bell = config.config.appearance.audio_bell;
         let billing_mode = config.config.general.billing_mode;
-        let claude_billing = config.config.general.claude_billing;
-        let codex_billing = config.config.general.codex_billing;
         let mut term = Terminal::with_scrollback(size, config.config.general.scrollback_lines);
         term.set_palette(palette);
         let terminal = Arc::new(Mutex::new(term));
@@ -575,14 +593,25 @@ impl TerminalView {
         // a fresh agent session exists for this cwd: that agent is often a
         // *separate* process (e.g. the dev's own Claude Code editing this repo).
         // So a plain pwsh pane stays a shell (no agent header, no usage).
-        let agent = launch.agent;
-        // Per-pane starting display mode: config default for this agent, with
-        // `auto` resolved to %/$ by detecting the agent's login (member vs API).
-        let usage_mode = match agent {
-            Some(a) => {
-                crate::usage_display::starting_mode(a, billing_mode, claude_billing, codex_billing)
+        let agent = launch.agent.clone();
+        // The app-wide registry resolves this agent's descriptor (presentation +
+        // capabilities + cursor quirk) and adapter (usage telemetry). Everything
+        // below reads the descriptor/adapter — no concrete agent is named.
+        let registry = crate::agent_host::agent_registry(cx);
+        // Resolve the agent's presentation + starting usage-pill mode once.
+        let (agent_accent, agent_label, agent_short, agent_manages_cursor, usage_mode) = match &agent
+        {
+            Some(id) => {
+                let v = Self::resolve_agent_view(id, &config, &registry, ui_accent, billing_mode);
+                (
+                    v.accent,
+                    Some(v.label),
+                    Some(v.short),
+                    v.manages_cursor,
+                    v.usage_mode,
+                )
             }
-            None => tn_config::BillingMode::default(),
+            None => (ui_accent, None, None, false, tn_config::BillingMode::default()),
         };
         // For launched agents: stash the launch cwd so refresh_changes has a fallback
         // when the blocks model returns no cwd (no shell integration -> no OSC 7).
@@ -592,13 +621,17 @@ impl TerminalView {
             None
         };
         let mut change_watcher = None;
-        if let Some(kind) = agent {
+        if let Some(id) = &agent {
             // Usage binds to the session THIS pane launches (newest log created
             // at/after `launched_at`), not whatever's newest in the cwd — a dev
             // Claude editing this very repo must not hijack a fresh pane's readout
-            // (see tn_ai::resolve_session_for_pane). cwd-independent: hosted agent
-            // panes carry no shell integration, so the agent's cwd is unknowable.
-            Self::spawn_usage_poller(cx, kind, launched_at);
+            // (see tn_ai::resolve_pane_session). cwd-independent: hosted agent panes
+            // carry no shell integration, so the agent's cwd is unknowable. Only an
+            // agent with a usage adapter is polled — a config-level agent (no
+            // adapter) hosts fine but reports no usage.
+            if let Some(adapter) = registry.adapter(id) {
+                Self::spawn_usage_poller(cx, adapter.clone(), launched_at);
+            }
             // 活动栏「本次改动」still needs a working dir for `git diff` (变化即刷新).
             if let Some(cwd) = rail_cwd.clone() {
                 change_watcher = Self::spawn_change_watcher(cx, cwd);
@@ -665,12 +698,13 @@ impl TerminalView {
             bell_fading: false,
             visual_bell,
             audio_bell,
+            config: config.clone(),
             billing_mode,
-            claude_billing,
-            codex_billing,
             usage_mode,
-            claude_accent,
-            codex_accent,
+            agent_accent,
+            agent_label,
+            agent_short,
+            agent_manages_cursor,
             ui_accent,
             ui_fg,
             ui_muted,
@@ -700,9 +734,10 @@ impl TerminalView {
         self.focus_handle.clone()
     }
 
-    /// This pane's agent (from launch intent, or detected from session logs).
-    pub fn agent(&self) -> Option<AgentKind> {
-        self.agent
+    /// This pane's agent (from launch intent, or detected from a typed shell
+    /// command). An open [`AgentId`] resolved through the registry.
+    pub fn agent(&self) -> Option<AgentId> {
+        self.agent.clone()
     }
 
     /// Explicitly clear the GPUI render cache to free the massive `gpui::Div` trees
@@ -898,6 +933,47 @@ impl TerminalView {
         self.rail_state = RailState::Idle;
         self.rail_cwd = None;
         self.change_watcher = None; // stop watching the working tree
+        // Reset resolved presentation back to the plain-shell defaults.
+        self.agent_accent = self.ui_accent;
+        self.agent_label = None;
+        self.agent_short = None;
+        self.agent_manages_cursor = false;
+    }
+
+    /// Resolve an agent id's presentation (accent / label / own-cursor quirk) and
+    /// its starting usage-pill mode from the registry descriptor + this view's
+    /// config. Agent-agnostic — the single place the UI turns an [`AgentId`] into
+    /// display data, shared by construction and [`sync_shell_agent`]. Accent =
+    /// theme `[agents.<id>]` override → descriptor default → UI accent; pill mode
+    /// = config override → global, with `auto` resolved from the adapter's login.
+    fn resolve_agent_view(
+        id: &AgentId,
+        config: &Loaded,
+        registry: &AgentRegistry,
+        ui_accent: Rgb,
+        billing_mode: tn_config::BillingMode,
+    ) -> AgentView {
+        let desc = registry.descriptor_or_generic(id, id.as_str());
+        let accent = config
+            .theme
+            .agents
+            .accent_for(id.as_str())
+            .or(desc.accent)
+            .map(|c| Rgb::new(c.r, c.g, c.b))
+            .unwrap_or(ui_accent);
+        let override_mode = config.config.general.billing_for(id.as_str());
+        let is_sub = registry
+            .adapter(id)
+            .map(|a| a.is_subscription())
+            .unwrap_or(false);
+        let usage_mode = crate::usage_display::starting_mode(billing_mode, override_mode, is_sub);
+        AgentView {
+            accent,
+            label: SharedString::from(desc.label.clone()),
+            short: SharedString::from(desc.short.clone()),
+            manages_cursor: desc.manages_own_cursor,
+            usage_mode,
+        }
     }
 
     /// Flip the pane to / from agent state based on what's **running** in the shell
@@ -910,30 +986,41 @@ impl TerminalView {
     pub(super) fn sync_shell_agent(&mut self, cx: &mut Context<Self>) {
         // First token of the currently-running command → an agent? (Match the
         // PROGRAM, not the whole line, so `cd claude-proj` / `cat codex.md` don't trip.)
+        let registry = crate::agent_host::agent_registry(cx);
         let running_agent = {
             let bm = self.blocks.lock().unwrap();
             bm.current()
                 .filter(|b| b.is_running())
                 .and_then(|b| b.command.as_deref())
                 .and_then(|cmd| cmd.split_whitespace().next())
-                .and_then(tn_ai::agent_kind_for_command)
+                .and_then(|tok| registry.match_command(tok))
         };
-        match (running_agent, self.agent) {
+        match (running_agent, self.agent.is_some()) {
             // A typed agent command started in a plain (non-agent) shell.
-            (Some(kind), None) => {
-                self.agent = Some(kind);
+            (Some(id), false) => {
+                self.agent = Some(id.clone());
                 self.agent_from_shell = true;
                 self.usage = None;
-                // Resolve this pane's starting pill mode for the now-known agent.
-                self.usage_mode = crate::usage_display::starting_mode(
-                    kind,
+                // Resolve this pane's presentation + starting pill mode for the
+                // now-known agent (agent-agnostic, via the registry).
+                let v = Self::resolve_agent_view(
+                    &id,
+                    &self.config,
+                    &registry,
+                    self.ui_accent,
                     self.billing_mode,
-                    self.claude_billing,
-                    self.codex_billing,
                 );
+                self.agent_accent = v.accent;
+                self.agent_label = Some(v.label);
+                self.agent_short = Some(v.short);
+                self.agent_manages_cursor = v.manages_cursor;
+                self.usage_mode = v.usage_mode;
                 // Bind usage to the session this just-typed command starts (created
-                // ~now); the grace in resolve_session_for_pane absorbs detection lag.
-                Self::spawn_usage_poller(cx, kind, SystemTime::now());
+                // ~now); the grace in resolve_pane_session absorbs detection lag.
+                // Only an agent with a usage adapter is polled.
+                if let Some(adapter) = registry.adapter(&id) {
+                    Self::spawn_usage_poller(cx, adapter.clone(), SystemTime::now());
+                }
                 if let Some(root) = self.effective_browsable_cwd() {
                     self.change_watcher = Self::spawn_change_watcher(cx, root.clone());
                     self.rail_cwd = Some(root);
@@ -943,7 +1030,7 @@ impl TerminalView {
             // The shell-inferred agent's command finished → revert to plain shell.
             // (Launch-intent agents have `agent_from_shell == false` → left alone;
             // they clear via the exit sentinel instead.)
-            (None, Some(_)) if self.agent_from_shell => {
+            (None, true) if self.agent_from_shell => {
                 self.clear_agent();
                 cx.emit(UsageUpdated);
             }
@@ -1098,8 +1185,8 @@ impl TerminalView {
     /// A clean tab label: the agent name for an agent pane, else the shell name
     /// (never the raw OSC title, which for pwsh is the noisy `…\powershell.exe`).
     pub fn tab_label(&self) -> String {
-        match self.agent {
-            Some(a) => a.label().to_string(),
+        match &self.agent_short {
+            Some(s) => s.to_string(),
             None => shell_name_of(&self.program),
         }
     }
@@ -1869,7 +1956,7 @@ impl Render for TerminalView {
         // Claude Code(Ink)自绘虚拟光标 + ConPTY 常丢 `\e[?25l` → 我们强制隐藏物理光标
         // (见下 cursor_el)。既然 Claude 态根本不画光标,glide/Q弹动画毫无意义,别 spawn
         // 那个每 16ms notify 的驱动任务(否则 Claude 每移一次光标就白拉起一轮重绘循环)。
-        let force_hide_cursor = self.agent == Some(tn_ai::AgentKind::ClaudeCode);
+        let force_hide_cursor = self.agent_manages_cursor;
 
         // ── Smooth cursor glide (待优化清单 §3.1) ──────────────────────────────
         // Ease the drawn block toward the target cell instead of teleporting. Only
@@ -2798,11 +2885,16 @@ mod tests {
             .expect("a profile")
     }
 
+    /// The built-in registry (Claude + Codex) for launch-spec inference in tests.
+    fn reg() -> tn_agent::AgentRegistry {
+        tn_ai::builtin_registry()
+    }
+
     #[test]
     fn wsl_profile_launches_wsl_exe_with_distro() {
         let p =
             first_profile("[[profiles]]\nname = \"Ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
-        let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
+        let spec = LaunchSpec::from_profile(&p, &reg()).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
         assert_eq!(
             spec.args,
@@ -2826,7 +2918,7 @@ mod tests {
     #[test]
     fn wsl_profile_without_distro_runs_default() {
         let p = first_profile("[[profiles]]\nname = \"WSL\"\nkind = \"wsl\"\n");
-        let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
+        let spec = LaunchSpec::from_profile(&p, &reg()).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
         assert_eq!(spec.args, vec!["--cd".to_string(), "~".to_string()]);
     }
@@ -2840,7 +2932,7 @@ mod tests {
         let p = first_profile(
             "[[profiles]]\nname=\"box\"\nkind=\"ssh\"\nhost=\"example.com\"\nuser=\"alice\"\n",
         );
-        let spec = LaunchSpec::from_profile(&p).expect("ssh profile is launchable");
+        let spec = LaunchSpec::from_profile(&p, &reg()).expect("ssh profile is launchable");
         let cfg = spec.ssh.expect("ssh config present");
         assert_eq!(cfg.host, "example.com");
         assert_eq!(cfg.user, "alice");
@@ -2853,7 +2945,7 @@ mod tests {
     fn ssh_profile_without_host_is_none() {
         let p = first_profile("[[profiles]]\nname=\"box\"\nkind=\"ssh\"\nuser=\"alice\"\n");
         assert!(
-            LaunchSpec::from_profile(&p).is_none(),
+            LaunchSpec::from_profile(&p, &reg()).is_none(),
             "no host -> not launchable"
         );
     }
@@ -2861,7 +2953,7 @@ mod tests {
     #[test]
     fn native_pwsh_runs_directly_with_integration() {
         let p = first_profile("[[profiles]]\nname=\"PS\"\ncommand=\"powershell.exe\"\n");
-        let spec = LaunchSpec::from_profile(&p).expect("pwsh is launchable");
+        let spec = LaunchSpec::from_profile(&p, &reg()).expect("pwsh is launchable");
         assert_eq!(spec.program, "powershell.exe");
         assert!(spec.integrate_pwsh, "native pwsh gets OSC 133 integration");
         assert_eq!(spec.args, vec!["-NoLogo".to_string()]); // empty args defaulted
@@ -2872,12 +2964,12 @@ mod tests {
     #[test]
     fn agent_command_is_hosted_in_pwsh_with_noexit() {
         let p = first_profile("[[profiles]]\nname=\"Claude\"\ncommand=\"claude\"\n");
-        let spec = LaunchSpec::from_profile(&p).expect("claude is launchable");
+        let spec = LaunchSpec::from_profile(&p, &reg()).expect("claude is launchable");
         assert_eq!(spec.program, "powershell.exe", "hosted inside pwsh");
         assert!(!spec.integrate_pwsh);
         assert_eq!(
             spec.agent,
-            Some(AgentKind::ClaudeCode),
+            Some(AgentId::new("claude")),
             "agent inferred from command"
         );
         assert!(
@@ -2901,8 +2993,8 @@ mod tests {
     #[test]
     fn ephemeral_hosted_agent_omits_noexit_and_sentinel() {
         let p = first_profile("[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\n");
-        let spec = LaunchSpec::from_profile_ephemeral(&p).expect("codex is launchable");
-        assert_eq!(spec.agent, Some(AgentKind::Codex));
+        let spec = LaunchSpec::from_profile_ephemeral(&p, &reg()).expect("codex is launchable");
+        assert_eq!(spec.agent, Some(AgentId::new("codex")));
         assert!(
             !spec.args.contains(&"-NoExit".to_string()),
             "ephemeral drops -NoExit"

@@ -11,7 +11,7 @@
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use tn_ai::AgentKind;
+use tn_agent::AgentId;
 
 use crate::terminal_view::{FileNamespace, LaunchSpec};
 
@@ -29,7 +29,8 @@ pub struct LayoutPane {
     pub args: Vec<String>,
     #[serde(default)]
     pub integrate_pwsh: bool,
-    /// `"claude"` / `"codex"` — the launch-intent agent, or `None` for a plain shell.
+    /// The launch-intent agent id (`"claude"` / `"codex"` / any registered id), or
+    /// `None` for a plain shell. Stored as the raw `AgentId` string — open by design.
     #[serde(default)]
     pub agent: Option<String>,
 }
@@ -44,10 +45,8 @@ impl LayoutPane {
                 crate::terminal_view::ShellIntegration::Pwsh => "pwsh".to_string(),
                 crate::terminal_view::ShellIntegration::Bash => "bash".to_string(),
             }),
-            agent: s.agent.map(|a| match a {
-                AgentKind::ClaudeCode => "claude".to_string(),
-                AgentKind::Codex => "codex".to_string(),
-            }),
+            // Open: the agent id string is the wire form — no per-agent arm.
+            agent: s.agent.as_ref().map(|a| a.as_str().to_string()),
         }
     }
 
@@ -80,11 +79,7 @@ impl LayoutPane {
             args: self.args.clone(),
             integrate_pwsh: self.integrate_pwsh,
             shell_integration,
-            agent: match self.agent.as_deref() {
-                Some("claude") => Some(AgentKind::ClaudeCode),
-                Some("codex") => Some(AgentKind::Codex),
-                _ => None,
-            },
+            agent: self.agent.as_deref().map(AgentId::new),
             ssh: None,
             cwd: None,
             file_namespace,
@@ -181,7 +176,7 @@ mod tests {
             agent: Some("claude".into()),
         };
         let spec = p.to_spec();
-        assert_eq!(spec.agent, Some(AgentKind::ClaudeCode));
+        assert_eq!(spec.agent, Some(AgentId::new("claude")));
         assert!(spec.ssh.is_none());
         let back = LayoutPane::from_spec(&spec);
         assert_eq!(back.program, "powershell.exe");

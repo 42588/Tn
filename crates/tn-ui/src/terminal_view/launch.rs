@@ -4,7 +4,7 @@
 //! see [`LaunchSpec::from_profile`]. Pure data + selection logic, no GPUI — the
 //! view ([`super::TerminalView::new`]) consumes a `LaunchSpec` to pick a backend.
 
-use tn_ai::AgentKind;
+use tn_agent::{AgentId, AgentRegistry};
 
 use super::AGENT_EXIT_SENTINEL;
 
@@ -96,8 +96,8 @@ pub struct LaunchSpec {
     /// command blocks, cwd tracking, and agent detection work automatically.
     pub shell_integration: Option<ShellIntegration>,
     /// Which agent this pane hosts (launch-intent signal for per-pane usage).
-    /// `None` for a plain shell — usage is then auto-detected by log freshness.
-    pub agent: Option<AgentKind>,
+    /// `None` for a plain shell. An open [`AgentId`] — built-in or config-declared.
+    pub agent: Option<AgentId>,
     /// When set, this pane is a remote SSH session (M2): the view spawns an
     /// `SshBackend` instead of a local ConPTY, and `program`/`args` are unused
     /// (`program` is just the `user@host` label).
@@ -132,19 +132,19 @@ impl LaunchSpec {
     /// because on Windows those are extensionless npm shims that `CreateProcessW`
     /// can't execute directly — pwsh resolves them via PATH + PATHEXT, and the
     /// shell survives the agent's exit (back to a prompt).
-    pub fn from_profile(p: &tn_config::Profile) -> Option<Self> {
-        Self::from_profile_inner(p, true)
+    pub fn from_profile(p: &tn_config::Profile, reg: &AgentRegistry) -> Option<Self> {
+        Self::from_profile_inner(p, reg, true)
     }
 
     /// Like [`from_profile`](Self::from_profile), but the pwsh hosting a non-pwsh
     /// agent omits `-NoExit`, so exiting the agent exits the PTY. The quick
     /// terminal uses this so "exit claude" returns to its launcher instead of
     /// leaving a lingering pwsh prompt under a stale agent header.
-    pub fn from_profile_ephemeral(p: &tn_config::Profile) -> Option<Self> {
-        Self::from_profile_inner(p, false)
+    pub fn from_profile_ephemeral(p: &tn_config::Profile, reg: &AgentRegistry) -> Option<Self> {
+        Self::from_profile_inner(p, reg, false)
     }
 
-    fn from_profile_inner(p: &tn_config::Profile, persist: bool) -> Option<Self> {
+    fn from_profile_inner(p: &tn_config::Profile, reg: &AgentRegistry, persist: bool) -> Option<Self> {
         // One launch path per profile kind (待优化清单 §6.3). WSL/SSH ignore the
         // command field; everything else needs a command, then forks on whether
         // it's a native pwsh (run directly + integrated) or another program
@@ -154,15 +154,16 @@ impl LaunchSpec {
             tn_config::ProfileKind::Ssh => Self::launch_ssh(p),
             _ => {
                 let command = p.command.clone()?;
-                // Agent identity: an explicit `agent = "..."` wins, else infer from
-                // the command (`claude` / `codex`). This launch-intent signal is
-                // what the status bar reads, so a Codex pane never shows Claude's
-                // usage.
+                // Agent identity (launch-intent signal the status bar reads): an
+                // explicit `agent = "..."` wins — matched against registered command
+                // aliases (so `"claude"` → the claude id), else taken as a literal
+                // open id (a config-declared agent). With no explicit field, infer
+                // from the command via the registry. No per-agent arm here.
                 let agent = p
                     .agent
                     .as_deref()
-                    .and_then(tn_ai::agent_kind_for_command)
-                    .or_else(|| tn_ai::agent_kind_for_command(&command));
+                    .map(|a| reg.match_command(a).unwrap_or_else(|| AgentId::new(a)))
+                    .or_else(|| reg.match_command(&command));
                 let lc = command.to_ascii_lowercase();
                 if lc.contains("powershell") || lc.contains("pwsh") {
                     Some(Self::launch_pwsh(command, &p.args, agent))
@@ -219,7 +220,7 @@ impl LaunchSpec {
 
     /// Native PowerShell: run directly with OSC 133 integration. Empty args
     /// default to `-NoLogo`.
-    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentKind>) -> Self {
+    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentId>) -> Self {
         let mut args = profile_args.to_vec();
         if args.is_empty() {
             args.push("-NoLogo".into());
@@ -244,7 +245,7 @@ impl LaunchSpec {
     fn launch_hosted(
         command: String,
         profile_args: &[String],
-        agent: Option<AgentKind>,
+        agent: Option<AgentId>,
         persist: bool,
     ) -> Self {
         let mut invoke = format!("& '{}'", command.replace('\'', "''"));
