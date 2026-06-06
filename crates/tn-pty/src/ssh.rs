@@ -471,7 +471,8 @@ async fn run_session(
             }
         };
 
-        let auth_method = match authenticate(&mut handle, &mut cfg, &event_tx, &waker, &in_tx).await {
+        let auth_method = match authenticate(&mut handle, &mut cfg, &event_tx, &waker, &in_tx).await
+        {
             Ok(m) => m,
             Err(e) => {
                 let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 认证失败: {}\r\n", e);
@@ -673,7 +674,8 @@ async fn authenticate(
             let password = match &cfg.password {
                 Some(pw) => Some(pw.clone()),
                 None => {
-                    let reply = prompt_password(cfg, event_tx, waker, in_tx, last_error.take()).await;
+                    let reply =
+                        prompt_password(cfg, event_tx, waker, in_tx, last_error.take()).await;
                     if let Some(reply) = reply {
                         if reply.remember && !reply.password.is_empty() {
                             cfg.password = Some(reply.password.clone());

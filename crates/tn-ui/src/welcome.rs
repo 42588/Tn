@@ -139,8 +139,8 @@ pub(crate) enum LaunchEntry {
 
 /// Collapse a discovered-profile list into launch cards: each shell/agent profile
 /// stays its own card; **all** WSL distros fold into ONE [`LaunchEntry::Wsl`] (only
-/// when ≥1 exists); a [`LaunchEntry::SshSoon`] placeholder is always appended.
-/// Configured SSH profiles fold away too (not launchable until SSH is un-parked).
+/// when ≥1 exists); a single SSH prompt card is always appended. Configured SSH
+/// profiles fold into that prompt instead of appearing as separate launch tiles.
 pub(crate) fn launch_entries(profiles: &[Profile]) -> Vec<LaunchEntry> {
     let mut agents = Vec::new();
     let mut shells = Vec::new();

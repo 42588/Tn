@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tn_ai::AgentKind;
 
-use crate::terminal_view::LaunchSpec;
+use crate::terminal_view::{FileNamespace, LaunchSpec};
 
 /// Number of layout slots offered in the manager.
 pub const SLOTS: usize = 7;
@@ -68,6 +68,13 @@ impl LayoutPane {
                 }
             }
         };
+        let file_namespace = if self.program.eq_ignore_ascii_case("wsl.exe") {
+            FileNamespace::Wsl {
+                distro: wsl_distro_from_args(&self.args),
+            }
+        } else {
+            FileNamespace::Host
+        };
         LaunchSpec {
             program: self.program.clone(),
             args: self.args.clone(),
@@ -80,8 +87,14 @@ impl LayoutPane {
             },
             ssh: None,
             cwd: None,
+            file_namespace,
         }
     }
+}
+
+fn wsl_distro_from_args(args: &[String]) -> Option<String> {
+    args.windows(2)
+        .find_map(|w| (w[0] == "-d" || w[0] == "--distribution").then(|| w[1].clone()))
 }
 
 /// A serializable mirror of `workspace::Node` (leaves = launchers, not live panes).

@@ -243,8 +243,8 @@ impl TerminalView {
             None => head,
         };
         let mut head = head.child(div().flex_1()); // .sp
-        // B4/C3: SSH connection state as one polished info pill:
-        // `已连接 root@host:port 登录方案 密钥`.
+                                                   // B4/C3: SSH connection state as one polished info pill:
+                                                   // `已连接 root@host:port 登录方案 密钥`.
         if let Some(state) = self.ssh_conn {
             use super::SshConnState::*;
             let (color, status) = match state {

@@ -586,6 +586,10 @@ impl QuickLook {
         }
 
         self.path = Some(path.clone());
+        self.root = path
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
         self.tab = Tab::File;
         self.editing = false;
         self.sel_anchor = None; // 清上个文件残留的(预览)选区

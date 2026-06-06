@@ -8,6 +8,70 @@ use tn_ai::AgentKind;
 
 use super::AGENT_EXIT_SENTINEL;
 
+/// Which filesystem namespace a pane's cwd belongs to. The terminal may display
+/// any cwd string, but only explicitly-mapped namespaces may drive host file I/O.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileNamespace {
+    Host,
+    Wsl { distro: Option<String> },
+    Ssh,
+}
+
+impl FileNamespace {
+    pub fn host_process_path_from_cwd(&self, cwd: &str) -> Option<std::path::PathBuf> {
+        match self {
+            FileNamespace::Host => host_process_path(cwd),
+            FileNamespace::Wsl { .. } | FileNamespace::Ssh => None,
+        }
+    }
+
+    pub fn browsable_path_from_cwd(&self, cwd: &str) -> Option<std::path::PathBuf> {
+        match self {
+            FileNamespace::Host => host_process_path(cwd),
+            FileNamespace::Wsl { distro } => wsl_unc_path(distro.as_deref()?, cwd),
+            FileNamespace::Ssh => None,
+        }
+    }
+}
+
+pub fn is_host_process_path(path: &std::path::Path) -> bool {
+    let s = path.to_string_lossy();
+    host_process_path(&s).is_some() && !is_wsl_unc(&s)
+}
+
+fn host_process_path(cwd: &str) -> Option<std::path::PathBuf> {
+    let s = cwd.trim();
+    if s.len() >= 3 {
+        let b = s.as_bytes();
+        if b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/') {
+            return Some(std::path::PathBuf::from(s));
+        }
+    }
+    if (s.starts_with(r"\\") || s.starts_with("//")) && !is_wsl_unc(s) {
+        return Some(std::path::PathBuf::from(s));
+    }
+    None
+}
+
+fn is_wsl_unc(path: &str) -> bool {
+    let s = path.replace('/', "\\").to_ascii_lowercase();
+    s.starts_with(r"\\wsl$\") || s.starts_with(r"\\wsl.localhost\")
+}
+
+fn wsl_unc_path(distro: &str, cwd: &str) -> Option<std::path::PathBuf> {
+    let cwd = cwd.trim();
+    if cwd.is_empty() || !cwd.starts_with('/') {
+        return None;
+    }
+    let rel = cwd.trim_start_matches('/').replace('/', "\\");
+    let prefix = format!(r"\\wsl$\{}", distro);
+    Some(if rel.is_empty() {
+        std::path::PathBuf::from(prefix)
+    } else {
+        std::path::PathBuf::from(format!(r"{prefix}\{rel}"))
+    })
+}
+
 /// Which shell-integration flavour to inject at spawn time.
 /// `None` means no shell-integration markers are injected (plain WSL/SSH without
 /// the extra hooks, or a hosted agent pane that has no shell prompt to annotate).
@@ -42,6 +106,7 @@ pub struct LaunchSpec {
     /// Workspace::spawn_pane_with fills it from the explorer root so the
     /// process inherits the file-tree directory.
     pub cwd: Option<std::path::PathBuf>,
+    pub file_namespace: FileNamespace,
 }
 
 impl LaunchSpec {
@@ -55,6 +120,7 @@ impl LaunchSpec {
             integrate_pwsh: true,
             agent: None,
             cwd: None,
+            file_namespace: FileNamespace::Host,
         }
     }
 
@@ -117,6 +183,8 @@ impl LaunchSpec {
             args.push("-d".to_string());
             args.push(distro.to_string());
         }
+        args.push("--cd".to_string());
+        args.push("~".to_string());
         Self {
             program: "wsl.exe".into(),
             args,
@@ -125,6 +193,9 @@ impl LaunchSpec {
             agent: None,
             ssh: None,
             cwd: None,
+            file_namespace: FileNamespace::Wsl {
+                distro: p.distro.clone(),
+            },
         }
     }
 
@@ -142,6 +213,7 @@ impl LaunchSpec {
             agent: None,
             cwd: None,
             ssh: Some(cfg),
+            file_namespace: FileNamespace::Ssh,
         })
     }
 
@@ -160,6 +232,7 @@ impl LaunchSpec {
             agent,
             ssh: None,
             cwd: None,
+            file_namespace: FileNamespace::Host,
         }
     }
 
@@ -201,6 +274,44 @@ impl LaunchSpec {
             agent,
             ssh: None,
             cwd: None,
+            file_namespace: FileNamespace::Host,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_namespace_rejects_unix_paths() {
+        assert!(FileNamespace::Host
+            .browsable_path_from_cwd(r"C:\Users\Gua")
+            .is_some());
+        assert!(FileNamespace::Host
+            .browsable_path_from_cwd("/home/gua/project")
+            .is_none());
+        assert!(FileNamespace::Ssh
+            .browsable_path_from_cwd("/Users/gua/project")
+            .is_none());
+    }
+
+    #[test]
+    fn wsl_namespace_maps_to_wsl_unc_not_windows_drive() {
+        let ns = FileNamespace::Wsl {
+            distro: Some("Ubuntu".into()),
+        };
+        let p = ns.browsable_path_from_cwd("/home/gua/project").unwrap();
+        let s = p.to_string_lossy().replace('/', "\\");
+        assert!(s.starts_with(r"\\wsl$\Ubuntu\home\gua\project"));
+        assert!(ns.host_process_path_from_cwd("/home/gua/project").is_none());
+    }
+
+    #[test]
+    fn host_process_path_rejects_wsl_unc() {
+        assert!(is_host_process_path(std::path::Path::new(r"D:\coder\Tn")));
+        assert!(!is_host_process_path(std::path::Path::new(
+            r"\\wsl$\Ubuntu\home\gua"
+        )));
     }
 }

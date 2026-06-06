@@ -21,14 +21,15 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::explorer::{ExplorerView, OpenFile};
+use crate::explorer::{ExplorerRoot, ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::ssh_recents::{AuthBadge, SshRecents};
 use crate::terminal_view::{
-    FilesChanged, LaunchSpec, OpenInQuickLook, SshCloseRequested, SshConnected,
-    SshRememberPassword, SshRetryRequested, TerminalView, UsageUpdated,
+    is_host_process_path, CwdChanged, FileNamespace, FilesChanged, LaunchSpec, OpenInQuickLook,
+    SshCloseRequested, SshConnected, SshRememberPassword, SshRetryRequested, TerminalView,
+    UsageUpdated,
 };
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 
@@ -170,6 +171,33 @@ pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
         });
     }
     profiles
+}
+
+fn wsl_unc_from_linux_cwd(distro: &str, cwd: &str) -> std::path::PathBuf {
+    let rel = cwd.trim_start_matches('/').replace('/', "\\");
+    let prefix = format!(r"\\wsl$\{}", distro);
+    if rel.is_empty() {
+        std::path::PathBuf::from(prefix)
+    } else {
+        std::path::PathBuf::from(format!(r"{prefix}\{rel}"))
+    }
+}
+
+fn explorer_root_for_pane(view: &TerminalView) -> Option<ExplorerRoot> {
+    match view.file_namespace() {
+        FileNamespace::Host => view.effective_browsable_cwd().map(ExplorerRoot::host),
+        FileNamespace::Wsl {
+            distro: Some(distro),
+        } => {
+            let linux_cwd = view.cwd().filter(|cwd| cwd.starts_with('/'))?;
+            let unc = wsl_unc_from_linux_cwd(&distro, &linux_cwd);
+            Some(ExplorerRoot::wsl(distro, linux_cwd, unc))
+        }
+        // Without a concrete WSL distro or a remote filesystem backend, the file
+        // explorer has no host-browsable path to enumerate. Keep the previous tree
+        // instead of re-rooting to an empty Remote placeholder.
+        FileNamespace::Wsl { distro: None } | FileNamespace::Ssh => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -675,10 +703,7 @@ enum SshConnRow {
     },
     /// A `Host` alias from `~/.ssh/config` (A4): not yet connected, just an
     /// endpoint OpenSSH already knows. `target` is `[user@]host[:port]`.
-    Config {
-        alias: String,
-        target: String,
-    },
+    Config { alias: String, target: String },
 }
 
 /// C2 pre-dial validation of a typed `[user@]host[:port]`. Returns `Err(msg)`
@@ -686,7 +711,7 @@ enum SshConnRow {
 /// *before* dialing (empty host, dangling `@`/`:`, out-of-range port). A
 /// non-numeric `:suffix` is left alone — it stays part of the host, matching
 /// `SshConfig::parse`. Empty input is `Ok` (placeholder state, nothing to flag).
-fn validate_ssh_target(typed: &str) -> Result<(), &'static str> {
+pub(crate) fn validate_ssh_target(typed: &str) -> Result<(), &'static str> {
     let t = typed.trim();
     if t.is_empty() {
         return Ok(());
@@ -1099,16 +1124,20 @@ impl Workspace {
         // Use the active pane's cwd when splitting inside an existing tab, so the
         // new pane opens in the same directory as its sibling. Fall back to the
         // explorer root for the first pane (no sibling to inherit from).
-        launch.cwd.get_or_insert_with(|| {
-            // The very first pane (TN_AUTOQUIT/DEMO) is spawned *before* its tab is
-            // pushed, so `self.tabs[self.active]` would be out of bounds — fall back
-            // to the explorer root then. `.get` keeps this safe for the first pane.
-            self.tabs
-                .get(self.active)
-                .and_then(|tab| self.panes.get(&tab.focused))
-                .and_then(|v| v.read(cx).effective_cwd().map(std::path::PathBuf::from))
-                .unwrap_or_else(|| self.explorer.read(cx).root())
-        });
+        if launch.file_namespace == FileNamespace::Host && launch.cwd.is_none() {
+            let inherited = {
+                // The very first pane (TN_AUTOQUIT/DEMO) is spawned *before* its tab is
+                // pushed, so `self.tabs[self.active]` would be out of bounds — fall back
+                // to the explorer root then. `.get` keeps this safe for the first pane.
+                self.tabs
+                    .get(self.active)
+                    .and_then(|tab| self.panes.get(&tab.focused))
+                    .and_then(|v| v.read(cx).effective_host_process_cwd())
+            };
+            let explorer_root = self.explorer.read(cx).root_path();
+            launch.cwd = inherited
+                .or_else(|| explorer_root.filter(|root| is_host_process_path(root.as_path())));
+        }
         let id = self.next_id;
         self.next_id += 1;
         self.install_pane(id, launch, cx);
@@ -1128,6 +1157,11 @@ impl Workspace {
         // rather than relying on plain `notify`).
         cx.subscribe(&view, |_ws, _view, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
+        // Repaint workspace when the pane's CWD changes so the explorer follows it.
+        cx.subscribe(&view, |_ws, _view, _ev: &CwdChanged, cx| {
+            cx.notify();
+        })
+        .detach();
         // File watcher fired → refresh explorer tree and git tags.
         cx.subscribe(&view, |ws, _view, _ev: &FilesChanged, cx| {
             ws.explorer.update(cx, |explorer, cx| explorer.rebuild(cx));
@@ -1230,27 +1264,35 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Send `cd <dir>` to every **plain local shell** pane (`打开文件夹`). Agents
-    /// (Claude/Codex), WSL and SSH panes are skipped — they don't take a host `cd`.
-    fn cd_shells_to(&self, dir: &std::path::Path, cx: &Context<Self>) {
-        let path = dir.to_string_lossy().to_string();
+    /// Send `cd <dir>` to every terminal pane, mapping the explorer root to each pane's namespace.
+    fn cd_panes_to_root(&self, root: &ExplorerRoot, cx: &Context<Self>) {
         for (id, view) in &self.panes {
             let Some(spec) = self.pane_specs.get(id) else {
                 continue;
             };
-            let prog = spec.program.to_ascii_lowercase();
-            let is_plain_shell = spec.agent.is_none()
-                && spec.ssh.is_none()
-                && (prog.contains("powershell") || prog.contains("pwsh") || prog.contains("cmd"));
-            if !is_plain_shell {
+            if spec.agent.is_some() {
                 continue;
             }
-            // cmd needs `/d` to switch drives; pwsh's `cd`(Set-Location) changes
-            // drive on its own. Quote the path for spaces.
-            let line = if prog.contains("cmd") {
-                format!("cd /d \"{path}\"\r")
+            let Some(target_path) = root.path_for_namespace(&spec.file_namespace) else {
+                continue;
+            };
+            let prog = spec.program.to_ascii_lowercase();
+            let is_cmd = prog.contains("cmd");
+
+            let line = if spec.ssh.is_some() || spec.file_namespace == FileNamespace::Ssh {
+                format!("cd \"{target_path}\"\r")
+            } else if matches!(spec.file_namespace, FileNamespace::Wsl { .. }) {
+                format!("cd \"{target_path}\"\r")
+            } else if is_cmd {
+                if !is_host_process_path(std::path::Path::new(&target_path)) {
+                    continue;
+                }
+                format!("cd /d \"{target_path}\"\r")
             } else {
-                format!("cd \"{path}\"\r")
+                if !is_host_process_path(std::path::Path::new(&target_path)) {
+                    continue;
+                }
+                format!("cd \"{target_path}\"\r")
             };
             view.read(cx).send_bytes(line.as_bytes());
         }
@@ -2146,12 +2188,16 @@ impl Workspace {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             if let Ok(Ok(Some(paths))) = recv.await {
                 if let Some(p) = paths.into_iter().next() {
-                    let _ = explorer.update(cx, |e, cx| e.set_root(p.clone(), cx));
+                    let picked_root = ExplorerRoot::from_accessible_path(p.clone());
+                    let _ =
+                        explorer.update(cx, |e, cx| e.set_browser_root(picked_root.clone(), cx));
                     let _ = this.update(cx, |ws, cx| {
                         ws.explorer_open = true;
-                        ws.cd_shells_to(&p, cx);
-                        for view in ws.panes.values() {
-                            view.update(cx, |v, cx| v.set_rail_root(&p, cx));
+                        ws.cd_panes_to_root(&picked_root, cx);
+                        if let Some(path) = picked_root.path_buf() {
+                            for view in ws.panes.values() {
+                                view.update(cx, |v, cx| v.set_rail_root(&path, cx));
+                            }
                         }
                         cx.notify();
                     });
@@ -2394,6 +2440,7 @@ impl Workspace {
             agent: None,
             ssh: Some(cfg),
             cwd: None,
+            file_namespace: FileNamespace::Ssh,
         };
         match self.ssh_prompt_intent.take() {
             Some(SshPromptIntent::Welcome) => {
@@ -2801,10 +2848,7 @@ impl Workspace {
                                         .child(SharedString::from(when)),
                                 )
                         }
-                        SshConnRow::Config {
-                            alias,
-                            target,
-                        } => {
+                        SshConnRow::Config { alias, target } => {
                             // A4: connect via the alias so ssh-config rules apply.
                             let conn_alias = alias.clone();
                             base()
@@ -4014,12 +4058,11 @@ impl Render for Workspace {
         // the expansion state, so `cd` into a subdir — or back out — doesn't
         // collapse the tree (子目录保留展开态). Skip welcome tabs (no panes).
         if !self.tabs[active].welcome {
-            if let Some(cwd) = self
+            if let Some(new_root) = self
                 .panes
                 .get(&focused)
-                .and_then(|v| v.read(cx).effective_cwd())
+                .and_then(|v| explorer_root_for_pane(&v.read(cx)))
             {
-                let new_root = std::path::PathBuf::from(&cwd);
                 if self.explorer.read(cx).root() != new_root {
                     self.explorer
                         .update(cx, |e, cx| e.follow_root(new_root, cx));

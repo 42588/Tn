@@ -72,12 +72,13 @@ __tn_pe() {
 }
 trap '__tn_pe' DEBUG
 
-# precmd: emit OSC 133;D (exit code) + OSC 133;A (prompt start).
+# precmd: emit OSC 133;D (exit code) + Cwd + OSC 133;A (prompt start).
 # MUST capture $? first - reading anything else resets it.
 __tn_pc() {
     __tn_in_cmd=0
     local __tn_code=$?
     printf '\033]133;D;%s\007' "$__tn_code"
+    printf '\033]633;P;Cwd=%s\007' "$PWD"
     printf '\033]133;A\007'
 }
 
@@ -126,9 +127,10 @@ preexec() {
     printf '\033]133;C\007'
 }
 
-# precmd: emit OSC 133;D (exit code) + OSC 133;A (prompt start).
+# precmd: emit OSC 133;D (exit code) + Cwd + OSC 133;A (prompt start).
 precmd() {
     printf '\033]133;D;%s\007' "$?"
+    printf '\033]633;P;Cwd=%s\007' "$PWD"
     printf '\033]133;A\007'
 }
 

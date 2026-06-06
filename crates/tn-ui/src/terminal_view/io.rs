@@ -25,8 +25,8 @@ use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
 use super::{
-    ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS,
-    CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
+    CwdChanged, ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS,
+    CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
 impl TerminalView {
@@ -198,6 +198,14 @@ impl TerminalView {
                         view.sync_shell_agent(cx);
                         // BEL on this batch → start the flash / beep (待优化清单 §3.8).
                         view.handle_bell_if_rung(cx);
+
+                        // Check if the current working directory has changed and emit CwdChanged
+                        let current_cwd = view.cwd();
+                        if current_cwd != view.last_cwd {
+                            view.last_cwd = current_cwd;
+                            cx.emit(CwdChanged);
+                        }
+
                         cx.notify();
                     })
                     .is_ok();
@@ -505,10 +513,9 @@ impl TerminalView {
     /// Bounded git runs off-thread in `refresh_changes`. `None` if unwatchable.
     pub(super) fn spawn_change_watcher(
         cx: &mut Context<Self>,
-        cwd: String,
+        root: PathBuf,
     ) -> Option<notify::RecommendedWatcher> {
         use notify::Watcher;
-        let root = PathBuf::from(&cwd);
         if !root.is_dir() {
             return None;
         }

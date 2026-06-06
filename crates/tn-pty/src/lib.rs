@@ -168,10 +168,7 @@ pub enum PtyEvent {
     },
     /// SSH connection progressed to a new phase (B1 progress card). `detail` is a
     /// short human note for the active step (resolved host, key file, …).
-    SshProgress {
-        phase: SshPhase,
-        detail: String,
-    },
+    SshProgress { phase: SshPhase, detail: String },
     /// SSH connection failed unrecoverably (C1 error card). `offered` lists the
     /// auth methods the server advertised (e.g. `publickey · password`), empty if
     /// unknown.
@@ -190,9 +187,7 @@ pub enum PtyEvent {
     },
     /// Authentication succeeded and the remote shell is open — the UI records
     /// this target as a recent connection, tagged with the method used.
-    Connected {
-        method: AuthKind,
-    },
+    Connected { method: AuthKind },
     /// The connection was lost. The UI can choose to reconnect.
     Disconnected,
 }
@@ -212,7 +207,7 @@ pub trait PtyBackend: Send {
     fn wait(&mut self) -> anyhow::Result<i32>;
     /// Poll whether the child has exited yet, without blocking.
     fn try_wait(&mut self) -> anyhow::Result<Option<i32>>;
-    
+
     /// Try to receive an asynchronous event from the backend (e.g. password prompt).
     fn try_recv_event(&mut self) -> Option<PtyEvent> {
         None

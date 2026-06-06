@@ -12,9 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, AsyncApp, Context,
-    FocusHandle, KeyDownEvent, MouseButton, ScrollStrategy, SharedString, UniformListScrollHandle,
-    WeakEntity, Window,
+    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, AnyElement,
+    AsyncApp, Context, FocusHandle, KeyDownEvent, MouseButton, ScrollStrategy, SharedString,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 
@@ -93,6 +93,145 @@ const TREE_ROW_H: f32 = 26.0; // §16 .tnode height 26
 /// Emitted when a file row is clicked, so the workspace can open it in the viewer.
 pub struct OpenFile(pub PathBuf);
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExplorerFs {
+    Host,
+    Wsl { distro: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExplorerRoot {
+    fs: ExplorerFs,
+    path: Option<PathBuf>,
+    display_path: String,
+}
+
+impl ExplorerRoot {
+    pub fn host(path: PathBuf) -> Self {
+        let display_path = path.to_string_lossy().to_string();
+        Self {
+            fs: ExplorerFs::Host,
+            path: Some(path),
+            display_path,
+        }
+    }
+
+    pub fn wsl(distro: String, linux_path: String, unc_path: PathBuf) -> Self {
+        let linux_path = if linux_path == "/" {
+            "/".to_string()
+        } else {
+            linux_path.trim_end_matches('/').to_string()
+        };
+        let display_path = format!("{distro}:{linux_path}");
+        Self {
+            fs: ExplorerFs::Wsl { distro },
+            path: Some(unc_path),
+            display_path,
+        }
+    }
+
+    pub fn from_accessible_path(path: PathBuf) -> Self {
+        if let Some((distro, linux_path)) = parse_wsl_unc(&path) {
+            Self::wsl(distro, linux_path, path)
+        } else {
+            Self::host(path)
+        }
+    }
+
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    pub fn path_buf(&self) -> Option<PathBuf> {
+        self.path.clone()
+    }
+
+    pub fn is_browsable(&self) -> bool {
+        self.path.is_some()
+    }
+
+    pub fn path_for_namespace(&self, ns: &crate::terminal_view::FileNamespace) -> Option<String> {
+        match (&self.fs, ns) {
+            // Local Host namespace expects Windows path / UNC path
+            (_, crate::terminal_view::FileNamespace::Host) => {
+                self.path.as_ref().map(|p| p.to_string_lossy().to_string())
+            }
+            // WSL namespace expects Linux path
+            (
+                ExplorerFs::Wsl {
+                    distro: root_distro,
+                },
+                crate::terminal_view::FileNamespace::Wsl {
+                    distro: pane_distro,
+                },
+            ) => {
+                if pane_distro.as_ref().map_or(true, |d| d == root_distro) {
+                    if let Some(path) = &self.path {
+                        if let Some((_, linux_path)) = parse_wsl_unc(path) {
+                            return Some(linux_path);
+                        }
+                    }
+                }
+                None
+            }
+            // Host Windows path to WSL Linux path: C:\Users -> /mnt/c/Users
+            (ExplorerFs::Host, crate::terminal_view::FileNamespace::Wsl { .. }) => self
+                .path
+                .as_ref()
+                .and_then(|p| windows_drive_to_wsl_mount(p)),
+            _ => None,
+        }
+    }
+
+    fn supports_git_status(&self) -> bool {
+        matches!(self.fs, ExplorerFs::Host)
+    }
+
+    fn same_fs(&self, other: &Self) -> bool {
+        self.fs == other.fs
+    }
+
+    fn header_label(&self) -> String {
+        match &self.fs {
+            ExplorerFs::Host => self
+                .path
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| self.display_path.clone()),
+            ExplorerFs::Wsl { .. } => self.display_path.clone(),
+        }
+    }
+}
+
+fn parse_wsl_unc(path: &Path) -> Option<(String, String)> {
+    let s = path.to_string_lossy().replace('/', "\\");
+    let rest = s
+        .strip_prefix(r"\\wsl$\")
+        .or_else(|| s.strip_prefix(r"\\wsl.localhost\"))?;
+    let mut parts = rest.split('\\').filter(|p| !p.is_empty());
+    let distro = parts.next()?.to_string();
+    let linux_tail: Vec<&str> = parts.collect();
+    let linux_path = if linux_tail.is_empty() {
+        "/".to_string()
+    } else {
+        format!("/{}", linux_tail.join("/"))
+    };
+    Some((distro, linux_path))
+}
+
+fn windows_drive_to_wsl_mount(path: &Path) -> Option<String> {
+    let s = path.to_string_lossy().replace('\\', "/");
+    let b = s.as_bytes();
+    if s.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'/' {
+        let drive = (b[0] as char).to_ascii_lowercase();
+        Some(format!("/mnt/{}{}", drive, &s[2..]))
+    } else {
+        None
+    }
+}
+
 /// One rendered tree row (a directory or a file at some depth).
 #[derive(Clone)]
 struct Row {
@@ -105,10 +244,12 @@ struct Row {
 
 pub struct ExplorerView {
     config: Arc<Loaded>,
-    root: PathBuf,
+    root: ExplorerRoot,
     expanded: HashSet<PathBuf>,
     selected: Option<PathBuf>,
     rows: Vec<Row>,
+    read_error: Option<String>,
+    rebuilding: bool,
     /// `git status --porcelain` tags, keyed by forward-slash path relative to
     /// the root (`crates/tn-ui/src/x.rs` → 'M'). Refreshed asynchronously.
     git_status: HashMap<String, char>,
@@ -117,6 +258,7 @@ pub struct ExplorerView {
     git_stale: bool,
     /// Keeps the background git task alive until completion.
     _git_task: Option<gpui::Task<()>>,
+    rebuild_rev: u64,
     scroll_handle: UniformListScrollHandle,
     focus_handle: FocusHandle,
     _change_watcher: Option<notify::RecommendedWatcher>,
@@ -197,20 +339,26 @@ impl ExplorerView {
             .or_else(|| std::env::var_os("HOME"))
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let root = ExplorerRoot::host(root);
         let mut me = Self {
             config,
             root: root.clone(),
             expanded: HashSet::new(),
             selected: None,
             rows: Vec::new(),
+            read_error: None,
+            rebuilding: false,
             git_status: HashMap::new(),
             git_stale: true,
             _git_task: None,
+            rebuild_rev: 0,
             scroll_handle: UniformListScrollHandle::default(),
             focus_handle: cx.focus_handle(),
             _change_watcher: None,
         };
-        me._change_watcher = Self::spawn_change_watcher(&root, cx);
+        me._change_watcher = root
+            .path()
+            .and_then(|path| Self::spawn_change_watcher(path, cx));
         me.rebuild(cx);
         me
     }
@@ -278,11 +426,19 @@ impl ExplorerView {
 
     /// Re-root the tree at `root` (app menu「打开文件夹」): reset expansion +
     /// selection, then rebuild from the new folder (refreshing git status for it).
-    pub fn set_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    pub fn set_browser_root(&mut self, root: ExplorerRoot, cx: &mut Context<Self>) {
+        if !root.is_browsable() {
+            return;
+        }
+        let watcher_root = root.path_buf();
         self.root = root.clone();
         self.expanded.clear();
         self.selected = None;
-        self._change_watcher = Self::spawn_change_watcher(&root, cx);
+        self.read_error = None;
+        self.git_status.clear();
+        self._change_watcher = watcher_root
+            .as_deref()
+            .and_then(|path| Self::spawn_change_watcher(path, cx));
         self.rebuild(cx);
     }
 
@@ -293,23 +449,46 @@ impl ExplorerView {
     /// you `cd` into a subdirectory. When backing out, direct ancestors remain
     /// expanded, though distant siblings are pruned to prevent memory leaks (待优化清单 §7).
     /// The selection is kept only while it still points inside the new root.
-    pub fn follow_root(&mut self, root: PathBuf, cx: &mut Context<Self>) {
+    pub fn follow_root(&mut self, root: ExplorerRoot, cx: &mut Context<Self>) {
+        if !root.is_browsable() {
+            return;
+        }
         if self.root == root {
             return;
         }
+        let old = self.root.clone();
+        let watcher_root = root.path_buf();
         self.root = root.clone();
-        self.expanded
-            .retain(|p| p.starts_with(&root) || root.starts_with(p));
-        self._change_watcher = Self::spawn_change_watcher(&root, cx);
-        self.selected = selection_under_root(&self.selected, &root);
+        if old.same_fs(&root) {
+            if let Some(root_path) = root.path() {
+                self.expanded
+                    .retain(|p| p.starts_with(root_path) || root_path.starts_with(p));
+                self.selected = selection_under_root(&self.selected, root_path);
+            } else {
+                self.expanded.clear();
+                self.selected = None;
+            }
+        } else {
+            self.expanded.clear();
+            self.selected = None;
+        }
+        self._change_watcher = watcher_root
+            .as_deref()
+            .and_then(|path| Self::spawn_change_watcher(path, cx));
+        self.git_status.clear();
+        self.read_error = None;
         self.rebuild(cx);
     }
 
     /// The current tree root — the single source of truth for the working
     /// directory. Pane launch cwd and activity-rail git directory both read
     /// this so they stay in sync with the explorer.
-    pub fn root(&self) -> PathBuf {
+    pub fn root(&self) -> ExplorerRoot {
         self.root.clone()
+    }
+
+    pub fn root_path(&self) -> Option<PathBuf> {
+        self.root.path_buf()
     }
 
     /// Run `git status --porcelain` in the root and map each changed path
@@ -375,17 +554,24 @@ impl ExplorerView {
         }
     }
 
-    /// Read `dir`'s entries, drop hidden/ignored, and sort directories first
-    /// then files, each alphabetically (case-insensitive).
-    fn read_dir_sorted(dir: &Path) -> Vec<(PathBuf, String, bool)> {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return Vec::new();
-        };
+    fn include_entry_name(name: &str, show_dotfiles: bool) -> bool {
+        !IGNORED.contains(&name) && (show_dotfiles || !name.starts_with('.'))
+    }
+
+    /// Read `dir`'s entries, drop ignored entries, and sort directories first
+    /// then files, each alphabetically (case-insensitive). Host roots keep hiding
+    /// dotfiles; WSL roots show them because Linux home/root dirs often contain
+    /// only dotfiles such as `.bashrc`, `.profile`, or `.ssh`.
+    fn read_dir_sorted(
+        dir: &Path,
+        show_dotfiles: bool,
+    ) -> std::io::Result<Vec<(PathBuf, String, bool)>> {
+        let entries = std::fs::read_dir(dir)?;
         let mut out: Vec<(PathBuf, String, bool)> = entries
-            .flatten()
+            .filter_map(Result::ok)
             .filter_map(|e| {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || IGNORED.contains(&name.as_str()) {
+                if !Self::include_entry_name(&name, show_dotfiles) {
                     return None;
                 }
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -396,13 +582,19 @@ impl ExplorerView {
             b.2.cmp(&a.2) // dirs (true) before files (false)
                 .then_with(|| a.1.to_ascii_lowercase().cmp(&b.1.to_ascii_lowercase()))
         });
-        out
+        Ok(out)
     }
 
-    fn walk(dir: &Path, depth: usize, expanded: &HashSet<PathBuf>, out: &mut Vec<Row>) {
-        for (path, name, is_dir) in Self::read_dir_sorted(dir) {
+    fn walk(
+        dir: &Path,
+        depth: usize,
+        expanded: &HashSet<PathBuf>,
+        show_dotfiles: bool,
+        out: &mut Vec<Row>,
+    ) -> std::io::Result<()> {
+        for (path, name, is_dir) in Self::read_dir_sorted(dir, show_dotfiles)? {
             if out.len() >= MAX_ROWS {
-                return;
+                return Ok(());
             }
             let is_expanded = is_dir && expanded.contains(&path);
             out.push(Row {
@@ -413,33 +605,59 @@ impl ExplorerView {
                 expanded: is_expanded,
             });
             if is_expanded {
-                Self::walk(&path, depth + 1, expanded, out);
+                let _ = Self::walk(&path, depth + 1, expanded, show_dotfiles, out);
             }
         }
+        Ok(())
     }
 
     /// Rebuild the cached row list from the filesystem + current expansion.
     /// Runs off-thread to prevent blocking the UI on huge projects or slow disks.
     /// Git status is refreshed asynchronously on the next render cycle.
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
-        let root = self.root.clone();
+        self.rebuild_rev = self.rebuild_rev.wrapping_add(1);
+        let rev = self.rebuild_rev;
+        let Some(root) = self.root.path_buf() else {
+            self.rows.clear();
+            self.git_status.clear();
+            self.git_stale = false;
+            self.read_error = Some("No browsable path for this namespace.".to_string());
+            self.rebuilding = false;
+            cx.notify();
+            return;
+        };
+        let expected_root = root.clone();
         let expanded = self.expanded.clone();
+        let supports_git = self.root.supports_git_status();
+        let show_dotfiles = matches!(self.root.fs, ExplorerFs::Wsl { .. });
+        self.rebuilding = true;
+        self.read_error = None;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            let rows = cx
+            let (rows, read_error) = cx
                 .background_executor()
                 .spawn(async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
                     std::thread::spawn(move || {
                         let mut out = Vec::new();
-                        Self::walk(&root, 0, &expanded, &mut out);
-                        let _ = tx.send(out);
+                        let read_error = Self::walk(&root, 0, &expanded, show_dotfiles, &mut out)
+                            .err()
+                            .map(|e| e.to_string());
+                        let _ = tx.send((out, read_error));
                     });
                     rx.await.unwrap_or_default()
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                if this.rebuild_rev != rev || this.root.path() != Some(expected_root.as_path()) {
+                    return;
+                }
                 this.rows = rows;
-                this.git_stale = true;
+                this.read_error = read_error;
+                this.rebuilding = false;
+                this.git_stale = supports_git;
+                if !supports_git {
+                    this.git_status.clear();
+                }
                 cx.notify();
             });
         })
@@ -449,7 +667,14 @@ impl ExplorerView {
     /// Kick off an async git-status refresh. Safe to call from any context;
     /// only one task runs at a time (the flag is cleared immediately).
     fn start_git_refresh(&mut self, cx: &mut Context<Self>) {
-        let root = self.root.clone();
+        if !self.root.supports_git_status() {
+            self.git_status.clear();
+            return;
+        }
+        let Some(root) = self.root.path_buf() else {
+            self.git_status.clear();
+            return;
+        };
         let exec = cx.background_executor().clone();
         let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // compute_git_status 内部走 gitutil::capture_bounded,会**同步阻塞调用线程**
@@ -614,11 +839,7 @@ impl Render for ExplorerView {
         }
 
         let ui = &self.config.theme.ui;
-        let root_name = self
-            .root
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "/".into());
+        let root_name = self.root.header_label();
 
         let header = div()
             .flex()
@@ -635,6 +856,9 @@ impl Render for ExplorerView {
             .child(div().child("Explorer · "))
             .child(
                 div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(col(ui.accent))
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(SharedString::from(root_name)),
@@ -643,12 +867,97 @@ impl Render for ExplorerView {
         // Prepare data for the 'static uniform_list closure (Rc/Arc clones are cheap).
         let tree_rows: std::rc::Rc<Vec<Row>> = std::rc::Rc::new(self.rows.clone());
         let tree_config = self.config.clone(); // Arc
-        let tree_root: std::rc::Rc<PathBuf> = std::rc::Rc::new(self.root.clone());
+        let tree_root: std::rc::Rc<PathBuf> =
+            std::rc::Rc::new(self.root.path_buf().unwrap_or_default());
         let tree_git: std::rc::Rc<HashMap<String, char>> =
             std::rc::Rc::new(self.git_status.clone());
         let tree_sel: std::rc::Rc<Option<PathBuf>> = std::rc::Rc::new(self.selected.clone());
         let tree_entity = cx.entity().downgrade();
-
+        let empty_text = if let Some(err) = &self.read_error {
+            Some(format!("Cannot read folder: {err}"))
+        } else if self.rebuilding {
+            Some("Loading folder...".to_string())
+        } else if self.rows.is_empty() {
+            Some(match self.root.fs {
+                ExplorerFs::Host => "No visible files in this folder.".to_string(),
+                ExplorerFs::Wsl { .. } => "This WSL folder is empty.".to_string(),
+            })
+        } else {
+            None
+        };
+        let tree_content: AnyElement = if let Some(text) = empty_text {
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .p(px(12.))
+                .text_size(px(12.))
+                .text_color(col(ui.muted))
+                .child(SharedString::from(text))
+                .into_any_element()
+        } else {
+            uniform_list(
+                "explorer-tree",
+                self.rows.len(),
+                move |range, _window, _cx| {
+                    range
+                        .map(|i| {
+                            let row = &tree_rows[i];
+                            let indent = 10.0 + row.depth as f32 * 16.0;
+                            let is_sel = tree_sel.as_ref().as_ref() == Some(&row.path);
+                            let key = row
+                                .path
+                                .strip_prefix(tree_root.as_ref())
+                                .ok()
+                                .map(|p| p.to_string_lossy().replace('\\', "/"));
+                            let git_tag = key.as_ref().and_then(|k| tree_git.get(k)).map(|&tag| {
+                                let c = match tag {
+                                    'U' | 'A' => tree_config.theme.ansi.green,
+                                    'D' => tree_config.theme.ansi.red,
+                                    _ => tree_config.theme.ansi.yellow,
+                                };
+                                (tag, c)
+                            });
+                            let path = row.path.clone();
+                            let is_dir = row.is_dir;
+                            let entity = tree_entity.clone();
+                            tree_row(
+                                &tree_config.theme.ui,
+                                &tree_config.theme,
+                                row,
+                                indent,
+                                is_sel,
+                                git_tag,
+                            )
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_ev, _w, app| {
+                                    app.stop_propagation();
+                                    let path = path.clone();
+                                    let _ = entity.update(app, move |this, cx| {
+                                        if is_dir {
+                                            if !this.expanded.remove(&path) {
+                                                this.expanded.insert(path.clone());
+                                            }
+                                            this.rebuild(cx);
+                                        } else {
+                                            let p = path.clone();
+                                            this.selected = Some(path);
+                                            cx.emit(OpenFile(p));
+                                        }
+                                        cx.notify();
+                                    });
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .flex_1()
+            .min_h(px(0.))
+            .p(px(6.)) // mockup .tree padding 6
+            .track_scroll(self.scroll_handle.clone())
+            .into_any_element()
+        };
         // Inner content, rounded 1px tighter so the gradient-border ring shows
         // (see style::glass_pane); g1 glass + specular + header + tree.
         let is_focused = self.focus_handle.is_focused(window);
@@ -668,70 +977,7 @@ impl Render for ExplorerView {
             .bg(pane_fill(ui.chrome_bg))
             .child(crate::style::specular_wash(is_focused, ui.accent))
             .child(header)
-            .child(
-                uniform_list(
-                    "explorer-tree",
-                    self.rows.len(),
-                    move |range, _window, _cx| {
-                        range
-                            .map(|i| {
-                                let row = &tree_rows[i];
-                                let indent = 10.0 + row.depth as f32 * 16.0;
-                                let is_sel = tree_sel.as_ref().as_ref() == Some(&row.path);
-                                let key = row
-                                    .path
-                                    .strip_prefix(tree_root.as_ref())
-                                    .ok()
-                                    .map(|p| p.to_string_lossy().replace('\\', "/"));
-                                let git_tag =
-                                    key.as_ref().and_then(|k| tree_git.get(k)).map(|&tag| {
-                                        let c = match tag {
-                                            'U' | 'A' => tree_config.theme.ansi.green,
-                                            'D' => tree_config.theme.ansi.red,
-                                            _ => tree_config.theme.ansi.yellow,
-                                        };
-                                        (tag, c)
-                                    });
-                                let path = row.path.clone();
-                                let is_dir = row.is_dir;
-                                let entity = tree_entity.clone();
-                                tree_row(
-                                    &tree_config.theme.ui,
-                                    &tree_config.theme,
-                                    row,
-                                    indent,
-                                    is_sel,
-                                    git_tag,
-                                )
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    move |_ev, _w, app| {
-                                        app.stop_propagation();
-                                        let path = path.clone();
-                                        let _ = entity.update(app, move |this, cx| {
-                                            if is_dir {
-                                                if !this.expanded.remove(&path) {
-                                                    this.expanded.insert(path.clone());
-                                                }
-                                                this.rebuild(cx);
-                                            } else {
-                                                let p = path.clone();
-                                                this.selected = Some(path);
-                                                cx.emit(OpenFile(p));
-                                            }
-                                            cx.notify();
-                                        });
-                                    },
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    },
-                )
-                .flex_1()
-                .min_h(px(0.))
-                .p(px(6.)) // mockup .tree padding 6
-                .track_scroll(self.scroll_handle.clone()),
-            );
+            .child(tree_content);
         // mockup .pane::before 竖向渐变描边 + 浮起投影(与终端面板一致;explorer 恒非焦点)
         glass_pane(inner, false, ui.accent)
     }
@@ -805,6 +1051,21 @@ mod tests {
     }
 
     #[test]
+    fn explorer_root_detects_wsl_unc() {
+        let root = ExplorerRoot::from_accessible_path(PathBuf::from(r"\\wsl$\Ubuntu\home\me"));
+        assert_eq!(
+            root,
+            ExplorerRoot::wsl(
+                "Ubuntu".to_string(),
+                "/home/me".to_string(),
+                PathBuf::from(r"\\wsl$\Ubuntu\home\me")
+            )
+        );
+        assert!(matches!(root.fs, ExplorerFs::Wsl { .. }));
+        assert!(!root.supports_git_status());
+    }
+
+    #[test]
     fn porcelain_skips_blank_and_short_lines() {
         // Empty output (clean repo / not-a-repo) and malformed short lines yield
         // nothing instead of panicking on the `[..2]` / `[3..]` slices.
@@ -813,5 +1074,68 @@ mod tests {
             parse_porcelain("\n\nx\n M\n").is_empty(),
             "lines < 4 chars skipped"
         );
+    }
+
+    #[test]
+    fn entry_filter_shows_dotfiles_for_wsl_only() {
+        assert!(!ExplorerView::include_entry_name(".bashrc", false));
+        assert!(ExplorerView::include_entry_name(".bashrc", true));
+        assert!(!ExplorerView::include_entry_name(".git", true));
+        assert!(!ExplorerView::include_entry_name("target", true));
+        assert!(ExplorerView::include_entry_name("src", false));
+    }
+
+    #[test]
+    fn path_for_namespace_translation() {
+        use crate::terminal_view::FileNamespace;
+
+        // 1. Host root
+        let host_root = ExplorerRoot::host(PathBuf::from(r"D:\coder\Tn"));
+        assert_eq!(
+            host_root.path_for_namespace(&FileNamespace::Host),
+            Some(r"D:\coder\Tn".to_string())
+        );
+        assert_eq!(
+            host_root.path_for_namespace(&FileNamespace::Wsl {
+                distro: Some("Ubuntu".to_string())
+            }),
+            Some("/mnt/d/coder/Tn".to_string())
+        );
+        let unc_root = ExplorerRoot::host(PathBuf::from(r"\\server\share"));
+        assert_eq!(
+            unc_root.path_for_namespace(&FileNamespace::Wsl {
+                distro: Some("Ubuntu".to_string())
+            }),
+            None,
+            "only drive-letter Windows paths have a reliable /mnt/<drive> WSL mapping"
+        );
+
+        // 2. WSL root
+        let wsl_root = ExplorerRoot::wsl(
+            "Ubuntu".to_string(),
+            "/home/me".to_string(),
+            PathBuf::from(r"\\wsl$\Ubuntu\home\me"),
+        );
+        assert_eq!(
+            wsl_root.path_for_namespace(&FileNamespace::Wsl {
+                distro: Some("Ubuntu".to_string())
+            }),
+            Some("/home/me".to_string())
+        );
+        assert_eq!(
+            wsl_root.path_for_namespace(&FileNamespace::Wsl {
+                distro: Some("Debian".to_string())
+            }),
+            None
+        );
+        assert_eq!(
+            wsl_root.path_for_namespace(&FileNamespace::Host),
+            Some(r"\\wsl$\Ubuntu\home\me".to_string())
+        );
+
+        // SSH intentionally has no ExplorerRoot mapping until a remote filesystem
+        // backend exists; otherwise the sidebar would re-root to an unlistable path.
+        assert_eq!(host_root.path_for_namespace(&FileNamespace::Ssh), None);
+        assert_eq!(wsl_root.path_for_namespace(&FileNamespace::Ssh), None);
     }
 }

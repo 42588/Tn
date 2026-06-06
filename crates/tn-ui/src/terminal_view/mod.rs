@@ -45,6 +45,9 @@ pub struct UsageUpdated;
 /// cwd — the workspace uses this to refresh the explorer's git-status tags.
 pub struct FilesChanged;
 
+/// Emitted when the pane's current working directory changes.
+pub struct CwdChanged;
+
 /// Emitted once the pane's child process exits (detected via ConPTY `try_wait`,
 /// since ConPTY doesn't reliably EOF the reader). The quick terminal listens for
 /// this to fall back to its launcher when the hosted agent/shell exits.
@@ -113,6 +116,8 @@ use crate::style::{col, cola, HOVER};
 mod header; // agent pane header UI (avatar / model / usage ring)
 mod io; // off-thread workers (reader / repaint / blink / exit-watcher / usage poller)
 mod launch; // LaunchSpec: profile -> spawnable pane
+pub use launch::is_host_process_path;
+pub use launch::FileNamespace;
 pub use launch::LaunchSpec;
 pub use launch::ShellIntegration;
 
@@ -249,6 +254,8 @@ pub struct TerminalView {
     content_bounds: Rc<RefCell<Bounds<Pixels>>>,
     // Warp-style command blocks, built from the shell-integration bypass.
     blocks: Arc<Mutex<BlockModel>>,
+    // The last CWD sent to the workspace/explorer tree (to filter redundant updates).
+    last_cwd: Option<String>,
     // Live palette copy (for block-bar colors); kept in sync with the engine.
     palette: Palette,
     // True while a left-drag selection is in progress.
@@ -293,8 +300,9 @@ pub struct TerminalView {
     /// the shell cwd for shell-typed agents). Used as a fallback in
     /// `refresh_changes` when the blocks model has no known cwd (launched
     /// agent panes carry no shell integration, so OSC 7 never fires).
-    rail_cwd: Option<String>,
+    rail_cwd: Option<std::path::PathBuf>,
     spawn_cwd: Option<std::path::PathBuf>,
+    file_namespace: FileNamespace,
     /// `true` when `agent` was inferred from a **typed shell command** (the user ran
     /// `claude`/`codex` at a plain-shell prompt — detected via shell-integration's
     /// command line, not a fragile process walk) rather than from launch intent.
@@ -455,8 +463,10 @@ impl TerminalView {
             for a in &launch.args {
                 spec = spec.arg(a);
             }
-            if let Some(cwd) = &launch.cwd {
-                spec = spec.cwd(cwd);
+            if launch.file_namespace == FileNamespace::Host {
+                if let Some(cwd) = &launch.cwd {
+                    spec = spec.cwd(cwd);
+                }
             }
             if std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
                 match launch.shell_integration {
@@ -576,11 +586,11 @@ impl TerminalView {
         };
         // For launched agents: stash the launch cwd so refresh_changes has a fallback
         // when the blocks model returns no cwd (no shell integration -> no OSC 7).
-        let rail_cwd = launch
-            .cwd
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .and_then(|p| p.to_str().map(str::to_string));
+        let rail_cwd = if launch.file_namespace == FileNamespace::Host {
+            launch.cwd.clone().or_else(|| std::env::current_dir().ok())
+        } else {
+            None
+        };
         let mut change_watcher = None;
         if let Some(kind) = agent {
             // Usage binds to the session THIS pane launches (newest log created
@@ -627,6 +637,7 @@ impl TerminalView {
             title,
             content_bounds: Rc::new(RefCell::new(Bounds::default())),
             blocks,
+            last_cwd: None,
             palette,
             selecting: false,
             focused_once: false,
@@ -645,6 +656,7 @@ impl TerminalView {
             rail_cwd,
             agent_from_shell: false,
             spawn_cwd: launch.cwd.clone(),
+            file_namespace: launch.file_namespace.clone(),
             integrate_pwsh: launch.integrate_pwsh,
             change_watcher,
             agent_exited,
@@ -802,6 +814,11 @@ impl TerminalView {
                 self.ssh_error = None;
                 self.ssh_conn = self.ssh_conn.map(|_| SshConnState::Connected);
                 self.ssh_conn_method = Some(method); // C3: surface 密钥/密码 in header
+
+                // Inject prompt command for remote bash/zsh to report CWD changes
+                let integration_cmd = " if [ -n \"$BASH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; PROMPT_COMMAND=\"__tn_pc;${PROMPT_COMMAND:-}\"; elif [ -n \"$ZSH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; typeset -ag precmd_functions; if [[ -z ${(M)precmd_functions:#__tn_pc} ]]; then precmd_functions+=(__tn_pc); fi; fi\r";
+                self.send_bytes(integration_cmd.as_bytes());
+
                 cx.emit(SshConnected(method));
                 cx.notify();
             }
@@ -917,9 +934,9 @@ impl TerminalView {
                 // Bind usage to the session this just-typed command starts (created
                 // ~now); the grace in resolve_session_for_pane absorbs detection lag.
                 Self::spawn_usage_poller(cx, kind, SystemTime::now());
-                if let Some(cwd) = self.cwd() {
-                    self.change_watcher = Self::spawn_change_watcher(cx, cwd.clone());
-                    self.rail_cwd = Some(cwd);
+                if let Some(root) = self.effective_browsable_cwd() {
+                    self.change_watcher = Self::spawn_change_watcher(cx, root.clone());
+                    self.rail_cwd = Some(root);
                 }
                 cx.emit(UsageUpdated); // relabel the tab + repaint chrome
             }
@@ -948,7 +965,10 @@ impl TerminalView {
         if self.agent.is_none() {
             return;
         }
-        let Some(cwd) = self.cwd().or_else(|| self.rail_cwd.clone()) else {
+        let Some(root) = self
+            .effective_browsable_cwd()
+            .or_else(|| self.rail_cwd.clone())
+        else {
             return;
         };
 
@@ -967,7 +987,6 @@ impl TerminalView {
                 .spawn(async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
                     std::thread::spawn(move || {
-                        let root = std::path::PathBuf::from(&cwd);
                         let files = crate::gitutil::changes_for(&root);
                         let _ = tx.send((files, root));
                     });
@@ -1001,9 +1020,8 @@ impl TerminalView {
         if self.agent.is_none() {
             return;
         }
-        let cwd = root.to_string_lossy().to_string();
-        self.rail_cwd = Some(cwd.clone());
-        self.change_watcher = Self::spawn_change_watcher(cx, cwd);
+        self.rail_cwd = Some(root.to_path_buf());
+        self.change_watcher = Self::spawn_change_watcher(cx, root.to_path_buf());
         self.refresh_changes(cx);
     }
     /// Find the index of `path` within the activity rail's file list.
@@ -1048,15 +1066,33 @@ impl TerminalView {
             })
     }
 
-    /// This pane's effective working directory: OSC 7 cwd first,
-    /// falling back to the directory it was launched in — essential for
-    /// agent panes that carry no shell integration (no OSC 7).
-    pub fn effective_cwd(&self) -> Option<String> {
-        self.cwd().or_else(|| {
-            self.spawn_cwd
-                .as_ref()
-                .and_then(|p| p.to_str().map(str::to_string))
-        })
+    pub fn file_namespace(&self) -> FileNamespace {
+        self.file_namespace.clone()
+    }
+
+    /// Current cwd as a host-browsable path. Host shells produce Windows paths;
+    /// WSL cwd is mapped to its `\\wsl$\<distro>` namespace; SSH/macOS/Linux
+    /// remote cwd deliberately returns `None` until a remote file backend exists.
+    pub fn effective_browsable_cwd(&self) -> Option<std::path::PathBuf> {
+        self.cwd()
+            .and_then(|cwd| self.file_namespace.browsable_path_from_cwd(&cwd))
+            .or_else(|| {
+                (self.file_namespace == FileNamespace::Host)
+                    .then(|| self.spawn_cwd.clone())
+                    .flatten()
+            })
+    }
+
+    /// A cwd safe to pass as the Windows process cwd for newly spawned local
+    /// processes. WSL and SSH cwd are intentionally excluded.
+    pub fn effective_host_process_cwd(&self) -> Option<std::path::PathBuf> {
+        self.cwd()
+            .and_then(|cwd| self.file_namespace.host_process_path_from_cwd(&cwd))
+            .or_else(|| {
+                (self.file_namespace == FileNamespace::Host)
+                    .then(|| self.spawn_cwd.clone())
+                    .flatten()
+            })
     }
 
     /// A clean tab label: the agent name for an agent pane, else the shell name
@@ -1581,6 +1617,7 @@ impl TerminalView {
 
 impl gpui::EventEmitter<UsageUpdated> for TerminalView {}
 impl gpui::EventEmitter<FilesChanged> for TerminalView {}
+impl gpui::EventEmitter<CwdChanged> for TerminalView {}
 impl gpui::EventEmitter<ProcessExited> for TerminalView {}
 impl gpui::EventEmitter<OpenInQuickLook> for TerminalView {}
 impl gpui::EventEmitter<SshConnected> for TerminalView {}
@@ -2767,7 +2804,21 @@ mod tests {
             first_profile("[[profiles]]\nname = \"Ubuntu\"\nkind = \"wsl\"\ndistro = \"Ubuntu\"\n");
         let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
-        assert_eq!(spec.args, vec!["-d".to_string(), "Ubuntu".to_string()]);
+        assert_eq!(
+            spec.args,
+            vec![
+                "-d".to_string(),
+                "Ubuntu".to_string(),
+                "--cd".to_string(),
+                "~".to_string()
+            ]
+        );
+        assert_eq!(
+            spec.file_namespace,
+            FileNamespace::Wsl {
+                distro: Some("Ubuntu".into())
+            }
+        );
         assert!(spec.integrate_pwsh); // bash integration reserves rail space
         assert!(spec.agent.is_none());
     }
@@ -2777,7 +2828,7 @@ mod tests {
         let p = first_profile("[[profiles]]\nname = \"WSL\"\nkind = \"wsl\"\n");
         let spec = LaunchSpec::from_profile(&p).expect("wsl profile is launchable");
         assert_eq!(spec.program, "wsl.exe");
-        assert!(spec.args.is_empty()); // bare `wsl.exe` -> default distro
+        assert_eq!(spec.args, vec!["--cd".to_string(), "~".to_string()]);
     }
 
     // ── Launch-path coverage (待优化清单 §6.3) ─────────────────────────────────
