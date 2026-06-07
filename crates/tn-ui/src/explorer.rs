@@ -136,10 +136,6 @@ enum ExplorerPath {
 }
 
 impl ExplorerPath {
-    fn local(path: PathBuf) -> Self {
-        Self::Local(path)
-    }
-
     fn local_path(&self) -> Option<&Path> {
         match self {
             Self::Local(path) => Some(path.as_path()),
@@ -271,6 +267,13 @@ impl ExplorerRoot {
         self.remote_path.as_ref()
     }
 
+    pub fn ssh_config(&self) -> Option<&tn_pty::SshConfig> {
+        match &self.fs {
+            ExplorerFs::Ssh { cfg } => Some(cfg),
+            _ => None,
+        }
+    }
+
     pub fn is_browsable(&self) -> bool {
         self.path.is_some() || self.remote_path.is_some()
     }
@@ -313,6 +316,20 @@ impl ExplorerRoot {
 
     fn supports_git_status(&self) -> bool {
         matches!(self.fs, ExplorerFs::Host)
+    }
+
+    /// For a WSL root: `(distro, linux_path)` parsed from its `\\wsl$\<distro>\…`
+    /// UNC path. `None` for Host/SSH roots. Drives the in-app WSL directory picker.
+    pub fn wsl_parts(&self) -> Option<(String, String)> {
+        match &self.fs {
+            ExplorerFs::Wsl { distro } => self
+                .path
+                .as_ref()
+                .and_then(|p| parse_wsl_unc(p))
+                .map(|(_, linux)| (distro.clone(), linux))
+                .or_else(|| Some((distro.clone(), "/".to_string()))),
+            _ => None,
+        }
     }
 
     fn same_fs(&self, other: &Self) -> bool {

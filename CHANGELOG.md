@@ -11,6 +11,32 @@
 M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段,**新里程碑在上**),尚未打新 tag。
 **唯一未完成:M2 的 SSH**——已编译 + headless 单测,owner 决定暂停(parked),等有远程登录需求再做端到端。
 
+## [Unreleased] — SFTP 远端文件服务与远端改动流首版(2026-06)
+
+### Added
+- **`tn-pty::remote_fs` SFTP v3 后端**:`RemoteFileService` + `SftpFileService` 支持 SSH 远端列目录、有界读文件、stat 元数据和写回文件,复用 SSH 配置/密钥/内存密码,后台探测不弹 host-key/password UI。
+- **`tn-pty::remote_cmd` 远端命令执行**:新增有界 SSH exec 服务,支持 POSIX shell quoting、stdout/stderr/exit-status 捕获和 stdin 传入,供远端 git / hunk patch 使用。
+- **SSH Explorer root**:`ExplorerRoot::Ssh` / `ExplorerPath::Remote` 用 `RemoteId` 表示远端路径,焦点 SSH pane 的 cwd 可驱动左侧远端文件树;展开目录通过 SFTP 枚举,不再把 `/home/...` 伪装成本机 `PathBuf`。
+- **Quick Look 远端预览 + 编辑写回**:Explorer 打开远端文件时走 `QuickLook::open_remote`,最多读取 `REMOTE_READ_LIMIT`;文本文件可进入编辑态,保存前用 SFTP stat + 内容 hash guard 检测远端变化,冲突时显示「重新载入 / 取消 / 覆盖远端」,避免静默覆盖。
+- **远端 git 数据流**:`remote_git` 通过远端 `git diff --numstat` 渲染 SSH agent 活动栏,改动卡可打开远端 full diff;新增 hunk 解析、单 hunk patch 构造和 `git apply -` stdin helper。
+
+### Changed
+- **SSH pane 的「打开文件夹」**不走本机 picker:打开当前远端 root 的应用内 SFTP 目录 picker,支持父目录、目录过滤、刷新/错误状态和确认/取消;确认后向目标 SSH pane 发送远端 `cd`,仍保持只影响当前焦点 pane。
+
+### Added(2026-06-07 续:远端 hunk 可视按钮 + 刷新 + 失败提示)
+- **Quick Look Diff tab 远端 hunk「接受 / 拒绝」按钮**:仅在远端 diff(`remote_diff_file` 存在)时,每个 `@@` 行右侧渲染接受(绿)/拒绝(红)按钮。点击 → `QuickLook::apply_hunk`:后台**重新拉取**当前 `git diff` → `remote_git::parse_file_diff` → `apply_remote_hunk` 经 SSH 跑 `git apply --cached -`(接受)/ `--reverse -`(拒绝),patch 走 stdin。`DiffLine` 新增 `hunk_index`,`parse_diff` 与 `remote_git::parse_file_diff` 同序计数 `@@` 保证点击行映射到正确 hunk(单测 `parse_diff_numbers_hunks_in_lockstep_with_remote_file_diff`)。
+- **应用后刷新**:成功 → `diff_dirty` 重拉 diff(已应用/撤销 hunk 自动消失)+ `QuickLookEvent::RemoteChangesDirty` → workspace 刷新每个 pane 的「本次改动」(远端经 `changes_for_remote`)+ `explorer.mark_stale()`,与本地保存同路径(远端 FS 编辑文件监听不可见)。
+- **失败提示 + 防并发**:apply 期间 `hunk_busy` 禁用按钮(防双击发两条冲突补丁);失败 → `hunk_error` 红色横幅(复用 save_error 范式,显示 `git apply` stderr + 关闭);开新文件即清。
+
+### Fixed(2026-06-07 续:真机连 SSH 后暴露的远端文件树/picker bug)
+- **SSH 文件树 / 「打开文件夹」一直停在 Windows 主机目录**:`TerminalView::cwd()` 只读逐 block cwd(`current()`/`last_finished()`),而 SSH 注入脚本只发裸 `OSC 633;P;Cwd`(无 A/B/C/D 标记)→ 不建 block → cwd 恒 None。修:`cwd()` 兜底 `BlockModel::cwd()`(模型级);注入脚本钩好后立即 `__tn_pc` 当下报 cwd。
+- **WSL「打开文件夹」开成 Windows 原生选择器**:把 `RemoteDirPicker` 泛化为 `PickerSource::{Ssh,Wsl}` + `PickerEntry`(解耦 SSH `RemoteId`),WSL 经 `\\wsl$\<distro>` 本地 `std::fs` 列目录。`open_folder_should_use_native_picker` 现只对 Host/欢迎页返回 true;SSH 与 WSL 都走应用内导航 picker。`fallback_remote_root` 在 cwd 未知时从 `/` 起。
+- **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
+- **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
+
+### Still TODO
+- **SSH/SFTP 真机端到端回归(剩余)**:hunk 按钮真改远端 working tree、`git apply` 拒绝补丁的失败文案、并发/超时;远端目录 picker hunk 头随长行水平滚动(极长行需常驻浮起按钮)。远端文件树/「打开文件夹」/picker 键鼠导航 **已真机确认可用(2026-06-07)**。
+
 ## [Unreleased] — 面板解耦:per-pane 工作区上下文(2026-06)
 
 让每个终端窗格拥有自己的「工作区上下文」,文件树状态不再被全局单例串台;「打开文件夹」只影响当前焦点 pane。
@@ -19,7 +45,7 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **per-pane 文件树状态(展开态 + 选中文件)**:`ExplorerSnapshot`(`crates/tn-ui/src/explorer.rs`)+ `ExplorerView::snapshot()`/`switch_pane()`;Workspace 按 `PaneId` 存 `explorer_states` 快照、`explorer_pane` 记当前展示的 pane。焦点在分屏 pane 间切换时保存旧 pane、恢复新 pane 的展开/选中,各 pane 文件树互不串台;同 pane 内 `cd` 仍走 `follow_root`(保留子目录展开态)。快照在保存时惰性裁掉已关闭 pane,无需逐 `remove` 钩子。纯函数 `snapshot_under_root` 把恢复过滤到新 root 内(headless 单测覆盖)。
 
 ### Changed
-- **「打开文件夹」收敛到焦点 pane**:`cd_panes_to_root`(广播给所有非 agent pane)→ `cd_pane_to_root(id, …)`(单 pane);`menu_open_folder` 只 `cd` + `set_rail_root` 当前焦点 pane,其它 pane 保持各自目录,agent pane 永不被 `cd`。SSH pane 点「打开文件夹」本轮**禁用 + echo 提示**(远端浏览需 SFTP / 远端 FS 后端,后续支持),不把本机路径塞进远端 shell。
+- **「打开文件夹」收敛到焦点 pane**:`cd_panes_to_root`(广播给所有非 agent pane)→ `cd_pane_to_root(id, …)`(单 pane);`menu_open_folder` 只 `cd` + `set_rail_root` 当前焦点 pane,其它 pane 保持各自目录,agent pane 永不被 `cd`。SSH pane 跳过本机 picker,打开当前远端 root 的应用内 SFTP 浏览并只向该 pane 发送远端 `cd`。
 
 > Agent 身份/用量环/「本次改动」/git watcher 早已 per-pane(在 `TerminalView` 上),本轮只验证不回归。逐项见 [docs/架构蓝图.md](docs/架构蓝图.md);坑 + 操作见 [CLAUDE.md](CLAUDE.md)。
 
@@ -60,6 +86,8 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ### Fixed
 - **联网 sidecar 把 agent 开成 shell**:GUI「联网 sidecar」曾写成 agent 的 `runtime_support=["remote_daemon"]`(非 PTY)→ PTY 启动器「不支持 LocalPty 即拒绝」守卫把 `claude` 这种命令型 agent 当非 PTY 拒了 → 回退 pwsh shell。修:sidecar 的网络属性只走 `allow_network`(`AgentDescriptor::sidecar_launch` 改为只看 `network_policy`,与 `runtime_support` 解耦);命令型 agent 的 `runtime_support` 永远是 PTY。旧版存的 agent 重新保存一次即修。
+- **一个 agent 显示成两张磁贴**:旧版默认 config 出厂带 claude/codex profile;用户经编辑器声明同名 `[[agents]]` 后,`is_removed_builtin_agent_profile`(只隐藏「无 manifest 的内置遗留」)对它失效 → 遗留 profile + 新增 profile = 两张。修:`discover_profiles` 增 `dedup_agent_profiles` —— 按 agent id 去重,**保留最新保存的一条**(非 agent 的 shell/WSL/SSH 不去重)。即便 config 仍有遗留条目也只显示一张。
+- **欢迎页「打开文件夹」失效**:欢迎 launchpad 的焦点「pane」是 `WELCOME_DUMMY`(`PaneId::MAX`,无 `LaunchSpec`),`open_folder_should_use_native_picker(None)` 旧返回 `false` → 走 SSH 式「应用内浏览」分支并提前 return,**原生文件夹选择器从不弹出**。修:无 spec(=欢迎页)默认用原生选择器 → 选目录即重定 explorer root → 欢迎页磁贴启动的 agent/shell 继承该 root 为 cwd(无同级 pane 可继承时回退 explorer root),实现「选目录 → 点磁贴在该目录起 agent」。
 
 ### 后续(未做)
 - Agent Protocol / JSON-RPC 的完整请求-响应语义、HTTP/WebSocket 网络客户端和 tool-call/checkpoint Inspector。当前已落地的是 stdio JSONL 事件 adapter + 网络 runtime 安全契约。

@@ -34,7 +34,10 @@ use tn_agent::{
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
-use tn_pty::{LocalPty, PtyBackend, PtySize, SpawnSpec, SshBackend};
+use tn_pty::{
+    remote_cmd::SshCommandService, remote_fs::RemotePath, LocalPty, PtyBackend, PtySize, SpawnSpec,
+    SshBackend,
+};
 use tn_shell::Integration;
 
 use crate::block_view;
@@ -59,7 +62,13 @@ pub struct ProcessExited;
 /// Emitted when a changed-file card in the agent activity rail is clicked — the
 /// workspace opens that file in Quick Look on the Diff tab (mockup `.ahint`
 /// 「点卡片 = 速览全 diff」). Carries the absolute path.
-pub struct OpenInQuickLook(pub std::path::PathBuf);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RailFileTarget {
+    Local(std::path::PathBuf),
+    Remote(crate::remote_git::RemoteGitFile),
+}
+
+pub(crate) struct OpenInQuickLook(pub(crate) RailFileTarget);
 
 /// Emitted when this pane's SSH session finishes authenticating and opens its
 /// shell — the workspace records the pane's target as a recent connection (A1),
@@ -229,8 +238,30 @@ pub enum RailState {
     /// `files` are relative to it; used to resolve click→QuickLook absolute paths).
     Ready {
         files: Vec<crate::gitutil::FileChange>,
-        root: std::path::PathBuf,
+        source: RailSource,
     },
+}
+
+#[derive(Debug, Clone)]
+pub enum RailSource {
+    Local { root: std::path::PathBuf },
+    Remote {
+        cfg: tn_pty::SshConfig,
+        root: RemotePath,
+    },
+}
+
+impl RailSource {
+    fn target_for(&self, path: &str) -> RailFileTarget {
+        match self {
+            Self::Local { root } => RailFileTarget::Local(root.join(path)),
+            Self::Remote { cfg, root } => RailFileTarget::Remote(crate::remote_git::RemoteGitFile {
+                cfg: cfg.clone(),
+                root: root.clone(),
+                path: path.to_string(),
+            }),
+        }
+    }
 }
 
 /// A network-reaching telemetry sidecar awaiting user confirmation before it
@@ -330,6 +361,7 @@ pub struct TerminalView {
     rail_cwd: Option<std::path::PathBuf>,
     spawn_cwd: Option<std::path::PathBuf>,
     file_namespace: FileNamespace,
+    ssh_cfg: Option<tn_pty::SshConfig>,
     /// `true` when `agent` was inferred from a **typed shell command** (the user ran
     /// `claude`/`codex` at a plain-shell prompt — detected via shell-integration's
     /// command line, not a fragile process walk) rather than from launch intent.
@@ -781,6 +813,7 @@ impl TerminalView {
             agent_from_shell: false,
             spawn_cwd: launch.cwd.clone(),
             file_namespace: launch.file_namespace.clone(),
+            ssh_cfg: launch.ssh.clone(),
             integrate_pwsh: launch.integrate_pwsh,
             change_watcher,
             agent_exited,
@@ -943,7 +976,12 @@ impl TerminalView {
                 self.ssh_conn_method = Some(method); // C3: surface 密钥/密码 in header
 
                 // Inject prompt command for remote bash/zsh to report CWD changes
-                let integration_cmd = " if [ -n \"$BASH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; PROMPT_COMMAND=\"__tn_pc;${PROMPT_COMMAND:-}\"; elif [ -n \"$ZSH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; typeset -ag precmd_functions; if [[ -z ${(M)precmd_functions:#__tn_pc} ]]; then precmd_functions+=(__tn_pc); fi; fi\r";
+                // Define `__tn_pc` (emits OSC 633;P;Cwd), hook it into the prompt,
+                // **and call it once immediately** so the remote cwd is reported the
+                // moment this runs — without waiting for the next prompt (the first
+                // prompt may already be drawn). `TerminalView::cwd()` reads the
+                // model-level cwd from this bare P;Cwd (no A/B/C/D markers needed).
+                let integration_cmd = " if [ -n \"$BASH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; PROMPT_COMMAND=\"__tn_pc;${PROMPT_COMMAND:-}\"; __tn_pc; elif [ -n \"$ZSH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; typeset -ag precmd_functions; if [[ -z ${(M)precmd_functions:#__tn_pc} ]]; then precmd_functions+=(__tn_pc); fi; __tn_pc; fi\r";
                 self.send_bytes(integration_cmd.as_bytes());
 
                 cx.emit(SshConnected(method));
@@ -1247,10 +1285,7 @@ impl TerminalView {
         if self.agent.is_none() {
             return;
         }
-        let Some(root) = self
-            .effective_browsable_cwd()
-            .or_else(|| self.rail_cwd.clone())
-        else {
+        let Some(source) = self.effective_rail_source() else {
             return;
         };
 
@@ -1265,15 +1300,21 @@ impl TerminalView {
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // ── Background: expensive git ops (may block for >100ms) ──
-            let (files, root) = exec
+            let (files, source) = exec
                 .spawn(async move {
                     let (tx, rx) = futures::channel::oneshot::channel();
+                    let fallback_source = source.clone();
                     std::thread::spawn(move || {
-                        let files = crate::gitutil::changes_for(&root);
-                        let _ = tx.send((files, root));
+                        let files = match &fallback_source {
+                            RailSource::Local { root } => crate::gitutil::changes_for(root),
+                            RailSource::Remote { cfg, root } => {
+                                let service = SshCommandService::shared();
+                                crate::remote_git::changes_for_remote(service.as_ref(), cfg, root)
+                            }
+                        };
+                        let _ = tx.send((files, fallback_source));
                     });
-                    rx.await
-                        .unwrap_or_else(|_| (Vec::new(), std::path::PathBuf::new()))
+                    rx.await.unwrap_or_else(|_| (Vec::new(), source))
                 })
                 .await;
             // ── Back on UI thread: only apply if still current ──
@@ -1283,13 +1324,31 @@ impl TerminalView {
                     // drop these stale results so the UI doesn't regress.
                     return;
                 }
-                v.rail_state = RailState::Ready { files, root };
+                v.rail_state = RailState::Ready { files, source };
                 cx.emit(UsageUpdated);
                 cx.emit(FilesChanged);
                 cx.notify(); // skeleton exits, real cards render
             });
         })
         .detach();
+    }
+
+    fn effective_rail_source(&self) -> Option<RailSource> {
+        match self.file_namespace {
+            FileNamespace::Ssh => {
+                let cfg = self.ssh_cfg.clone()?;
+                let cwd = self.cwd()?;
+                let cwd = cwd.trim();
+                cwd.starts_with('/').then(|| RailSource::Remote {
+                    cfg,
+                    root: RemotePath::new(cwd),
+                })
+            }
+            _ => self
+                .effective_browsable_cwd()
+                .or_else(|| self.rail_cwd.clone())
+                .map(|root| RailSource::Local { root }),
+        }
     }
 
     /// This pane's latest AI usage snapshot, if any has been parsed yet.
@@ -1309,24 +1368,30 @@ impl TerminalView {
     /// Find the index of `path` within the activity rail's file list.
     /// Used by the workspace to remember which card was clicked so ↑↓ nav
     /// can stay within the rail's changed-file scope (not the explorer tree).
-    pub fn rail_find_idx(&self, path: &std::path::Path) -> Option<usize> {
-        if let RailState::Ready { files, root } = &self.rail_state {
-            files.iter().position(|f| root.join(&f.path) == path)
+    pub(crate) fn rail_find_idx(&self, target: &RailFileTarget) -> Option<usize> {
+        if let RailState::Ready { files, source } = &self.rail_state {
+            files
+                .iter()
+                .position(|f| source.target_for(&f.path) == *target)
         } else {
             None
         }
     }
 
     /// Navigate the activity rail by `delta` (-1 = previous, +1 = next) from
-    /// `current_idx`, wrapping around. Returns `(new_index, absolute_path)`.
-    pub fn rail_nav(&self, current_idx: usize, delta: i32) -> Option<(usize, std::path::PathBuf)> {
-        if let RailState::Ready { files, root } = &self.rail_state {
+    /// `current_idx`, wrapping around. Returns `(new_index, target)`.
+    pub(crate) fn rail_nav(
+        &self,
+        current_idx: usize,
+        delta: i32,
+    ) -> Option<(usize, RailFileTarget)> {
+        if let RailState::Ready { files, source } = &self.rail_state {
             if files.is_empty() {
                 return None;
             }
             let n = files.len() as i32;
             let new_idx = ((current_idx as i32 + delta).rem_euclid(n)) as usize;
-            Some((new_idx, root.join(&files[new_idx].path)))
+            Some((new_idx, source.target_for(&files[new_idx].path)))
         } else {
             None
         }
@@ -1346,6 +1411,12 @@ impl TerminalView {
                 m.last_finished()
                     .and_then(|b| b.cwd.as_ref().map(|s| s.to_string()))
             })
+            // Model-level cwd: a bare `OSC 633;P;Cwd` with **no** A/B/C/D prompt
+            // markers (as the remote bash/zsh injection emits — see PtyEvent::
+            // Connected) never creates a block, so `current()`/`last_finished()`
+            // stay None. Without this fallback the SSH pane's cwd is never known,
+            // and the file tree / 「打开文件夹」 can't re-root to the remote FS.
+            .or_else(|| m.cwd().map(|s| s.to_string()))
             .or_else(|| self.last_cwd.clone())
     }
 

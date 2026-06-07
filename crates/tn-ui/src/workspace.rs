@@ -16,8 +16,9 @@ use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
     AnyElement, App, AppContext, AsyncApp, Bounds, Context, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba, SharedString,
-    Subscription, UTF16Selection, WeakEntity, Window, WindowControlArea,
+    uniform_list, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba,
+    ScrollStrategy, SharedString, Subscription, UTF16Selection, UniformListScrollHandle,
+    WeakEntity, Window, WindowControlArea,
 };
 use tn_config::Loaded;
 
@@ -25,16 +26,18 @@ use crate::explorer::{ExplorerFile, ExplorerRoot, ExplorerSnapshot, ExplorerView
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
+use crate::remote_dir_picker::{PickerEntry, PickerSource, RemoteDirPicker};
 use crate::ssh_recents::{AuthBadge, SshRecents};
 use crate::terminal_view::{
     is_host_process_path, CwdChanged, FileNamespace, FilesChanged, LaunchSpec, OpenInQuickLook,
-    SshCloseRequested, SshConnected, SshRememberPassword, SshRetryRequested, TerminalView,
-    UsageUpdated,
+    RailFileTarget, SshCloseRequested, SshConnected, SshRememberPassword, SshRetryRequested,
+    TerminalView, UsageUpdated,
 };
 use crate::welcome::{launch_rows, row_card, wsl_distros, LaunchRequested, LaunchRow, WelcomeView};
 use tn_agent::AgentId;
+use tn_pty::remote_fs::{RemoteFileService, RemotePath, SftpFileService};
 
-type PaneId = u64;
+pub(crate) type PaneId = u64;
 
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (待优化清单 §4.1).
@@ -223,6 +226,39 @@ fn short_name(name: &str) -> String {
         .collect()
 }
 
+/// Collapse duplicate **agent** tiles by resolved agent id — an agent shows once
+/// in the launcher. Keeps the **last** occurrence (most-recently-saved wins), so a
+/// freshly added/edited agent supersedes a stale leftover — e.g. a `claude`
+/// profile written by an older default config that resurfaces once the user
+/// declares a `claude` `[[agents]]` (the dup the user hit). Non-agent profiles
+/// (shell / WSL / SSH) are never deduped — those can legitimately repeat.
+fn dedup_agent_profiles(profiles: Vec<tn_config::Profile>) -> Vec<tn_config::Profile> {
+    let key = |p: &tn_config::Profile| -> Option<String> {
+        if p.kind != tn_config::ProfileKind::Agent {
+            return None;
+        }
+        let k = p
+            .agent
+            .clone()
+            .or_else(|| p.command.clone())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        (!k.is_empty()).then_some(k)
+    };
+    let mut last: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (i, p) in profiles.iter().enumerate() {
+        if let Some(k) = key(p) {
+            last.insert(k, i);
+        }
+    }
+    profiles
+        .into_iter()
+        .enumerate()
+        .filter(|(i, p)| key(p).map_or(true, |k| last.get(&k) == Some(i)))
+        .map(|(_, p)| p)
+        .collect()
+}
+
 /// The launcher's profiles: the configured `[[profiles]]` plus every installed
 /// WSL distro not already covered by a config profile — so users get *all* their
 /// distros without editing config (the default config ships only one). Shells
@@ -250,6 +286,9 @@ pub(crate) fn discover_profiles(config: &Loaded) -> Vec<tn_config::Profile> {
     if removed_builtin_agent && !profiles.iter().any(is_launchable_agent_profile) {
         profiles.push(generic_agent_profile());
     }
+    // One tile per agent: collapse duplicate agent profiles (e.g. a stale `claude`
+    // from an older default config alongside a freshly added one). Latest wins.
+    let mut profiles = dedup_agent_profiles(profiles);
     let configured: std::collections::HashSet<String> = profiles
         .iter()
         .filter(|p| p.kind == tn_config::ProfileKind::Wsl)
@@ -290,6 +329,29 @@ fn wsl_unc_from_linux_cwd(distro: &str, cwd: &str) -> std::path::PathBuf {
     }
 }
 
+/// List a WSL directory for the in-app picker by reading the local
+/// `\\wsl$\<distro>\…` UNC mapping of `linux_path` with `std::fs`. Child paths are
+/// kept Linux-style (`linux_path/<name>`) so the picker navigates the same way the
+/// SSH/SFTP source does. Runs on the background executor (blocking FS).
+fn list_wsl_dir(distro: &str, linux_path: &RemotePath) -> anyhow::Result<Vec<PickerEntry>> {
+    let unc = wsl_unc_from_linux_cwd(distro, linux_path.as_str());
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&unc)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        out.push(PickerEntry {
+            path: linux_path.join(name.as_str()),
+            name,
+            is_dir,
+        });
+    }
+    Ok(out)
+}
+
 fn explorer_root_for_pane(view: &TerminalView, spec: Option<&LaunchSpec>) -> Option<ExplorerRoot> {
     explorer_root_from_parts(
         view.file_namespace(),
@@ -326,7 +388,36 @@ fn explorer_root_from_parts(
 }
 
 fn open_folder_should_use_native_picker(spec: Option<&LaunchSpec>) -> bool {
-    spec.is_some_and(|spec| !matches!(spec.file_namespace, FileNamespace::Ssh))
+    // No spec = the welcome launchpad (focused pane is the `WELCOME_DUMMY`, with no
+    // live `LaunchSpec`): open the native folder picker so the chosen directory
+    // becomes the explorer root — and thus the cwd for the next agent/shell tile.
+    // SSH (SFTP) and WSL (\\wsl$ local UNC) panes use the in-app navigable picker
+    // instead, so you can browse the Linux tree (with 上级/进入/确认) rather than the
+    // Windows-rooted native dialog. Only Host panes / welcome use the native picker.
+    match spec {
+        None => true,
+        Some(spec) => matches!(spec.file_namespace, FileNamespace::Host),
+    }
+}
+
+/// A root at the filesystem root `/` for an SSH/WSL pane, used when the pane's
+/// live cwd isn't known yet so the in-app picker can still open (navigate from `/`).
+fn fallback_remote_root(spec: Option<&LaunchSpec>) -> Option<ExplorerRoot> {
+    let spec = spec?;
+    match &spec.file_namespace {
+        FileNamespace::Ssh => spec
+            .ssh
+            .clone()
+            .map(|cfg| ExplorerRoot::ssh(cfg, "/")),
+        FileNamespace::Wsl {
+            distro: Some(distro),
+        } => Some(ExplorerRoot::wsl(
+            distro.clone(),
+            "/".to_string(),
+            wsl_unc_from_linux_cwd(distro, "/"),
+        )),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -694,6 +785,13 @@ pub struct Workspace {
     explorer_width: f32,
     /// Active explorer-width drag (mouse), if any.
     explorer_drag: Option<ExplorerDrag>,
+    /// App-internal SSH directory picker. Unlike the native host picker, this is
+    /// backed by SFTP directory state and commits only after explicit confirm.
+    remote_dir_picker: Option<RemoteDirPicker>,
+    remote_dir_focus: FocusHandle,
+    remote_dir_needs_focus: bool,
+    remote_dir_scroll: UniformListScrollHandle,
+    remote_fs: Arc<dyn RemoteFileService>,
     /// Per-pane explorer view state (expansion + selection). The single
     /// `explorer` entity renders one pane at a time; switching focus saves the
     /// outgoing pane's snapshot here and restores the incoming pane's, so each
@@ -997,9 +1095,7 @@ impl Workspace {
                             .and_then(|v| v.read(cx).rail_nav(ws.ql_rail_idx, *delta));
                         if let Some((new_idx, path)) = result {
                             ws.ql_rail_idx = new_idx;
-                            ws.quick_look.update(cx, |v, cx| {
-                                v.open_diff(path, cx); // stay on Diff tab
-                            });
+                            ws.open_quick_look_diff_target(path, cx); // stay on Diff tab
                         }
                     } else {
                         // QuickLook was opened from the explorer → use the old
@@ -1036,6 +1132,17 @@ impl Workspace {
                         .update(cx, |explorer, _cx| explorer.mark_stale());
                     cx.notify();
                 }
+                QuickLookEvent::RemoteChangesDirty => {
+                    // Remote hunk accept/reject changed the remote tree → refresh
+                    // every pane's「本次改动」(remote panes via changes_for_remote)
+                    // and the explorer git tags. Same path as a local save.
+                    for view in ws.panes.values() {
+                        view.update(cx, |v, cx| v.refresh_changes(cx));
+                    }
+                    ws.explorer
+                        .update(cx, |explorer, _cx| explorer.mark_stale());
+                    cx.notify();
+                }
             }
         })
         .detach();
@@ -1062,6 +1169,11 @@ impl Workspace {
             explorer_open: true,
             explorer_width: 224.0,
             explorer_drag: None,
+            remote_dir_picker: None,
+            remote_dir_focus: cx.focus_handle(),
+            remote_dir_needs_focus: false,
+            remote_dir_scroll: UniformListScrollHandle::default(),
+            remote_fs: SftpFileService::shared(),
             explorer_states: HashMap::new(),
             explorer_pane: None,
             quick_look,
@@ -1400,10 +1512,7 @@ impl Workspace {
                 .unwrap_or(0);
             ws.ql_rail_pane = Some(id);
             ws.ql_rail_idx = file_idx;
-            ws.quick_look.update(cx, |v, cx| {
-                v.open_diff(path, cx);
-            });
-            ws.quick_look_open = true;
+            ws.open_quick_look_diff_target(path, cx);
             cx.notify();
         })
         .detach();
@@ -1574,6 +1683,18 @@ impl Workspace {
             self.refocus_after_quick_look(window, cx);
         }
         cx.notify();
+    }
+
+    fn open_quick_look_diff_target(
+        &mut self,
+        target: RailFileTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.quick_look.update(cx, |v, cx| match target {
+            RailFileTarget::Local(path) => v.open_diff(path, cx),
+            RailFileTarget::Remote(file) => v.open_remote_diff(file, cx),
+        });
+        self.quick_look_open = true;
     }
 
     /// Refocus the active tab's focused pane (after the palette closes).
@@ -2412,13 +2533,18 @@ impl Workspace {
             return;
         };
         if !open_folder_should_use_native_picker(self.pane_specs.get(&target)) {
-            self.explorer_open = true;
-            self.explorer_pane = Some(target);
-            if let Some(root) = self.panes.get(&target).and_then(|view| {
-                explorer_root_for_pane(&view.read(cx), self.pane_specs.get(&target))
-            }) {
-                self.explorer
-                    .update(cx, |e, cx| e.set_browser_root(root, cx));
+            // Prefer the pane's live cwd; if it isn't known yet (remote shell
+            // integration hasn't reported it), fall back to the filesystem root so
+            // the picker still opens and the user can navigate from `/`.
+            let root = self
+                .panes
+                .get(&target)
+                .and_then(|view| {
+                    explorer_root_for_pane(&view.read(cx), self.pane_specs.get(&target))
+                })
+                .or_else(|| fallback_remote_root(self.pane_specs.get(&target)));
+            if let Some(root) = root {
+                self.open_remote_dir_picker(target, root, cx);
             }
             cx.notify();
             return;
@@ -2452,6 +2578,413 @@ impl Workspace {
             }
         })
         .detach();
+    }
+
+    fn open_remote_dir_picker(
+        &mut self,
+        target: PaneId,
+        root: ExplorerRoot,
+        cx: &mut Context<Self>,
+    ) {
+        // SSH → SFTP source at the remote cwd; WSL → local \\wsl$ source at the
+        // Linux cwd. Either way the picker navigates Linux-style paths.
+        let (source, current) = if let Some(cfg) = root.ssh_config().cloned() {
+            let Some(path) = root.remote_path().cloned() else {
+                return;
+            };
+            (PickerSource::Ssh(cfg), path)
+        } else if let Some((distro, linux)) = root.wsl_parts() {
+            (PickerSource::Wsl { distro }, RemotePath::new(linux))
+        } else {
+            return;
+        };
+        self.app_menu_open = false;
+        self.remote_dir_picker = Some(RemoteDirPicker::new(target, source, current));
+        self.remote_dir_needs_focus = true;
+        self.load_remote_dir_picker(cx);
+        cx.notify();
+    }
+
+    fn load_remote_dir_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self.remote_dir_picker.as_mut() else {
+            return;
+        };
+        let generation = picker.begin_load();
+        let source = picker.source.clone();
+        let path = picker.current.clone();
+        let remote_fs = self.remote_fs.clone();
+        cx.notify();
+
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = exec
+                .spawn(async move {
+                    match source {
+                        // SSH: list over SFTP, drop the `RemoteId` shape.
+                        PickerSource::Ssh(cfg) => remote_fs.list_dir(&cfg, &path).map(|entries| {
+                            entries
+                                .into_iter()
+                                .map(|e| PickerEntry {
+                                    name: e.name,
+                                    path: e.id.path,
+                                    is_dir: e.is_dir,
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                        // WSL: list the local \\wsl$ UNC dir via std::fs.
+                        PickerSource::Wsl { distro } => list_wsl_dir(&distro, &path),
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |ws, cx| {
+                let Some(picker) = ws.remote_dir_picker.as_mut() else {
+                    return;
+                };
+                if picker.generation != generation {
+                    return;
+                }
+                match result {
+                    Ok(entries) => picker.apply_entries(entries),
+                    Err(e) => picker.apply_error(e.to_string()),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn confirm_remote_dir_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self.remote_dir_picker.take() else {
+            return;
+        };
+        let root = match &picker.source {
+            PickerSource::Ssh(cfg) => ExplorerRoot::ssh(cfg.clone(), picker.current.as_str()),
+            PickerSource::Wsl { distro } => {
+                let linux = picker.current.as_str();
+                let unc = wsl_unc_from_linux_cwd(distro, linux);
+                ExplorerRoot::wsl(distro.clone(), linux.to_string(), unc)
+            }
+        };
+        self.explorer_open = true;
+        self.explorer_pane = Some(picker.target);
+        self.explorer
+            .update(cx, |e, cx| e.set_browser_root(root.clone(), cx));
+        self.cd_pane_to_root(picker.target, &root, cx);
+        cx.notify();
+    }
+
+    fn cancel_remote_dir_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.remote_dir_picker = None;
+        self.refocus_active(window, cx);
+        cx.notify();
+    }
+
+    fn on_remote_dir_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.stop_propagation();
+        let key = ev.keystroke.key.as_str();
+        match key {
+            "escape" => self.cancel_remote_dir_picker(window, cx),
+            "up" => {
+                if let Some(picker) = self.remote_dir_picker.as_mut() {
+                    picker.move_selection(-1);
+                    let sel = picker.selected;
+                    self.remote_dir_scroll.scroll_to_item(sel, ScrollStrategy::Center);
+                    cx.notify();
+                }
+            }
+            "down" => {
+                if let Some(picker) = self.remote_dir_picker.as_mut() {
+                    picker.move_selection(1);
+                    let sel = picker.selected;
+                    self.remote_dir_scroll.scroll_to_item(sel, ScrollStrategy::Center);
+                    cx.notify();
+                }
+            }
+            "left" | "backspace" => {
+                if self
+                    .remote_dir_picker
+                    .as_mut()
+                    .is_some_and(|picker| picker.go_parent())
+                {
+                    self.load_remote_dir_picker(cx);
+                }
+            }
+            "enter" if ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform => {
+                self.confirm_remote_dir_picker(cx);
+            }
+            "enter" | "right" => {
+                if self
+                    .remote_dir_picker
+                    .as_mut()
+                    .is_some_and(|picker| picker.enter_selected())
+                {
+                    self.load_remote_dir_picker(cx);
+                }
+            }
+            "r" if ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform => {
+                self.load_remote_dir_picker(cx);
+            }
+            _ => {}
+        }
+    }
+
+    fn render_remote_dir_picker(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let picker = self.remote_dir_picker.as_ref()?;
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let dirs = picker.visible_dirs();
+        let selected = picker.selected.min(dirs.len().saturating_sub(1));
+        let target = picker.source_label();
+        let current = picker.current.as_str().to_string();
+
+        const ROW_H: f32 = 34.0;
+        let mut list = div().flex().flex_col().gap(px(2.)).p(px(6.));
+        // Clickable「上级目录」row — the only mouse path *up* the tree (dir rows
+        // only go deeper). Without it you can't get from /root to /usr or /mnt
+        // without the keyboard. Shown whenever a parent exists (i.e. not at `/`).
+        // Kept fixed above the scroll list so it's always reachable.
+        if let Some(parent) = picker.current.parent() {
+            let parent_path = parent.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h(px(ROW_H))
+                    .gap(px(9.))
+                    .px(px(11.))
+                    .rounded(px(9.))
+                    .hover(|s| s.bg(rgba(INSET)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e, _w, cx| {
+                            if let Some(picker) = this.remote_dir_picker.as_mut() {
+                                picker.current = parent_path.clone();
+                                picker.entries.clear();
+                                picker.selected = 0;
+                            }
+                            this.load_remote_dir_picker(cx);
+                        }),
+                    )
+                    .child(icon("folder", 14., ui.muted))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .text_color(col(ui.muted))
+                            .child(".. 上级目录"),
+                    ),
+            );
+        }
+        if picker.loading {
+            list = list.child(
+                div()
+                    .px(px(12.))
+                    .py(px(14.))
+                    .text_size(px(12.))
+                    .text_color(col(ui.muted))
+                    .child("正在读取远端目录..."),
+            );
+        } else if let Some(error) = &picker.error {
+            list = list.child(
+                div()
+                    .px(px(12.))
+                    .py(px(14.))
+                    .text_size(px(12.))
+                    .text_color(col(t.ansi.red))
+                    .child(SharedString::from(format!("读取失败: {error}"))),
+            );
+        } else if dirs.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(12.))
+                    .py(px(14.))
+                    .text_size(px(12.))
+                    .text_color(col(ui.muted))
+                    .child("此目录没有可进入的子目录"),
+            );
+        } else {
+            // Virtualized + scrollable list (mouse wheel + keyboard scroll-to-selected)
+            // so long directories (`/` has dozens of entries) aren't clipped. The
+            // container gets a definite height = min(content, 320) for uniform_list's
+            // auto-sizing to scroll past it. `'static` closure → capture a weak handle.
+            let dirs_rc: std::rc::Rc<Vec<PickerEntry>> = std::rc::Rc::new(dirs.clone());
+            let entity = cx.entity().downgrade();
+            let accent = ui.accent;
+            let fg = ui.foreground;
+            let count = dirs_rc.len();
+            let list_h = (count as f32 * ROW_H).clamp(ROW_H, 320.0);
+            list = list.child(
+                div().h(px(list_h)).flex().flex_col().min_h(px(0.)).child(
+                    uniform_list("remote-dir-list", count, move |range, _w, _cx| {
+                        range
+                            .map(|i| {
+                                let entry = &dirs_rc[i];
+                                let is_sel = i == selected;
+                                let path = entry.path.clone();
+                                let name = entry.name.clone();
+                                let entity = entity.clone();
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .h(px(ROW_H))
+                                    .gap(px(9.))
+                                    .px(px(11.))
+                                    .rounded(px(9.))
+                                    .when(is_sel, |d| d.bg(rgba(HOVER)))
+                                    .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        move |_e: &MouseDownEvent, _w, app| {
+                                            let _ = entity.update(app, |this, cx| {
+                                                if let Some(picker) =
+                                                    this.remote_dir_picker.as_mut()
+                                                {
+                                                    picker.current = path.clone();
+                                                    picker.entries.clear();
+                                                    picker.selected = 0;
+                                                }
+                                                this.load_remote_dir_picker(cx);
+                                            });
+                                            app.stop_propagation();
+                                        },
+                                    )
+                                    .child(icon("folder", 14., accent))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .text_size(px(12.5))
+                                            .text_color(col(fg))
+                                            .child(SharedString::from(name)),
+                                    )
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .flex_1()
+                    .min_h(px(0.))
+                    .track_scroll(self.remote_dir_scroll.clone()),
+                ),
+            );
+        }
+
+        let panel = shadowed(
+            div()
+                .flex()
+                .flex_col()
+                .w(px(560.))
+                .rounded(px(R_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(RIM))
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
+                    linear_color_stop(rgba(0x161826eb), 1.),
+                ))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .px(px(16.))
+                        .py(px(13.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .text_size(px(13.))
+                                .text_color(col(ui.foreground))
+                                .child(icon("folder", 15., ui.accent))
+                                .child("选择远端目录"),
+                        )
+                        .child(
+                            div()
+                                .font_family(SharedString::from(self.config.font().family.clone()))
+                                .text_size(px(11.))
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from(format!("{target}:{current}"))),
+                        ),
+                )
+                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                .child(list)
+                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(14.))
+                        .py(px(11.))
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(col(ui.muted))
+                                .child("Enter 进入 · Backspace 上级 · Ctrl+Enter 确认"),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .px(px(10.))
+                                .py(px(5.))
+                                .rounded(px(7.))
+                                .text_size(px(11.))
+                                .text_color(col(ui.muted))
+                                .hover(|s| s.bg(rgba(INSET)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, w, cx| {
+                                        this.cancel_remote_dir_picker(w, cx);
+                                    }),
+                                )
+                                .child("取消"),
+                        )
+                        .child(
+                            div()
+                                .px(px(10.))
+                                .py(px(5.))
+                                .rounded(px(7.))
+                                .text_size(px(11.))
+                                .text_color(col(ui.accent))
+                                .bg(cola(ui.accent, 0.12))
+                                .hover(|s| s.bg(cola(ui.accent, 0.18)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| {
+                                        this.confirm_remote_dir_picker(cx);
+                                    }),
+                                )
+                                .child("确认"),
+                        ),
+                ),
+            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)],
+        );
+
+        Some(
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(rgba(0x0a0b118c))
+                .track_focus(&self.remote_dir_focus)
+                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
+                    this.on_remote_dir_key(ev, w, cx)
+                }))
+                .child(div().h(px(110.)))
+                .child(panel),
+        )
     }
 
     /// `重载配置`(app menu, panic button): overwrite the on-disk `config.toml` +
@@ -5231,6 +5764,12 @@ impl Render for Workspace {
             self.ssh_prompt_needs_focus = false;
             self.ssh_prompt_focus.focus(window);
         }
+        if self.remote_dir_picker.is_some()
+            && (self.remote_dir_needs_focus || !self.remote_dir_focus.is_focused(window))
+        {
+            self.remote_dir_needs_focus = false;
+            self.remote_dir_focus.focus(window);
+        }
         if self.agent_form_open
             && (self.agent_form_needs_focus || !self.agent_form_focus.is_focused(window))
         {
@@ -5240,8 +5779,20 @@ impl Render for Workspace {
         // IME control: disable IME for ASCII overlay fields (the SSH target filter,
         // the agent editor's command field), but keep it on for the SSH favorite
         // rename + the agent editor's name field so Chinese names work.
+        //
+        // **Navigation-only overlays (remote dir picker / split launcher / layout
+        // manager) MUST disable IME too**: they have no text input and drive purely
+        // by ↑↓/Enter/Esc/Backspace. With an active CJK IME + the `install_ime_keyfix`
+        // window subclass (which routes `VK_PROCESSKEY` to the IME), an *enabled* IME
+        // claims those navigation keys before they reach gpui's `on_key_down` → the
+        // panel's keyboard goes completely dead (踩过的坑:远端目录 picker 按键无反应).
+        // Turning IME off makes the keys arrive as plain VKs so the handlers fire.
         let disable_ime = (self.ssh_prompt_open && self.ssh_rename.is_none())
-            || (self.agent_form_open && self.agent_form_field != AgentField::Name);
+            || (self.agent_form_open && self.agent_form_field != AgentField::Name)
+            || self.remote_dir_picker.is_some()
+            || self.split_launcher_open
+            || self.layout_manager_open
+            || self.palette_open; // search reads ASCII key_char; CJK search is parked
         if disable_ime != self.ime_disabled {
             if let Some(hwnd) = crate::platform::hwnd_of(window) {
                 crate::platform::set_ime_enabled(hwnd, !disable_ime);
@@ -5277,7 +5828,12 @@ impl Render for Workspace {
             || self.layout_manager_open
             || self.quick_look_open
             || self.ssh_prompt_open
-            || self.agent_form_open;
+            || self.agent_form_open
+            // The remote dir picker holds focus on `remote_dir_focus`; if it's not
+            // listed here, the block below finds "no pane focused" and re-parks focus
+            // onto `workspace_focus` **every frame**, stealing it from the picker so
+            // its ↑↓/Enter/Esc never fire (踩过的坑:picker 键盘无反应的真凶).
+            || self.remote_dir_picker.is_some();
         if !overlay_focused && !self.tabs[active].welcome {
             let mut leaves = Vec::new();
             collect_leaves(&self.tabs[active].root, &mut leaves);
@@ -5719,6 +6275,7 @@ impl Render for Workspace {
         let app_menu = self.render_app_menu(cx);
         let ssh_prompt = self.render_ssh_prompt(cx);
         let agent_form = self.render_agent_form(cx);
+        let remote_dir_picker = self.render_remote_dir_picker(cx);
 
         let root = div()
             // Full-window focus anchor: clicking anywhere (except the panes + the
@@ -5779,6 +6336,7 @@ impl Render for Workspace {
             .when_some(layout_manager, |d, l| d.child(l))
             .when_some(app_menu, |d, m| d.child(m))
             .when_some(ssh_prompt, |d, s| d.child(s))
+            .when_some(remote_dir_picker, |d, p| d.child(p))
             .when_some(agent_form, |d, f| d.child(f));
 
         // No render-data cache here (tab labels/cwd live in the child panes and
@@ -5986,6 +6544,59 @@ mod tests {
         assert_eq!(short_name("aaaaaaaaaaaaaaaaaaaa").len(), 16); // capped
     }
 
+    #[test]
+    fn dedup_agent_profiles_keeps_one_per_agent_latest_wins() {
+        let agent = |name: &str, id: &str, accent: u32| tn_config::Profile {
+            name: name.into(),
+            kind: tn_config::ProfileKind::Agent,
+            command: Some(id.into()),
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: None,
+            user: None,
+            agent: Some(id.into()),
+            accent: Some(tn_config::Color::new(
+                (accent >> 16) as u8,
+                (accent >> 8) as u8,
+                accent as u8,
+            )),
+            glyph: None,
+        };
+        let shell = tn_config::Profile {
+            name: "pwsh".into(),
+            kind: tn_config::ProfileKind::Shell,
+            command: Some("powershell.exe".into()),
+            args: Vec::new(),
+            cwd: None,
+            distro: None,
+            host: None,
+            user: None,
+            agent: None,
+            accent: None,
+            glyph: None,
+        };
+        // A stale claude (old default) + a freshly added one + a codex dup too.
+        let out = dedup_agent_profiles(vec![
+            agent("claude", "claude", 0xF79AC0), // stale leftover
+            shell.clone(),
+            agent("codex", "codex", 0x000000), // stale leftover
+            agent("claude", "claude", 0x7AA2F7), // user's new one → kept (latest)
+            agent("codex", "codex", 0x73DACA),  // user's new one → kept
+        ]);
+        // Exactly one claude + one codex + the shell.
+        assert_eq!(out.len(), 3);
+        let claude: Vec<_> = out.iter().filter(|p| p.agent.as_deref() == Some("claude")).collect();
+        let codex: Vec<_> = out.iter().filter(|p| p.agent.as_deref() == Some("codex")).collect();
+        assert_eq!(claude.len(), 1);
+        assert_eq!(codex.len(), 1);
+        // Latest (last) occurrence wins → the user's accents, not the stale ones.
+        assert_eq!(claude[0].accent, Some(tn_config::Color::new(0x7A, 0xA2, 0xF7)));
+        assert_eq!(codex[0].accent, Some(tn_config::Color::new(0x73, 0xDA, 0xCA)));
+        // Non-agent profiles are never deduped.
+        assert!(out.iter().any(|p| p.name == "pwsh"));
+    }
+
     fn ssh_cfg() -> tn_pty::SshConfig {
         tn_pty::SshConfig {
             host: "example.com".into(),
@@ -6037,16 +6648,23 @@ mod tests {
     }
 
     #[test]
-    fn open_folder_uses_native_picker_only_for_host_and_wsl_panes() {
+    fn open_folder_uses_native_picker_only_for_host_and_welcome() {
+        // Welcome page (no live pane / no spec): use the native picker so the
+        // chosen folder re-roots the explorer and becomes the next launch cwd.
+        assert!(open_folder_should_use_native_picker(None));
+
+        // Host shell → native Windows folder picker.
         let host = LaunchSpec::pwsh();
         assert!(open_folder_should_use_native_picker(Some(&host)));
 
+        // WSL → in-app navigable picker (browses \\wsl$ locally), not native.
         let mut wsl = LaunchSpec::pwsh();
         wsl.file_namespace = FileNamespace::Wsl {
             distro: Some("Ubuntu".into()),
         };
-        assert!(open_folder_should_use_native_picker(Some(&wsl)));
+        assert!(!open_folder_should_use_native_picker(Some(&wsl)));
 
+        // SSH → in-app SFTP picker, not native.
         let mut ssh = LaunchSpec::pwsh();
         ssh.file_namespace = FileNamespace::Ssh;
         ssh.ssh = Some(ssh_cfg());

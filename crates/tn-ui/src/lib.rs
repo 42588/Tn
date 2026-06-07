@@ -16,6 +16,8 @@ mod perf;
 mod platform;
 mod quick_look;
 mod quick_terminal;
+mod remote_dir_picker;
+mod remote_git;
 mod ssh_recents;
 mod style;
 mod terminal_view;

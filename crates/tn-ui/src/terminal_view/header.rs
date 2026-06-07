@@ -527,7 +527,7 @@ impl TerminalView {
             }
 
             // ── Ready: real cards ──
-            super::RailState::Ready { files, root } => {
+            super::RailState::Ready { files, source } => {
                 let total_add: u32 = files.iter().map(|f| f.add).sum();
                 let total_del: u32 = files.iter().map(|f| f.del).sum();
                 let summary = if files.is_empty() {
@@ -594,7 +594,7 @@ impl TerminalView {
                     let plus = format!("+{}", f.add);
                     let minus = (f.del > 0).then(|| format!("−{}", f.del));
 
-                    let abs = root.join(&f.path);
+                    let target = source.target_for(&f.path);
                     let row = div()
                         .w_full()
                         .rounded(px(6.)) // 内部胶囊圆角
@@ -605,7 +605,7 @@ impl TerminalView {
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |_this, _e, _w, cx| {
-                                cx.emit(super::OpenInQuickLook(abs.clone()));
+                                cx.emit(super::OpenInQuickLook(target.clone()));
                             }),
                         )
                         .child(self.arail_file(f.name(), &plus, minus.as_deref()));

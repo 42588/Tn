@@ -27,8 +27,10 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
+use tn_pty::remote_cmd::SshCommandService;
 use tn_pty::remote_fs::{
-    remote_path_to_virtual_path, RemoteFileService, RemoteId, SftpFileService, REMOTE_READ_LIMIT,
+    remote_path_to_virtual_path, RemoteFileService, RemoteFileStat, RemoteId, SftpFileService,
+    REMOTE_READ_LIMIT,
 };
 
 use crate::style::{
@@ -295,6 +297,10 @@ struct DiffLine {
     kind: DiffKind,
     new_no: Option<u32>,
     text: String,
+    /// For `Hunk` rows on a **remote** diff: the 0-based hunk index (matching
+    /// [`crate::remote_git::parse_file_diff`]), so the accept/reject buttons can
+    /// build the patch for exactly this hunk. `None` for non-hunk rows.
+    hunk_index: Option<usize>,
 }
 
 /// Emitted to the workspace for the few cross-entity needs (keyboard focus lives
@@ -308,6 +314,10 @@ pub enum QuickLookEvent {
     /// activity rail (本次改动) **synchronously**, instead of waiting on the file
     /// watcher (which can miss the edit: file outside the watched cwd, debounce, etc.).
     FileSaved(std::path::PathBuf),
+    /// A remote per-hunk accept/reject (`git apply`) changed the remote working
+    /// tree → refresh every agent pane's「本次改动」(remote panes recompute via
+    /// `changes_for_remote`; the file watcher can't see remote FS edits).
+    RemoteChangesDirty,
 }
 
 #[derive(Clone)]
@@ -327,6 +337,34 @@ enum QuickLookData {
     Binary {
         size: u64,
     },
+}
+
+#[derive(Clone)]
+struct PreviewPayload {
+    data: QuickLookData,
+    format: Option<TextFormat>,
+    guard: Option<FileGuard>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RemoteSource {
+    cfg: tn_pty::SshConfig,
+    id: RemoteId,
+}
+
+enum RemoteSaveResult {
+    Saved {
+        guard: FileGuard,
+        lines: Vec<String>,
+    },
+    Conflict(Conflict),
+    Error(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SaveStateUpdate {
+    dirty: bool,
+    diff_dirty: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -387,17 +425,6 @@ impl FileGuard {
     fn from_parts(mtime: SystemTime, size: u64, hash: u64) -> Self {
         Self { mtime, size, hash }
     }
-
-    fn from_path(path: &std::path::Path) -> std::io::Result<Self> {
-        let meta = std::fs::metadata(path)?;
-        let mtime = meta.modified()?;
-        let bytes = std::fs::read(path)?;
-        Ok(Self::from_parts(
-            mtime,
-            meta.len(),
-            file_sample_hash(&bytes),
-        ))
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -408,12 +435,56 @@ enum Conflict {
     Unknown,
 }
 
+impl Conflict {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "无冲突",
+            Self::ModifiedOnDisk => "远端文件已被其他进程修改",
+            Self::MissingOnDisk => "远端文件已不存在",
+            Self::Unknown => "无法确认远端文件状态",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveGuardMode {
+    Check,
+    Force,
+}
+
 fn detect_conflict(opened: Option<&FileGuard>, disk: Option<&FileGuard>) -> Conflict {
     match (opened, disk) {
         (None, _) => Conflict::Unknown,
         (Some(_), None) => Conflict::MissingOnDisk,
         (Some(opened), Some(disk)) if opened == disk => Conflict::Clean,
         (Some(_), Some(_)) => Conflict::ModifiedOnDisk,
+    }
+}
+
+fn remote_save_conflict(
+    opened: Option<&FileGuard>,
+    current: Option<&FileGuard>,
+    mode: SaveGuardMode,
+) -> Conflict {
+    match mode {
+        SaveGuardMode::Check => detect_conflict(opened, current),
+        SaveGuardMode::Force => Conflict::Clean,
+    }
+}
+
+fn remote_file_guard(stat: &RemoteFileStat, bytes: &[u8]) -> FileGuard {
+    FileGuard::from_parts(
+        std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(stat.mtime.unwrap_or(0)),
+        stat.size.unwrap_or(bytes.len() as u64),
+        file_sample_hash(bytes),
+    )
+}
+
+fn save_state_after_success(is_remote: bool, has_remote_diff: bool) -> SaveStateUpdate {
+    SaveStateUpdate {
+        dirty: false,
+        diff_dirty: !is_remote || has_remote_diff,
     }
 }
 
@@ -522,17 +593,35 @@ fn encode_text_lines(lines: &[String], format: TextFormat) -> Vec<u8> {
     }
 }
 
-fn preview_data_from_bytes(bytes: Vec<u8>, ext: &str, declared_size: Option<u64>) -> QuickLookData {
+fn preview_payload_from_bytes(
+    bytes: Vec<u8>,
+    ext: &str,
+    declared_size: Option<u64>,
+    remote_stat: Option<&RemoteFileStat>,
+) -> PreviewPayload {
+    let guard = remote_stat.map(|stat| remote_file_guard(stat, &bytes));
     let size = declared_size.unwrap_or(bytes.len() as u64);
     if size > MAX_FILE_SIZE || bytes.len() as u64 > MAX_FILE_SIZE {
-        return QuickLookData::Binary { size };
+        return PreviewPayload {
+            data: QuickLookData::Binary { size },
+            format: None,
+            guard,
+        };
     }
     let peek_len = PEEK_SIZE.min(bytes.len());
     if content_inspector::inspect(&bytes[..peek_len]).is_binary() {
-        return QuickLookData::Binary { size };
+        return PreviewPayload {
+            data: QuickLookData::Binary { size },
+            format: None,
+            guard,
+        };
     }
     let Some(decoded) = decode_text_bytes(&bytes, ext) else {
-        return QuickLookData::Binary { size };
+        return PreviewPayload {
+            data: QuickLookData::Binary { size },
+            format: None,
+            guard,
+        };
     };
     let mut line_iter = decoded.lines.into_iter();
     let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
@@ -540,16 +629,17 @@ fn preview_data_from_bytes(bytes: Vec<u8>, ext: &str, declared_size: Option<u64>
         lines.push(line);
     }
     let truncated = line_iter.next().is_some();
-    QuickLookData::Text {
-        lines: Arc::new(lines),
-        truncated,
+    PreviewPayload {
+        data: QuickLookData::Text {
+            lines: Arc::new(lines),
+            truncated,
+        },
+        format: Some(decoded.format),
+        guard,
     }
 }
 
-fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, is_remote: bool) -> bool {
-    if is_remote {
-        return false;
-    }
+fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, _is_remote: bool) -> bool {
     match data {
         QuickLookData::Text {
             truncated: false, ..
@@ -632,15 +722,28 @@ pub struct QuickLook {
     loading_state: LoadingState,
     generation: usize,
     /// True when `path` is only a display/virtual path for an SSH remote file.
-    /// Remote previews are read-only and never run local `git diff` or disk writes.
+    /// Remote text saves go through SFTP guards; local git/disk paths are never
+    /// used against the virtual `ssh://` display path.
     is_remote_source: bool,
     remote_fs: Arc<dyn RemoteFileService>,
+    remote_source: Option<RemoteSource>,
+    remote_diff_file: Option<crate::remote_git::RemoteGitFile>,
+    text_format: Option<TextFormat>,
+    opened_guard: Option<FileGuard>,
+    save_conflict: Option<Conflict>,
+    save_error: Option<String>,
+    save_in_flight: bool,
     /// Deferred-edit flag: if `open_for_edit` is called while the file is still
     /// loading, this is set so the async completion handler enters edit afterwards.
     edit_on_ready: bool,
     /// Independent loading track for the `git diff` path (separate from file I/O).
     diff_loading: bool,
     diff_generation: usize,
+    /// A remote per-hunk accept/reject (`git apply`) is in flight — buttons are
+    /// disabled meanwhile so a double-click can't fire two conflicting patches.
+    hunk_busy: bool,
+    /// Last remote hunk apply/reject failure, surfaced as a dismissible banner.
+    hunk_error: Option<String>,
     /// Token used to cancel background tasks (e.g. image decoding, pdf parsing) when a new file is opened.
     cancel_token: Arc<std::sync::atomic::AtomicBool>,
     /// Preview 横向滚动(px)。自绘底部滚动条,**不用** `overflow.x = Scroll`(那会让滚轮
@@ -702,9 +805,18 @@ impl QuickLook {
             generation: 0,
             is_remote_source: false,
             remote_fs: SftpFileService::shared(),
+            remote_source: None,
+            remote_diff_file: None,
+            text_format: None,
+            opened_guard: None,
+            save_conflict: None,
+            save_error: None,
+            save_in_flight: false,
             edit_on_ready: false,
             diff_loading: false,
             diff_generation: 0,
+            hunk_busy: false,
+            hunk_error: None,
             cancel_token: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hscroll_px: 0.0,
             hscroll_drag: None,
@@ -777,6 +889,15 @@ impl QuickLook {
         self.cancel_token
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.is_remote_source = false;
+        self.remote_source = None;
+        self.remote_diff_file = None;
+        self.text_format = None;
+        self.opened_guard = None;
+        self.save_conflict = None;
+        self.save_error = None;
+        self.save_in_flight = false;
+        self.hunk_busy = false;
+        self.hunk_error = None;
 
         cx.notify();
     }
@@ -822,6 +943,15 @@ impl QuickLook {
         self.find_open = false;
         self.file_highlight_cache.borrow_mut().clear();
         self.is_remote_source = is_remote;
+        self.remote_source = None;
+        self.remote_diff_file = None;
+        self.text_format = None;
+        self.opened_guard = None;
+        self.save_conflict = None;
+        self.save_error = None;
+        self.save_in_flight = false;
+        self.hunk_busy = false;
+        self.hunk_error = None;
 
         self.cancel_token
             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1200,9 +1330,10 @@ impl QuickLook {
         .detach();
     }
 
-    /// Open a remote SSH file through the remote filesystem service. This first
-    /// pass is read-only and bounded; it never invokes local `git diff`, image/PDF
-    /// decoders, or disk writes against the virtual `ssh://` display path.
+    /// Open a remote SSH file through the remote filesystem service. Reads are
+    /// bounded; text saves use SFTP stat/hash guards and never invoke local
+    /// `git diff`, image/PDF decoders, or disk writes against the virtual
+    /// `ssh://` display path.
     pub fn open_remote(
         &mut self,
         cfg: tn_pty::SshConfig,
@@ -1224,7 +1355,12 @@ impl QuickLook {
             .to_lowercase();
         let remote_fs = self.remote_fs.clone();
         let remote_path = id.path.clone();
+        let source = RemoteSource {
+            cfg: cfg.clone(),
+            id: id.clone(),
+        };
         self.reset_for_open(display_path, true, cx);
+        self.remote_source = Some(source);
         self.generation = self.generation.wrapping_add(1);
         let gen = self.generation;
         self.loading_state = LoadingState::Loading;
@@ -1237,17 +1373,33 @@ impl QuickLook {
             let data = exec
                 .spawn(async move {
                     if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
-                        return QuickLookData::None;
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
                     }
+                    let stat = remote_fs.stat_file(&cfg, &remote_path).ok();
+                    let declared_size = size.or_else(|| stat.as_ref().and_then(|s| s.size));
                     let bytes = remote_fs.read_file(&cfg, &remote_path, REMOTE_READ_LIMIT);
                     if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
-                        return QuickLookData::None;
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
                     }
                     match bytes {
-                        Ok(bytes) => preview_data_from_bytes(bytes, &ext, size),
-                        Err(e) => QuickLookData::Text {
-                            lines: Arc::new(vec![format!("Remote preview failed: {e}")]),
-                            truncated: false,
+                        Ok(bytes) => {
+                            preview_payload_from_bytes(bytes, &ext, declared_size, stat.as_ref())
+                        }
+                        Err(e) => PreviewPayload {
+                            data: QuickLookData::Text {
+                                lines: Arc::new(vec![format!("Remote preview failed: {e}")]),
+                                truncated: false,
+                            },
+                            format: None,
+                            guard: None,
                         },
                     }
                 })
@@ -1256,7 +1408,9 @@ impl QuickLook {
                 if v.generation != gen {
                     return;
                 }
-                v.file_data = data;
+                v.file_data = data.data;
+                v.text_format = data.format;
+                v.opened_guard = data.guard;
                 v.loading_state = LoadingState::Ready;
                 v.diff_dirty = false;
                 v.diff_loading = false;
@@ -1285,17 +1439,65 @@ impl QuickLook {
         self.select_tab(Tab::Diff, cx);
     }
 
+    pub(crate) fn open_remote_diff(
+        &mut self,
+        file: crate::remote_git::RemoteGitFile,
+        cx: &mut Context<Self>,
+    ) {
+        let id = RemoteId::new(&file.cfg, file.remote_path().as_str());
+        self.open_remote(file.cfg.clone(), id, None, cx);
+        self.remote_diff_file = Some(file);
+        self.diff_dirty = true;
+        self.select_tab(Tab::Diff, cx);
+    }
+
     /// Recompute `diff` **asynchronously** — dispatched to the background executor.
     /// Stale-protected by an independent `diff_generation` counter so rapid
     /// tab-toggling / file navigation never shows an old diff on a new file.
     fn ensure_diff(&mut self, cx: &mut Context<Self>) {
+        if !self.diff_dirty || self.diff_loading {
+            return;
+        }
+        if let Some(file) = self.remote_diff_file.clone() {
+            self.diff_generation = self.diff_generation.wrapping_add(1);
+            let gen = self.diff_generation;
+            self.diff_loading = true;
+            cx.notify();
+
+            let exec = cx.background_executor().clone();
+            let diff_cancel = self.cancel_token.clone();
+            cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let diff_lines = exec
+                    .spawn(async move {
+                        if diff_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return vec![];
+                        }
+                        let service = SshCommandService::shared();
+                        let text = crate::remote_git::diff_for_remote_file(service.as_ref(), &file)
+                            .unwrap_or_default();
+                        if diff_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return vec![];
+                        }
+                        parse_diff(&text)
+                    })
+                    .await;
+
+                let _ = this.update(cx, |v, cx| {
+                    if v.diff_generation == gen {
+                        v.diff = Rc::new(diff_lines);
+                        v.diff_dirty = false;
+                        v.diff_loading = false;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         if self.is_remote_source {
             self.diff = Rc::new(Vec::new());
             self.diff_dirty = false;
             self.diff_loading = false;
-            return;
-        }
-        if !self.diff_dirty || self.diff_loading {
             return;
         }
         let Some(path) = self.path.clone() else {
@@ -1345,6 +1547,70 @@ impl QuickLook {
         .detach();
     }
 
+    /// Accept (`--cached`) or reject (`--reverse`) a single remote hunk via
+    /// `git apply` over SSH, then refresh the diff + agent rails. Only valid on a
+    /// remote Diff tab (`remote_diff_file` set). The patch is rebuilt from a
+    /// **freshly fetched** diff so it always applies against the current tree (the
+    /// rendered `DiffLine`s have lost the raw hunk body needed for a patch).
+    fn apply_hunk(
+        &mut self,
+        hunk_index: usize,
+        action: crate::remote_git::HunkAction,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(file) = self.remote_diff_file.clone() else {
+            return;
+        };
+        if self.hunk_busy {
+            return;
+        }
+        self.hunk_busy = true;
+        self.hunk_error = None;
+        cx.notify();
+
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result: Result<(), String> = exec
+                .spawn(async move {
+                    let service = SshCommandService::shared();
+                    let text =
+                        crate::remote_git::diff_for_remote_file(service.as_ref(), &file)
+                            .map_err(|e| e.to_string())?;
+                    let parsed = crate::remote_git::parse_file_diff(&file.path, &text);
+                    crate::remote_git::apply_remote_hunk(
+                        service.as_ref(),
+                        &file,
+                        &parsed,
+                        hunk_index,
+                        action,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .await;
+
+            let _ = this.update(cx, |v, cx| {
+                v.hunk_busy = false;
+                match result {
+                    Ok(()) => {
+                        // Re-fetch the diff so the applied/reverted hunk drops out,
+                        // and let the workspace refresh remote「本次改动」rails.
+                        v.diff_dirty = true;
+                        v.ensure_diff(cx);
+                        cx.emit(QuickLookEvent::RemoteChangesDirty);
+                    }
+                    Err(msg) => v.hunk_error = Some(msg),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn dismiss_hunk_error(&mut self, cx: &mut Context<Self>) {
+        self.hunk_error = None;
+        cx.notify();
+    }
+
     /// Switch tabs; computing the diff lazily (async) when entering the Diff tab.
     fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
@@ -1382,6 +1648,13 @@ impl QuickLook {
         let Some(path) = self.path.clone() else {
             return;
         };
+        if self.save_in_flight {
+            return;
+        }
+        if let Some(source) = self.remote_source.clone() {
+            self.save_remote(path, source, SaveGuardMode::Check, cx);
+            return;
+        }
         let joined = self.buf.join("\n");
         let content = if joined.is_empty() {
             joined
@@ -1390,7 +1663,8 @@ impl QuickLook {
         };
         match std::fs::write(&path, content) {
             Ok(()) => {
-                self.dirty = false;
+                let update = save_state_after_success(false, false);
+                self.dirty = update.dirty;
                 self.file_data = QuickLookData::Text {
                     lines: Arc::new(self.buf.as_ref().clone()),
                     truncated: false,
@@ -1398,7 +1672,7 @@ impl QuickLook {
                 // The diff is now stale; recompute lazily (only if the Diff tab is
                 // currently showing — otherwise just mark it dirty so Ctrl+S stays
                 // fast and never blocks on `git diff`).
-                self.diff_dirty = true;
+                self.diff_dirty = update.diff_dirty;
                 if self.tab == Tab::Diff {
                     self.ensure_diff(cx);
                 }
@@ -1409,6 +1683,126 @@ impl QuickLook {
             Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
         }
         cx.notify();
+    }
+
+    fn save_remote(
+        &mut self,
+        path: PathBuf,
+        source: RemoteSource,
+        guard_mode: SaveGuardMode,
+        cx: &mut Context<Self>,
+    ) {
+        let format = self.text_format.unwrap_or_default();
+        let bytes = encode_text_lines(self.buf.as_ref(), format);
+        let lines = self.buf.as_ref().clone();
+        let opened_guard = self.opened_guard.clone();
+        let remote_fs = self.remote_fs.clone();
+        let cfg = source.cfg.clone();
+        let remote_path = source.id.path.clone();
+        self.save_in_flight = true;
+        self.save_conflict = None;
+        self.save_error = None;
+        cx.notify();
+
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let result = exec
+                .spawn(async move {
+                    let current_stat = match remote_fs.stat_file(&cfg, &remote_path) {
+                        Ok(stat) => stat,
+                        Err(e) => return RemoteSaveResult::Error(format!("Remote stat failed: {e}")),
+                    };
+                    let current_bytes =
+                        match remote_fs.read_file(&cfg, &remote_path, REMOTE_READ_LIMIT) {
+                            Ok(bytes) => bytes,
+                            Err(e) => {
+                                return RemoteSaveResult::Error(format!(
+                                    "Remote conflict check failed: {e}"
+                                ))
+                            }
+                        };
+                    let current_guard = remote_file_guard(&current_stat, &current_bytes);
+                    match remote_save_conflict(
+                        opened_guard.as_ref(),
+                        Some(&current_guard),
+                        guard_mode,
+                    ) {
+                        Conflict::Clean => {}
+                        conflict => return RemoteSaveResult::Conflict(conflict),
+                    }
+
+                    match remote_fs.write_file(&cfg, &remote_path, &bytes) {
+                        Ok(stat) => RemoteSaveResult::Saved {
+                            guard: remote_file_guard(&stat, &bytes),
+                            lines,
+                        },
+                        Err(e) => RemoteSaveResult::Error(format!("Remote save failed: {e}")),
+                    }
+                })
+                .await;
+
+            let _ = this.update(cx, |v, cx| {
+                if v.path.as_ref() != Some(&path) {
+                    return;
+                }
+                v.save_in_flight = false;
+                match result {
+                    RemoteSaveResult::Saved { guard, lines } => {
+                        let update =
+                            save_state_after_success(true, v.remote_diff_file.is_some());
+                        v.dirty = update.dirty;
+                        v.opened_guard = Some(guard);
+                        v.file_data = QuickLookData::Text {
+                            lines: Arc::new(lines),
+                            truncated: false,
+                        };
+                        v.diff_dirty = update.diff_dirty;
+                        v.diff_loading = false;
+                        v.save_conflict = None;
+                        v.save_error = None;
+                        if v.tab == Tab::Diff {
+                            v.ensure_diff(cx);
+                        }
+                        cx.emit(QuickLookEvent::FileSaved(path.clone()));
+                    }
+                    RemoteSaveResult::Conflict(conflict) => {
+                        v.save_conflict = Some(conflict);
+                    }
+                    RemoteSaveResult::Error(error) => {
+                        v.save_error = Some(error);
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn force_remote_save(&mut self, cx: &mut Context<Self>) {
+        if self.save_in_flight {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let Some(source) = self.remote_source.clone() else {
+            return;
+        };
+        self.save_remote(path, source, SaveGuardMode::Force, cx);
+    }
+
+    fn cancel_save_conflict(&mut self, cx: &mut Context<Self>) {
+        self.save_conflict = None;
+        self.save_error = None;
+        cx.notify();
+    }
+
+    fn reload_remote_source(&mut self, cx: &mut Context<Self>) {
+        let Some(source) = self.remote_source.clone() else {
+            return;
+        };
+        self.loading_state = LoadingState::Loading;
+        self.open_remote(source.cfg, source.id, None, cx);
     }
 
     // ── selection / undo helpers ──
@@ -2077,6 +2471,10 @@ fn align_table(rows: &[Vec<String>]) -> Vec<String> {
 fn parse_diff(text: &str) -> Vec<DiffLine> {
     let mut lines = Vec::new();
     let mut new_no = 0u32;
+    // 0-based hunk counter — kept in lockstep with `remote_git::parse_file_diff`
+    // (both skip the same header lines, count `@@` in order) so a clicked hunk
+    // header maps back to the right `FileDiff` hunk for accept/reject.
+    let mut hunk_no = 0usize;
     for line in text.lines() {
         if line.starts_with("diff ")
             || line.starts_with("index ")
@@ -2099,7 +2497,9 @@ fn parse_diff(text: &str) -> Vec<DiffLine> {
                 kind: DiffKind::Hunk,
                 new_no: None,
                 text: line.to_string(),
+                hunk_index: Some(hunk_no),
             });
+            hunk_no += 1;
             continue;
         }
         let (kind, text) = match line.chars().next() {
@@ -2121,6 +2521,7 @@ fn parse_diff(text: &str) -> Vec<DiffLine> {
             kind,
             new_no: no,
             text,
+            hunk_index: None,
         });
         if lines.len() >= MAX_LINES {
             break;
@@ -2880,28 +3281,41 @@ impl Render for QuickLook {
             )
             .child(div().flex_1())
             // mockup .vh .by:编辑态 = 「编辑中(●)」,预览态有未提交改动 = 「已改动」(claude)
-            .when(self.editing || !self.diff.is_empty(), |d| {
-                let label = if self.editing {
-                    if self.dirty {
-                        "编辑中 ●"
+            .when(
+                self.editing
+                    || !self.diff.is_empty()
+                    || self.save_in_flight
+                    || self.save_conflict.is_some()
+                    || self.save_error.is_some(),
+                |d| {
+                    let (label, color) = if self.save_in_flight {
+                        ("保存中", th.ansi.yellow)
+                    } else if self.save_conflict.is_some() {
+                        ("保存冲突", th.ansi.red)
+                    } else if self.save_error.is_some() {
+                        ("保存失败", th.ansi.red)
+                    } else if self.editing {
+                        if self.dirty {
+                            ("编辑中 ●", th.agents.claude)
+                        } else {
+                            ("编辑中", th.agents.claude)
+                        }
                     } else {
-                        "编辑中"
-                    }
-                } else {
-                    "已改动"
-                };
-                d.child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(5.)) // §16 .vh .by gap 5
-                        .text_size(px(11.))
-                        .text_color(col(th.agents.claude))
-                        .child(icon("pen", 13., th.agents.claude))
-                        .child(label),
-                )
-            })
+                        ("已改动", th.agents.claude)
+                    };
+                    d.child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(5.)) // §16 .vh .by gap 5
+                            .text_size(px(11.))
+                            .text_color(col(color))
+                            .child(icon("pen", 13., color))
+                            .child(label),
+                    )
+                },
+            )
             .child(tabset);
 
         // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不卡)。
@@ -2919,6 +3333,9 @@ impl Render for QuickLook {
         let cursor = self.cursor;
         let sel = self.sel_range();
         let tab = self.tab;
+        // Remote Diff tab → per-hunk accept/reject buttons on each `@@` row.
+        let is_remote_diff = self.remote_diff_file.is_some();
+        let hunk_busy = self.hunk_busy;
         // Per-row click → place cursor (mouse). The row index `i` is known here, so
         // we only map x → column (gutter + measured char width); no scroll-offset
         // math needed. Capture a weak handle (the 'static closure can't borrow self).
@@ -3219,7 +3636,83 @@ impl Render for QuickLook {
                                 },
                             )
                         } else {
-                            diff_row(&config, &diff, i)
+                            let base = diff_row(&config, &diff, i);
+                            // Remote Diff tab: each `@@` hunk header gets accept /
+                            // reject buttons (`git apply --cached` / `--reverse`).
+                            let hunk_idx = if is_remote_diff
+                                && matches!(diff[i].kind, DiffKind::Hunk)
+                            {
+                                diff[i].hunk_index
+                            } else {
+                                None
+                            };
+                            if let Some(hunk_index) = hunk_idx {
+                                let th = &config.theme;
+                                let hbtn = |label: &'static str, c: tn_config::Color| {
+                                    div()
+                                        .px(px(7.))
+                                        .py(px(1.))
+                                        .rounded(px(6.))
+                                        .flex_none()
+                                        .text_size(px(10.))
+                                        .font_weight(gpui::FontWeight(640.))
+                                        .text_color(if hunk_busy {
+                                            col(th.ui.muted)
+                                        } else {
+                                            col(c)
+                                        })
+                                        .bg(if hunk_busy {
+                                            rgba(INSET)
+                                        } else {
+                                            cola(c, 0.12)
+                                        })
+                                        .border_1()
+                                        .border_color(cola(c, 0.30))
+                                        .child(label)
+                                };
+                                let entity_a = entity.clone();
+                                let entity_r = entity.clone();
+                                base.child(div().flex_1().min_w(px(0.)))
+                                    .child(
+                                        hbtn("接受", th.ansi.green).on_mouse_down(
+                                            MouseButton::Left,
+                                            move |_e: &MouseDownEvent, _w, app| {
+                                                if hunk_busy {
+                                                    return;
+                                                }
+                                                let _ = entity_a.update(app, |this, cx| {
+                                                    this.apply_hunk(
+                                                        hunk_index,
+                                                        crate::remote_git::HunkAction::Apply,
+                                                        cx,
+                                                    );
+                                                });
+                                                app.stop_propagation();
+                                            },
+                                        ),
+                                    )
+                                    .child(
+                                        hbtn("拒绝", th.ansi.red).on_mouse_down(
+                                            MouseButton::Left,
+                                            move |_e: &MouseDownEvent, _w, app| {
+                                                if hunk_busy {
+                                                    return;
+                                                }
+                                                let _ = entity_r.update(app, |this, cx| {
+                                                    this.apply_hunk(
+                                                        hunk_index,
+                                                        crate::remote_git::HunkAction::Reject,
+                                                        cx,
+                                                    );
+                                                });
+                                                app.stop_propagation();
+                                            },
+                                        ),
+                                    )
+                                    .gap(px(6.))
+                            } else {
+                                base
+                            }
                         }
                     })
                     .collect::<Vec<_>>()
@@ -3514,6 +4007,152 @@ impl Render for QuickLook {
                 )
         });
 
+        let save_notice = self
+            .save_conflict
+            .map(|conflict| {
+                let action = |label: &'static str, danger: bool| {
+                    div()
+                        .px(px(9.))
+                        .py(px(2.))
+                        .rounded(px(7.))
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight(620.))
+                        .text_color(col(if danger { th.ansi.red } else { ui.foreground }))
+                        .bg(if danger { cola(th.ansi.red, 0.10) } else { rgba(INSET) })
+                        .border_1()
+                        .border_color(if danger {
+                            cola(th.ansi.red, 0.32)
+                        } else {
+                            rgba(0xffffff14)
+                        })
+                        .child(label)
+                };
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .px(px(13.))
+                    .py(px(7.))
+                    .flex_none()
+                    .font_family(UI_SANS)
+                    .text_size(px(10.5))
+                    .text_color(col(ui.muted))
+                    .bg(cola(th.ansi.red, 0.06))
+                    .border_t_1()
+                    .border_color(rgba(0xffffff0d))
+                    .child(icon("alert", 13., th.ansi.red))
+                    .child(
+                        div()
+                            .text_color(col(th.ansi.red))
+                            .child(SharedString::from(conflict.label())),
+                    )
+                    .child(div().flex_1())
+                    .child(
+                        action("重新载入", false).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| this.reload_remote_source(cx)),
+                        ),
+                    )
+                    .child(
+                        action("取消", false).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| this.cancel_save_conflict(cx)),
+                        ),
+                    )
+                    .child(
+                        action("覆盖远端", true).on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| this.force_remote_save(cx)),
+                        ),
+                    )
+            })
+            .or_else(|| {
+                self.save_error.as_ref().map(|error| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(13.))
+                        .py(px(7.))
+                        .flex_none()
+                        .font_family(UI_SANS)
+                        .text_size(px(10.5))
+                        .text_color(col(ui.muted))
+                        .bg(cola(th.ansi.red, 0.06))
+                        .border_t_1()
+                        .border_color(rgba(0xffffff0d))
+                        .child(icon("alert", 13., th.ansi.red))
+                        .child(
+                            div()
+                                .text_color(col(th.ansi.red))
+                                .child(SharedString::from(error.clone())),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .px(px(9.))
+                                .py(px(2.))
+                                .rounded(px(7.))
+                                .text_size(px(10.5))
+                                .font_weight(gpui::FontWeight(620.))
+                                .text_color(col(ui.foreground))
+                                .bg(rgba(INSET))
+                                .border_1()
+                                .border_color(rgba(0xffffff14))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| this.cancel_save_conflict(cx)),
+                                )
+                                .child("关闭"),
+                        )
+                })
+            });
+
+        // Remote hunk apply/reject failure → dismissible red banner (independent of
+        // the save banner; either can show).
+        let hunk_notice = self.hunk_error.as_ref().map(|error| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(13.))
+                .py(px(7.))
+                .flex_none()
+                .font_family(UI_SANS)
+                .text_size(px(10.5))
+                .text_color(col(ui.muted))
+                .bg(cola(th.ansi.red, 0.06))
+                .border_t_1()
+                .border_color(rgba(0xffffff0d))
+                .child(icon("alert", 13., th.ansi.red))
+                .child(
+                    div()
+                        .text_color(col(th.ansi.red))
+                        .child(SharedString::from(format!("应用失败:{error}"))),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .px(px(9.))
+                        .py(px(2.))
+                        .rounded(px(7.))
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight(620.))
+                        .text_color(col(ui.foreground))
+                        .bg(rgba(INSET))
+                        .border_1()
+                        .border_color(rgba(0xffffff14))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| this.dismiss_hunk_error(cx)),
+                        )
+                        .child("关闭"),
+                )
+        });
+
         // ── 左缘 accent 竖线(.seam):指向树中选中文件的「连接感」;末位子 = 画在最上层 ──
         let seam = div()
             .absolute()
@@ -3583,6 +4222,8 @@ impl Render for QuickLook {
             .child(header)
             .when_some(find_bar, |d, fb| d.child(fb))
             .child(body)
+            .when_some(save_notice, |d, n| d.child(n))
+            .when_some(hunk_notice, |d, n| d.child(n))
             .child(footer)
             .child(seam);
 
@@ -3868,6 +4509,41 @@ mod tests {
     }
 
     #[test]
+    fn parse_diff_numbers_hunks_in_lockstep_with_remote_file_diff() {
+        // The Diff-tab `@@` rows must carry the same 0-based hunk index that
+        // `remote_git::parse_file_diff` assigns, so an "接受/拒绝" click rebuilds
+        // the patch for exactly the clicked hunk. Two hunks → 0 and 1.
+        let raw = concat!(
+            "diff --git a/x.rs b/x.rs\n",
+            "--- a/x.rs\n",
+            "+++ b/x.rs\n",
+            "@@ -1 +1 @@\n",
+            "-old\n",
+            "+new\n",
+            "@@ -8 +9 @@\n",
+            " ctx\n",
+            "+tail\n",
+        );
+        let d = parse_diff(raw);
+        let hunk_indices: Vec<Option<usize>> = d
+            .iter()
+            .filter(|l| l.kind == DiffKind::Hunk)
+            .map(|l| l.hunk_index)
+            .collect();
+        assert_eq!(hunk_indices, vec![Some(0), Some(1)]);
+        // Non-hunk rows never carry a hunk index.
+        assert!(d
+            .iter()
+            .filter(|l| l.kind != DiffKind::Hunk)
+            .all(|l| l.hunk_index.is_none()));
+        // Cross-check against the remote parser used to build the patch.
+        let parsed = crate::remote_git::parse_file_diff("x.rs", raw);
+        assert_eq!(parsed.hunks.len(), 2);
+        assert_eq!(parsed.hunks[0].index, 0);
+        assert_eq!(parsed.hunks[1].index, 1);
+    }
+
+    #[test]
     fn align_table_pads_columns_to_widest_cell() {
         // Ragged input: row 2 has the widest first column ("ccc").
         let rows = vec![
@@ -3952,8 +4628,9 @@ mod tests {
     }
 
     #[test]
-    fn remote_preview_bytes_are_bounded_text_or_binary_and_read_only() {
-        let text = preview_data_from_bytes(b"fn main() {}\n".to_vec(), "rs", Some(13));
+    fn remote_preview_bytes_are_bounded_text_or_binary_and_editable_when_text() {
+        let text =
+            preview_payload_from_bytes(b"fn main() {}\n".to_vec(), "rs", Some(13), None).data;
         let QuickLookData::Text { lines, truncated } = &text else {
             panic!("expected text preview");
         };
@@ -3964,21 +4641,117 @@ mod tests {
             &text,
             false
         ));
-        assert!(!preview_is_editable(
+        assert!(preview_is_editable(
             std::path::Path::new("ssh://alice@example.com:22/home/alice/main.rs"),
             &text,
             true
         ));
 
-        let binary = preview_data_from_bytes(vec![0, 1, 2, 3], "bin", Some(4));
+        let binary = preview_payload_from_bytes(vec![0, 1, 2, 3], "bin", Some(4), None).data;
         assert!(matches!(binary, QuickLookData::Binary { size: 4 }));
 
-        let too_large = preview_data_from_bytes(Vec::new(), "log", Some(MAX_FILE_SIZE + 1));
+        let too_large =
+            preview_payload_from_bytes(Vec::new(), "log", Some(MAX_FILE_SIZE + 1), None).data;
         assert!(matches!(
             too_large,
             QuickLookData::Binary {
                 size
             } if size == MAX_FILE_SIZE + 1
         ));
+    }
+
+    #[test]
+    fn remote_file_guard_uses_stat_and_content_hash_for_conflicts() {
+        let stat = RemoteFileStat {
+            is_dir: false,
+            size: Some(5),
+            permissions: Some(0o100644),
+            mtime: Some(22),
+        };
+        let guard = remote_file_guard(&stat, b"hello");
+        assert_eq!(
+            guard,
+            FileGuard::from_parts(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(22),
+                5,
+                file_sample_hash(b"hello"),
+            )
+        );
+
+        let changed = RemoteFileStat {
+            size: Some(5),
+            mtime: Some(23),
+            ..stat
+        };
+        let changed_guard = remote_file_guard(&changed, b"hullo");
+        assert_eq!(
+            detect_conflict(Some(&guard), Some(&changed_guard)),
+            Conflict::ModifiedOnDisk
+        );
+    }
+
+    #[test]
+    fn preview_payload_keeps_text_format_and_remote_guard() {
+        let stat = RemoteFileStat {
+            is_dir: false,
+            size: Some(14),
+            permissions: Some(0o100644),
+            mtime: Some(30),
+        };
+        let loaded = preview_payload_from_bytes(
+            b"one\r\ntwo\r\n".to_vec(),
+            "rs",
+            Some(14),
+            Some(&stat),
+        );
+        let QuickLookData::Text { lines, truncated } = &loaded.data else {
+            panic!("expected text payload");
+        };
+        assert_eq!(lines.as_ref(), &buf(&["one", "two"]));
+        assert!(!truncated);
+        assert_eq!(
+            loaded.format,
+            Some(TextFormat {
+                encoding: TextEncoding::Utf8,
+                newline: NewlineStyle::Crlf,
+                final_newline: true,
+            })
+        );
+        assert_eq!(
+            loaded.guard,
+            Some(FileGuard::from_parts(
+                std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(30),
+                14,
+                file_sample_hash(b"one\r\ntwo\r\n"),
+            ))
+        );
+    }
+
+    #[test]
+    fn save_success_marks_remote_diff_dirty_when_opened_from_remote_git_card() {
+        assert_eq!(
+            save_state_after_success(false, false),
+            SaveStateUpdate {
+                dirty: false,
+                diff_dirty: true,
+            },
+            "local saves keep local git diff stale until recomputed"
+        );
+        assert_eq!(
+            save_state_after_success(true, false),
+            SaveStateUpdate {
+                dirty: false,
+                diff_dirty: false,
+            },
+            "plain remote file previews have no diff source"
+        );
+        assert_eq!(
+            save_state_after_success(true, true),
+            SaveStateUpdate {
+                dirty: false,
+                diff_dirty: true,
+            },
+            "remote git-card previews must refresh the remote diff after save"
+        );
     }
 }

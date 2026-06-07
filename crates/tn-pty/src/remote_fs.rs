@@ -23,13 +23,20 @@ const SSH_FXP_VERSION: u8 = 2;
 const SSH_FXP_OPEN: u8 = 3;
 const SSH_FXP_CLOSE: u8 = 4;
 const SSH_FXP_READ: u8 = 5;
+const SSH_FXP_WRITE: u8 = 6;
 const SSH_FXP_OPENDIR: u8 = 11;
 const SSH_FXP_READDIR: u8 = 12;
+const SSH_FXP_STAT: u8 = 17;
 const SSH_FXP_HANDLE: u8 = 102;
 const SSH_FXP_NAME: u8 = 104;
+const SSH_FXP_ATTRS: u8 = 105;
 const SSH_FXP_STATUS: u8 = 101;
 
 const SSH_FXF_READ: u32 = 0x0000_0001;
+const SSH_FXF_WRITE: u32 = 0x0000_0002;
+const SSH_FXF_CREAT: u32 = 0x0000_0008;
+const SSH_FXF_TRUNC: u32 = 0x0000_0010;
+const SSH_FX_OK: u32 = 0;
 const SSH_FX_EOF: u32 = 1;
 
 const SSH_FILEXFER_ATTR_SIZE: u32 = 0x0000_0001;
@@ -137,6 +144,14 @@ pub struct RemoteDirEntry {
     pub mtime: Option<u64>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteFileStat {
+    pub is_dir: bool,
+    pub size: Option<u64>,
+    pub permissions: Option<u32>,
+    pub mtime: Option<u64>,
+}
+
 pub trait RemoteFileService: Send + Sync {
     fn list_dir(&self, cfg: &SshConfig, path: &RemotePath) -> anyhow::Result<Vec<RemoteDirEntry>>;
     fn read_file(
@@ -145,6 +160,17 @@ pub trait RemoteFileService: Send + Sync {
         path: &RemotePath,
         max_bytes: u64,
     ) -> anyhow::Result<Vec<u8>>;
+    fn stat_file(&self, _cfg: &SshConfig, _path: &RemotePath) -> anyhow::Result<RemoteFileStat> {
+        bail!("remote stat unsupported")
+    }
+    fn write_file(
+        &self,
+        _cfg: &SshConfig,
+        _path: &RemotePath,
+        _bytes: &[u8],
+    ) -> anyhow::Result<RemoteFileStat> {
+        bail!("remote write unsupported")
+    }
 }
 
 #[derive(Default)]
@@ -205,6 +231,34 @@ impl RemoteFileService for SftpFileService {
                 .await;
             let _ = client.close().await;
             data
+        })
+    }
+
+    fn stat_file(&self, cfg: &SshConfig, path: &RemotePath) -> anyhow::Result<RemoteFileStat> {
+        let cfg = cfg.clone();
+        let path = path.clone();
+        run_sftp_future(move || async move {
+            let mut client = SftpClient::connect(cfg).await?;
+            let stat = client.stat(path.as_str()).await;
+            let _ = client.close().await;
+            stat
+        })
+    }
+
+    fn write_file(
+        &self,
+        cfg: &SshConfig,
+        path: &RemotePath,
+        bytes: &[u8],
+    ) -> anyhow::Result<RemoteFileStat> {
+        let cfg = cfg.clone();
+        let path = path.clone();
+        let bytes = bytes.to_vec();
+        run_sftp_future(move || async move {
+            let mut client = SftpClient::connect(cfg).await?;
+            let stat = client.write_file(path.as_str(), &bytes).await;
+            let _ = client.close().await;
+            stat
         })
     }
 }
@@ -366,11 +420,7 @@ impl SftpClient {
 
     async fn read_file(&mut self, path: &str, max_bytes: u64) -> anyhow::Result<Vec<u8>> {
         let id = self.next_request_id();
-        let mut payload = Vec::new();
-        put_u32(&mut payload, id);
-        put_string(&mut payload, path.as_bytes());
-        put_u32(&mut payload, SSH_FXF_READ);
-        put_attrs(&mut payload, &FileAttrs::default());
+        let payload = build_open_payload(id, path, SSH_FXF_READ);
         self.send_raw(SSH_FXP_OPEN, payload).await?;
         let handle = self.expect_handle(id).await?;
 
@@ -417,6 +467,51 @@ impl SftpClient {
         Ok(out)
     }
 
+    async fn stat(&mut self, path: &str) -> anyhow::Result<RemoteFileStat> {
+        let id = self.next_request_id();
+        let mut payload = Vec::new();
+        put_u32(&mut payload, id);
+        put_string(&mut payload, path.as_bytes());
+        self.send_raw(SSH_FXP_STAT, payload).await?;
+        let packet = self.recv_packet().await?;
+        if packet.id != Some(id) {
+            bail!("sftp request id mismatch");
+        }
+        match packet.kind {
+            SSH_FXP_ATTRS => parse_attrs_response(&packet.payload),
+            SSH_FXP_STATUS => {
+                let status = parse_status_code(&packet.payload)?;
+                bail!("sftp stat failed: status {status}");
+            }
+            other => bail!("unexpected sftp stat response {other}"),
+        }
+    }
+
+    async fn write_file(&mut self, path: &str, bytes: &[u8]) -> anyhow::Result<RemoteFileStat> {
+        let id = self.next_request_id();
+        let payload = build_open_payload(id, path, SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
+        self.send_raw(SSH_FXP_OPEN, payload).await?;
+        let handle = self.expect_handle(id).await?;
+
+        let mut offset = 0u64;
+        for chunk in bytes.chunks(32 * 1024) {
+            let req = self.next_request_id();
+            let payload = build_write_payload(req, &handle, offset, chunk);
+            self.send_raw(SSH_FXP_WRITE, payload).await?;
+            self.expect_status_ok(req, "write").await?;
+            offset += chunk.len() as u64;
+        }
+        let _ = self.close_handle(&handle).await;
+        self.stat(path).await.or_else(|_| {
+            Ok(RemoteFileStat {
+                is_dir: false,
+                size: Some(bytes.len() as u64),
+                permissions: None,
+                mtime: None,
+            })
+        })
+    }
+
     async fn expect_handle(&mut self, id: u32) -> anyhow::Result<Vec<u8>> {
         let packet = self.recv_packet().await?;
         if packet.id != Some(id) {
@@ -447,6 +542,24 @@ impl SftpClient {
             bail!("sftp request id mismatch");
         }
         Ok(())
+    }
+
+    async fn expect_status_ok(&mut self, id: u32, op: &str) -> anyhow::Result<()> {
+        let packet = self.recv_packet().await?;
+        if packet.id != Some(id) {
+            bail!("sftp request id mismatch");
+        }
+        match packet.kind {
+            SSH_FXP_STATUS => {
+                let status = parse_status_code(&packet.payload)?;
+                if status == SSH_FX_OK {
+                    Ok(())
+                } else {
+                    bail!("sftp {op} failed: status {status}")
+                }
+            }
+            other => bail!("unexpected sftp {op} response {other}"),
+        }
     }
 
     async fn send_raw(&self, kind: u8, payload: Vec<u8>) -> anyhow::Result<()> {
@@ -494,6 +607,17 @@ struct FileAttrs {
 impl FileAttrs {
     fn is_dir(&self) -> bool {
         self.permissions.is_some_and(|p| (p & S_IFMT) == S_IFDIR)
+    }
+}
+
+impl From<FileAttrs> for RemoteFileStat {
+    fn from(attrs: FileAttrs) -> Self {
+        Self {
+            is_dir: attrs.is_dir(),
+            size: attrs.size,
+            permissions: attrs.permissions,
+            mtime: attrs.mtime,
+        }
     }
 }
 
@@ -553,6 +677,12 @@ fn parse_status_code(payload: &[u8]) -> anyhow::Result<u32> {
     let mut r = PacketReader::new(payload);
     let _id = r.u32()?;
     r.u32()
+}
+
+fn parse_attrs_response(payload: &[u8]) -> anyhow::Result<RemoteFileStat> {
+    let mut r = PacketReader::new(payload);
+    let _id = r.u32()?;
+    Ok(r.attrs()?.into())
 }
 
 struct PacketReader<'a> {
@@ -661,6 +791,24 @@ fn put_attrs(out: &mut Vec<u8>, attrs: &FileAttrs) {
     }
 }
 
+fn build_open_payload(id: u32, path: &str, flags: u32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_u32(&mut payload, id);
+    put_string(&mut payload, path.as_bytes());
+    put_u32(&mut payload, flags);
+    put_attrs(&mut payload, &FileAttrs::default());
+    payload
+}
+
+fn build_write_payload(id: u32, handle: &[u8], offset: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::new();
+    put_u32(&mut payload, id);
+    put_string(&mut payload, handle);
+    put_u64(&mut payload, offset);
+    put_string(&mut payload, bytes);
+    payload
+}
+
 pub fn is_remote_path_visible_name(name: &str) -> bool {
     !matches!(name, "." | "..") && !name.is_empty()
 }
@@ -762,5 +910,45 @@ mod tests {
         assert_eq!(packet.kind, SSH_FXP_STATUS);
         assert_eq!(packet.id, Some(99));
         assert_eq!(parse_status_code(&packet.payload).unwrap(), SSH_FX_EOF);
+    }
+
+    #[test]
+    fn parse_attrs_response_extracts_remote_file_stat() {
+        let mut payload = Vec::new();
+        put_u32(&mut payload, 12);
+        put_u32(
+            &mut payload,
+            SSH_FILEXFER_ATTR_SIZE | SSH_FILEXFER_ATTR_PERMISSIONS | SSH_FILEXFER_ATTR_ACMODTIME,
+        );
+        put_u64(&mut payload, 1234);
+        put_u32(&mut payload, 0o100644);
+        put_u32(&mut payload, 111);
+        put_u32(&mut payload, 222);
+
+        let stat = parse_attrs_response(&payload).unwrap();
+        assert_eq!(stat.size, Some(1234));
+        assert_eq!(stat.permissions, Some(0o100644));
+        assert_eq!(stat.mtime, Some(222));
+        assert!(!stat.is_dir);
+    }
+
+    #[test]
+    fn write_open_payload_uses_write_create_truncate_flags() {
+        let payload = build_open_payload(41, "/home/alice/app.rs", SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
+        let mut r = PacketReader::new(&payload);
+        assert_eq!(r.u32().unwrap(), 41);
+        assert_eq!(r.string().unwrap(), b"/home/alice/app.rs");
+        assert_eq!(r.u32().unwrap(), SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
+    }
+
+    #[test]
+    fn write_payload_carries_offset_and_data() {
+        let handle = b"h1";
+        let payload = build_write_payload(42, handle, 32768, b"hello");
+        let mut r = PacketReader::new(&payload);
+        assert_eq!(r.u32().unwrap(), 42);
+        assert_eq!(r.string().unwrap(), handle);
+        assert_eq!(r.u64().unwrap(), 32768);
+        assert_eq!(r.string().unwrap(), b"hello");
     }
 }
