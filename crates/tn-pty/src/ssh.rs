@@ -420,6 +420,7 @@ async fn run_session(
             event_tx: event_tx.clone(),
             waker: waker.clone(),
             key_rejected: key_rejected.clone(),
+            allow_host_key_prompt: true,
         };
 
         let _ = in_tx.send(
@@ -754,6 +755,72 @@ async fn authenticate(
     ))
 }
 
+/// Non-interactive authentication for background SFTP/file-service work.
+///
+/// This deliberately does **not** emit UI password/host-key prompts. Remote file
+/// browsing runs as a background side channel of an SSH pane; if the host is not
+/// trusted yet or no key/config password works, the caller gets a normal error
+/// and the interactive shell path remains the place where trust/password UI is
+/// collected.
+pub(crate) async fn authenticate_for_remote_fs(
+    handle: &mut Handle<ClientHandler>,
+    cfg: &mut SshConfig,
+) -> anyhow::Result<crate::AuthKind> {
+    let mut methods: Vec<russh::MethodKind> = Vec::new();
+    match handle.authenticate_none(cfg.user.as_str()).await {
+        Ok(client::AuthResult::Success) => return Ok(crate::AuthKind::PublicKey),
+        Ok(client::AuthResult::Failure {
+            remaining_methods, ..
+        }) => {
+            methods = remaining_methods.iter().copied().collect();
+        }
+        Err(e) => tracing::debug!("sftp: `none` auth probe failed: {e}"),
+    }
+
+    if server_offers(&methods, russh::MethodKind::PublicKey) {
+        for path in &cfg.key_candidates() {
+            let key = match load_secret_key(path, None) {
+                Ok(k) => k,
+                Err(_) => continue,
+            };
+            let hash = handle.best_supported_rsa_hash().await?.flatten();
+            if handle
+                .authenticate_publickey(
+                    cfg.user.as_str(),
+                    PrivateKeyWithHashAlg::new(Arc::new(key), hash),
+                )
+                .await?
+                .success()
+            {
+                return Ok(crate::AuthKind::PublicKey);
+            }
+        }
+    }
+
+    if let Some(pw) = cfg.password.as_deref().filter(|p| !p.is_empty()) {
+        if server_offers(&methods, russh::MethodKind::Password)
+            && handle
+                .authenticate_password(cfg.user.as_str(), pw)
+                .await?
+                .success()
+        {
+            return Ok(crate::AuthKind::Password);
+        }
+        if server_offers(&methods, russh::MethodKind::KeyboardInteractive)
+            && try_keyboard_interactive(handle, cfg.user.as_str(), pw).await?
+        {
+            return Ok(crate::AuthKind::KeyboardInteractive);
+        }
+    }
+
+    Err(anyhow!(
+        "sftp authentication failed for {}@{} (offered: {})",
+        cfg.user,
+        cfg.host,
+        methods_str(&methods)
+    ))
+}
+
 /// Send a UI [`crate::PtyEvent`] + wake the foreground so the card repaints
 /// promptly (same pattern as `Connected`/`NeedPassword`).
 fn emit_event(
@@ -849,7 +916,7 @@ async fn try_keyboard_interactive(
 }
 
 /// russh client event handler. Verifies the host key against `~/.ssh/known_hosts`.
-struct ClientHandler {
+pub(crate) struct ClientHandler {
     host: String,
     port: u16,
     in_tx: StdSender<Vec<u8>>,
@@ -860,6 +927,10 @@ struct ClientHandler {
     /// key, so the outer retry loop can distinguish "network error → retry" from
     /// "key rejected → abort".
     key_rejected: Arc<AtomicBool>,
+    /// Interactive terminal sessions may ask the UI to trust a first-seen host.
+    /// Background SFTP probes must not raise UI prompts; they fail until the
+    /// host is already trusted by the shell path.
+    allow_host_key_prompt: bool,
 }
 
 impl client::Handler for ClientHandler {
@@ -904,6 +975,16 @@ impl client::Handler for ClientHandler {
             }
         }
 
+        if !self.allow_host_key_prompt {
+            tracing::warn!(
+                "SSH: unknown host {}:{} in non-interactive client; rejecting",
+                self.host,
+                self.port
+            );
+            self.key_rejected.store(true, Ordering::Relaxed);
+            return Ok(false);
+        }
+
         // First contact with an unrecognized host → ask the user (B2 TOFU).
         tracing::info!(
             "SSH: unknown host {}:{}, asking to trust (TOFU)",
@@ -943,6 +1024,20 @@ impl client::Handler for ClientHandler {
 }
 
 impl ClientHandler {
+    pub(crate) fn quiet(host: String, port: u16) -> Self {
+        let (in_tx, _in_rx) = std::sync::mpsc::channel();
+        let (event_tx, _event_rx) = std::sync::mpsc::channel();
+        Self {
+            host,
+            port,
+            in_tx,
+            event_tx,
+            waker: Arc::new(Mutex::new(None)),
+            key_rejected: Arc::new(AtomicBool::new(false)),
+            allow_host_key_prompt: false,
+        }
+    }
+
     /// Ask the UI to trust an unrecognized host key (B2 TOFU) and block (off the
     /// runtime) on the reply. A dropped channel ⇒ reject.
     async fn confirm_host_key(&self, fingerprint: &str) -> crate::HostKeyVerdict {
@@ -1190,6 +1285,12 @@ Host alma
         tx.send(b"\r".to_vec()).unwrap();
         drain_pending_input(&mut rx);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn quiet_client_handler_disables_ui_host_key_prompt() {
+        let handler = ClientHandler::quiet("example.com".into(), 22);
+        assert!(!handler.allow_host_key_prompt);
     }
 
     #[test]

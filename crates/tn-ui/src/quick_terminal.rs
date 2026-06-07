@@ -37,8 +37,7 @@ use crate::terminal_view::{
     SshRetryRequested, TerminalView, UsageUpdated,
 };
 use crate::welcome::{
-    launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId,
-    LaunchEntry,
+    launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId, LaunchEntry,
 };
 
 /// Launcher → session cross-fade duration (待优化:手感真机调).

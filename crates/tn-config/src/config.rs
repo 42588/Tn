@@ -248,7 +248,10 @@ pub struct Profile {
 /// access tier). Telemetry (usage) still needs a built-in or external adapter; a
 /// config-only agent hosts as a terminal (+ activity rail). `capabilities` lists the
 /// enabled slots beyond the always-on `terminal` + `cwd_sync` + `git_diff` baseline
-/// (e.g. `["usage", "transcript"]`).
+/// (e.g. `["usage", "transcript"]`). Non-PTY runtimes are opt-in through
+/// `runtime_support`; networked runtimes still default to denied unless
+/// `allow_network = true` is present, and the host layer must ask the user before
+/// connecting.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct AgentManifest {
     pub id: String,
@@ -269,6 +272,23 @@ pub struct AgentManifest {
     /// Extra capability slots enabled beyond the terminal baseline.
     #[serde(default)]
     pub capabilities: Vec<String>,
+    /// Runtime locations/protocols this agent supports. Empty = PTY family
+    /// (`local_pty`, `wsl_pty`, `ssh_pty`) for backward compatibility.
+    #[serde(default)]
+    pub runtime_support: Vec<String>,
+    /// Whether this manifest may request networked runtimes (`http`,
+    /// `websocket`, `remote_daemon`). False by default: network access is denied.
+    /// True still means "requires user confirmation", not silent allow.
+    #[serde(default)]
+    pub allow_network: bool,
+    /// Optional stdio/JSONL **telemetry sidecar** command. When set, a launched
+    /// pane for this agent spawns it and reads realtime [`AgentEvent`]s (usage /
+    /// transcript / status / permission) — the realtime (observation) tier
+    /// **without** a built-in adapter. Whitespace-split into argv. A sidecar whose
+    /// `runtime_support` is networked (`http`/`websocket`/`remote_daemon`) only
+    /// spawns after user confirmation (and only if `allow_network = true`).
+    #[serde(default)]
+    pub sidecar: Option<String>,
 }
 
 /// A named action (`[[actions]]`): `{ id, command }`. A command may carry args
@@ -399,7 +419,10 @@ mod tests {
         assert_eq!(c.general.claude_billing, Some(BillingMode::Subscription));
         assert_eq!(c.general.codex_billing, Some(BillingMode::Tokens));
         // The agent-agnostic accessor reads the legacy fields by id.
-        assert_eq!(c.general.billing_for("claude"), Some(BillingMode::Subscription));
+        assert_eq!(
+            c.general.billing_for("claude"),
+            Some(BillingMode::Subscription)
+        );
         assert_eq!(c.general.billing_for("codex"), Some(BillingMode::Tokens));
         assert_eq!(c.general.billing_for("gemini"), None);
     }
@@ -417,6 +440,51 @@ mod tests {
         assert_eq!(c.agents[0].label.as_deref(), Some("Gemini CLI"));
         assert!(c.agents[0].manages_own_cursor);
         assert_eq!(c.agents[0].capabilities, vec!["usage".to_string()]);
+        assert!(c.agents[0].runtime_support.is_empty());
+        assert!(!c.agents[0].allow_network);
+        assert_eq!(c.agents[0].sidecar, None); // no sidecar by default
+    }
+
+    #[test]
+    fn agents_manifest_sidecar_parses_and_roundtrips() {
+        // A telemetry sidecar command survives parse + fragment round-trip (so the
+        // realtime tier is reachable from config alone).
+        let c = Config::from_toml_str(
+            "[[agents]]\nid = \"gemini\"\nsidecar = \"gemini-telemetry --json\"\n",
+        )
+        .expect("sidecar manifest parses");
+        assert_eq!(
+            c.agents[0].sidecar.as_deref(),
+            Some("gemini-telemetry --json")
+        );
+        let frag = agents_toml_fragment(&c.agents).expect("serializes");
+        let back = Config::from_toml_str(&frag).expect("fragment is valid toml");
+        assert_eq!(
+            back.agents[0].sidecar.as_deref(),
+            Some("gemini-telemetry --json")
+        );
+    }
+
+    #[test]
+    fn agents_manifest_parses_runtime_and_network_policy() {
+        let c = Config::from_toml_str(
+            "[[agents]]\nid = \"bridge\"\nruntime_support = [\"structured\", \"http\", \"websocket\"]\nallow_network = true\ncapabilities = [\"usage\", \"permission_prompts\"]\n",
+        )
+        .expect("agent runtime manifest parses");
+        let agent = &c.agents[0];
+        assert_eq!(
+            agent.runtime_support,
+            vec![
+                "structured".to_string(),
+                "http".to_string(),
+                "websocket".to_string(),
+            ]
+        );
+        assert!(agent.allow_network);
+        assert_eq!(
+            agent.capabilities,
+            vec!["usage".to_string(), "permission_prompts".to_string()]
+        );
     }
 
     #[test]
@@ -427,7 +495,10 @@ mod tests {
             "[general]\nclaude_billing = \"tokens\"\n[general.billing]\nclaude = \"subscription\"\ngemini = \"api\"\n",
         )
         .expect("per-id billing parses");
-        assert_eq!(c.general.billing_for("claude"), Some(BillingMode::Subscription)); // map wins
+        assert_eq!(
+            c.general.billing_for("claude"),
+            Some(BillingMode::Subscription)
+        ); // map wins
         assert_eq!(c.general.billing_for("gemini"), Some(BillingMode::Api));
         assert_eq!(c.general.billing_for("aider"), None);
     }

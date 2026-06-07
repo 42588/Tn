@@ -17,6 +17,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use gpui::{
     canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
@@ -26,6 +27,9 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
+use tn_pty::remote_fs::{
+    remote_path_to_virtual_path, RemoteFileService, RemoteId, SftpFileService, REMOTE_READ_LIMIT,
+};
 
 use crate::style::{
     col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, R_PANEL, UI_SANS,
@@ -325,6 +329,244 @@ enum QuickLookData {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TextEncoding {
+    Utf8,
+    Utf8Bom,
+    Utf16Le,
+    Utf16Be,
+    Gbk,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NewlineStyle {
+    Lf,
+    Crlf,
+}
+
+impl NewlineStyle {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::Crlf => "\r\n",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TextFormat {
+    encoding: TextEncoding,
+    newline: NewlineStyle,
+    final_newline: bool,
+}
+
+impl Default for TextFormat {
+    fn default() -> Self {
+        Self {
+            encoding: TextEncoding::Utf8,
+            newline: NewlineStyle::Lf,
+            final_newline: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DecodedText {
+    lines: Vec<String>,
+    format: TextFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FileGuard {
+    mtime: SystemTime,
+    size: u64,
+    hash: u64,
+}
+
+impl FileGuard {
+    fn from_parts(mtime: SystemTime, size: u64, hash: u64) -> Self {
+        Self { mtime, size, hash }
+    }
+
+    fn from_path(path: &std::path::Path) -> std::io::Result<Self> {
+        let meta = std::fs::metadata(path)?;
+        let mtime = meta.modified()?;
+        let bytes = std::fs::read(path)?;
+        Ok(Self::from_parts(
+            mtime,
+            meta.len(),
+            file_sample_hash(&bytes),
+        ))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Conflict {
+    Clean,
+    ModifiedOnDisk,
+    MissingOnDisk,
+    Unknown,
+}
+
+fn detect_conflict(opened: Option<&FileGuard>, disk: Option<&FileGuard>) -> Conflict {
+    match (opened, disk) {
+        (None, _) => Conflict::Unknown,
+        (Some(_), None) => Conflict::MissingOnDisk,
+        (Some(opened), Some(disk)) if opened == disk => Conflict::Clean,
+        (Some(_), Some(_)) => Conflict::ModifiedOnDisk,
+    }
+}
+
+fn file_sample_hash(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    const SAMPLE: usize = 64 * 1024;
+
+    fn feed(mut hash: u64, bytes: &[u8]) -> u64 {
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    let mut hash = FNV_OFFSET;
+    hash = feed(hash, &(bytes.len() as u64).to_le_bytes());
+    if bytes.len() <= SAMPLE * 2 {
+        feed(hash, bytes)
+    } else {
+        hash = feed(hash, &bytes[..SAMPLE]);
+        hash = feed(hash, b"tn-quicklook-sample-tail");
+        feed(hash, &bytes[bytes.len() - SAMPLE..])
+    }
+}
+
+fn split_text_lines(text: &str) -> (Vec<String>, NewlineStyle, bool) {
+    if text.is_empty() {
+        return (Vec::new(), NewlineStyle::Lf, false);
+    }
+    let newline = if text.contains("\r\n") {
+        NewlineStyle::Crlf
+    } else {
+        NewlineStyle::Lf
+    };
+    let final_newline = text.ends_with('\n') || text.ends_with('\r');
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines: Vec<String> = normalized.split('\n').map(str::to_string).collect();
+    if final_newline {
+        lines.pop();
+    }
+    (lines, newline, final_newline)
+}
+
+fn decode_text_bytes(bytes: &[u8], _ext: &str) -> Option<DecodedText> {
+    let (text, encoding) = if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        (
+            String::from_utf8_lossy(&bytes[3..]).into_owned(),
+            TextEncoding::Utf8Bom,
+        )
+    } else if bytes.starts_with(&[0xFF, 0xFE]) {
+        let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        (cow.into_owned(), TextEncoding::Utf16Le)
+    } else if bytes.starts_with(&[0xFE, 0xFF]) {
+        let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        (cow.into_owned(), TextEncoding::Utf16Be)
+    } else if let Ok(utf8) = std::str::from_utf8(bytes) {
+        (utf8.to_string(), TextEncoding::Utf8)
+    } else {
+        let (cow, _, _) = encoding_rs::GBK.decode(bytes);
+        (cow.into_owned(), TextEncoding::Gbk)
+    };
+    let (lines, newline, final_newline) = split_text_lines(&text);
+    Some(DecodedText {
+        lines,
+        format: TextFormat {
+            encoding,
+            newline,
+            final_newline,
+        },
+    })
+}
+
+fn encode_text_lines(lines: &[String], format: TextFormat) -> Vec<u8> {
+    let sep = format.newline.as_str();
+    let mut text = lines.join(sep);
+    if format.final_newline {
+        text.push_str(sep);
+    }
+    match format.encoding {
+        TextEncoding::Utf8 => text.into_bytes(),
+        TextEncoding::Utf8Bom => {
+            let mut out = vec![0xEF, 0xBB, 0xBF];
+            out.extend_from_slice(text.as_bytes());
+            out
+        }
+        TextEncoding::Utf16Le => {
+            let mut out = vec![0xFF, 0xFE];
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+            out
+        }
+        TextEncoding::Utf16Be => {
+            let mut out = vec![0xFE, 0xFF];
+            for unit in text.encode_utf16() {
+                out.extend_from_slice(&unit.to_be_bytes());
+            }
+            out
+        }
+        TextEncoding::Gbk => {
+            let (cow, _, _) = encoding_rs::GBK.encode(&text);
+            cow.into_owned()
+        }
+    }
+}
+
+fn preview_data_from_bytes(bytes: Vec<u8>, ext: &str, declared_size: Option<u64>) -> QuickLookData {
+    let size = declared_size.unwrap_or(bytes.len() as u64);
+    if size > MAX_FILE_SIZE || bytes.len() as u64 > MAX_FILE_SIZE {
+        return QuickLookData::Binary { size };
+    }
+    let peek_len = PEEK_SIZE.min(bytes.len());
+    if content_inspector::inspect(&bytes[..peek_len]).is_binary() {
+        return QuickLookData::Binary { size };
+    }
+    let Some(decoded) = decode_text_bytes(&bytes, ext) else {
+        return QuickLookData::Binary { size };
+    };
+    let mut line_iter = decoded.lines.into_iter();
+    let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
+    for line in (&mut line_iter).take(MAX_LINES) {
+        lines.push(line);
+    }
+    let truncated = line_iter.next().is_some();
+    QuickLookData::Text {
+        lines: Arc::new(lines),
+        truncated,
+    }
+}
+
+fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, is_remote: bool) -> bool {
+    if is_remote {
+        return false;
+    }
+    match data {
+        QuickLookData::Text {
+            truncated: false, ..
+        } => {}
+        _ => return false,
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    !matches!(
+        ext.as_str(),
+        "docx" | "doc" | "xlsx" | "xls" | "ods" | "pptx" | "ppt" | "odp" | "odt" | "pdf"
+    )
+}
+
 pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
@@ -389,6 +631,10 @@ pub struct QuickLook {
     // ── Async-loading control (render-pure: zero I/O in render()) ──
     loading_state: LoadingState,
     generation: usize,
+    /// True when `path` is only a display/virtual path for an SSH remote file.
+    /// Remote previews are read-only and never run local `git diff` or disk writes.
+    is_remote_source: bool,
+    remote_fs: Arc<dyn RemoteFileService>,
     /// Deferred-edit flag: if `open_for_edit` is called while the file is still
     /// loading, this is set so the async completion handler enters edit afterwards.
     edit_on_ready: bool,
@@ -454,6 +700,8 @@ impl QuickLook {
             focus_handle: cx.focus_handle(),
             loading_state: LoadingState::Ready,
             generation: 0,
+            is_remote_source: false,
+            remote_fs: SftpFileService::shared(),
             edit_on_ready: false,
             diff_loading: false,
             diff_generation: 0,
@@ -475,29 +723,9 @@ impl QuickLook {
     /// PDF, image, binary, and Office files (docx/xlsx/ppt/etc.) are view-only
     /// and should not show the "Enter 编辑" hint in the footer.
     fn is_editable(&self) -> bool {
-        // Non-text data variants are never editable.
-        match &self.file_data {
-            // 截断的大文件(>MAX_LINES)不可编辑:buf 只含已加载的前若干行,进编辑→保存会用
-            // 它覆盖整个文件、永久丢失其余内容(审查⑮ 确证的数据丢失)。截断文件只读看。
-            QuickLookData::Text {
-                truncated: true, ..
-            } => return false,
-            QuickLookData::Text { .. } => {}
-            _ => return false,
-        }
-        // Office / spreadsheet extensions: we extracted plain text for preview
-        // but writing back would corrupt the binary format — treat as read-only.
-        let ext = self
-            .path
+        self.path
             .as_ref()
-            .and_then(|p| p.extension())
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        !matches!(
-            ext.as_str(),
-            "docx" | "doc" | "xlsx" | "xls" | "ods" | "pptx" | "ppt" | "odp" | "odt" | "pdf"
-        )
+            .is_some_and(|path| preview_is_editable(path, &self.file_data, self.is_remote_source))
     }
 
     /// `(filename, language)` for the open file — drives the status bar's
@@ -548,25 +776,12 @@ impl QuickLook {
         // Cancel any pending async tasks.
         self.cancel_token
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        self.is_remote_source = false;
 
         cx.notify();
     }
 
-    /// Open `path`: read its text off the **background** thread, default to the File
-    /// tab (preview). Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`]
-    /// are detected early — instead of garbled/empty content, the overlay shows file
-    /// info with size and a "can't preview" note.
-    ///
-    /// ## Async + stale-result prevention
-    /// The file read and binary peek are dispatched to `cx.background_executor()`;
-    /// the UI switches to `LoadingState::Loading` immediately (skeleton renders).
-    /// A monotonic `generation` counter prevents out-of-order completion from
-    /// overwriting a newer open that was triggered while this one was in flight.
-    pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        if self.path.as_ref() == Some(&path) && self.loading_state == LoadingState::Ready {
-            return; // unchanged, don't re-trigger async loading
-        }
-
+    fn reset_for_open(&mut self, path: PathBuf, is_remote: bool, cx: &mut Context<Self>) {
         // --- EXPLICIT GPUI CACHE EVICTION ---
         // GPUI caches textures and images globally. If we don't manually remove the old
         // image asset, switching between many large images will cause memory to grow
@@ -600,16 +815,35 @@ impl QuickLook {
         self.dirty = false;
         self.file_data = QuickLookData::None;
         self.diff = Rc::new(Vec::new());
-        self.diff_dirty = true;
+        self.diff_dirty = !is_remote;
         self.diff_loading = false;
         self.scroll = UniformListScrollHandle::default();
         self.needs_focus = true;
         self.find_open = false;
         self.file_highlight_cache.borrow_mut().clear();
+        self.is_remote_source = is_remote;
 
         self.cancel_token
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    }
+
+    /// Open `path`: read its text off the **background** thread, default to the File
+    /// tab (preview). Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`]
+    /// are detected early — instead of garbled/empty content, the overlay shows file
+    /// info with size and a "can't preview" note.
+    ///
+    /// ## Async + stale-result prevention
+    /// The file read and binary peek are dispatched to `cx.background_executor()`;
+    /// the UI switches to `LoadingState::Loading` immediately (skeleton renders).
+    /// A monotonic `generation` counter prevents out-of-order completion from
+    /// overwriting a newer open that was triggered while this one was in flight.
+    pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.path.as_ref() == Some(&path) && self.loading_state == LoadingState::Ready {
+            return; // unchanged, don't re-trigger async loading
+        }
+
+        self.reset_for_open(path.clone(), false, cx);
         let cancel_token = self.cancel_token.clone();
 
         // ── Async: bump generation + switch to Loading → skeleton renders ──
@@ -966,6 +1200,72 @@ impl QuickLook {
         .detach();
     }
 
+    /// Open a remote SSH file through the remote filesystem service. This first
+    /// pass is read-only and bounded; it never invokes local `git diff`, image/PDF
+    /// decoders, or disk writes against the virtual `ssh://` display path.
+    pub fn open_remote(
+        &mut self,
+        cfg: tn_pty::SshConfig,
+        id: RemoteId,
+        size: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
+        let display_path = remote_path_to_virtual_path(&id);
+        if self.path.as_ref() == Some(&display_path)
+            && self.loading_state == LoadingState::Ready
+            && self.is_remote_source
+        {
+            return;
+        }
+        let ext = display_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let remote_fs = self.remote_fs.clone();
+        let remote_path = id.path.clone();
+        self.reset_for_open(display_path, true, cx);
+        self.generation = self.generation.wrapping_add(1);
+        let gen = self.generation;
+        self.loading_state = LoadingState::Loading;
+        self.edit_on_ready = false;
+        let cancel_token = self.cancel_token.clone();
+        cx.notify();
+
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let data = exec
+                .spawn(async move {
+                    if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                        return QuickLookData::None;
+                    }
+                    let bytes = remote_fs.read_file(&cfg, &remote_path, REMOTE_READ_LIMIT);
+                    if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                        return QuickLookData::None;
+                    }
+                    match bytes {
+                        Ok(bytes) => preview_data_from_bytes(bytes, &ext, size),
+                        Err(e) => QuickLookData::Text {
+                            lines: Arc::new(vec![format!("Remote preview failed: {e}")]),
+                            truncated: false,
+                        },
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                if v.generation != gen {
+                    return;
+                }
+                v.file_data = data;
+                v.loading_state = LoadingState::Ready;
+                v.diff_dirty = false;
+                v.diff_loading = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     /// Open `path` straight into the editor (app menu「设置」opens config.toml here).
     /// If the file is still loading (skeleton shown), the edit is deferred — the
     /// async completion handler enters edit once the content arrives.
@@ -989,6 +1289,12 @@ impl QuickLook {
     /// Stale-protected by an independent `diff_generation` counter so rapid
     /// tab-toggling / file navigation never shows an old diff on a new file.
     fn ensure_diff(&mut self, cx: &mut Context<Self>) {
+        if self.is_remote_source {
+            self.diff = Rc::new(Vec::new());
+            self.diff_dirty = false;
+            self.diff_loading = false;
+            return;
+        }
         if !self.diff_dirty || self.diff_loading {
             return;
         }
@@ -3588,5 +3894,91 @@ mod tests {
         assert_eq!(out[0], "名字 | x");
         // row1's only cell is its last → not padded.
         assert_eq!(out[1], "ab");
+    }
+
+    #[test]
+    fn file_guard_detects_disk_conflict_only_when_snapshot_changes() {
+        let guard = FileGuard::from_parts(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10),
+            5,
+            file_sample_hash(b"hello"),
+        );
+        let same = FileGuard::from_parts(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10),
+            5,
+            file_sample_hash(b"hello"),
+        );
+        assert_eq!(detect_conflict(Some(&guard), Some(&same)), Conflict::Clean);
+
+        let changed = FileGuard::from_parts(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(11),
+            5,
+            file_sample_hash(b"hullo"),
+        );
+        assert_eq!(
+            detect_conflict(Some(&guard), Some(&changed)),
+            Conflict::ModifiedOnDisk
+        );
+        assert_eq!(detect_conflict(Some(&guard), None), Conflict::MissingOnDisk);
+        assert_eq!(detect_conflict(None, Some(&changed)), Conflict::Unknown);
+    }
+
+    #[test]
+    fn decode_and_encode_preserves_newline_style_final_newline_and_encoding() {
+        let lf = decode_text_bytes(b"one\ntwo", "txt").expect("utf8 text");
+        assert_eq!(lf.lines, buf(&["one", "two"]));
+        assert_eq!(lf.format.newline, NewlineStyle::Lf);
+        assert!(!lf.format.final_newline);
+        assert_eq!(encode_text_lines(&lf.lines, lf.format), b"one\ntwo");
+
+        let crlf = decode_text_bytes(b"one\r\ntwo\r\n", "txt").expect("crlf text");
+        assert_eq!(crlf.lines, buf(&["one", "two"]));
+        assert_eq!(crlf.format.newline, NewlineStyle::Crlf);
+        assert!(crlf.format.final_newline);
+        assert_eq!(
+            encode_text_lines(&crlf.lines, crlf.format),
+            b"one\r\ntwo\r\n"
+        );
+
+        let utf16 = [0xFF, 0xFE, b'a', 0, b'\r', 0, b'\n', 0, b'b', 0];
+        let decoded = decode_text_bytes(&utf16, "txt").expect("utf16 text");
+        assert_eq!(decoded.lines, buf(&["a", "b"]));
+        assert_eq!(decoded.format.encoding, TextEncoding::Utf16Le);
+        assert_eq!(decoded.format.newline, NewlineStyle::Crlf);
+        assert_eq!(
+            encode_text_lines(&decoded.lines, decoded.format),
+            utf16.to_vec()
+        );
+    }
+
+    #[test]
+    fn remote_preview_bytes_are_bounded_text_or_binary_and_read_only() {
+        let text = preview_data_from_bytes(b"fn main() {}\n".to_vec(), "rs", Some(13));
+        let QuickLookData::Text { lines, truncated } = &text else {
+            panic!("expected text preview");
+        };
+        assert_eq!(lines.as_ref(), &buf(&["fn main() {}"]));
+        assert!(!truncated);
+        assert!(preview_is_editable(
+            std::path::Path::new("main.rs"),
+            &text,
+            false
+        ));
+        assert!(!preview_is_editable(
+            std::path::Path::new("ssh://alice@example.com:22/home/alice/main.rs"),
+            &text,
+            true
+        ));
+
+        let binary = preview_data_from_bytes(vec![0, 1, 2, 3], "bin", Some(4));
+        assert!(matches!(binary, QuickLookData::Binary { size: 4 }));
+
+        let too_large = preview_data_from_bytes(Vec::new(), "log", Some(MAX_FILE_SIZE + 1));
+        assert!(matches!(
+            too_large,
+            QuickLookData::Binary {
+                size
+            } if size == MAX_FILE_SIZE + 1
+        ));
     }
 }

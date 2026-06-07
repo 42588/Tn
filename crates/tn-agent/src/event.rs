@@ -5,11 +5,13 @@
 //! transcript / tool-call / permission shapes are fleshed out in P4.
 
 use crate::AiUsage;
+use serde::{Deserialize, Serialize};
 
 /// Coarse run state of an agent session, surfaced **honestly** — derived from
 /// observable signals (shell-integration command blocks, log activity, process
 /// exit), never a fabricated "thinking…" spinner.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
     Starting,
     Idle,
@@ -20,7 +22,7 @@ pub enum AgentStatus {
 
 /// A fact about one agent session. The UI reduces a stream of these into its
 /// per-pane view model (header, usage ring, status, activity rail).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AgentEvent {
     /// The agent session became active in its pane.
     SessionStarted,

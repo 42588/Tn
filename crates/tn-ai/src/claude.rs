@@ -225,12 +225,6 @@ pub fn claude_sessions_with_mtime() -> Vec<(PathBuf, std::time::SystemTime)> {
     out
 }
 
-/// Read + parse the newest Claude session for `cwd`.
-pub fn usage_for_cwd(cwd: &str) -> Option<AiUsage> {
-    let text = std::fs::read_to_string(latest_session_file(cwd)?).ok()?;
-    parse_claude_session(&text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -131,16 +131,12 @@ pub fn run() {
 
             // Install the app-wide agent registry before any pane is built — the
             // UI resolves all agent identity through it. The Agent Host ships with
-            // **no built-in agents** (proving the platform is agent-agnostic): the
-            // registry is populated purely from user `[[agents]]` manifests. To
-            // re-add Claude/Codex *with usage telemetry*, register their adapters
-            // here via `tn_ai::builtin_registry()` (kept available) or
-            // `reg.register(Arc::new(tn_ai::ClaudeAdapter::new()))`.
-            let mut registry = tn_agent::AgentRegistry::new();
-            for manifest in &config.config.agents {
-                registry.register_manifest(manifest);
-            }
-            cx.set_global(agent_host::AgentHost(registry));
+            // **no built-in agents** (pure shell host); the registry is built from
+            // the user's `[[agents]]` manifests. A manifest whose command names
+            // Claude/Codex automatically gets Tn's built-in usage parser (real
+            // usage ring, keeping the user's color/label) — see
+            // `agent_host::build_registry` / `tn_ai::builtin_adapter_for_manifest`.
+            cx.set_global(agent_host::AgentHost(agent_host::build_registry(&config)));
 
             let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
             let main_config = config.clone();

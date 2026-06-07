@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::{AgentDescriptor, AiUsage};
+use crate::{AgentDescriptor, AgentEvent, AiUsage};
 
 /// A resolved session log: where it is and when last touched. The owning agent
 /// is known from the adapter that produced it. Pane ownership (pane id + runtime
@@ -56,6 +56,21 @@ pub trait AgentAdapter: Send + Sync {
     /// key? Drives the usage-display default (context % vs $). Unknown → false.
     fn is_subscription(&self) -> bool {
         false
+    }
+
+    /// Whether this adapter exposes a live event stream (sidecar / JSON-RPC /
+    /// Tn Agent Protocol). The UI only starts the lightweight event poller for
+    /// adapters that opt in here, so built-in log-only adapters do not gain a new
+    /// hot path.
+    fn has_realtime_events(&self) -> bool {
+        false
+    }
+
+    /// Drain any live events observed since the previous call. Implementations
+    /// must return quickly and never block on IO; process/stdout/socket clients
+    /// should push into an internal queue from their reader thread.
+    fn drain_events(&self) -> Vec<AgentEvent> {
+        Vec::new()
     }
 }
 

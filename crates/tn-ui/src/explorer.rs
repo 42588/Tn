@@ -17,6 +17,7 @@ use gpui::{
     UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
+use tn_pty::remote_fs::{RemoteFileService, RemoteId, RemotePath, SftpFileService};
 
 use crate::gitutil;
 use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, R_PANEL};
@@ -79,8 +80,11 @@ fn parse_porcelain(stdout: &str) -> HashMap<String, char> {
 /// points inside the new root, else drop it (a highlight on a now-invisible path
 /// is meaningless). Pure (component-wise `starts_with`, separator-agnostic on
 /// Windows) so the [`ExplorerView::follow_root`] rule is unit-testable headless.
-fn selection_under_root(selected: &Option<PathBuf>, root: &Path) -> Option<PathBuf> {
-    selected.clone().filter(|p| p.starts_with(root))
+fn selection_under_root(
+    selected: &Option<ExplorerPath>,
+    root: &ExplorerRoot,
+) -> Option<ExplorerPath> {
+    selected.clone().filter(|p| p.is_under_root(root))
 }
 
 /// Filter a restored pane snapshot to stay inside `root_path`: keep expanded
@@ -89,15 +93,33 @@ fn selection_under_root(selected: &Option<PathBuf>, root: &Path) -> Option<PathB
 /// pane-switch restore logic is headless-testable without a gpui `Context`.
 fn snapshot_under_root(
     snap: ExplorerSnapshot,
-    root_path: &Path,
-) -> (HashSet<PathBuf>, Option<PathBuf>) {
+    root: &ExplorerRoot,
+) -> (HashSet<ExplorerPath>, Option<ExplorerPath>) {
     let expanded = snap
         .expanded
         .into_iter()
-        .filter(|p| p.starts_with(root_path) || root_path.starts_with(p))
+        .filter(|p| p.is_under_root(root) || p.is_ancestor_of_root(root))
         .collect();
-    let selected = selection_under_root(&snap.selected, root_path);
+    let selected = selection_under_root(&snap.selected, root);
     (expanded, selected)
+}
+
+fn explorer_file_for_path(
+    root: &ExplorerRoot,
+    path: &ExplorerPath,
+    size: Option<u64>,
+) -> Option<ExplorerFile> {
+    match path {
+        ExplorerPath::Local(path) => Some(ExplorerFile::Local(path.clone())),
+        ExplorerPath::Remote(id) => match &root.fs {
+            ExplorerFs::Ssh { cfg } => Some(ExplorerFile::Remote {
+                cfg: cfg.clone(),
+                id: id.clone(),
+                size,
+            }),
+            _ => None,
+        },
+    }
 }
 
 /// Directories that are noise in a source tree — never listed.
@@ -107,19 +129,82 @@ const MAX_ROWS: usize = 400;
 /// Fixed row height so `uniform_list` can measure once and assume the rest.
 const TREE_ROW_H: f32 = 26.0; // §16 .tnode height 26
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ExplorerPath {
+    Local(PathBuf),
+    Remote(RemoteId),
+}
+
+impl ExplorerPath {
+    fn local(path: PathBuf) -> Self {
+        Self::Local(path)
+    }
+
+    fn local_path(&self) -> Option<&Path> {
+        match self {
+            Self::Local(path) => Some(path.as_path()),
+            Self::Remote(_) => None,
+        }
+    }
+
+    fn is_under_root(&self, root: &ExplorerRoot) -> bool {
+        match (self, &root.fs) {
+            (Self::Local(path), _) => root.path().is_some_and(|r| path.starts_with(r)),
+            (Self::Remote(id), ExplorerFs::Ssh { cfg }) => {
+                id.user == cfg.user
+                    && id.host == cfg.host
+                    && id.port == cfg.port
+                    && root
+                        .remote_path
+                        .as_ref()
+                        .is_some_and(|r| remote_path_under(&id.path, r))
+            }
+            _ => false,
+        }
+    }
+
+    fn is_ancestor_of_root(&self, root: &ExplorerRoot) -> bool {
+        match (self, &root.fs) {
+            (Self::Local(path), _) => root.path().is_some_and(|r| r.starts_with(path)),
+            (Self::Remote(id), ExplorerFs::Ssh { cfg }) => {
+                id.user == cfg.user
+                    && id.host == cfg.host
+                    && id.port == cfg.port
+                    && root
+                        .remote_path
+                        .as_ref()
+                        .is_some_and(|r| remote_path_under(r, &id.path))
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ExplorerFile {
+    Local(PathBuf),
+    Remote {
+        cfg: tn_pty::SshConfig,
+        id: RemoteId,
+        size: Option<u64>,
+    },
+}
+
 /// Emitted when a file row is clicked, so the workspace can open it in the viewer.
-pub struct OpenFile(pub PathBuf);
+pub struct OpenFile(pub ExplorerFile);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExplorerFs {
     Host,
     Wsl { distro: String },
+    Ssh { cfg: tn_pty::SshConfig },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExplorerRoot {
     fs: ExplorerFs,
     path: Option<PathBuf>,
+    remote_path: Option<RemotePath>,
     display_path: String,
 }
 
@@ -129,6 +214,7 @@ impl ExplorerRoot {
         Self {
             fs: ExplorerFs::Host,
             path: Some(path),
+            remote_path: None,
             display_path,
         }
     }
@@ -143,6 +229,24 @@ impl ExplorerRoot {
         Self {
             fs: ExplorerFs::Wsl { distro },
             path: Some(unc_path),
+            remote_path: None,
+            display_path,
+        }
+    }
+
+    pub fn ssh(cfg: tn_pty::SshConfig, remote_path: impl Into<String>) -> Self {
+        let remote_path = RemotePath::new(remote_path);
+        let display_path = format!(
+            "{}@{}:{}:{}",
+            cfg.user,
+            cfg.host,
+            cfg.port,
+            remote_path.as_str()
+        );
+        Self {
+            fs: ExplorerFs::Ssh { cfg },
+            path: None,
+            remote_path: Some(remote_path),
             display_path,
         }
     }
@@ -163,8 +267,12 @@ impl ExplorerRoot {
         self.path.clone()
     }
 
+    pub fn remote_path(&self) -> Option<&RemotePath> {
+        self.remote_path.as_ref()
+    }
+
     pub fn is_browsable(&self) -> bool {
-        self.path.is_some()
+        self.path.is_some() || self.remote_path.is_some()
     }
 
     pub fn path_for_namespace(&self, ns: &crate::terminal_view::FileNamespace) -> Option<String> {
@@ -196,6 +304,9 @@ impl ExplorerRoot {
                 .path
                 .as_ref()
                 .and_then(|p| windows_drive_to_wsl_mount(p)),
+            (ExplorerFs::Ssh { .. }, crate::terminal_view::FileNamespace::Ssh) => {
+                self.remote_path.as_ref().map(|p| p.as_str().to_string())
+            }
             _ => None,
         }
     }
@@ -218,8 +329,21 @@ impl ExplorerRoot {
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| self.display_path.clone()),
             ExplorerFs::Wsl { .. } => self.display_path.clone(),
+            ExplorerFs::Ssh { .. } => self.display_path.clone(),
         }
     }
+}
+
+fn remote_path_under(path: &RemotePath, root: &RemotePath) -> bool {
+    let p = path.as_str().trim_end_matches('/');
+    let r = root.as_str().trim_end_matches('/');
+    if r == "." {
+        return true;
+    }
+    if r == "/" {
+        return p == "/" || p.starts_with('/');
+    }
+    p == r || p.strip_prefix(r).is_some_and(|rest| rest.starts_with('/'))
 }
 
 fn parse_wsl_unc(path: &Path) -> Option<(String, String)> {
@@ -258,26 +382,28 @@ fn windows_drive_to_wsl_mount(path: &Path) -> Option<String> {
 /// the selection (and re-scrolling to it) is the meaningful, robust behavior.
 #[derive(Clone, Default)]
 pub struct ExplorerSnapshot {
-    expanded: HashSet<PathBuf>,
-    selected: Option<PathBuf>,
+    expanded: HashSet<ExplorerPath>,
+    selected: Option<ExplorerPath>,
 }
 
 /// One rendered tree row (a directory or a file at some depth).
 #[derive(Clone)]
 struct Row {
-    path: PathBuf,
+    path: ExplorerPath,
     name: String,
     depth: usize,
     is_dir: bool,
     expanded: bool,
+    size: Option<u64>,
 }
 
 pub struct ExplorerView {
     config: Arc<Loaded>,
     root: ExplorerRoot,
-    expanded: HashSet<PathBuf>,
-    selected: Option<PathBuf>,
+    expanded: HashSet<ExplorerPath>,
+    selected: Option<ExplorerPath>,
     rows: Vec<Row>,
+    remote_fs: Arc<dyn RemoteFileService>,
     read_error: Option<String>,
     rebuilding: bool,
     /// `git status --porcelain` tags, keyed by forward-slash path relative to
@@ -376,6 +502,7 @@ impl ExplorerView {
             expanded: HashSet::new(),
             selected: None,
             rows: Vec::new(),
+            remote_fs: SftpFileService::shared(),
             read_error: None,
             rebuilding: false,
             git_status: HashMap::new(),
@@ -490,14 +617,13 @@ impl ExplorerView {
         let watcher_root = root.path_buf();
         self.root = root.clone();
         if old.same_fs(&root) {
-            if let Some(root_path) = root.path() {
-                self.expanded
-                    .retain(|p| p.starts_with(root_path) || root_path.starts_with(p));
-                self.selected = selection_under_root(&self.selected, root_path);
-            } else {
-                self.expanded.clear();
-                self.selected = None;
-            }
+            let snap = ExplorerSnapshot {
+                expanded: std::mem::take(&mut self.expanded),
+                selected: self.selected.take(),
+            };
+            let (expanded, selected) = snapshot_under_root(snap, &root);
+            self.expanded = expanded;
+            self.selected = selected;
         } else {
             self.expanded.clear();
             self.selected = None;
@@ -536,14 +662,14 @@ impl ExplorerView {
         }
         let watcher_root = root.path_buf();
         self.root = root.clone();
-        match (snap, root.path()) {
-            (Some(snap), Some(root_path)) => {
-                let (expanded, selected) = snapshot_under_root(snap, root_path);
+        match snap {
+            Some(snap) => {
+                let (expanded, selected) = snapshot_under_root(snap, &root);
                 self.expanded = expanded;
                 self.selected = selected;
             }
-            // No saved state (or a rootless namespace): start clean.
-            _ => {
+            // No saved state: start clean.
+            None => {
                 self.expanded.clear();
                 self.selected = None;
             }
@@ -664,7 +790,7 @@ impl ExplorerView {
     fn walk(
         dir: &Path,
         depth: usize,
-        expanded: &HashSet<PathBuf>,
+        expanded: &HashSet<ExplorerPath>,
         show_dotfiles: bool,
         out: &mut Vec<Row>,
     ) -> std::io::Result<()> {
@@ -672,16 +798,65 @@ impl ExplorerView {
             if out.len() >= MAX_ROWS {
                 return Ok(());
             }
-            let is_expanded = is_dir && expanded.contains(&path);
+            let explorer_path = ExplorerPath::Local(path.clone());
+            let is_expanded = is_dir && expanded.contains(&explorer_path);
+            let size = if is_dir {
+                None
+            } else {
+                std::fs::metadata(&path).ok().map(|m| m.len())
+            };
             out.push(Row {
-                path: path.clone(),
+                path: explorer_path,
                 name,
                 depth,
                 is_dir,
                 expanded: is_expanded,
+                size,
             });
             if is_expanded {
                 let _ = Self::walk(&path, depth + 1, expanded, show_dotfiles, out);
+            }
+        }
+        Ok(())
+    }
+
+    fn walk_remote(
+        remote_fs: &dyn RemoteFileService,
+        cfg: &tn_pty::SshConfig,
+        dir: &RemotePath,
+        depth: usize,
+        expanded: &HashSet<ExplorerPath>,
+        out: &mut Vec<Row>,
+    ) -> anyhow::Result<()> {
+        let mut entries: Vec<_> = remote_fs
+            .list_dir(cfg, dir)?
+            .into_iter()
+            .filter(|e| Self::include_entry_name(&e.name, true))
+            .collect();
+        entries.sort_by(|a, b| {
+            b.is_dir.cmp(&a.is_dir).then_with(|| {
+                a.name
+                    .to_ascii_lowercase()
+                    .cmp(&b.name.to_ascii_lowercase())
+            })
+        });
+        for entry in entries {
+            if out.len() >= MAX_ROWS {
+                return Ok(());
+            }
+            let explorer_path = ExplorerPath::Remote(entry.id.clone());
+            let is_expanded = entry.is_dir && expanded.contains(&explorer_path);
+            let child_path = entry.id.path.clone();
+            out.push(Row {
+                path: explorer_path,
+                name: entry.name,
+                depth,
+                is_dir: entry.is_dir,
+                expanded: is_expanded,
+                size: entry.size,
+            });
+            if is_expanded {
+                let _ = Self::walk_remote(remote_fs, cfg, &child_path, depth + 1, expanded, out);
             }
         }
         Ok(())
@@ -693,19 +868,16 @@ impl ExplorerView {
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         self.rebuild_rev = self.rebuild_rev.wrapping_add(1);
         let rev = self.rebuild_rev;
-        let Some(root) = self.root.path_buf() else {
-            self.rows.clear();
-            self.git_status.clear();
-            self.git_stale = false;
-            self.read_error = Some("No browsable path for this namespace.".to_string());
-            self.rebuilding = false;
-            cx.notify();
-            return;
-        };
-        let expected_root = root.clone();
+        let expected_root = self.root.clone();
         let expanded = self.expanded.clone();
         let supports_git = self.root.supports_git_status();
         let show_dotfiles = matches!(self.root.fs, ExplorerFs::Wsl { .. });
+        let local_root = self.root.path_buf();
+        let remote_root = match (&self.root.fs, self.root.remote_path()) {
+            (ExplorerFs::Ssh { cfg }, Some(path)) => Some((cfg.clone(), path.clone())),
+            _ => None,
+        };
+        let remote_fs = self.remote_fs.clone();
         self.rebuilding = true;
         self.read_error = None;
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
@@ -715,16 +887,31 @@ impl ExplorerView {
                     let (tx, rx) = futures::channel::oneshot::channel();
                     std::thread::spawn(move || {
                         let mut out = Vec::new();
-                        let read_error = Self::walk(&root, 0, &expanded, show_dotfiles, &mut out)
+                        let read_error = if let Some(root) = local_root {
+                            Self::walk(&root, 0, &expanded, show_dotfiles, &mut out)
+                                .err()
+                                .map(|e| e.to_string())
+                        } else if let Some((cfg, root)) = remote_root {
+                            Self::walk_remote(
+                                remote_fs.as_ref(),
+                                &cfg,
+                                &root,
+                                0,
+                                &expanded,
+                                &mut out,
+                            )
                             .err()
-                            .map(|e| e.to_string());
+                            .map(|e| e.to_string())
+                        } else {
+                            Some("No browsable path for this namespace.".to_string())
+                        };
                         let _ = tx.send((out, read_error));
                     });
                     rx.await.unwrap_or_default()
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
-                if this.rebuild_rev != rev || this.root.path() != Some(expected_root.as_path()) {
+                if this.rebuild_rev != rev || this.root != expected_root {
                     return;
                 }
                 this.rows = rows;
@@ -783,7 +970,7 @@ impl ExplorerView {
 
     fn on_row_click(
         &mut self,
-        path: PathBuf,
+        path: ExplorerPath,
         is_dir: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -800,8 +987,15 @@ impl ExplorerView {
             // focus (its `needs_focus`) so its own keys (↑↓ 换文件 / Esc 关 / Enter
             // 编辑) work. Focusing the tree here would steal focus from the opening
             // overlay → its `Esc` never fires (踩过的坑).
-            self.selected = Some(path.clone());
-            cx.emit(OpenFile(path));
+            let size = self
+                .rows
+                .iter()
+                .find(|row| row.path == path)
+                .and_then(|row| row.size);
+            if let Some(file) = explorer_file_for_path(&self.root, &path, size) {
+                self.selected = Some(path);
+                cx.emit(OpenFile(file));
+            }
         }
         cx.notify();
     }
@@ -830,8 +1024,13 @@ impl ExplorerView {
                     let is_dir = self.rows.iter().any(|r| r.path == path && r.is_dir);
                     if is_dir {
                         self.on_row_click(path, true, window, cx); // toggle expand
-                    } else {
-                        cx.emit(OpenFile(path)); // → workspace opens Quick Look
+                    } else if let Some(file) = self
+                        .rows
+                        .iter()
+                        .find(|row| row.path == path)
+                        .and_then(|row| explorer_file_for_path(&self.root, &row.path, row.size))
+                    {
+                        cx.emit(OpenFile(file)); // → workspace opens Quick Look
                     }
                 }
             }
@@ -866,7 +1065,11 @@ impl ExplorerView {
     /// Select the next/prev **file** row (skipping directories) and return its path
     /// — Quick Look's `↑↓ 换文件` live-follow (driven from the focused overlay).
     /// `None` when there is no further file in that direction (selection unchanged).
-    pub fn select_adjacent_file(&mut self, delta: i32, cx: &mut Context<Self>) -> Option<PathBuf> {
+    pub fn select_adjacent_file(
+        &mut self,
+        delta: i32,
+        cx: &mut Context<Self>,
+    ) -> Option<ExplorerFile> {
         if self.rows.is_empty() {
             return None;
         }
@@ -884,11 +1087,12 @@ impl ExplorerView {
                 return None;
             }
             if !self.rows[i as usize].is_dir {
-                let p = self.rows[i as usize].path.clone();
-                self.selected = Some(p.clone());
+                let row = self.rows[i as usize].clone();
+                let file = explorer_file_for_path(&self.root, &row.path, row.size)?;
+                self.selected = Some(row.path);
                 self.scroll_to_selected();
                 cx.notify();
-                return Some(p);
+                return Some(file);
             }
         }
     }
@@ -943,11 +1147,11 @@ impl Render for ExplorerView {
         // Prepare data for the 'static uniform_list closure (Rc/Arc clones are cheap).
         let tree_rows: std::rc::Rc<Vec<Row>> = std::rc::Rc::new(self.rows.clone());
         let tree_config = self.config.clone(); // Arc
-        let tree_root: std::rc::Rc<PathBuf> =
-            std::rc::Rc::new(self.root.path_buf().unwrap_or_default());
+        let tree_root: std::rc::Rc<Option<PathBuf>> = std::rc::Rc::new(self.root.path_buf());
+        let tree_view_root: std::rc::Rc<ExplorerRoot> = std::rc::Rc::new(self.root.clone());
         let tree_git: std::rc::Rc<HashMap<String, char>> =
             std::rc::Rc::new(self.git_status.clone());
-        let tree_sel: std::rc::Rc<Option<PathBuf>> = std::rc::Rc::new(self.selected.clone());
+        let tree_sel: std::rc::Rc<Option<ExplorerPath>> = std::rc::Rc::new(self.selected.clone());
         let tree_entity = cx.entity().downgrade();
         let empty_text = if let Some(err) = &self.read_error {
             Some(format!("Cannot read folder: {err}"))
@@ -957,6 +1161,7 @@ impl Render for ExplorerView {
             Some(match self.root.fs {
                 ExplorerFs::Host => "No visible files in this folder.".to_string(),
                 ExplorerFs::Wsl { .. } => "This WSL folder is empty.".to_string(),
+                ExplorerFs::Ssh { .. } => "This remote folder is empty.".to_string(),
             })
         } else {
             None
@@ -980,11 +1185,12 @@ impl Render for ExplorerView {
                             let row = &tree_rows[i];
                             let indent = 10.0 + row.depth as f32 * 16.0;
                             let is_sel = tree_sel.as_ref().as_ref() == Some(&row.path);
-                            let key = row
-                                .path
-                                .strip_prefix(tree_root.as_ref())
-                                .ok()
-                                .map(|p| p.to_string_lossy().replace('\\', "/"));
+                            let key = row.path.local_path().and_then(|path| {
+                                tree_root
+                                    .as_deref()
+                                    .and_then(|root| path.strip_prefix(root).ok())
+                                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                            });
                             let git_tag = key.as_ref().and_then(|k| tree_git.get(k)).map(|&tag| {
                                 let c = match tag {
                                     'U' | 'A' => tree_config.theme.ansi.green,
@@ -995,7 +1201,9 @@ impl Render for ExplorerView {
                             });
                             let path = row.path.clone();
                             let is_dir = row.is_dir;
+                            let size = row.size;
                             let entity = tree_entity.clone();
+                            let view_root = tree_view_root.clone();
                             tree_row(
                                 &tree_config.theme.ui,
                                 &tree_config.theme,
@@ -1009,6 +1217,7 @@ impl Render for ExplorerView {
                                 move |_ev, _w, app| {
                                     app.stop_propagation();
                                     let path = path.clone();
+                                    let view_root = view_root.clone();
                                     let _ = entity.update(app, move |this, cx| {
                                         if is_dir {
                                             if !this.expanded.remove(&path) {
@@ -1016,9 +1225,12 @@ impl Render for ExplorerView {
                                             }
                                             this.rebuild(cx);
                                         } else {
-                                            let p = path.clone();
+                                            let file =
+                                                explorer_file_for_path(&view_root, &path, size);
                                             this.selected = Some(path);
-                                            cx.emit(OpenFile(p));
+                                            if let Some(file) = file {
+                                                cx.emit(OpenFile(file));
+                                            }
                                         }
                                         cx.notify();
                                     });
@@ -1062,6 +1274,24 @@ impl Render for ExplorerView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn local(path: &str) -> ExplorerPath {
+        ExplorerPath::Local(PathBuf::from(path))
+    }
+
+    fn host_root(path: &str) -> ExplorerRoot {
+        ExplorerRoot::host(PathBuf::from(path))
+    }
+
+    fn ssh_cfg() -> tn_pty::SshConfig {
+        tn_pty::SshConfig {
+            host: "example.com".into(),
+            port: 2222,
+            user: "alice".into(),
+            key_path: None,
+            password: None,
+        }
+    }
 
     #[test]
     fn porcelain_tags_each_status_kind() {
@@ -1115,14 +1345,14 @@ mod tests {
         // `cd` into a subdir: a selection inside the new root survives (so the
         // highlight follows you down); one outside is dropped (it'd point at a
         // now-invisible path). None stays None.
-        let root = PathBuf::from("D:/proj/crates");
-        let inside = Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs"));
+        let root = host_root("D:/proj/crates");
+        let inside = Some(local("D:/proj/crates/tn-ui/src.rs"));
         assert_eq!(selection_under_root(&inside, &root), inside);
-        let outside = Some(PathBuf::from("D:/proj/docs/x.md"));
+        let outside = Some(local("D:/proj/docs/x.md"));
         assert_eq!(selection_under_root(&outside, &root), None);
         assert_eq!(selection_under_root(&None, &root), None);
         // The root itself counts as under-root (component-wise starts_with).
-        let at_root = Some(PathBuf::from("D:/proj/crates"));
+        let at_root = Some(local("D:/proj/crates"));
         assert_eq!(selection_under_root(&at_root, &root), at_root);
     }
 
@@ -1132,31 +1362,31 @@ mod tests {
         // under the new root survive (and ancestors of the root, so the path down
         // re-opens), entries outside are pruned, and the selection is kept only
         // while it points inside the root (面板解耦 per-pane state).
-        let root = PathBuf::from("D:/proj/crates");
+        let root = host_root("D:/proj/crates");
         let snap = ExplorerSnapshot {
             expanded: HashSet::from([
-                PathBuf::from("D:/proj/crates/tn-ui"), // under root → keep
-                PathBuf::from("D:/proj"),              // ancestor of root → keep
-                PathBuf::from("D:/other/x"),           // unrelated → drop
+                local("D:/proj/crates/tn-ui"), // under root → keep
+                local("D:/proj"),              // ancestor of root → keep
+                local("D:/other/x"),           // unrelated → drop
             ]),
-            selected: Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs")),
+            selected: Some(local("D:/proj/crates/tn-ui/src.rs")),
         };
         let (expanded, selected) = snapshot_under_root(snap, &root);
-        assert!(expanded.contains(&PathBuf::from("D:/proj/crates/tn-ui")));
-        assert!(expanded.contains(&PathBuf::from("D:/proj")));
-        assert!(!expanded.contains(&PathBuf::from("D:/other/x")));
+        assert!(expanded.contains(&local("D:/proj/crates/tn-ui")));
+        assert!(expanded.contains(&local("D:/proj")));
+        assert!(!expanded.contains(&local("D:/other/x")));
         assert_eq!(expanded.len(), 2);
-        assert_eq!(selected, Some(PathBuf::from("D:/proj/crates/tn-ui/src.rs")));
+        assert_eq!(selected, Some(local("D:/proj/crates/tn-ui/src.rs")));
     }
 
     #[test]
     fn snapshot_restore_drops_out_of_root_selection() {
         // A selection saved while the pane was elsewhere must not leak into a
         // different root (it'd highlight an invisible row).
-        let root = PathBuf::from("D:/proj/crates");
+        let root = host_root("D:/proj/crates");
         let snap = ExplorerSnapshot {
             expanded: HashSet::new(),
-            selected: Some(PathBuf::from("D:/proj/docs/readme.md")),
+            selected: Some(local("D:/proj/docs/readme.md")),
         };
         let (expanded, selected) = snapshot_under_root(snap, &root);
         assert!(expanded.is_empty());
@@ -1247,8 +1477,115 @@ mod tests {
         );
 
         // SSH intentionally has no ExplorerRoot mapping until a remote filesystem
-        // backend exists; otherwise the sidebar would re-root to an unlistable path.
+        // backend exists; host/WSL roots must still never fake such a mapping.
         assert_eq!(host_root.path_for_namespace(&FileNamespace::Ssh), None);
         assert_eq!(wsl_root.path_for_namespace(&FileNamespace::Ssh), None);
+
+        let ssh_root = ExplorerRoot::ssh(ssh_cfg(), "/home/alice/project");
+        assert_eq!(ssh_root.path_buf(), None);
+        assert_eq!(
+            ssh_root.path_for_namespace(&FileNamespace::Ssh),
+            Some("/home/alice/project".to_string())
+        );
+        assert_eq!(ssh_root.path_for_namespace(&FileNamespace::Host), None);
+    }
+
+    #[derive(Default)]
+    struct FakeRemoteFs {
+        entries: HashMap<String, Vec<tn_pty::remote_fs::RemoteDirEntry>>,
+    }
+
+    impl tn_pty::remote_fs::RemoteFileService for FakeRemoteFs {
+        fn list_dir(
+            &self,
+            _cfg: &tn_pty::SshConfig,
+            path: &tn_pty::remote_fs::RemotePath,
+        ) -> anyhow::Result<Vec<tn_pty::remote_fs::RemoteDirEntry>> {
+            Ok(self.entries.get(path.as_str()).cloned().unwrap_or_default())
+        }
+
+        fn read_file(
+            &self,
+            _cfg: &tn_pty::SshConfig,
+            _path: &tn_pty::remote_fs::RemotePath,
+            _max_bytes: u64,
+        ) -> anyhow::Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn remote_entry(
+        cfg: &tn_pty::SshConfig,
+        path: &str,
+        name: &str,
+        is_dir: bool,
+        size: Option<u64>,
+    ) -> tn_pty::remote_fs::RemoteDirEntry {
+        tn_pty::remote_fs::RemoteDirEntry {
+            id: tn_pty::remote_fs::RemoteId::new(cfg, path),
+            name: name.into(),
+            is_dir,
+            size,
+            permissions: None,
+            mtime: None,
+        }
+    }
+
+    #[test]
+    fn remote_walk_builds_rows_and_emits_remote_file_handles() {
+        let cfg = ssh_cfg();
+        let root = ExplorerRoot::ssh(cfg.clone(), "/home/alice/project");
+        let mut fs = FakeRemoteFs::default();
+        fs.entries.insert(
+            "/home/alice/project".into(),
+            vec![
+                remote_entry(&cfg, "/home/alice/project/src", "src", true, None),
+                remote_entry(
+                    &cfg,
+                    "/home/alice/project/main.rs",
+                    "main.rs",
+                    false,
+                    Some(42),
+                ),
+                remote_entry(&cfg, "/home/alice/project/.git", ".git", true, None),
+            ],
+        );
+        fs.entries.insert(
+            "/home/alice/project/src".into(),
+            vec![remote_entry(
+                &cfg,
+                "/home/alice/project/src/lib.rs",
+                "lib.rs",
+                false,
+                Some(7),
+            )],
+        );
+
+        let expanded = HashSet::from([ExplorerPath::Remote(tn_pty::remote_fs::RemoteId::new(
+            &cfg,
+            "/home/alice/project/src",
+        ))]);
+        let mut rows = Vec::new();
+        ExplorerView::walk_remote(
+            &fs,
+            &cfg,
+            root.remote_path().unwrap(),
+            0,
+            &expanded,
+            &mut rows,
+        )
+        .unwrap();
+
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            vec!["src", "lib.rs", "main.rs"]
+        );
+        let main = rows.iter().find(|r| r.name == "main.rs").unwrap();
+        assert_eq!(main.size, Some(42));
+        assert!(matches!(
+            explorer_file_for_path(&root, &main.path, main.size),
+            Some(ExplorerFile::Remote { id, size: Some(42), .. })
+                if id.path.as_str() == "/home/alice/project/main.rs"
+        ));
     }
 }

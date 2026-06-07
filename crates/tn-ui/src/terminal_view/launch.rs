@@ -160,7 +160,11 @@ impl LaunchSpec {
         Self::from_profile_inner(p, reg, false)
     }
 
-    fn from_profile_inner(p: &tn_config::Profile, reg: &AgentRegistry, persist: bool) -> Option<Self> {
+    fn from_profile_inner(
+        p: &tn_config::Profile,
+        reg: &AgentRegistry,
+        persist: bool,
+    ) -> Option<Self> {
         // One launch path per profile kind (待优化清单 §6.3). WSL/SSH ignore the
         // command field; everything else needs a command, then forks on whether
         // it's a native pwsh (run directly + integrated) or another program
@@ -180,6 +184,12 @@ impl LaunchSpec {
                     .as_deref()
                     .map(|a| reg.match_command(a).unwrap_or_else(|| AgentId::new(a)))
                     .or_else(|| reg.match_command(&command));
+                if let Some(id) = &agent {
+                    let desc = reg.descriptor_or_generic(id, &p.name);
+                    if !desc.supports_runtime(AgentRuntimeKind::LocalPty) {
+                        return None;
+                    }
+                }
                 let lc = command.to_ascii_lowercase();
                 if lc.contains("powershell") || lc.contains("pwsh") {
                     Some(Self::launch_pwsh(command, &p.args, agent))

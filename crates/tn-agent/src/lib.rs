@@ -19,14 +19,19 @@
 mod adapter;
 mod descriptor;
 mod event;
+mod external;
 mod id;
 pub mod pricing;
 mod registry;
 mod usage;
 
 pub use adapter::{AgentAdapter, GenericAdapter, SessionRef};
-pub use descriptor::{AgentCapabilities, AgentDescriptor, AgentRuntimeKind};
+pub use descriptor::{
+    pty_runtimes, AgentCapabilities, AgentDescriptor, AgentNetworkPolicy, AgentRuntimeKind,
+    SidecarLaunch,
+};
 pub use event::{AgentEvent, AgentStatus};
+pub use external::{ExternalEventAdapter, ExternalProcessAdapter};
 pub use id::AgentId;
 pub use pricing::{pricing_for, Pricing};
 pub use registry::AgentRegistry;
@@ -75,7 +80,10 @@ mod tests {
         let reg = AgentRegistry::new()
             .with(Arc::new(StubAdapter(desc("codex", "codex"))))
             .with(Arc::new(StubAdapter(desc("other", "codex"))));
-        assert_eq!(reg.match_command("mycodex-tool"), Some(AgentId::new("codex")));
+        assert_eq!(
+            reg.match_command("mycodex-tool"),
+            Some(AgentId::new("codex"))
+        );
         assert!(reg.get(&AgentId::new("codex")).is_some());
         assert!(reg.get(&AgentId::new("nope")).is_none());
     }
@@ -122,18 +130,103 @@ mod tests {
             glyph: None,
             manages_own_cursor: true,
             capabilities: vec!["usage".into(), "transcript".into(), "bogus".into()],
+            runtime_support: Vec::new(),
+            allow_network: false,
+            sidecar: None,
         };
         let d = AgentDescriptor::from_manifest(&m);
         assert_eq!(d.id, AgentId::new("gemini"));
         assert_eq!(d.label, "Gemini CLI");
         assert_eq!(d.short, "Gemini CLI"); // short defaults to label
-        assert_eq!(d.command_aliases, vec!["gemini".to_string(), "gmn".to_string()]);
+        assert_eq!(
+            d.command_aliases,
+            vec!["gemini".to_string(), "gmn".to_string()]
+        );
         assert!(d.manages_own_cursor);
         // baseline always-on + listed extras; unknown ("bogus") ignored.
         assert!(d.capabilities.terminal && d.capabilities.cwd_sync && d.capabilities.git_diff);
         assert!(d.capabilities.usage && d.capabilities.transcript);
         assert!(!d.capabilities.tool_calls);
         assert!(d.matches_command("gmn-run"));
+        assert_eq!(d.runtime_support, pty_runtimes());
+        assert_eq!(d.network_policy, AgentNetworkPolicy::Deny);
+        assert!(d.realtime_command.is_none());
+        assert_eq!(d.sidecar_launch(), SidecarLaunch::None); // no sidecar declared
+    }
+
+    #[test]
+    fn descriptor_from_manifest_maps_runtime_and_network_policy() {
+        let m = tn_config::AgentManifest {
+            id: "bridge".into(),
+            label: Some("Bridge Agent".into()),
+            short: Some("Bridge".into()),
+            aliases: vec!["bridge".into()],
+            accent: None,
+            glyph: None,
+            manages_own_cursor: false,
+            capabilities: vec!["usage".into(), "permission_prompts".into()],
+            runtime_support: vec![
+                "structured".into(),
+                "http".into(),
+                "websocket".into(),
+                "http".into(), // duplicate ignored
+                "unknown".into(),
+            ],
+            allow_network: true,
+            sidecar: Some("bridge --json".into()),
+        };
+        let d = AgentDescriptor::from_manifest(&m);
+        assert_eq!(
+            d.runtime_support,
+            vec![
+                AgentRuntimeKind::Structured,
+                AgentRuntimeKind::Http,
+                AgentRuntimeKind::WebSocket,
+            ]
+        );
+        assert_eq!(d.network_policy, AgentNetworkPolicy::Ask);
+        assert!(d.supports_runtime(AgentRuntimeKind::Structured));
+        assert!(d.requires_network_confirmation(AgentRuntimeKind::Http));
+        assert!(d.runtime_allowed_after_confirmation(AgentRuntimeKind::Http));
+        assert!(d.runtime_allowed_after_confirmation(AgentRuntimeKind::Structured));
+        assert!(!d.runtime_allowed_after_confirmation(AgentRuntimeKind::LocalPty));
+        // Sidecar argv parsed; allow_network → Confirm (never a silent connect).
+        assert_eq!(
+            d.realtime_command,
+            Some(vec!["bridge".to_string(), "--json".to_string()])
+        );
+        assert_eq!(d.sidecar_launch(), SidecarLaunch::Confirm);
+    }
+
+    #[test]
+    fn sidecar_launch_keys_on_network_policy_not_runtime_support() {
+        let base = |allow: bool, sidecar: Option<&str>| {
+            AgentDescriptor::from_manifest(&tn_config::AgentManifest {
+                id: "x".into(),
+                label: None,
+                short: None,
+                aliases: vec![],
+                accent: None,
+                glyph: None,
+                manages_own_cursor: false,
+                capabilities: vec![],
+                // runtime_support stays empty (PTY default) — the agent runs in a
+                // PTY regardless; only the sidecar's allow_network gates the spawn.
+                runtime_support: Vec::new(),
+                allow_network: allow,
+                sidecar: sidecar.map(String::from),
+            })
+        };
+        // Local sidecar (no allow_network) → spawn now; the agent still PTY-runs.
+        let local = base(false, Some("tele --json"));
+        assert!(local.supports_runtime(AgentRuntimeKind::LocalPty)); // not refused by the launcher
+        assert_eq!(local.sidecar_launch(), SidecarLaunch::SpawnNow);
+        // Network-reaching sidecar (allow_network) → confirm first; agent still PTY-runs.
+        let net = base(true, Some("tele --json"));
+        assert!(net.supports_runtime(AgentRuntimeKind::LocalPty));
+        assert_eq!(net.sidecar_launch(), SidecarLaunch::Confirm);
+        // No sidecar → nothing, even with allow_network.
+        assert_eq!(base(true, None).sidecar_launch(), SidecarLaunch::None);
     }
 
     #[test]
@@ -150,6 +243,9 @@ mod tests {
             glyph: None,
             manages_own_cursor: false,
             capabilities: vec![],
+            runtime_support: Vec::new(),
+            allow_network: false,
+            sidecar: None,
         };
         reg.register_manifest(&gemini);
         assert_eq!(reg.match_command("gemini"), Some(AgentId::new("gemini")));
@@ -164,6 +260,9 @@ mod tests {
             glyph: None,
             manages_own_cursor: false,
             capabilities: vec![],
+            runtime_support: Vec::new(),
+            allow_network: false,
+            sidecar: None,
         };
         reg.register_manifest(&shadow);
         assert_eq!(reg.get(&AgentId::new("claude")).unwrap().label, "claude");

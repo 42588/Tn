@@ -8,11 +8,24 @@ use gpui::{
     div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AnyElement, App, Context, Div,
     FontWeight, MouseButton, Overflow, SharedString, WeakEntity,
 };
+use tn_agent::AgentStatus;
 use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
 use crate::style::{col, cola, glass_card, icon, HOVER, INSET, R_CARD, UI_SANS};
+
+fn short_chip(s: &str, max_chars: usize) -> String {
+    let trimmed = s.trim();
+    let total = trimmed.chars().count();
+    if total <= max_chars {
+        trimmed.to_string()
+    } else {
+        let mut out: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
+}
 
 impl TerminalView {
     /// This pane's identity accent: the agent's resolved accent, or the UI accent
@@ -63,6 +76,21 @@ impl TerminalView {
             )
     }
 
+    fn agent_chip(&self, label: String, color: Rgb) -> Div {
+        div()
+            .flex_none()
+            .px(px(9.))
+            .py(px(4.))
+            .rounded_full()
+            .bg(cola(color, 0.12))
+            .border_1()
+            .border_color(cola(color, 0.24))
+            .text_size(px(10.5))
+            .font_weight(FontWeight(680.))
+            .text_color(col(color))
+            .child(SharedString::from(label))
+    }
+
     /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
     /// indicator — we can't observe the agent's think state from the PTY, so we
     /// don't fake one (Calm Glass: honest chrome).
@@ -75,9 +103,14 @@ impl TerminalView {
             .clone()
             .unwrap_or_else(|| SharedString::from("Agent"));
         let model = self
-            .usage
+            .agent_model
             .as_ref()
-            .map(|u| crate::workspace::short_model(&u.model))
+            .map(|m| crate::workspace::short_model(m))
+            .or_else(|| {
+                self.usage
+                    .as_ref()
+                    .map(|u| crate::workspace::short_model(&u.model))
+            })
             .filter(|m| !m.is_empty());
         let mut who = div().flex().flex_col().child(
             div()
@@ -124,6 +157,25 @@ impl TerminalView {
             .child(avatar)
             .child(who)
             .child(div().flex_1());
+
+        if let Some(err) = &self.agent_error {
+            head = head.child(self.agent_chip(short_chip(err, 30), self.palette.ansi[1]));
+        } else if let Some(prompt) = &self.agent_permission_prompt {
+            head = head.child(
+                self.agent_chip(format!("权限: {}", short_chip(prompt, 24)), self.ui_yellow),
+            );
+        } else if let Some(status) = &self.agent_status {
+            let (label, color) = match status {
+                AgentStatus::Starting => ("启动中".to_string(), self.ui_accent),
+                AgentStatus::Idle => ("空闲".to_string(), self.ui_muted),
+                AgentStatus::Running => ("运行中".to_string(), self.palette.ansi[2]),
+                AgentStatus::Exited => ("已退出".to_string(), self.ui_muted),
+                AgentStatus::Error => ("错误".to_string(), self.palette.ansi[1]),
+            };
+            head = head.child(self.agent_chip(label, color));
+        } else if let Some(text) = &self.agent_transcript_tail {
+            head = head.child(self.agent_chip(short_chip(text, 26), self.ui_muted));
+        }
         // Usage ring/pill is a capability slot: only agents that declare `usage`
         // (i.e. have a telemetry adapter) show it. A config-level agent hosts
         // without it instead of showing an empty ring.

@@ -94,6 +94,23 @@
               <div style="font-size:10.5px;color:var(--muted)">Claude/Gemini 等 TUI 自管光标;关掉则终端画块光标</div>
             </div>
           </div>
+          <!-- 高级(可选)· 遥测 sidecar:设了才有用量环 + 实时 chip -->
+          <div style="height:1px;background:rgba(255,255,255,0.07);margin:4px 16px 0;"></div>
+          <div style="padding:6px 16px 0;font-size:11px;font-weight:600;color:var(--muted);">高级(可选)· 遥测 sidecar</div>
+          <div style="display:flex;flex-direction:column;gap:5px;padding:6px 16px;">
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:11px;background:var(--g2);border:1px solid var(--rim);">
+              <div style="width:52px;font-size:12px;color:var(--muted)">Sidecar</div>
+              <div style="flex:1;font-family:var(--num);font-size:13.5px;color:var(--muted)">如 gemini-telemetry --json(吐 JSONL 事件)</div>
+            </div>
+            <div style="font-size:10.5px;color:var(--muted);">设了 sidecar → agent 有用量环 + 实时状态/权限/transcript;留空 = 通用(仅终端 + git 改动栏)。</div>
+            <div style="display:flex;align-items:center;gap:10px;padding-top:2px;">
+              <div style="width:18px;height:18px;border-radius:5px;background:var(--g2);border:1px solid var(--rim);"></div>
+              <div>
+                <div style="font-size:12.5px;color:var(--fg)">联网 sidecar(连接前需确认)</div>
+                <div style="font-size:10.5px;color:var(--muted)">默认拒绝;勾选后启动弹确认卡,允许才连</div>
+              </div>
+            </div>
+          </div>
           <div style="display:flex;align-items:center;gap:8px;padding:6px 16px 12px;">
             <div style="width:52px;font-size:12px;color:var(--muted)">预览</div>
             <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:11px;background:var(--g2);border:1px solid rgba(122,162,247,0.3);">

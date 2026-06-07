@@ -10,15 +10,41 @@ use crate::AgentId;
 /// Where an agent process/protocol runs — **not** where its files live. Kept
 /// strictly separate from `FileNamespace` (the UI's file-I/O namespace): an
 /// SSH-runtime agent still can't drive Explorer/Quick Look until a remote FS is
-/// wired. Only the PTY family is implemented this round; the rest are reserved.
+/// wired.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentRuntimeKind {
     LocalPty,
     WslPty,
     SshPty,
-    // Reserved for future non-PTY runtimes (RemoteDaemon / Http / WebSocket /
-    // Structured); not implemented this round — the enum is open so the UI's
-    // "agent is a local process" assumption can be lifted later without churn.
+    /// A local/remote sidecar daemon reached over stdio or a local socket.
+    RemoteDaemon,
+    /// HTTP(S) agent runtime. Network use is denied by default unless a manifest
+    /// explicitly allows it and the user confirms at the host layer.
+    Http,
+    /// WebSocket agent runtime. Same network-permission model as [`Http`](Self::Http).
+    WebSocket,
+    /// A structured, non-terminal protocol endpoint (Tn Agent Protocol / JSON-RPC).
+    Structured,
+}
+
+impl AgentRuntimeKind {
+    pub fn is_pty(self) -> bool {
+        matches!(self, Self::LocalPty | Self::WslPty | Self::SshPty)
+    }
+
+    pub fn is_networked(self) -> bool {
+        matches!(self, Self::Http | Self::WebSocket | Self::RemoteDaemon)
+    }
+}
+
+/// Network access policy for non-PTY runtimes declared by a manifest. The safe
+/// default is [`Deny`](Self::Deny). [`Ask`](Self::Ask) means the descriptor may
+/// be used for networked runtimes only after the host has shown a user
+/// confirmation; it is never a silent allow.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentNetworkPolicy {
+    Deny,
+    Ask,
 }
 
 /// Capability flags → which Universal Agent Surface slots render for this agent
@@ -68,9 +94,27 @@ pub struct AgentDescriptor {
     pub default_args: Vec<String>,
     pub capabilities: AgentCapabilities,
     pub runtime_support: Vec<AgentRuntimeKind>,
+    pub network_policy: AgentNetworkPolicy,
     /// The agent paints/owns its own cursor (Ink TUIs like Claude); the terminal
     /// must hide its block cursor. Replaces the old Claude-only `force_hide_cursor`.
     pub manages_own_cursor: bool,
+    /// Argv for a stdio/JSONL telemetry **sidecar** (from manifest `sidecar`), if
+    /// any. The host spawns it per-pane as an `ExternalProcessAdapter` to get
+    /// realtime events without a built-in adapter. `None` = log-only / generic.
+    pub realtime_command: Option<Vec<String>>,
+}
+
+/// How the host should treat a descriptor's sidecar at launch time — the result
+/// of the default-deny network policy. Pure/headless so the launch decision is
+/// unit-testable without spawning anything.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SidecarLaunch {
+    /// No sidecar declared → nothing to spawn.
+    None,
+    /// A local stdio sidecar → spawn it now.
+    SpawnNow,
+    /// A network-reaching sidecar (`allow_network`) → ask the user first.
+    Confirm,
 }
 
 impl AgentDescriptor {
@@ -80,6 +124,39 @@ impl AgentDescriptor {
     pub fn matches_command(&self, command: &str) -> bool {
         let lc = command.to_ascii_lowercase();
         self.command_aliases.iter().any(|a| lc.contains(a.as_str()))
+    }
+
+    pub fn supports_runtime(&self, runtime: AgentRuntimeKind) -> bool {
+        self.runtime_support.contains(&runtime)
+    }
+
+    pub fn requires_network_confirmation(&self, runtime: AgentRuntimeKind) -> bool {
+        runtime.is_networked() && self.network_policy == AgentNetworkPolicy::Ask
+    }
+
+    pub fn runtime_allowed_after_confirmation(&self, runtime: AgentRuntimeKind) -> bool {
+        self.supports_runtime(runtime)
+            && (!runtime.is_networked() || self.network_policy == AgentNetworkPolicy::Ask)
+    }
+
+    /// What the host should do with this descriptor's sidecar at launch (the
+    /// default-deny network gate, in one place): nothing if no sidecar; a user
+    /// confirmation when the sidecar may reach the network (`allow_network` →
+    /// `network_policy == Ask`); otherwise spawn the local stdio sidecar now.
+    ///
+    /// Keyed on `network_policy` (the **sidecar's** network property), **not** on
+    /// `runtime_support` — the latter is where the *agent itself* runs (its PTY),
+    /// independent of whether its telemetry sidecar networks. (Conflating them
+    /// made a `claude` agent with a networked sidecar look non-PTY → refused →
+    /// fell back to a plain shell.)
+    pub fn sidecar_launch(&self) -> SidecarLaunch {
+        if self.realtime_command.is_none() {
+            SidecarLaunch::None
+        } else if self.network_policy == AgentNetworkPolicy::Ask {
+            SidecarLaunch::Confirm
+        } else {
+            SidecarLaunch::SpawnNow
+        }
     }
 
     /// Build a descriptor from a user config manifest (`[[agents]]`) — the
@@ -108,6 +185,7 @@ impl AgentDescriptor {
         } else {
             m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect()
         };
+        let runtime_support = runtimes_from_manifest(&m.runtime_support);
         Self {
             id: AgentId::new(m.id.clone()),
             label,
@@ -117,12 +195,14 @@ impl AgentDescriptor {
             glyph: m.glyph.clone(),
             default_args: Vec::new(),
             capabilities,
-            runtime_support: vec![
-                AgentRuntimeKind::LocalPty,
-                AgentRuntimeKind::WslPty,
-                AgentRuntimeKind::SshPty,
-            ],
+            runtime_support,
+            network_policy: if m.allow_network {
+                AgentNetworkPolicy::Ask
+            } else {
+                AgentNetworkPolicy::Deny
+            },
             manages_own_cursor: m.manages_own_cursor,
+            realtime_command: parse_sidecar(m.sidecar.as_deref()),
         }
     }
 
@@ -140,12 +220,59 @@ impl AgentDescriptor {
             glyph: None,
             default_args: Vec::new(),
             capabilities: AgentCapabilities::terminal_only(),
-            runtime_support: vec![
-                AgentRuntimeKind::LocalPty,
-                AgentRuntimeKind::WslPty,
-                AgentRuntimeKind::SshPty,
-            ],
+            runtime_support: pty_runtimes(),
+            network_policy: AgentNetworkPolicy::Deny,
             manages_own_cursor: false,
+            realtime_command: None,
         }
+    }
+}
+
+/// Split a manifest `sidecar = "..."` string into argv (whitespace-separated).
+/// `None`/blank → `None` (no sidecar). Quoting isn't handled yet — a path with
+/// spaces would need a future array form; the common `prog --flag` case works.
+fn parse_sidecar(raw: Option<&str>) -> Option<Vec<String>> {
+    let parts: Vec<String> = raw?.split_whitespace().map(String::from).collect();
+    (!parts.is_empty()).then_some(parts)
+}
+
+pub fn pty_runtimes() -> Vec<AgentRuntimeKind> {
+    vec![
+        AgentRuntimeKind::LocalPty,
+        AgentRuntimeKind::WslPty,
+        AgentRuntimeKind::SshPty,
+    ]
+}
+
+fn runtimes_from_manifest(raw: &[String]) -> Vec<AgentRuntimeKind> {
+    if raw.is_empty() {
+        return pty_runtimes();
+    }
+    let mut out = Vec::new();
+    for r in raw {
+        let Some(kind) = runtime_from_str(r) else {
+            continue;
+        };
+        if !out.contains(&kind) {
+            out.push(kind);
+        }
+    }
+    if out.is_empty() {
+        pty_runtimes()
+    } else {
+        out
+    }
+}
+
+fn runtime_from_str(s: &str) -> Option<AgentRuntimeKind> {
+    match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "local" | "local_pty" | "pty" => Some(AgentRuntimeKind::LocalPty),
+        "wsl" | "wsl_pty" => Some(AgentRuntimeKind::WslPty),
+        "ssh" | "ssh_pty" => Some(AgentRuntimeKind::SshPty),
+        "daemon" | "remote_daemon" | "sidecar" => Some(AgentRuntimeKind::RemoteDaemon),
+        "http" | "https" => Some(AgentRuntimeKind::Http),
+        "websocket" | "ws" | "wss" => Some(AgentRuntimeKind::WebSocket),
+        "structured" | "protocol" | "tn_agent_protocol" => Some(AgentRuntimeKind::Structured),
+        _ => None,
     }
 }

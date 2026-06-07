@@ -19,13 +19,8 @@ mod claude;
 mod codex;
 mod detect;
 
-pub use adapter::{builtin_registry, ClaudeAdapter, CodexAdapter};
-pub use claude::{
-    claude_projects_dir, encode_project_dir, latest_session_file, parse_claude_session,
-    usage_for_cwd,
-};
-pub use codex::{
-    codex_sessions_dir, latest_codex_session_file, parse_codex_session, usage_for_cwd_codex,
+pub use adapter::{
+    builtin_adapter_for_manifest, builtin_registry, ClaudeAdapter, CodexAdapter,
 };
 pub use detect::{adapter_session_mtimes, resolve_pane_session};
 

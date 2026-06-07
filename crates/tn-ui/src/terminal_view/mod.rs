@@ -27,7 +27,10 @@ use gpui::{
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
     ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
-use tn_agent::{AgentCapabilities, AgentEvent, AgentId, AgentRegistry, AiUsage};
+use tn_agent::{
+    AgentAdapter, AgentCapabilities, AgentDescriptor, AgentEvent, AgentId, AgentRegistry,
+    AgentStatus, AiUsage, ExternalProcessAdapter, SidecarLaunch,
+};
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
 use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
@@ -230,6 +233,14 @@ pub enum RailState {
     },
 }
 
+/// A network-reaching telemetry sidecar awaiting user confirmation before it
+/// spawns — the default-deny network gate ([`SidecarLaunch::Confirm`]). Carries
+/// the descriptor the confirm action needs to start the [`ExternalProcessAdapter`].
+#[derive(Clone)]
+struct SidecarConfirm {
+    descriptor: AgentDescriptor,
+}
+
 pub struct TerminalView {
     terminal: Arc<Mutex<Terminal>>,
     writer: SharedWriter,
@@ -286,6 +297,21 @@ pub struct TerminalView {
     // open identity resolved through the registry — no closed enum.
     agent: Option<AgentId>,
     usage: Option<AiUsage>,
+    /// Realtime event state from external/sidecar adapters. Built-in log-only
+    /// adapters leave these empty; the header renders them only when present.
+    agent_status: Option<AgentStatus>,
+    agent_model: Option<String>,
+    agent_transcript_tail: Option<String>,
+    agent_permission_prompt: Option<String>,
+    agent_error: Option<String>,
+    /// Per-pane realtime telemetry adapter — a sidecar [`ExternalProcessAdapter`]
+    /// spawned when this agent's manifest declared `sidecar`. Owned here so the
+    /// child process is killed on `clear_agent` / view drop; the agent-event
+    /// poller drains it into [`reduce_agent_event`](Self::reduce_agent_event).
+    realtime_adapter: Option<Arc<dyn AgentAdapter>>,
+    /// A networked sidecar pending user confirmation before spawning (default-deny
+    /// network gate). `None` once spawned, denied, or for local sidecars.
+    sidecar_confirm: Option<SidecarConfirm>,
     // Activity-rail「本次改动」state machine (mockup `.arail`).
     // Replaces ad-hoc `Vec` + `Option<PathBuf>` — the render path reads this
     // pure enum; zero computation inside `render()`. The `files`/`preview`/`root`
@@ -437,6 +463,15 @@ fn shell_name_of(program: &str) -> String {
         "cmd" => "cmd".to_string(),
         other if other.is_empty() => "shell".to_string(),
         other => other.to_string(),
+    }
+}
+
+fn tail_chars(s: &str, max_chars: usize) -> String {
+    let total = s.chars().count();
+    if total <= max_chars {
+        s.to_string()
+    } else {
+        s.chars().skip(total - max_chars).collect()
     }
 }
 
@@ -646,6 +681,8 @@ impl TerminalView {
             None
         };
         let mut change_watcher = None;
+        let mut realtime_adapter: Option<Arc<dyn AgentAdapter>> = None;
+        let mut sidecar_confirm: Option<SidecarConfirm> = None;
         if let Some(id) = &agent {
             // Usage binds to the session THIS pane launches (newest log created
             // at/after `launched_at`), not whatever's newest in the cwd — a dev
@@ -656,10 +693,32 @@ impl TerminalView {
             // adapter) hosts fine but reports no usage.
             if let Some(adapter) = registry.adapter(id) {
                 Self::spawn_usage_poller(cx, adapter.clone(), launched_at);
+                if adapter.has_realtime_events() {
+                    Self::spawn_agent_event_poller(cx, adapter.clone());
+                }
             }
             // 活动栏「本次改动」still needs a working dir for `git diff` (变化即刷新).
             if let Some(cwd) = rail_cwd.clone() {
                 change_watcher = Self::spawn_change_watcher(cx, cwd);
+            }
+            // Config-declared realtime sidecar (the observation tier without a
+            // built-in adapter): a local stdio sidecar spawns now; a networked one
+            // stages a user confirmation (default-deny). The per-pane adapter owns
+            // the child (killed on clear_agent / drop); its event poller feeds the
+            // agent header. Only for launched agents — shell-promoted agents
+            // (sync_shell_agent) don't spawn sidecars.
+            if let Some(desc) = registry.get(id) {
+                match desc.sidecar_launch() {
+                    SidecarLaunch::SpawnNow => {
+                        realtime_adapter = Self::spawn_sidecar(cx, desc.clone());
+                    }
+                    SidecarLaunch::Confirm => {
+                        sidecar_confirm = Some(SidecarConfirm {
+                            descriptor: desc.clone(),
+                        });
+                    }
+                    SidecarLaunch::None => {}
+                }
             }
         }
 
@@ -709,6 +768,13 @@ impl TerminalView {
             scrollbar_drag: None,
             agent,
             usage: None,
+            agent_status: None,
+            agent_model: None,
+            agent_transcript_tail: None,
+            agent_permission_prompt: None,
+            agent_error: None,
+            realtime_adapter,
+            sidecar_confirm,
             rail_state: RailState::Idle,
             rail_generation: 0,
             rail_cwd,
@@ -956,15 +1022,60 @@ impl TerminalView {
         self.agent = None;
         self.agent_from_shell = false;
         self.usage = None;
+        self.agent_status = None;
+        self.agent_model = None;
+        self.agent_transcript_tail = None;
+        self.agent_permission_prompt = None;
+        self.agent_error = None;
         self.rail_state = RailState::Idle;
         self.rail_cwd = None;
         self.change_watcher = None; // stop watching the working tree
+        self.realtime_adapter = None; // drop sidecar → its child process is killed
+        self.sidecar_confirm = None;
         // Reset resolved presentation back to the plain-shell defaults.
         self.agent_accent = self.ui_accent;
         self.agent_label = None;
         self.agent_short = None;
         self.agent_manages_cursor = false;
         self.agent_caps = AgentCapabilities::default();
+    }
+
+    /// Spawn a per-pane telemetry sidecar from a descriptor's `realtime_command`
+    /// and start its event poller. Returns the owned adapter (the view keeps it so
+    /// the child dies on drop), or `None` if there's no command / the spawn failed.
+    /// Never panics — a spawn error degrades to "no telemetry" (pane construction
+    /// runs in a non-unwinding GPUI callback).
+    fn spawn_sidecar(
+        cx: &mut Context<Self>,
+        descriptor: AgentDescriptor,
+    ) -> Option<Arc<dyn AgentAdapter>> {
+        match ExternalProcessAdapter::from_descriptor(descriptor) {
+            Some(Ok(adapter)) => {
+                let arc: Arc<dyn AgentAdapter> = Arc::new(adapter);
+                Self::spawn_agent_event_poller(cx, arc.clone());
+                Some(arc)
+            }
+            Some(Err(e)) => {
+                tracing::error!(error = %e, "agent sidecar spawn failed");
+                None
+            }
+            None => None,
+        }
+    }
+
+    /// Confirm a pending networked sidecar (user clicked 允许) → spawn it now.
+    fn confirm_sidecar(&mut self, cx: &mut Context<Self>) {
+        let Some(c) = self.sidecar_confirm.take() else {
+            return;
+        };
+        self.realtime_adapter = Self::spawn_sidecar(cx, c.descriptor);
+        cx.notify();
+    }
+
+    /// Deny a pending networked sidecar (user clicked 拒绝) → host without it.
+    fn deny_sidecar(&mut self, cx: &mut Context<Self>) {
+        self.sidecar_confirm = None;
+        cx.notify();
     }
 
     /// Reduce one [`AgentEvent`] into this pane's view state — the single funnel
@@ -979,21 +1090,42 @@ impl TerminalView {
                 cx.emit(UsageUpdated); // relabel tab + repaint status bar
             }
             AgentEvent::DiffChanged => self.refresh_changes(cx),
+            AgentEvent::SessionStarted => {
+                self.agent_status = Some(AgentStatus::Starting);
+            }
             AgentEvent::SessionEnded => {
                 self.clear_agent();
                 cx.emit(UsageUpdated);
             }
-            // Reserved variants — no surface slot renders them yet (no status
-            // pill, transcript, or permission UI). CwdChanged feeds only this
-            // pane's context (runtime ≠ namespace); the git watcher already
-            // tracks the cwd, so nothing global here.
-            AgentEvent::StatusChanged(_)
-            | AgentEvent::CwdChanged(_)
-            | AgentEvent::ModelChanged(_)
-            | AgentEvent::TranscriptAppended(_)
-            | AgentEvent::PermissionRequested(_)
-            | AgentEvent::ErrorReported(_)
-            | AgentEvent::SessionStarted => {}
+            AgentEvent::StatusChanged(s) => {
+                self.agent_status = Some(s);
+            }
+            AgentEvent::CwdChanged(cwd) => {
+                self.last_cwd = Some(cwd.clone());
+                if let Some(root) = self.file_namespace.browsable_path_from_cwd(&cwd) {
+                    self.rail_cwd = Some(root.clone());
+                    if self.agent.is_some() && self.agent_caps.git_diff {
+                        self.change_watcher = Self::spawn_change_watcher(cx, root);
+                        self.refresh_changes(cx);
+                    }
+                }
+                cx.emit(CwdChanged);
+            }
+            AgentEvent::ModelChanged(model) => {
+                self.agent_model = Some(model);
+                cx.emit(UsageUpdated); // status bar/tab model text may repaint
+            }
+            AgentEvent::TranscriptAppended(text) => {
+                self.agent_transcript_tail = Some(tail_chars(&text, 180));
+            }
+            AgentEvent::PermissionRequested(prompt) => {
+                self.agent_permission_prompt = Some(prompt);
+                self.agent_status = Some(AgentStatus::Running);
+            }
+            AgentEvent::ErrorReported(err) => {
+                self.agent_error = Some(err);
+                self.agent_status = Some(AgentStatus::Error);
+            }
         }
         cx.notify();
     }
@@ -1080,6 +1212,9 @@ impl TerminalView {
                 // Only an agent with a usage adapter is polled.
                 if let Some(adapter) = registry.adapter(&id) {
                     Self::spawn_usage_poller(cx, adapter.clone(), SystemTime::now());
+                    if adapter.has_realtime_events() {
+                        Self::spawn_agent_event_poller(cx, adapter.clone());
+                    }
                 }
                 if let Some(root) = self.effective_browsable_cwd() {
                     self.change_watcher = Self::spawn_change_watcher(cx, root.clone());
@@ -1211,6 +1346,7 @@ impl TerminalView {
                 m.last_finished()
                     .and_then(|b| b.cwd.as_ref().map(|s| s.to_string()))
             })
+            .or_else(|| self.last_cwd.clone())
     }
 
     pub fn file_namespace(&self) -> FileNamespace {
@@ -2906,6 +3042,66 @@ impl Render for TerminalView {
                 )
         });
 
+        // Networked telemetry sidecar awaiting confirmation (default-deny gate):
+        // shows the command + which networked runtime, with 拒绝/允许. 允许 spawns
+        // the `ExternalProcessAdapter`; 拒绝 hosts the agent without it.
+        let sidecar_card = self.sidecar_confirm.as_ref().map(|c| {
+            let cmd = c
+                .descriptor
+                .realtime_command
+                .as_ref()
+                .map(|v| v.join(" "))
+                .unwrap_or_default();
+            let agent_label = self
+                .agent_label
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "外部 Agent".to_string());
+            let allow = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
+                .child(crate::style::icon("check", 13., self.ui_accent))
+                .child(div().text_size(px(12.)).child(SharedString::from("允许并连接")))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.confirm_sidecar(cx);
+                }));
+            let deny = div()
+                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
+                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .child(crate::style::icon("close", 13., self.ui_muted))
+                .child(div().text_size(px(12.)).child(SharedString::from("拒绝")))
+                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                    cx.stop_propagation();
+                    this.deny_sidecar(cx);
+                }));
+            card_chrome(
+                div()
+                    .child(card_header("alert", self.ui_yellow, "Agent 要联网", &agent_label))
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(
+                        div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
+                            .child(SharedString::from(
+                                "这个 Agent 的遥测 sidecar 要联网。默认拒绝,确认后才运行。",
+                            )),
+                    )
+                    .child(
+                        div().mx(px(14.)).mt(px(9.)).p(px(9.)).rounded(px(8.))
+                            .bg(rgba(crate::style::INSET)).border_1().border_color(rgba(crate::style::RIM))
+                            .font_family(self.font_family.clone())
+                            .text_size(px(11.5)).text_color(col(self.ui_muted))
+                            .child(SharedString::from(cmd)),
+                    )
+                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)).mt(px(12.)))
+                    .child(
+                        div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.))
+                            .child(deny).child(allow),
+                    ),
+            )
+        });
+
         div()
             .track_focus(&self.focus_handle)
             .on_key_down(
@@ -2929,6 +3125,7 @@ impl Render for TerminalView {
             .when_some(ssh_error_card, |this, p| this.child(p))
             .when_some(ssh_password_card, |this, p| this.child(p))
             .when_some(ssh_hostkey_card, |this, p| this.child(p))
+            .when_some(sidecar_card, |this, p| this.child(p))
     }
 }
 
@@ -2947,7 +3144,9 @@ mod tests {
             .expect("a profile")
     }
 
-    /// The built-in registry (Claude + Codex) for launch-spec inference in tests.
+    /// Seed registry (Claude + Codex) for launch-spec inference in tests.
+    /// The default app intentionally starts from an empty registry + config
+    /// manifests; these tests exercise the optional telemetry adapters.
     fn reg() -> tn_agent::AgentRegistry {
         tn_ai::builtin_registry()
     }
@@ -3088,6 +3287,34 @@ mod tests {
             !spec.args.iter().any(|a| a.contains(AGENT_EXIT_SENTINEL)),
             "ephemeral agent must not append the sentinel, got {:?}",
             spec.args
+        );
+    }
+
+    #[test]
+    fn non_pty_only_agent_is_not_launched_by_pty_launcher() {
+        let cfg = tn_config::Config::from_toml_str(
+            "[[agents]]\n\
+             id=\"bridge\"\n\
+             aliases=[\"bridge\"]\n\
+             runtime_support=[\"structured\", \"http\"]\n\
+             allow_network=true\n\
+             \n\
+             [[profiles]]\n\
+             name=\"Bridge\"\n\
+             kind=\"agent\"\n\
+             command=\"bridge\"\n\
+             agent=\"bridge\"\n",
+        )
+        .expect("config parses");
+        let mut reg = tn_agent::AgentRegistry::new();
+        for manifest in &cfg.agents {
+            reg.register_manifest(manifest);
+        }
+        let profile = cfg.profiles.first().expect("profile");
+
+        assert!(
+            LaunchSpec::from_profile(profile, &reg).is_none(),
+            "the current launcher only produces PTY runtimes; structured/http agents need a dedicated runtime confirmation path"
         );
     }
 

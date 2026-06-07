@@ -3,10 +3,10 @@
 //! status bar (see docs/产品设计.md §5). Moved here from `tn-ai` so it's the
 //! platform's contract, not a Claude/Codex-specific type.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A point-in-time usage snapshot for one agent session.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct AiUsage {
     pub model: String,
     /// Cumulative tokens over the whole session.

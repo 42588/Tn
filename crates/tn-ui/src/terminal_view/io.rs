@@ -453,10 +453,8 @@ impl TerminalView {
                                     let valid_delta = &delta[..valid_bytes];
                                     let new_offset = prev_offset + valid_bytes as u64;
                                     let new_usage = if valid_bytes > 0 {
-                                        adapter_i.update_usage(
-                                            valid_delta,
-                                            prev_usage_clone.unwrap(),
-                                        )
+                                        adapter_i
+                                            .update_usage(valid_delta, prev_usage_clone.unwrap())
                                     } else {
                                         prev_usage_clone.unwrap()
                                     };
@@ -491,10 +489,7 @@ impl TerminalView {
                         // path) rather than poking `usage` directly.
                         if this
                             .update(cx, |v, cx| {
-                                v.reduce_agent_event(
-                                    tn_agent::AgentEvent::UsageUpdated(usage),
-                                    cx,
-                                );
+                                v.reduce_agent_event(tn_agent::AgentEvent::UsageUpdated(usage), cx);
                             })
                             .is_err()
                         {
@@ -505,6 +500,42 @@ impl TerminalView {
                 exec.timer(Duration::from_secs(4)).await;
             }
         })
+        .detach();
+    }
+
+    /// Poll a realtime-capable adapter's internal event queue and reduce those
+    /// events through the same [`AgentEvent`](tn_agent::AgentEvent) funnel as
+    /// usage updates. This is intentionally opt-in via
+    /// `AgentAdapter::has_realtime_events()`: built-in Claude/Codex log parsers do
+    /// not gain another background task, while sidecar/JSON-RPC adapters can push
+    /// status/transcript/permission/tool facts into their queue from a reader
+    /// thread and have the UI consume them here.
+    pub(super) fn spawn_agent_event_poller(
+        cx: &mut Context<Self>,
+        adapter: std::sync::Arc<dyn tn_agent::AgentAdapter>,
+    ) {
+        let exec = cx.background_executor().clone();
+        let agent_id = adapter.descriptor().id.clone();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
+                exec.timer(Duration::from_millis(120)).await;
+                let events = adapter.drain_events();
+                let alive = this
+                    .update(cx, |v, cx| {
+                        if v.agent() != Some(agent_id.clone()) {
+                            return false;
+                        }
+                        for ev in events {
+                            v.reduce_agent_event(ev, cx);
+                        }
+                        true
+                    })
+                    .unwrap_or(false);
+                if !alive {
+                    break;
+                }
+            },
+        )
         .detach();
     }
 

@@ -2,9 +2,10 @@
 //! seed providers. Each pairs a static [`AgentDescriptor`] (identity, accent,
 //! capabilities, cursor quirk) with the existing `claude`/`codex` log parsers.
 //!
-//! These are **removable**: tn-app builds the registry from [`builtin_registry`],
-//! and the P6 end state swaps that for an empty registry (pure shell host) +
-//! manually-registered agents. The platform (`tn-agent`) has no knowledge of
+//! These are **removable**: the default app starts from an empty registry (pure
+//! shell host) and only registers config-declared agents. [`builtin_registry`] is
+//! kept as the reusable seed for tests or for a build/user path that explicitly
+//! re-adds Claude/Codex telemetry. The platform (`tn-agent`) has no knowledge of
 //! either agent — all the Claude/Codex specifics live right here.
 
 use std::path::PathBuf;
@@ -12,8 +13,8 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use tn_agent::{
-    AgentAdapter, AgentCapabilities, AgentDescriptor, AgentId, AgentRegistry, AgentRuntimeKind,
-    AiUsage,
+    AgentAdapter, AgentCapabilities, AgentDescriptor, AgentId, AgentNetworkPolicy, AgentRegistry,
+    AgentRuntimeKind, AiUsage,
 };
 use tn_config::Color;
 
@@ -53,8 +54,10 @@ fn claude_descriptor() -> AgentDescriptor {
         default_args: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
+        network_policy: AgentNetworkPolicy::Deny,
         // Claude Code is an Ink TUI that paints its own cursor → hide ours.
         manages_own_cursor: true,
+        realtime_command: None, // telemetry via log parsing, not a sidecar
     }
 }
 
@@ -69,7 +72,9 @@ fn codex_descriptor() -> AgentDescriptor {
         default_args: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
+        network_policy: AgentNetworkPolicy::Deny,
         manages_own_cursor: false,
+        realtime_command: None, // telemetry via log parsing, not a sidecar
     }
 }
 
@@ -83,6 +88,13 @@ impl ClaudeAdapter {
         Self {
             descriptor: claude_descriptor(),
         }
+    }
+
+    /// Wrap the built-in Claude log parser with a **custom** descriptor — so a
+    /// user's `[[agents]]` manifest keeps its own accent / label / cursor while
+    /// still getting Tn's real Claude usage parsing (see [`builtin_adapter_for_manifest`]).
+    pub fn with_descriptor(descriptor: AgentDescriptor) -> Self {
+        Self { descriptor }
     }
 }
 
@@ -131,6 +143,12 @@ impl CodexAdapter {
             descriptor: codex_descriptor(),
         }
     }
+
+    /// Like [`ClaudeAdapter::with_descriptor`] — built-in Codex parsing under a
+    /// user-supplied descriptor.
+    pub fn with_descriptor(descriptor: AgentDescriptor) -> Self {
+        Self { descriptor }
+    }
 }
 
 impl Default for CodexAdapter {
@@ -165,13 +183,45 @@ impl AgentAdapter for CodexAdapter {
     }
 }
 
-/// The default built-in registry: Claude + Codex. tn-app wires this at startup.
-/// **Removing the built-ins (P6) = returning `AgentRegistry::new()` instead** —
-/// the platform stays identical, only the seed providers change.
+/// A seed registry containing Claude + Codex telemetry adapters. The default app
+/// does **not** install this automatically; it starts with `AgentRegistry::new()`
+/// and registers user manifests, proving Agent Host works without built-ins.
 pub fn builtin_registry() -> AgentRegistry {
     AgentRegistry::new()
         .with(Arc::new(ClaudeAdapter::new()))
         .with(Arc::new(CodexAdapter::new()))
+}
+
+/// If a user `[[agents]]` manifest names a built-in agent (its id/aliases match
+/// Claude's or Codex's command), return a telemetry adapter that uses **Tn's
+/// built-in usage parser** but **the manifest's own presentation** (accent /
+/// label / cursor, with `usage` enabled). So "add an agent whose command is
+/// `claude`" gets a real usage ring for free — no sidecar, no built-in registered
+/// by default — while keeping the user's chosen color/name. `None` for an unknown
+/// command → the caller registers a generic (no-telemetry) agent instead.
+///
+/// This is the supported "user re-adds Claude/Codex telemetry" path: the platform
+/// (`tn-agent`) stays agent-agnostic; only this `tn-ai` function knows the names.
+pub fn builtin_adapter_for_manifest(
+    m: &tn_config::AgentManifest,
+) -> Option<Arc<dyn AgentAdapter>> {
+    // The command tokens this manifest would be identified by.
+    let probes: Vec<String> = if m.aliases.is_empty() {
+        vec![m.id.to_ascii_lowercase()]
+    } else {
+        m.aliases.iter().map(|a| a.to_ascii_lowercase()).collect()
+    };
+    let seed = builtin_registry();
+    let id = probes.iter().find_map(|p| seed.match_command(p))?;
+    // Keep the user's descriptor (color/label/Ink) but force `usage` on, since the
+    // built-in parser supplies it.
+    let mut descriptor = AgentDescriptor::from_manifest(m);
+    descriptor.capabilities.usage = true;
+    match id.as_str() {
+        "claude" => Some(Arc::new(ClaudeAdapter::with_descriptor(descriptor))),
+        "codex" => Some(Arc::new(CodexAdapter::with_descriptor(descriptor))),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +279,44 @@ mod tests {
             reg.get(&AgentId::new("codex")).unwrap().accent,
             Some(Color::new(0x73, 0xDA, 0xCA))
         );
+    }
+
+    #[test]
+    fn builtin_adapter_for_manifest_uses_builtin_parser_with_user_presentation() {
+        // A user manifest whose command is `claude` → real Claude usage parsing,
+        // but the user's own id / label / accent kept (usage forced on).
+        let m = tn_config::AgentManifest {
+            id: "cluade".into(),
+            label: Some("我的 Claude".into()),
+            short: None,
+            aliases: vec!["claude".into()],
+            accent: Some(Color::new(0xE0, 0xAF, 0x68)),
+            glyph: None,
+            manages_own_cursor: true,
+            capabilities: vec![], // not declared → still forced on for a built-in
+            runtime_support: vec![],
+            allow_network: false,
+            sidecar: None,
+        };
+        let a = builtin_adapter_for_manifest(&m).expect("claude command matched a built-in");
+        let d = a.descriptor();
+        assert_eq!(d.id, AgentId::new("cluade")); // user's id, not "claude"
+        assert_eq!(d.label, "我的 Claude"); // user's label
+        assert_eq!(d.accent, Some(Color::new(0xE0, 0xAF, 0x68))); // user's accent
+        assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
+        assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
+        // And it actually parses Claude logs (built-in behavior, not generic).
+        assert_eq!(
+            a.parse_usage(CLAUDE_SAMPLE),
+            claude::parse_claude_session(CLAUDE_SAMPLE)
+        );
+
+        // An unknown command → None (caller registers a generic, no-telemetry agent).
+        let unknown = tn_config::AgentManifest {
+            id: "gemini".into(),
+            aliases: vec!["gemini".into()],
+            ..m
+        };
+        assert!(builtin_adapter_for_manifest(&unknown).is_none());
     }
 }

@@ -252,7 +252,7 @@ mod tests {
         assert_eq!(a.accent_for("codex"), Some(Color::new(0x73, 0xDA, 0xCA)));
         assert_eq!(a.accent_for("gemini"), Some(Color::new(0x44, 0x88, 0xFF)));
         assert_eq!(a.by_id.len(), 1); // only the non-builtin key lands in by_id
-        // An agent with no theme entry → None (caller uses the descriptor default).
+                                      // An agent with no theme entry → None (caller uses the descriptor default).
         assert_eq!(a.accent_for("aider"), None);
         // Defaults still hold when only builtins are present.
         let d = AgentColors::default();

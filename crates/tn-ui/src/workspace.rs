@@ -21,7 +21,7 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::explorer::{ExplorerRoot, ExplorerSnapshot, ExplorerView, OpenFile};
+use crate::explorer::{ExplorerFile, ExplorerRoot, ExplorerSnapshot, ExplorerView, OpenFile};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
@@ -290,21 +290,43 @@ fn wsl_unc_from_linux_cwd(distro: &str, cwd: &str) -> std::path::PathBuf {
     }
 }
 
-fn explorer_root_for_pane(view: &TerminalView) -> Option<ExplorerRoot> {
-    match view.file_namespace() {
-        FileNamespace::Host => view.effective_browsable_cwd().map(ExplorerRoot::host),
+fn explorer_root_for_pane(view: &TerminalView, spec: Option<&LaunchSpec>) -> Option<ExplorerRoot> {
+    explorer_root_from_parts(
+        view.file_namespace(),
+        view.cwd(),
+        view.effective_browsable_cwd(),
+        spec.and_then(|s| s.ssh.clone()),
+    )
+}
+
+fn explorer_root_from_parts(
+    namespace: FileNamespace,
+    cwd: Option<String>,
+    host_browsable_cwd: Option<std::path::PathBuf>,
+    ssh: Option<tn_pty::SshConfig>,
+) -> Option<ExplorerRoot> {
+    match namespace {
+        FileNamespace::Host => host_browsable_cwd.map(ExplorerRoot::host),
         FileNamespace::Wsl {
             distro: Some(distro),
         } => {
-            let linux_cwd = view.cwd().filter(|cwd| cwd.starts_with('/'))?;
+            let linux_cwd = cwd.filter(|cwd| cwd.starts_with('/'))?;
             let unc = wsl_unc_from_linux_cwd(&distro, &linux_cwd);
             Some(ExplorerRoot::wsl(distro, linux_cwd, unc))
         }
-        // Without a concrete WSL distro or a remote filesystem backend, the file
-        // explorer has no host-browsable path to enumerate. Keep the previous tree
-        // instead of re-rooting to an empty Remote placeholder.
-        FileNamespace::Wsl { distro: None } | FileNamespace::Ssh => None,
+        // Without a concrete WSL distro, the file explorer has no host-browsable
+        // path to enumerate. Keep the previous tree instead of re-rooting empty.
+        FileNamespace::Wsl { distro: None } => None,
+        FileNamespace::Ssh => {
+            let cfg = ssh?;
+            let remote_cwd = cwd.filter(|cwd| cwd.starts_with('/'))?;
+            Some(ExplorerRoot::ssh(cfg, remote_cwd))
+        }
     }
+}
+
+fn open_folder_should_use_native_picker(spec: Option<&LaunchSpec>) -> bool {
+    spec.is_some_and(|spec| !matches!(spec.file_namespace, FileNamespace::Ssh))
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -811,6 +833,8 @@ pub struct Workspace {
 enum AgentField {
     Name,
     Command,
+    /// The advanced telemetry-sidecar command (ASCII, IME off like Command).
+    Sidecar,
 }
 
 /// The working draft of the 添加/编辑 Agent overlay.
@@ -823,6 +847,12 @@ struct AgentForm {
     /// The agent paints its own cursor (Ink TUI) → the terminal hides its block.
     /// Default on (most agent CLIs are Ink-based).
     manages_cursor: bool,
+    /// Advanced: a stdio/JSONL telemetry sidecar command. Empty = generic (no
+    /// telemetry). When set, the agent gets the usage ring + realtime chips.
+    sidecar: String,
+    /// Advanced: the sidecar reaches the network → spawn behind a confirm card
+    /// (`remote_daemon` runtime + `allow_network`). Only meaningful with a sidecar.
+    networked: bool,
 }
 
 impl AgentForm {
@@ -944,10 +974,10 @@ impl Workspace {
         // Clicking / Space-ing a file in the explorer pops the Quick Look overlay
         // for it (open() also flags the overlay to grab focus on its next render).
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
-            let path = ev.0.clone();
             ws.ql_rail_pane = None; // navigator returns to explorer scope
-            ws.quick_look.update(cx, |v, cx| {
-                v.open(path, cx);
+            ws.quick_look.update(cx, |v, cx| match ev.0.clone() {
+                ExplorerFile::Local(path) => v.open(path, cx),
+                ExplorerFile::Remote { cfg, id, size } => v.open_remote(cfg, id, size, cx),
             });
             ws.quick_look_open = true;
             cx.notify();
@@ -977,9 +1007,12 @@ impl Workspace {
                         let next = ws
                             .explorer
                             .update(cx, |e, cx| e.select_adjacent_file(*delta, cx));
-                        if let Some(path) = next {
-                            ws.quick_look.update(cx, |v, cx| {
-                                v.open(path, cx);
+                        if let Some(file) = next {
+                            ws.quick_look.update(cx, |v, cx| match file {
+                                ExplorerFile::Local(path) => v.open(path, cx),
+                                ExplorerFile::Remote { cfg, id, size } => {
+                                    v.open_remote(cfg, id, size, cx)
+                                }
                             });
                         }
                     }
@@ -2378,20 +2411,16 @@ impl Workspace {
         let Some(target) = self.tabs.get(self.active).map(|t| t.focused) else {
             return;
         };
-        // SSH pane: remote directory browsing needs an SFTP / remote-FS backend
-        // (not built yet). Don't pop a native picker that returns a *local* path
-        // and shove it into the remote shell — show a hint and bail (本轮禁用 + 提示).
-        let is_ssh = self
-            .pane_specs
-            .get(&target)
-            .is_some_and(|s| s.ssh.is_some() || s.file_namespace == FileNamespace::Ssh);
-        if is_ssh {
-            if let Some(view) = self.panes.get(&target) {
-                view.read(cx).send_bytes(
-                    "echo 'Tn: 远端目录浏览需要 SFTP / 远端文件后端(后续支持),本次已跳过'\r"
-                        .as_bytes(),
-                );
+        if !open_folder_should_use_native_picker(self.pane_specs.get(&target)) {
+            self.explorer_open = true;
+            self.explorer_pane = Some(target);
+            if let Some(root) = self.panes.get(&target).and_then(|view| {
+                explorer_root_for_pane(&view.read(cx), self.pane_specs.get(&target))
+            }) {
+                self.explorer
+                    .update(cx, |e, cx| e.set_browser_root(root, cx));
             }
+            cx.notify();
             return;
         }
         let recv = cx.prompt_for_paths(PathPromptOptions {
@@ -3311,7 +3340,7 @@ impl Workspace {
         let row_divs = rows.iter().enumerate().map(|(i, row)| {
             let is_sel = i == sel;
             let card = row_card(t, &self.launch_profiles, row, &reg); // identity = tiles/.dot
-                                                                // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
+                                                                      // Faint mono meta: a profile's command, or the WSL/SSH card's sub-label.
             let meta = match row {
                 LaunchRow::Profile(pi) => self.launch_profiles[*pi]
                     .command
@@ -4087,6 +4116,8 @@ impl Workspace {
             command: String::new(),
             accent_idx: 0,
             manages_cursor: true,
+            sidecar: String::new(),
+            networked: false,
         };
         self.agent_form_field = AgentField::Name;
         self.agent_form_marked = None;
@@ -4107,21 +4138,43 @@ impl Workspace {
             .clone()
             .or_else(|| p.command.clone())
             .unwrap_or_default();
-        let manifest = self.config.config.agents.iter().find(|a| a.id == id).cloned();
-        let accent = p.accent.or_else(|| manifest.as_ref().and_then(|m| m.accent));
+        let manifest = self
+            .config
+            .config
+            .agents
+            .iter()
+            .find(|a| a.id == id)
+            .cloned();
+        let accent = p
+            .accent
+            .or_else(|| manifest.as_ref().and_then(|m| m.accent));
         let accent_idx = accent
-            .and_then(|c| tn_config::ACCENT_SWATCHES.iter().position(|(_, sc)| *sc == c))
+            .and_then(|c| {
+                tn_config::ACCENT_SWATCHES
+                    .iter()
+                    .position(|(_, sc)| *sc == c)
+            })
             .unwrap_or(0);
-        let manages = manifest.as_ref().map(|m| m.manages_own_cursor).unwrap_or(true);
+        let manages = manifest
+            .as_ref()
+            .map(|m| m.manages_own_cursor)
+            .unwrap_or(true);
         let label = manifest
             .as_ref()
             .and_then(|m| m.label.clone())
             .unwrap_or_else(|| p.name.clone());
+        let sidecar = manifest
+            .as_ref()
+            .and_then(|m| m.sidecar.clone())
+            .unwrap_or_default();
+        let networked = manifest.as_ref().map(|m| m.allow_network).unwrap_or(false);
         self.agent_form = AgentForm {
             name: label,
             command: p.command.clone().unwrap_or_default(),
             accent_idx,
             manages_cursor: manages,
+            sidecar,
+            networked,
         };
         self.agent_form_field = AgentField::Name;
         self.agent_form_marked = None;
@@ -4200,6 +4253,25 @@ impl Workspace {
             .next()
             .unwrap_or(command.as_str())
             .to_string();
+        // Advanced: a telemetry sidecar unlocks the usage ring + realtime chips
+        // (otherwise the agent is generic = terminal + git rail, no telemetry —
+        // honest, not a stub). A networked sidecar goes behind the confirm card
+        // (`remote_daemon` runtime + `allow_network`); a local one spawns directly.
+        let sidecar = {
+            let s = self.agent_form.sidecar.trim();
+            (!s.is_empty()).then(|| s.to_string())
+        };
+        let networked = sidecar.is_some() && self.agent_form.networked;
+        let capabilities = if sidecar.is_some() {
+            vec!["usage".to_string()] // ungated chips (status/transcript/permission) show from data
+        } else {
+            Vec::new()
+        };
+        // `runtime_support` is where the **agent itself** runs — always PTY for an
+        // editor-made agent (it has a command). The sidecar's networkiness rides on
+        // `allow_network` alone; putting it in runtime_support would make the agent
+        // look non-PTY → the launcher would refuse it → fall back to a plain shell.
+        let runtime_support: Vec<String> = Vec::new();
         let manifest = tn_config::AgentManifest {
             id: id.clone(),
             label: Some(name.clone()),
@@ -4208,7 +4280,10 @@ impl Workspace {
             accent: Some(accent),
             glyph: Some("spark".into()),
             manages_own_cursor: manages,
-            capabilities: Vec::new(),
+            capabilities,
+            runtime_support,
+            allow_network: networked,
+            sidecar,
         };
         let profile = tn_config::Profile {
             name: name.clone(),
@@ -4280,10 +4355,9 @@ impl Workspace {
     /// agent shows immediately — no restart.
     fn reload_agents(&mut self, cx: &mut Context<Self>) {
         self.config = Arc::new(tn_config::load());
-        let mut registry = tn_agent::AgentRegistry::new();
-        for m in &self.config.config.agents {
-            registry.register_manifest(m);
-        }
+        // Same build path as startup: a claude/codex-commanded manifest gets the
+        // built-in usage parser (real ring, user's color), else a generic agent.
+        let registry = crate::agent_host::build_registry(&self.config);
         cx.set_global(crate::agent_host::AgentHost(registry));
         self.launch_profiles = discover_profiles(&self.config);
         let welcome =
@@ -4293,7 +4367,12 @@ impl Workspace {
         cx.notify();
     }
 
-    fn on_agent_form_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_agent_form_key(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let key = ev.keystroke.key.as_str();
         // Printable ASCII (no modifiers, no IME CJK slip-through). Chinese in the
         // name field arrives via the IME path (EntityInputHandler), not here.
@@ -4312,9 +4391,11 @@ impl Workspace {
         match key {
             "escape" => self.close_agent_form(window, cx),
             "tab" => {
+                // Cycle Name → Command → Sidecar → Name (Sidecar is the advanced field).
                 self.agent_form_field = match self.agent_form_field {
                     AgentField::Name => AgentField::Command,
-                    AgentField::Command => AgentField::Name,
+                    AgentField::Command => AgentField::Sidecar,
+                    AgentField::Sidecar => AgentField::Name,
                 };
                 self.agent_form_marked = None;
                 cx.notify();
@@ -4334,6 +4415,9 @@ impl Workspace {
                         AgentField::Command => {
                             self.agent_form.command.pop();
                         }
+                        AgentField::Sidecar => {
+                            self.agent_form.sidecar.pop();
+                        }
                     }
                     cx.notify();
                 }
@@ -4343,6 +4427,7 @@ impl Workspace {
                     match self.agent_form_field {
                         AgentField::Name => self.agent_form.name.push_str(&c),
                         AgentField::Command => self.agent_form.command.push_str(&c),
+                        AgentField::Sidecar => self.agent_form.sidecar.push_str(&c),
                     }
                     cx.notify();
                 }
@@ -4421,7 +4506,11 @@ impl Workspace {
                         )
                     })
                     .when(active, |d| {
-                        d.child(div().text_color(col(ui.muted)).child(SharedString::from("▏")))
+                        d.child(
+                            div()
+                                .text_color(col(ui.muted))
+                                .child(SharedString::from("▏")),
+                        )
                     })
                     .when(value.is_empty() && marked.is_empty(), |d| {
                         d.child(
@@ -4449,7 +4538,11 @@ impl Workspace {
         let name_marked = self.agent_form_marked.clone().unwrap_or_default();
         let command = self.agent_form.command.clone();
         let can_save = !name.trim().is_empty() && !command.trim().is_empty();
-        let title = if editing { "编辑 Agent" } else { "添加 Agent" };
+        let title = if editing {
+            "编辑 Agent"
+        } else {
+            "添加 Agent"
+        };
 
         let header = div()
             .flex()
@@ -4515,12 +4608,17 @@ impl Workspace {
                     .text_color(col(ui.muted))
                     .pl(px(2.))
                     .child(SharedString::from(
-                        "命令首词用于「在 shell 里敲它自动切 Agent 态」。无用量遥测(需内置/外部 adapter)。",
+                        "命令首词也用于「在 shell 里敲它自动切 Agent 态」。命令是 claude / codex 时自动显示用量。",
                     )),
             );
 
         // Color swatches (curated presets; the selected one is ringed).
-        let mut swatches = div().flex().flex_row().items_center().gap(px(9.)).flex_wrap();
+        let mut swatches = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(9.))
+            .flex_wrap();
         for (i, (_, c)) in tn_config::ACCENT_SWATCHES.iter().enumerate() {
             let sel = self.agent_form.accent_idx == i;
             let c = *c;
@@ -4533,7 +4631,11 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .border_2()
-                    .border_color(if sel { col(ui.foreground) } else { cola(c, 0.0) })
+                    .border_color(if sel {
+                        col(ui.foreground)
+                    } else {
+                        cola(c, 0.0)
+                    })
                     .child(div().w(px(15.)).h(px(15.)).rounded(px(999.)).bg(col(c)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -4602,15 +4704,94 @@ impl Workspace {
                             .text_color(col(ui.foreground))
                             .child(SharedString::from("由 Agent 自绘光标(Ink TUI)")),
                     )
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .text_color(col(ui.muted))
-                            .child(SharedString::from(
-                                "Claude/Gemini 等 TUI 自管光标;关掉则终端画块光标",
-                            )),
-                    ),
+                    .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(
+                        SharedString::from("Claude/Gemini 等 TUI 自管光标;关掉则终端画块光标"),
+                    )),
             );
+
+        // ── 高级(可选)· 遥测 sidecar — unlocks the usage ring + realtime chips
+        // without a built-in adapter. A networked sidecar gets the confirm gate.
+        let has_sidecar = !self.agent_form.sidecar.trim().is_empty();
+        let net_on = self.agent_form.networked;
+        let advanced = div()
+            .flex()
+            .flex_col()
+            .gap(px(7.))
+            .child(div().h(px(1.)).bg(rgba(DIVIDER)).mx(px(16.)).mt(px(4.)))
+            .child(
+                div().px(px(16.)).pt(px(3.)).child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(col(ui.muted))
+                        .child(SharedString::from("高级(可选)· 用量遥测 — 不懂就留空")),
+                ),
+            )
+            .child(div().px(px(16.)).child(self.agent_field_row(
+                "遥测程序",
+                self.agent_form.sidecar.clone(),
+                String::new(),
+                "留空即可(claude/codex 已自动显示用量)",
+                AgentField::Sidecar,
+                false,
+                cx,
+            )))
+            .child(
+                div()
+                    .px(px(16.))
+                    .text_size(px(10.5))
+                    .text_color(col(ui.muted))
+                    .child(SharedString::from(
+                        "开发者选项:一个会往屏幕输出 JSON 用量数据的伴随程序,Tn 据此显示用量环/状态。\
+                         你大概率不需要它 —— 命令是 claude / codex 时用量会自动出。",
+                    )),
+            )
+            .when(has_sidecar, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .px(px(16.))
+                        .py(px(4.))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| {
+                                cx.stop_propagation();
+                                this.agent_form.networked = !this.agent_form.networked;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .w(px(18.))
+                                .h(px(18.))
+                                .rounded(px(5.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .bg(if net_on { cola(accent, 0.9) } else { rgba(INSET) })
+                                .border_1()
+                                .border_color(if net_on { cola(accent, 0.9) } else { rgba(RIM) })
+                                .when(net_on, |d| d.child(icon("check", 13., ui.chrome_bg))),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(col(ui.foreground))
+                                        .child(SharedString::from("联网 sidecar(连接前需确认)")),
+                                )
+                                .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(
+                                    SharedString::from("默认拒绝;勾选后启动弹确认卡,允许才连"),
+                                )),
+                        ),
+                )
+            });
 
         // Live preview chip.
         let preview_name = if name.trim().is_empty() {
@@ -4689,9 +4870,17 @@ impl Workspace {
             .px(px(16.))
             .py(px(7.))
             .rounded(px(R_CARD))
-            .bg(if can_save { cola(accent, 0.9) } else { rgba(INSET) })
+            .bg(if can_save {
+                cola(accent, 0.9)
+            } else {
+                rgba(INSET)
+            })
             .border_1()
-            .border_color(if can_save { cola(accent, 0.9) } else { rgba(RIM) })
+            .border_color(if can_save {
+                cola(accent, 0.9)
+            } else {
+                rgba(RIM)
+            })
             .text_size(px(12.5))
             .font_weight(gpui::FontWeight(640.))
             .text_color(if can_save {
@@ -4707,7 +4896,11 @@ impl Workspace {
                     this.save_agent_form(w, cx);
                 }),
             )
-            .child(SharedString::from(if editing { "保存" } else { "添加" }));
+            .child(SharedString::from(if editing {
+                "保存"
+            } else {
+                "添加"
+            }));
         let mut buttons = div()
             .flex()
             .flex_row()
@@ -4766,6 +4959,7 @@ impl Workspace {
                 .child(fields)
                 .child(color_row)
                 .child(toggle)
+                .child(advanced)
                 .child(preview)
                 .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(buttons)
@@ -5047,7 +5241,7 @@ impl Render for Workspace {
         // the agent editor's command field), but keep it on for the SSH favorite
         // rename + the agent editor's name field so Chinese names work.
         let disable_ime = (self.ssh_prompt_open && self.ssh_rename.is_none())
-            || (self.agent_form_open && self.agent_form_field == AgentField::Command);
+            || (self.agent_form_open && self.agent_form_field != AgentField::Name);
         if disable_ime != self.ime_disabled {
             if let Some(hwnd) = crate::platform::hwnd_of(window) {
                 crate::platform::set_ime_enabled(hwnd, !disable_ime);
@@ -5133,11 +5327,9 @@ impl Render for Workspace {
                     self.explorer_states
                         .retain(|id, _| self.panes.contains_key(id));
                 }
-                if let Some(new_root) = self
-                    .panes
-                    .get(&focused)
-                    .and_then(|v| explorer_root_for_pane(&v.read(cx)))
-                {
+                if let Some(new_root) = self.panes.get(&focused).and_then(|v| {
+                    explorer_root_for_pane(&v.read(cx), self.pane_specs.get(&focused))
+                }) {
                     let snap = self.explorer_states.get(&focused).cloned();
                     self.explorer
                         .update(cx, |e, cx| e.switch_pane(new_root, snap, cx));
@@ -5146,7 +5338,7 @@ impl Render for Workspace {
             } else if let Some(new_root) = self
                 .panes
                 .get(&focused)
-                .and_then(|v| explorer_root_for_pane(&v.read(cx)))
+                .and_then(|v| explorer_root_for_pane(&v.read(cx), self.pane_specs.get(&focused)))
             {
                 if self.explorer.read(cx).root() != new_root {
                     self.explorer
@@ -5700,6 +5892,9 @@ mod tests {
             glyph: Some("spark".into()),
             manages_own_cursor: false,
             capabilities: Vec::new(),
+            runtime_support: Vec::new(),
+            allow_network: false,
+            sidecar: None,
         }];
 
         let profiles = discover_profiles(&loaded);
@@ -5789,6 +5984,73 @@ mod tests {
         assert_eq!(short_name("Gemini CLI"), "Gemini");
         assert_eq!(short_name("Qwen"), "Qwen");
         assert_eq!(short_name("aaaaaaaaaaaaaaaaaaaa").len(), 16); // capped
+    }
+
+    fn ssh_cfg() -> tn_pty::SshConfig {
+        tn_pty::SshConfig {
+            host: "example.com".into(),
+            port: 2222,
+            user: "alice".into(),
+            key_path: None,
+            password: None,
+        }
+    }
+
+    #[test]
+    fn explorer_root_from_parts_maps_ssh_cwd_to_remote_root() {
+        let cfg = ssh_cfg();
+        let root = explorer_root_from_parts(
+            FileNamespace::Ssh,
+            Some("/home/alice/project".into()),
+            None,
+            Some(cfg.clone()),
+        )
+        .expect("ssh cwd becomes browsable via remote fs");
+        assert_eq!(root.path_buf(), None);
+        assert_eq!(
+            root.remote_path().map(|p| p.as_str()),
+            Some("/home/alice/project")
+        );
+        assert_eq!(
+            root.path_for_namespace(&FileNamespace::Ssh),
+            Some("/home/alice/project".to_string())
+        );
+        assert_eq!(root.path_for_namespace(&FileNamespace::Host), None);
+
+        let host = std::path::PathBuf::from(r"D:\coder\Tn");
+        let root = explorer_root_from_parts(
+            FileNamespace::Host,
+            Some(r"D:\coder\Tn".into()),
+            Some(host.clone()),
+            Some(cfg.clone()),
+        )
+        .expect("host cwd still maps through host path");
+        assert_eq!(root.path_buf(), Some(host));
+
+        assert!(explorer_root_from_parts(
+            FileNamespace::Ssh,
+            Some(r"D:\not-remote".into()),
+            None,
+            Some(cfg),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn open_folder_uses_native_picker_only_for_host_and_wsl_panes() {
+        let host = LaunchSpec::pwsh();
+        assert!(open_folder_should_use_native_picker(Some(&host)));
+
+        let mut wsl = LaunchSpec::pwsh();
+        wsl.file_namespace = FileNamespace::Wsl {
+            distro: Some("Ubuntu".into()),
+        };
+        assert!(open_folder_should_use_native_picker(Some(&wsl)));
+
+        let mut ssh = LaunchSpec::pwsh();
+        ssh.file_namespace = FileNamespace::Ssh;
+        ssh.ssh = Some(ssh_cfg());
+        assert!(!open_folder_should_use_native_picker(Some(&ssh)));
     }
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {

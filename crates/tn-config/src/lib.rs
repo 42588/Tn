@@ -512,6 +512,9 @@ theme = "Tn Dark"
             glyph: Some("spark".into()),
             manages_own_cursor: true,
             capabilities: Vec::new(),
+            runtime_support: Vec::new(),
+            allow_network: false,
+            sidecar: None,
         };
         append_agent_to(&cfg, &m).unwrap();
 

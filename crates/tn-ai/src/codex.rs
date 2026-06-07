@@ -268,12 +268,6 @@ pub fn codex_sessions_with_mtime() -> Vec<(PathBuf, SystemTime)> {
         .collect()
 }
 
-/// Read + parse the newest Codex session for `cwd`.
-pub fn usage_for_cwd_codex(cwd: &str) -> Option<AiUsage> {
-    let text = std::fs::read_to_string(latest_codex_session_file(cwd)?).ok()?;
-    parse_codex_session(&text)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,6 +14,23 @@ pub(crate) struct AgentHost(pub(crate) AgentRegistry);
 
 impl gpui::Global for AgentHost {}
 
+/// Build the agent registry from a loaded config — the single place both startup
+/// (`lib::run`) and live reload (`Workspace::reload_agents`) construct it, so they
+/// can't drift. Each `[[agents]]` manifest becomes either a **built-in telemetry
+/// adapter** (when its command names Claude/Codex → real usage ring, keeping the
+/// user's color/label) or a generic no-telemetry agent. Empty config → empty
+/// registry = pure shell host.
+pub(crate) fn build_registry(config: &tn_config::Loaded) -> AgentRegistry {
+    let mut registry = AgentRegistry::new();
+    for manifest in &config.config.agents {
+        match tn_ai::builtin_adapter_for_manifest(manifest) {
+            Some(builtin) => registry.register(builtin),
+            None => registry.register_manifest(manifest),
+        }
+    }
+    registry
+}
+
 /// The active registry — a cheap (Arc-backed `Vec`) clone. Returns an **empty**
 /// registry when none is installed (e.g. a headless unit test that never called
 /// `set_global`), so agent-dependent UI degrades to "no agent" instead of
@@ -30,7 +47,9 @@ mod guard {
     use std::path::{Path, PathBuf};
 
     fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else { return };
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {

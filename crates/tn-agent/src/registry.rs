@@ -38,9 +38,9 @@ impl AgentRegistry {
         if self.get(&id).is_some() {
             return;
         }
-        self.register(Arc::new(GenericAdapter::new(AgentDescriptor::from_manifest(
-            manifest,
-        ))));
+        self.register(Arc::new(GenericAdapter::new(
+            AgentDescriptor::from_manifest(manifest),
+        )));
     }
 
     /// The descriptor for `id`, if registered.
