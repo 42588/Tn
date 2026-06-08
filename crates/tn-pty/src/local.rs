@@ -1,5 +1,7 @@
 //! Local pseudo-terminal backed by the OS (ConPTY on Windows) via `portable-pty`.
 
+#[cfg(windows)]
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 
 use anyhow::Context;
@@ -33,6 +35,13 @@ impl LocalPty {
         for (k, v) in &spec.env {
             cmd.env(k, v);
         }
+        #[cfg(windows)]
+        preserve_process_path(
+            &mut cmd,
+            std::env::var_os("PATH")
+                .or_else(|| std::env::var_os("Path"))
+                .as_deref(),
+        );
 
         // Tn 是独立终端,但开发期常从 VS Code/Cursor 的集成终端启动(`cargo run`),会继承
         // `TERM_PROGRAM=vscode` + 一串 `VSCODE_*`。CommandBuilder 默认继承本进程环境
@@ -131,5 +140,77 @@ impl PtyBackend for LocalPty {
             .try_wait()
             .context("try_wait failed")?
             .map(|status| status.exit_code() as i32))
+    }
+}
+
+#[cfg(windows)]
+fn merge_path_env(builder_path: Option<&OsStr>, process_path: Option<&OsStr>) -> Option<OsString> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for path in [builder_path, process_path].into_iter().flatten() {
+        for entry in path.to_string_lossy().split(';') {
+            if entry.is_empty() {
+                continue;
+            }
+            if seen.insert(entry.to_ascii_lowercase()) {
+                out.push(entry.to_string());
+            }
+        }
+    }
+
+    if out.is_empty() {
+        None
+    } else {
+        Some(OsString::from(out.join(";")))
+    }
+}
+
+#[cfg(windows)]
+fn preserve_process_path(cmd: &mut CommandBuilder, process_path: Option<&OsStr>) {
+    let Some(path) = merge_path_env(cmd.get_env("Path"), process_path) else {
+        return;
+    };
+    cmd.env("Path", path);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(windows)]
+    fn merge_path_env_appends_process_only_entries_case_insensitively() {
+        let builder = OsStr::new(r"C:\Windows;C:\Program Files\nodejs");
+        let process =
+            OsStr::new(r"C:\Users\Gua\AppData\Roaming\npm;C:\Users\Gua\.cargo\bin;c:\windows");
+
+        assert_eq!(
+            merge_path_env(Some(builder), Some(process)).as_deref(),
+            Some(OsStr::new(
+                r"C:\Windows;C:\Program Files\nodejs;C:\Users\Gua\AppData\Roaming\npm;C:\Users\Gua\.cargo\bin"
+            ))
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn preserve_process_path_updates_command_builder_path() {
+        let mut cmd = CommandBuilder::new("powershell.exe");
+        cmd.env("Path", r"C:\Windows;C:\Program Files\nodejs");
+
+        preserve_process_path(
+            &mut cmd,
+            Some(OsStr::new(
+                r"C:\Users\Gua\AppData\Roaming\npm;C:\Users\Gua\.cargo\bin;c:\windows",
+            )),
+        );
+
+        assert_eq!(
+            cmd.get_env("Path"),
+            Some(OsStr::new(
+                r"C:\Windows;C:\Program Files\nodejs;C:\Users\Gua\AppData\Roaming\npm;C:\Users\Gua\.cargo\bin"
+            ))
+        );
     }
 }
