@@ -2184,8 +2184,14 @@ impl QuickLook {
         let sel = self.sel_range();
         let editing = self.editing;
         let caret = self.cursor;
-        let ime = self.ime_marked.clone();
+        // While the find bar is open the IME preedit belongs to the query field, not
+        // the editor caret — suppress the body preedit so it isn't drawn twice.
         let find_open = self.find_open;
+        let ime = if find_open {
+            None
+        } else {
+            self.ime_marked.clone()
+        };
         let focus = self.focus_handle.clone();
         let entity = cx.entity();
         let bounds_cell = self.code_bounds.clone();
@@ -2207,6 +2213,19 @@ impl QuickLook {
         } else {
             view_lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
         };
+
+        // Find highlights: every occurrence of the live query (突出显示), tinted under
+        // the current match's selection. Empty while the find bar is closed/empty.
+        let matches: Vec<((usize, usize), (usize, usize))> =
+            if editing && find_open && !self.find_query.is_empty() {
+                if let Some(rc) = &edit_mirror {
+                    all_matches(&rc.borrow(), &self.find_query)
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
 
         // Row under a pointer y (from the stashed viewport bounds + vertical scroll),
         // clamped to the document. Column comes from `row_text` + a CJK-aware hit-test
@@ -2321,10 +2340,11 @@ impl QuickLook {
                         *bounds_cell.borrow_mut() = bounds;
                     },
                     move |bounds, _prepaint, window, cx| {
-                        // Register the IME/text input handler while editing (no find
-                        // bar), exactly like the old uniform_list canvas — so 中文
-                        // composition + WM_CHAR land in `replace_text_in_range`.
-                        if editing && !find_open {
+                        // Register the IME/text input handler whenever editing — the
+                        // handler routes committed/composed text to the buffer, or to
+                        // the find query when the find bar is open (中文 search), so
+                        // 中文 composition + WM_CHAR always land in `replace_text_in_range`.
+                        if editing {
                             window.handle_input(
                                 &focus,
                                 ElementInputHandler::new(bounds, entity.clone()),
@@ -2346,6 +2366,7 @@ impl QuickLook {
                             scroll_y,
                             hscroll,
                             sel,
+                            &matches,
                             editing,
                             caret,
                             ime.as_deref(),
@@ -2895,7 +2916,35 @@ impl QuickLook {
             self.sync_edit_mirror();
             self.scroll
                 .scroll_to_item(range.start.0, ScrollStrategy::Center);
+            // Self-paint path: center the match row and pin the de-bounced follow so
+            // the render-time `el_follow_caret` keeps it (won't edge-snap it away).
+            if self.el_render {
+                self.el_center_row(range.start.0);
+                self.last_follow_cursor = Some(self.cursor);
+            }
         }
+    }
+
+    /// Self-paint: scroll so logical `row` sits at the viewport's vertical center
+    /// (clamped to the content). Used by find-jump so a match never lands flush
+    /// against an edge. `el_scroll_y ≤ 0`.
+    fn el_center_row(&mut self, row: usize) {
+        let vh = f32::from(self.code_bounds.borrow().size.height);
+        if vh <= 0.0 {
+            return;
+        }
+        let target = -(row as f32 * ROW_H) + (vh * 0.5 - ROW_H * 0.5);
+        let total = if self.editing {
+            self.edit.line_count()
+        } else {
+            match &self.file_data {
+                QuickLookData::Text { lines, .. } => lines.len(),
+                _ => 0,
+            }
+        };
+        let content_h = total as f32 * ROW_H;
+        let vmin = (vh - content_h).min(0.0);
+        self.el_scroll_y = target.clamp(vmin, 0.0);
     }
 
     fn replace_current(&mut self) {
@@ -2921,40 +2970,52 @@ impl QuickLook {
         }
     }
 
-    /// Find-bar keystrokes (the bar captures input while open).
-    fn find_key(&mut self, key: &str, key_char: Option<&str>, shift: bool) {
+    /// Find-bar named/control keys (the bar owns these). Returns `true` when the key
+    /// was consumed. **Printable text is NOT handled here** — it returns `false` and
+    /// the caller defers it to the IME input handler (→ `find_query`/`replace_query`),
+    /// so 中文 composition works (typing it here + stop_propagation would make gpui
+    /// skip `translate_message` and the IME could never compose — see 踩过的坑).
+    fn find_key(&mut self, key: &str, shift: bool) -> bool {
         match key {
-            "escape" => self.find_open = false,
+            "escape" => {
+                self.find_open = false;
+                self.ime_marked = None;
+                true
+            }
             "enter" => {
                 if self.replacing && self.find_field_replace {
                     self.replace_current();
                 } else {
                     self.find_next(!shift); // Enter = next, Shift+Enter = prev
                 }
+                true
             }
             "tab" => {
                 if self.replacing {
                     self.find_field_replace = !self.find_field_replace;
                 }
+                true
             }
             "backspace" => {
-                let q = if self.find_field_replace {
-                    &mut self.replace_query
+                // No WM_CHAR is emitted for backspace, so handle it here (during IME
+                // composition the keyfix subclass routes it to the IME instead).
+                if self.find_field_replace {
+                    self.replace_query.pop();
                 } else {
-                    &mut self.find_query
-                };
-                q.pop();
-            }
-            _ => {
-                if let Some(ch) = key_char.filter(|s| !s.is_empty()) {
-                    let q = if self.find_field_replace {
-                        &mut self.replace_query
-                    } else {
-                        &mut self.find_query
-                    };
-                    q.push_str(ch);
+                    self.find_query.pop();
                 }
+                true
             }
+            _ => false,
+        }
+    }
+
+    /// Append IME-committed / WM_CHAR text into the active find-bar field.
+    fn find_input(&mut self, text: &str) {
+        if self.find_field_replace {
+            self.replace_query.push_str(text);
+        } else {
+            self.find_query.push_str(text);
         }
     }
 
@@ -3025,13 +3086,14 @@ impl QuickLook {
             if m.alt {
                 return;
             }
-            // The find bar captures plain input while it's open.
+            // The find bar captures named/control input while it's open; printable
+            // text falls through (handled==false) to the IME input handler so it
+            // composes into the query (中文) instead of being eaten here.
             if self.find_open {
-                self.find_key(key, ks.key_char.as_deref(), m.shift);
-                self.scroll
-                    .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
-                cx.stop_propagation();
-                cx.notify();
+                if self.find_key(key, m.shift) {
+                    cx.stop_propagation();
+                    cx.notify();
+                }
                 return;
             }
             let shift = m.shift;
@@ -3604,6 +3666,7 @@ fn paint_file_preview(
     scroll_y: f32,
     hscroll: f32,
     sel: Option<((usize, usize), (usize, usize))>,
+    matches: &[((usize, usize), (usize, usize))],
     editing: bool,
     caret: (usize, usize),
     ime: Option<&str>,
@@ -3627,6 +3690,9 @@ fn paint_file_preview(
     let ui = &config.theme.ui;
     let gutter_color: Hsla = col(ui.muted).into();
     let sel_bg: Hsla = cola(ui.accent, 0.22).into();
+    // Find highlight (every occurrence) — a distinct hue from the selection so the
+    // current match (selection, accent) stands out among the rest (accent_alt).
+    let match_bg: Hsla = cola(ui.accent_alt, 0.20).into();
     // Reverse-block caret (terminal-style) + IME preedit colors (editing only).
     let caret_bg: Hsla = col(ui.foreground).into();
     let caret_fg: Hsla = col(ui.chrome_bg).into();
@@ -3655,6 +3721,21 @@ fn paint_file_preview(
         for row in pre.rows.clone() {
             let Some(line) = lines.get(row) else { continue };
             let y = px(top + row_top(row, scroll_y, ROW_H));
+            // Find highlights (突出显示): every query occurrence on this row, painted
+            // under the text + selection (matches are single-line: start.0 == end.0).
+            for (ms, me) in matches.iter().filter(|(s, _)| s.0 == row) {
+                let xs = left + pre.content_x + prefix_cols(line, ms.1) as f32 * char_w;
+                let xe = left + pre.content_x + prefix_cols(line, me.1) as f32 * char_w;
+                if xe > xs {
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(xs), y),
+                            size: size(px(xe - xs), line_h),
+                        },
+                        match_bg,
+                    ));
+                }
+            }
             // Selection background (read-only preview drag-select). Per-row char span
             // [ss, ee) → display-col x range, painted under the text. Mirrors
             // `edit_row_cached`: full line for interior rows, accent @ 0.22.
@@ -3935,13 +4016,18 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // IME commit (中文) or a printable WM_CHAR → insert at the cursor like typed
-        // text (op handles multi-char + selection + undo). Empty `text` = composition
-        // cancel. (Backspace is encoded in `on_key`, never routed here.)
+        // IME commit (中文) or a printable WM_CHAR. While the find bar is open the
+        // text belongs to the query field (中文 search), else it inserts at the cursor
+        // like typed text. Empty `text` = composition cancel. (Backspace is encoded
+        // in `on_key`, never routed here.)
         if !text.is_empty() {
-            self.type_char(text);
-            self.scroll
-                .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+            if self.find_open {
+                self.find_input(text);
+            } else {
+                self.type_char(text);
+                self.scroll
+                    .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+            }
         }
         self.ime_marked = None;
         cx.notify();
@@ -4148,12 +4234,12 @@ impl Render for QuickLook {
         let row_bounds = self.code_bounds.clone(); // for the per-row click handler
         const GUTTER: f32 = CODE_GUTTER; // ln(38) + mr(14) + mk(14)
                                          // IME/text input handler captures (registered in the canvas paint below) —
-                                         // only while editing AND the find bar is closed (else composed/typed text
-                                         // would wrongly insert into the buffer instead of the find query; find typing
-                                         // stays on the `find_key`/key_char path).
+                                         // active whenever editing. The handler routes composed/typed text to the
+                                         // buffer, or to the find query when the find bar is open (中文 search),
+                                         // so 中文 composition works in both (see `replace_text_in_range`).
         let ime_focus = self.focus_handle.clone();
         let ime_entity = cx.entity();
-        let ime_active = editing && !self.find_open;
+        let ime_active = editing;
         let count = if editing {
             buf.borrow().len()
         } else if tab == Tab::Diff {
@@ -4775,6 +4861,18 @@ impl Render for QuickLook {
             };
             let edit_lines = self.edit.lines();
             let n = all_matches(&edit_lines.borrow(), &self.find_query).len();
+            // Echo the live IME preedit in whichever field is active (中文 search).
+            let preedit = self.ime_marked.as_deref().unwrap_or("");
+            let find_disp = if self.find_field_replace {
+                self.find_query.clone()
+            } else {
+                format!("{}{}", self.find_query, preedit)
+            };
+            let repl_disp = if self.find_field_replace {
+                format!("{}{}", self.replace_query, preedit)
+            } else {
+                self.replace_query.clone()
+            };
             div()
                 .flex()
                 .flex_row()
@@ -4787,9 +4885,9 @@ impl Render for QuickLook {
                 .bg(cola(ui.accent, 0.05))
                 .border_b_1()
                 .border_color(rgba(0xffffff0d))
-                .child(field("查找", &self.find_query, !self.find_field_replace))
+                .child(field("查找", &find_disp, !self.find_field_replace))
                 .when(self.replacing, |d| {
-                    d.child(field("替换", &self.replace_query, self.find_field_replace))
+                    d.child(field("替换", &repl_disp, self.find_field_replace))
                 })
                 .child(div().flex_1())
                 .child(
