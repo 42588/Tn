@@ -38,6 +38,10 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Fixed(2026-06-08:真机验出的 Quick Look 编辑两 bug)
+- **退出编辑回预览显示旧内容**(TnE-06 真机):预览从 `file_data` 渲染,而编辑只改 `Document`/编辑缓冲,escape 退出编辑时没把缓冲镜像回 `file_data` → 预览停在编辑前的旧文本(要重开文件才刷新)。新增 `QuickLook::sync_preview_from_edit`:escape 退出编辑时(仅 dirty 时)把编辑缓冲写回 `file_data` 并清按行的高亮缓存;**不写盘、不动 dirty**(保存冲突/dirty-close 守卫仍见未保存改动)。
+- **OS 关窗绕过 dirty-close 守卫**(TnE-03 真机):标题栏 ✕ / Alt+F4 走 `window_control_area(Close)` 由 OS 直接关窗,从不经 `request_quit` → 有未保存 Quick Look 编辑时静默丢失(只在用 ✕/Alt+F4 关窗时复现,故「偶尔」)。在 workspace reveal 块注册 `window.on_window_should_close`:`quick_look_open` 时返回 `quick_look.request_quit()`(干净放行 / 脏阻止并弹保存提示,选保存或放弃后经 `QuitConfirmed` → `cx.quit()`)。app 内 关浮层/切文件/切 Diff/菜单退出/Ctrl+Shift+Q 早已守卫。
+
 ### Added(2026-06-08:TnE-13 Diff 装饰 + hunk 跳转模型)
 - **`tn-ui::editor::diff` 装饰/导航模型**:新增 `DiffRowKind{HunkHeader|Addition|Deletion|Context|Meta}`(`gutter()`/`is_content()`)、`classify_diff_line`(`+++`/`---` 文件头先于 `+`/`-` 内容判定,meta 涵盖 git 头/mode/rename/二进制/no-newline)、hunk 跳转 `hunk_header_rows`/`next_hunk`/`prev_hunk`。纯 headless,8 个单测;`cargo test -p tn-ui --lib` 140 测全绿。只读 Diff renderer 接入(按 DiffRowKind 上色,复用 prepaint)+ 真机对照留待真机轮;不做 accept/reject。
 

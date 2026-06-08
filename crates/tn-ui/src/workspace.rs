@@ -5796,6 +5796,24 @@ impl Render for Workspace {
                     // Set the taskbar / title-bar icon to the Tn brand mark (same icon
                     // used for the tray). WM_SETICON doesn't re-enter the window proc.
                     crate::platform::set_window_icon(h);
+                    // Guard the OS window close (titlebar ✕ / Alt+F4) with the same
+                    // unsaved-edit prompt as the in-app close/quit paths. The titlebar
+                    // close button is OS-direct (NC hit via `window_control_area(Close)`),
+                    // so without this hook it bypasses the dirty-close guard and silently
+                    // drops unsaved Quick Look edits. Returning `false` blocks the close
+                    // and shows the save/discard prompt; picking save/discard then emits
+                    // `QuitConfirmed` → `cx.quit()`.
+                    let weak = cx.entity().downgrade();
+                    window.on_window_should_close(cx, move |_window, app| {
+                        weak.update(app, |ws, cx| {
+                            if ws.quick_look_open {
+                                ws.quick_look.update(cx, |v, cx| v.request_quit(cx))
+                            } else {
+                                true
+                            }
+                        })
+                        .unwrap_or(true)
+                    });
                     let exec = cx.background_executor().clone();
                     cx.spawn(async move |_this, _cx| {
                         exec.timer(std::time::Duration::from_millis(40)).await;

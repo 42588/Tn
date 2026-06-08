@@ -2083,6 +2083,28 @@ impl QuickLook {
         self.edit.mark_clean();
     }
 
+    /// After leaving edit mode back to the File preview, mirror the (possibly
+    /// unsaved) edit buffer into `file_data` so the preview shows what the user
+    /// just typed — the preview renders from `file_data`, which editing doesn't
+    /// touch, so without this it shows stale pre-edit content until the file is
+    /// reopened. Display-only: does **not** write to disk or clear the dirty flag
+    /// (so the save-conflict / dirty-close guards still see unsaved changes). The
+    /// per-row highlight cache is keyed by row index and now stale, so drop it.
+    fn sync_preview_from_edit(&mut self) {
+        if !self.dirty {
+            return; // clean buffer already equals file_data (fresh open or post-save)
+        }
+        if let QuickLookData::Text { truncated, .. } = &self.file_data {
+            let truncated = *truncated;
+            let lines = self.edit.lines().borrow().clone();
+            self.file_data = QuickLookData::Text {
+                lines: Arc::new(lines),
+                truncated,
+            };
+            self.file_highlight_cache.borrow_mut().clear();
+        }
+    }
+
     /// Write the edit buffer back to disk, then refresh the preview + diff.
     /// The `write` is sync (typically <1ms for reasonable files), but the
     /// diff recomputation is dispatched off-thread via `ensure_diff`.
@@ -2711,6 +2733,7 @@ impl QuickLook {
                 "escape" => {
                     self.sel_anchor = None;
                     self.editing = false; // exit edit → preview (stay focused)
+                    self.sync_preview_from_edit(); // reflect unsaved edits in the preview
                     self.hscroll_px = 0.0; // 预览不继承编辑态的横滚位置(否则停在很右=大片留白)
                     self.last_follow_cursor = None;
                 }
