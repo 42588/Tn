@@ -14,9 +14,12 @@
 // public geometry API is intentionally not all called from the crate yet.
 #![allow(dead_code)]
 
+pub mod diff;
 pub mod geometry;
 pub mod prepaint;
 
+#[allow(unused_imports)]
+pub use diff::{classify_diff_line, hunk_header_rows, next_hunk, prev_hunk, DiffRowKind};
 #[allow(unused_imports)]
 pub use geometry::{
     caret_abs_x, caret_col_at_x, caret_x, content_width, disp_width, follow_h_offset,
