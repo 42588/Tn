@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use gpui::{
-    canvas, div, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
-    uniform_list, AsyncApp, Bounds, ClipboardItem, Context, ElementInputHandler,
-    EntityInputHandler, FocusHandle, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Rgba, ScrollStrategy, SharedString, UTF16Selection,
-    UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
+    uniform_list, AsyncApp, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler,
+    EntityInputHandler, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollStrategy, ScrollWheelEvent,
+    SharedString, TextRun, UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 use tn_pty::remote_cmd::SshCommandService;
@@ -1062,6 +1062,11 @@ pub struct QuickLook {
     /// 编辑态横向 caret-follow 的去抖:只在光标**变化**时跟随一次,否则手动拖横滚条会被
     /// 每帧的 follow 立刻拉回(=「光标固定后拖不动」)。`None` ⇒ 下一帧无条件跟随一次。
     last_follow_cursor: Option<(usize, usize)>,
+    /// TnE-09: `TN_QL_ELEMENT=1` 门控的只读自绘 File 渲染(默认关 = 旧 `uniform_list`)。
+    /// 用 `editor::{geometry,prepaint}` 模型自绘行号 / 文本 / 横滚条;一键回旧路 = 不设 env。
+    el_render: bool,
+    /// 自绘 File 预览的纵向滚动偏移(px,≤0 向下滚)。仅自绘路径用。
+    el_scroll_y: f32,
 }
 
 impl QuickLook {
@@ -1127,6 +1132,8 @@ impl QuickLook {
             hscroll_drag: None,
             hscroll_content_w: 0.0,
             last_follow_cursor: None,
+            el_render: std::env::var("TN_QL_ELEMENT").is_ok(),
+            el_scroll_y: 0.0,
         }
     }
 
@@ -1264,6 +1271,7 @@ impl QuickLook {
         self.edit = QuickLookEditState::default();
         self.edit_drag = false;
         self.hscroll_px = 0.0; // 新文件从最左开始
+        self.el_scroll_y = 0.0; // 自绘路径:新文件从顶部开始
         self.last_follow_cursor = None;
         self.dirty = false;
         self.file_data = QuickLookData::None;
@@ -2103,6 +2111,57 @@ impl QuickLook {
             };
             self.file_highlight_cache.borrow_mut().clear();
         }
+    }
+
+    /// TnE-09: read-only self-painted File preview element (env-gated). A scrollable
+    /// container whose `canvas` paints via [`paint_file_preview`]; vertical scroll is
+    /// `el_scroll_y` driven by the wheel here (clamped to the content), horizontal is
+    /// the shared `hscroll_px`. Default off — `render` only calls this when
+    /// `TN_QL_ELEMENT` is set, so the `uniform_list` path stays the one-key fallback.
+    fn file_element(&self, lines: Arc<Vec<String>>, cx: &mut Context<Self>) -> impl IntoElement {
+        let config = self.config.clone();
+        let char_w = self.char_w;
+        let scroll_y = self.el_scroll_y;
+        let hscroll = self.hscroll_px;
+        let bounds_cell = self.code_bounds.clone();
+        let total = lines.len();
+        let lines_paint = lines.clone();
+
+        div()
+            .flex_1()
+            .min_h(px(0.))
+            .relative()
+            .overflow_hidden()
+            .bg(rgba(0x1e1e1e))
+            .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
+                let vh = f32::from(this.code_bounds.borrow().size.height);
+                let dy = f32::from(ev.delta.pixel_delta(px(ROW_H)).y);
+                let content_h = total as f32 * ROW_H;
+                let min = (vh - content_h).min(0.0); // ≤ 0; 0 when content fits
+                this.el_scroll_y = (this.el_scroll_y + dy).clamp(min, 0.0);
+                cx.notify();
+            }))
+            .child(
+                canvas(
+                    move |bounds, _window, _app| {
+                        // Stash the viewport bounds so the wheel handler can clamp.
+                        *bounds_cell.borrow_mut() = bounds;
+                    },
+                    move |bounds, _prepaint, window, cx| {
+                        paint_file_preview(
+                            bounds,
+                            &lines_paint,
+                            char_w,
+                            scroll_y,
+                            hscroll,
+                            &config,
+                            window,
+                            cx,
+                        );
+                    },
+                )
+                .size_full(),
+            )
     }
 
     /// Write the edit buffer back to disk, then refresh the preview + diff.
@@ -3268,6 +3327,119 @@ fn coalesce_spans(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     out
 }
 
+/// TnE-09: read-only **self-painted** File preview (env-gated `TN_QL_ELEMENT`).
+/// Draws line numbers + syntax-tinted text + a horizontal scrollbar via the shared
+/// `editor::{geometry,prepaint}` model. Each glyph is positioned on the 1/2-col
+/// grid (CJK = 2 cols) — ASCII runs shaped together, each CJK char placed at its
+/// 2-col step — so columns stay aligned exactly like the `uniform_list` fixed-cell
+/// path (no CJK drift, see 踩过的坑). `scroll_y` ≤ 0 (vertical), `hscroll` ≥ 0.
+fn paint_file_preview(
+    bounds: Bounds<Pixels>,
+    lines: &[String],
+    char_w: f32,
+    scroll_y: f32,
+    hscroll: f32,
+    config: &Loaded,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    use crate::editor::geometry::Metrics;
+    use crate::editor::prepaint::{gutter_label, prepaint_readonly, row_top};
+
+    let m = Metrics::new(char_w);
+    let vw = f32::from(bounds.size.width);
+    let vh = f32::from(bounds.size.height);
+    if vw <= 0.0 || vh <= 0.0 {
+        return;
+    }
+    let pre = prepaint_readonly(lines, vw, vh, scroll_y, hscroll, m);
+    let fs = px(CODE_FS);
+    let line_h = px(ROW_H);
+    let font = gpui::font(&config.font().family);
+    let ui = &config.theme.ui;
+    let gutter_color: Hsla = col(ui.muted).into();
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let gutter = m.gutter;
+
+    let mk_run = |text: &str, color: Hsla| TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+
+    // Text content, clipped to the area right of the gutter so horizontally-scrolled
+    // glyphs never bleed into the gutter / line numbers.
+    let text_area = Bounds {
+        origin: point(px(left + gutter), bounds.origin.y),
+        size: size(px((vw - gutter).max(0.0)), bounds.size.height),
+    };
+    window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
+        for row in pre.rows.clone() {
+            let Some(line) = lines.get(row) else { continue };
+            let y = px(top + row_top(row, scroll_y, ROW_H));
+            let mut cols = 0.0f32; // display columns consumed so far on this row
+            for (text, tint) in coalesce_spans(line) {
+                let color: Hsla = tint_color(config, tint).into();
+                let chars: Vec<char> = text.chars().collect();
+                let mut k = 0;
+                while k < chars.len() {
+                    if chars[k].is_ascii() {
+                        let mut j = k + 1;
+                        while j < chars.len() && chars[j].is_ascii() {
+                            j += 1;
+                        }
+                        let seg: String = chars[k..j].iter().collect();
+                        let x = px(left + pre.content_x + cols * char_w);
+                        let run = mk_run(&seg, color);
+                        let shaped = window
+                            .text_system()
+                            .shape_line(seg.into(), fs, &[run], None);
+                        let _ = shaped.paint(point(x, y), line_h, window, cx);
+                        cols += (j - k) as f32;
+                        k = j;
+                    } else {
+                        let s = chars[k].to_string();
+                        let x = px(left + pre.content_x + cols * char_w);
+                        let run = mk_run(&s, color);
+                        let shaped = window.text_system().shape_line(s.into(), fs, &[run], None);
+                        let _ = shaped.paint(point(x, y), line_h, window, cx);
+                        cols += 2.0;
+                        k += 1;
+                    }
+                }
+            }
+        }
+    });
+
+    // Line numbers, right-aligned in the gutter (content is masked out of the gutter
+    // region above, so they never overlap scrolled text).
+    for row in pre.rows.clone() {
+        let y = px(top + row_top(row, scroll_y, ROW_H));
+        let label = gutter_label(row);
+        let run = mk_run(&label, gutter_color);
+        let shaped = window
+            .text_system()
+            .shape_line(label.into(), fs, &[run], None);
+        let w = f32::from(shaped.width);
+        let x = px(left + gutter - 14.0 - w); // 14px right pad (matches CODE_GUTTER mk)
+        let _ = shaped.paint(point(x, y), line_h, window, cx);
+    }
+
+    // Horizontal scrollbar thumb (thin, near the bottom edge).
+    if let Some(thumb) = pre.thumb {
+        let thumb_color: Hsla = cola(ui.muted, 0.45).into();
+        let rect = Bounds {
+            origin: point(px(left + thumb.thumb_x), px(top + vh - 5.0)),
+            size: size(px(thumb.thumb_w), px(3.0)),
+        };
+        window.paint_quad(fill(rect, thumb_color));
+    }
+}
+
 fn file_row_cached(
     config: &Loaded,
     cached_spans: &[(smol_str::SmolStr, Tint)],
@@ -3745,6 +3917,13 @@ impl Render for QuickLook {
                     .text_color(col(ui.muted))
                     .child("无改动 · git working tree clean"),
             );
+        } else if self.el_render
+            && tab == Tab::File
+            && !editing
+            && matches!(self.file_data, QuickLookData::Text { .. })
+        {
+            // TnE-09: env-gated read-only self-painted File preview (default off).
+            body = body.child(self.file_element(lines.clone(), cx));
         } else {
             let _sel_anchor = sel.as_ref().map(|s| s.0);
             // Longest line's display width (cols), computed BEFORE the list closure
