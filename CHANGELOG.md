@@ -38,6 +38,9 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Added(2026-06-08:TnE-09 只读 prepaint 渲染模型)
+- **`tn-ui::editor::prepaint` 只读渲染模型**:新增 `editor/prepaint.rs`,产出只读 `EditorElement::prepaint` 所需的完整布局纯函数——`visible_row_indices`(按文档 clamp + 底部 +1 行)、`row_top`、`gutter_label`、`content_origin_x`、`prepaint_readonly`→`ReadOnlyPrepaint{content_w,max_off,h_offset(clamp),rows,thumb,content_x}`,忠实复刻 File renderer 的 content 宽至少撑满视口 / thumb `>8px` 可见门 / h_offset clamp,字段对齐 gpui `ShapedLine::paint` 以便 paint 层薄包装。5 个 headless 单测;`cargo test -p tn-ui --lib` 137 测全绿。GPUI `paint` + `TN_QL_ELEMENT` 门控接入 File tab + 真机对照留待真机轮(自绘渲染须真机肉眼验,headless 不盲写 paint)。
+
 ### Added(2026-06-08:TnE-08 编辑器只读几何/布局模型)
 - **`tn-ui::editor` 几何模块骨架**:新增 `crates/tn-ui/src/editor/`(`mod.rs` + `geometry.rs`),把 Quick Look `uniform_list` renderer 内联的几何复刻成**纯函数 + 数据结构**(`Metrics`、`disp_width`/`prefix_cols`、`caret_x`、`content_width`、`max_h_offset`、`hover_char_at_x`/`caret_col_at_x`、`visible_rows`/`row_out_of_view`、`follow_h_offset`、`h_scroll_thumb`/`h_offset_from_drag`、`caret_abs_x`),为后续 `EditorElement`(TnE-09+)的 layout/prepaint 提供 Quick Look / Editor Pane / Diff Review 共享的可测模型。无 GPUI 依赖、未接入任何 render 路径(脚手架 `#![allow(dead_code)]`),8 个 headless 单测覆盖 CJK 列宽/caret x/content 宽/取整命中/可见窗/caret-follow/thumb↔drag 反函数;Quick Look 默认渲染与旧 `uniform_list` 不变。
 
