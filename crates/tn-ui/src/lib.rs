@@ -8,6 +8,7 @@
 mod agent_host;
 mod assets;
 mod block_view;
+mod editor;
 mod explorer;
 mod gitutil;
 mod input;

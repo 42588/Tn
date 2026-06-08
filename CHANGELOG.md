@@ -38,6 +38,9 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Added(2026-06-08:TnE-08 编辑器只读几何/布局模型)
+- **`tn-ui::editor` 几何模块骨架**:新增 `crates/tn-ui/src/editor/`(`mod.rs` + `geometry.rs`),把 Quick Look `uniform_list` renderer 内联的几何复刻成**纯函数 + 数据结构**(`Metrics`、`disp_width`/`prefix_cols`、`caret_x`、`content_width`、`max_h_offset`、`hover_char_at_x`/`caret_col_at_x`、`visible_rows`/`row_out_of_view`、`follow_h_offset`、`h_scroll_thumb`/`h_offset_from_drag`、`caret_abs_x`),为后续 `EditorElement`(TnE-09+)的 layout/prepaint 提供 Quick Look / Editor Pane / Diff Review 共享的可测模型。无 GPUI 依赖、未接入任何 render 路径(脚手架 `#![allow(dead_code)]`),8 个 headless 单测覆盖 CJK 列宽/caret x/content 宽/取整命中/可见窗/caret-follow/thumb↔drag 反函数;Quick Look 默认渲染与旧 `uniform_list` 不变。
+
 ### Performance(2026-06-08:TnE-07 编辑核心增量化守卫)
 - **去除每键整 buffer 深拷,锁死「每键 O(1)」不变量**:复核确认增量机制随 TnE-05/06 已落地——`tn-editor::Document` 的 undo/redo 用 `EditTransaction` + 行区间 `EditSnapshot`(`capture_line_span` 只拷受影响行,不存整 buffer),连续打字按 `start_row` `coalesce` 成一条仍行有界的记录、移动光标即断开;Quick Look 薄壳 `sync_lines` 仅按 `last_transaction` 的行区间 `splice` 镜像,不再每键 `to_vec()` 整 buffer(仅开文件那一次兜底)。本轮补回归守卫把不变量钉死:`tn-editor` 新增 `continuous_typing_keeps_undo_records_line_bounded`(4000 行连打 500 字 + 换行,undo 栈合并为 1 条且 before/after 行数 < 8,移动光标后第二条记录仍有界),与既有 `undo_history_does_not_store_full_buffer_for_single_line_edit`、`tn-ui::edit_state_updates_line_mirror_without_replacing_whole_buffer`(`Rc::ptr_eq` 证镜像未被整 Vec 重建)合围。真机 4000 行连打手感待肉眼验证。
 
