@@ -555,6 +555,45 @@ struct DiffLine {
     hunk_index: Option<usize>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct DiffRenderRow {
+    kind: crate::editor::DiffRowKind,
+    new_no: Option<u32>,
+    text: String,
+    hunk_index: Option<usize>,
+}
+
+impl DiffRenderRow {
+    fn gutter(&self) -> char {
+        self.kind.gutter()
+    }
+}
+
+fn diff_render_rows(diff: &[DiffLine]) -> Vec<DiffRenderRow> {
+    diff.iter()
+        .map(|line| DiffRenderRow {
+            kind: match line.kind {
+                DiffKind::Ctx => crate::editor::DiffRowKind::Context,
+                DiffKind::Add => crate::editor::DiffRowKind::Addition,
+                DiffKind::Del => crate::editor::DiffRowKind::Deletion,
+                DiffKind::Hunk => crate::editor::DiffRowKind::HunkHeader,
+            },
+            new_no: line.new_no,
+            text: line.text.clone(),
+            hunk_index: line.hunk_index,
+        })
+        .collect()
+}
+
+fn should_self_paint_diff(
+    el_render: bool,
+    editing: bool,
+    tab: Tab,
+    file_data: &QuickLookData,
+) -> bool {
+    el_render && !editing && tab == Tab::Diff && matches!(file_data, QuickLookData::Text { .. })
+}
+
 /// Emitted to the workspace for the few cross-entity needs (keyboard focus lives
 /// on the overlay while it's open; these are the things it can't do alone).
 pub enum QuickLookEvent {
@@ -2438,6 +2477,235 @@ impl QuickLook {
             )
     }
 
+    /// Self-painted read-only Diff tab. This keeps Diff on the same canvas/prepaint
+    /// path as File preview while leaving hunk accept/reject as normal GPUI controls
+    /// layered over visible hunk rows for remote diffs.
+    fn diff_element(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let config = self.config.clone();
+        let char_w = self.char_w;
+        let scroll_y = self.el_scroll_y;
+        let hscroll = self.hscroll_px;
+        let rows = Rc::new(diff_render_rows(&self.diff));
+        let total = rows.len();
+        let max_disp = rows.iter().map(|r| disp_width(&r.text)).max().unwrap_or(0);
+        let bounds_cell = self.code_bounds.clone();
+        let entity = cx.entity().downgrade();
+        let is_remote_diff = self.remote_diff_file.is_some();
+        let hunk_busy = self.hunk_busy;
+
+        let mut root = div()
+            .flex_1()
+            .min_h(px(0.))
+            .relative()
+            .overflow_hidden()
+            .bg(rgba(0x1e1e1e))
+            .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
+                let (vw, vh) = {
+                    let b = this.code_bounds.borrow();
+                    (f32::from(b.size.width), f32::from(b.size.height))
+                };
+                let d = ev.delta.pixel_delta(px(ROW_H));
+                let (dx, dy) = (f32::from(d.x), f32::from(d.y));
+                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                let hmax = (content_w - vw).max(0.0);
+                if ev.modifiers.shift && hmax > 0.0 {
+                    this.hscroll_px = (this.hscroll_px - dy).clamp(0.0, hmax);
+                } else if dx != 0.0 && hmax > 0.0 {
+                    this.hscroll_px = (this.hscroll_px - dx).clamp(0.0, hmax);
+                } else {
+                    let content_h = total as f32 * ROW_H;
+                    let vmin = (vh - content_h).min(0.0);
+                    this.el_scroll_y = (this.el_scroll_y + dy).clamp(vmin, 0.0);
+                }
+                cx.notify();
+            }))
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    if this.hscroll_drag.is_some() {
+                        this.hscroll_drag = None;
+                        cx.notify();
+                    }
+                    return;
+                }
+                let Some(grab) = this.hscroll_drag else {
+                    return;
+                };
+                let (left, vw) = {
+                    let b = this.code_bounds.borrow();
+                    (f32::from(b.origin.x), f32::from(b.size.width))
+                };
+                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                let max_off = (content_w - vw).max(0.0);
+                this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
+                    f32::from(ev.position.x),
+                    left,
+                    grab,
+                    content_w,
+                    vw,
+                    max_off,
+                );
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
+                    if this.hscroll_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
+            .child(
+                canvas(
+                    move |bounds, _window, _app| {
+                        *bounds_cell.borrow_mut() = bounds;
+                    },
+                    {
+                        let rows = rows.clone();
+                        move |bounds, _prepaint, window, cx| {
+                            paint_diff_preview(
+                                bounds,
+                                rows.as_slice(),
+                                char_w,
+                                scroll_y,
+                                hscroll,
+                                &config,
+                                window,
+                                cx,
+                            );
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(14.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            let (left, vw) = {
+                                let b = this.code_bounds.borrow();
+                                (f32::from(b.origin.x), f32::from(b.size.width))
+                            };
+                            let content_w =
+                                (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                            let max_off = (content_w - vw).max(0.0);
+                            if max_off <= 0.0 {
+                                return;
+                            }
+                            let thumb = crate::editor::geometry::h_scroll_thumb(
+                                content_w,
+                                vw,
+                                this.hscroll_px,
+                                max_off,
+                            );
+                            let rel = f32::from(ev.position.x) - left;
+                            let grab =
+                                if rel >= thumb.thumb_x && rel <= thumb.thumb_x + thumb.thumb_w {
+                                    rel - thumb.thumb_x
+                                } else {
+                                    thumb.thumb_w / 2.0
+                                };
+                            this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
+                                f32::from(ev.position.x),
+                                left,
+                                grab,
+                                content_w,
+                                vw,
+                                max_off,
+                            );
+                            this.hscroll_content_w = content_w;
+                            this.hscroll_drag = Some(grab);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+
+        if is_remote_diff {
+            let viewport_h = f32::from(self.code_bounds.borrow().size.height);
+            for (i, row) in rows.iter().enumerate() {
+                let Some(hunk_index) = row.hunk_index else {
+                    continue;
+                };
+                let y = scroll_y + i as f32 * ROW_H;
+                if viewport_h > 0.0 && (y < -ROW_H || y > viewport_h) {
+                    continue;
+                }
+                let th = &self.config.theme;
+                let hbtn = |label: &'static str, c: tn_config::Color| {
+                    div()
+                        .px(px(7.))
+                        .py(px(1.))
+                        .rounded(px(6.))
+                        .flex_none()
+                        .text_size(px(10.))
+                        .font_weight(gpui::FontWeight(640.))
+                        .text_color(if hunk_busy { col(th.ui.muted) } else { col(c) })
+                        .bg(if hunk_busy {
+                            rgba(INSET)
+                        } else {
+                            cola(c, 0.12)
+                        })
+                        .border_1()
+                        .border_color(cola(c, 0.30))
+                        .child(label)
+                };
+                let entity_a = entity.clone();
+                let entity_r = entity.clone();
+                root = root.child(
+                    div()
+                        .absolute()
+                        .top(px(y))
+                        .right(px(8.))
+                        .h(px(ROW_H))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(hbtn("接受", th.ansi.green).on_mouse_down(
+                            MouseButton::Left,
+                            move |_e: &MouseDownEvent, _w, app| {
+                                if hunk_busy {
+                                    return;
+                                }
+                                let _ = entity_a.update(app, |this, cx| {
+                                    this.apply_hunk(
+                                        hunk_index,
+                                        crate::remote_git::HunkAction::Apply,
+                                        cx,
+                                    );
+                                });
+                                app.stop_propagation();
+                            },
+                        ))
+                        .child(hbtn("拒绝", th.ansi.red).on_mouse_down(
+                            MouseButton::Left,
+                            move |_e: &MouseDownEvent, _w, app| {
+                                if hunk_busy {
+                                    return;
+                                }
+                                let _ = entity_r.update(app, |this, cx| {
+                                    this.apply_hunk(
+                                        hunk_index,
+                                        crate::remote_git::HunkAction::Reject,
+                                        cx,
+                                    );
+                                });
+                                app.stop_propagation();
+                            },
+                        )),
+                );
+            }
+        }
+
+        root
+    }
+
     /// Write the edit buffer back to disk, then refresh the preview + diff.
     /// The `write` is sync (typically <1ms for reasonable files), but the
     /// diff recomputation is dispatched off-thread via `ensure_diff`.
@@ -3919,6 +4187,165 @@ fn paint_file_preview(
     }
 }
 
+fn paint_diff_preview(
+    bounds: Bounds<Pixels>,
+    rows: &[DiffRenderRow],
+    char_w: f32,
+    scroll_y: f32,
+    hscroll: f32,
+    config: &Loaded,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    use crate::editor::prepaint::{prepaint_readonly, row_top};
+
+    let vw = f32::from(bounds.size.width);
+    let vh = f32::from(bounds.size.height);
+    if vw <= 0.0 || vh <= 0.0 {
+        return;
+    }
+
+    let lines: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
+    let m = crate::editor::geometry::Metrics::new(char_w);
+    let pre = prepaint_readonly(&lines, vw, vh, scroll_y, hscroll, m);
+    let fs = px(CODE_FS);
+    let line_h = px(ROW_H);
+    let font = gpui::font(&config.font().family);
+    let th = &config.theme;
+    let gutter_color: Hsla = gpui::rgb(0x474E72).into();
+    let left = f32::from(bounds.origin.x);
+    let top = f32::from(bounds.origin.y);
+    let gutter = m.gutter;
+
+    let mk_run = |text: &str, color: Hsla| TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let row_style = |kind: crate::editor::DiffRowKind| -> (Option<Hsla>, Hsla, Hsla) {
+        match kind {
+            crate::editor::DiffRowKind::Addition => (
+                Some(cola(th.ansi.green, 0.09).into()),
+                col(th.ansi.green).into(),
+                col(th.ui.foreground).into(),
+            ),
+            crate::editor::DiffRowKind::Deletion => (
+                Some(cola(th.ansi.red, 0.09).into()),
+                col(th.ansi.red).into(),
+                col(th.ui.foreground).into(),
+            ),
+            crate::editor::DiffRowKind::HunkHeader => (
+                None,
+                col(th.ui.accent_alt).into(),
+                col(th.ui.accent_alt).into(),
+            ),
+            crate::editor::DiffRowKind::Context => {
+                (None, col(th.ui.muted).into(), col(th.ui.foreground).into())
+            }
+            crate::editor::DiffRowKind::Meta => {
+                (None, col(th.ui.muted).into(), col(th.ui.muted).into())
+            }
+        }
+    };
+
+    let text_area = Bounds {
+        origin: point(px(left + gutter), bounds.origin.y),
+        size: size(px((vw - gutter).max(0.0)), bounds.size.height),
+    };
+    window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
+        for row_ix in pre.rows.clone() {
+            let Some(row) = rows.get(row_ix) else {
+                continue;
+            };
+            let y = px(top + row_top(row_ix, scroll_y, ROW_H));
+            let (bg, _marker_col, text_col) = row_style(row.kind);
+            if let Some(bg) = bg {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(bounds.origin.x, y),
+                        size: size(bounds.size.width, line_h),
+                    },
+                    bg,
+                ));
+            }
+
+            let mut cols = 0.0f32;
+            let chars: Vec<char> = row.text.chars().collect();
+            let mut k = 0;
+            while k < chars.len() {
+                if chars[k].is_ascii() {
+                    let mut j = k + 1;
+                    while j < chars.len() && chars[j].is_ascii() {
+                        j += 1;
+                    }
+                    let seg: String = chars[k..j].iter().collect();
+                    let x = px(left + pre.content_x + cols * char_w);
+                    let run = mk_run(&seg, text_col);
+                    let shaped = window
+                        .text_system()
+                        .shape_line(seg.into(), fs, &[run], None);
+                    let _ = shaped.paint(point(x, y), line_h, window, cx);
+                    cols += (j - k) as f32;
+                    k = j;
+                } else {
+                    let seg = chars[k].to_string();
+                    let x = px(left + pre.content_x + cols * char_w);
+                    let run = mk_run(&seg, text_col);
+                    let shaped = window
+                        .text_system()
+                        .shape_line(seg.into(), fs, &[run], None);
+                    let _ = shaped.paint(point(x, y), line_h, window, cx);
+                    cols += 2.0;
+                    k += 1;
+                }
+            }
+        }
+    });
+
+    for row_ix in pre.rows.clone() {
+        let Some(row) = rows.get(row_ix) else {
+            continue;
+        };
+        let y = px(top + row_top(row_ix, scroll_y, ROW_H));
+        let (_bg, marker_col, _text_col) = row_style(row.kind);
+
+        if let Some(no) = row.new_no {
+            let label = no.to_string();
+            let run = mk_run(&label, gutter_color);
+            let shaped = window
+                .text_system()
+                .shape_line(label.into(), fs, &[run], None);
+            let w = f32::from(shaped.width);
+            let x = px(left + gutter - 14.0 - w);
+            let _ = shaped.paint(point(x, y), line_h, window, cx);
+        }
+
+        let mark = row.gutter();
+        if mark != ' ' {
+            let label = mark.to_string();
+            let run = mk_run(&label, marker_col);
+            let shaped = window
+                .text_system()
+                .shape_line(label.into(), fs, &[run], None);
+            let w = f32::from(shaped.width);
+            let x = px(left + gutter - 14.0 + (14.0 - w) * 0.5);
+            let _ = shaped.paint(point(x, y), line_h, window, cx);
+        }
+    }
+
+    if let Some(thumb) = pre.thumb {
+        let thumb_color: Hsla = cola(th.ui.muted, 0.45).into();
+        let rect = Bounds {
+            origin: point(px(left + thumb.thumb_x), px(top + vh - 5.0)),
+            size: size(px(thumb.thumb_w), px(3.0)),
+        };
+        window.paint_quad(fill(rect, thumb_color));
+    }
+}
+
 fn file_row_cached(
     config: &Loaded,
     cached_spans: &[(smol_str::SmolStr, Tint)],
@@ -4419,14 +4846,18 @@ impl Render for QuickLook {
                     .text_color(col(ui.muted))
                     .child("无改动 · git working tree clean"),
             );
+        } else if should_self_paint_diff(self.el_render, editing, tab, &self.file_data) {
+            // TnE-13: Diff tab now uses the same self-painted canvas/prepaint path
+            // as File preview. `TN_QL_LEGACY=1` still falls through to the old list.
+            body = body.child(self.diff_element(cx));
         } else if self.el_render
             && tab == Tab::File
             && matches!(self.file_data, QuickLookData::Text { .. })
         {
             // TnE-09/10/11: self-painted File preview + editor (default on; set
             // TN_QL_LEGACY=1 to force the old `uniform_list` path). Read-only preview
-            // and the live editor both render here; the old File branch below is the
-            // emergency fallback (Diff still uses it). caret-follow ran at the top of
+            // and the live editor both render here; the old list branch below is the
+            // emergency fallback for File/Diff. caret-follow ran at the top of
             // render (before the immutable borrows here).
             body = body.child(self.file_element(cx));
         } else {
@@ -5589,6 +6020,53 @@ mod tests {
         assert_eq!(d[4].new_no, Some(12));
         // empty input → no lines
         assert!(parse_diff("").is_empty());
+    }
+
+    #[test]
+    fn diff_renderer_rows_use_editor_decoration_model() {
+        use crate::editor::DiffRowKind;
+
+        let raw = concat!(
+            "diff --git a/x.rs b/x.rs\n",
+            "--- a/x.rs\n",
+            "+++ b/x.rs\n",
+            "@@ -10,2 +10,3 @@ fn main() {\n",
+            " ctx line\n",
+            "-removed\n",
+            "+added\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            rows.iter().map(|r| r.kind).collect::<Vec<_>>(),
+            vec![
+                DiffRowKind::HunkHeader,
+                DiffRowKind::Context,
+                DiffRowKind::Deletion,
+                DiffRowKind::Addition,
+            ]
+        );
+        assert_eq!(rows[0].gutter(), '@');
+        assert_eq!(rows[0].hunk_index, Some(0));
+        assert_eq!(rows[1].new_no, Some(10));
+        assert_eq!(rows[2].new_no, None);
+        assert_eq!(rows[3].new_no, Some(11));
+        assert_eq!(rows[3].text, "added");
+    }
+
+    #[test]
+    fn diff_tab_self_paint_is_default_text_render_path() {
+        let text = QuickLookData::Text {
+            lines: Arc::new(buf(&["x"])),
+            truncated: false,
+        };
+        let binary = QuickLookData::Binary { size: 4 };
+
+        assert!(should_self_paint_diff(true, false, Tab::Diff, &text));
+        assert!(!should_self_paint_diff(false, false, Tab::Diff, &text));
+        assert!(!should_self_paint_diff(true, true, Tab::Diff, &text));
+        assert!(!should_self_paint_diff(true, false, Tab::File, &text));
+        assert!(!should_self_paint_diff(true, false, Tab::Diff, &binary));
     }
 
     #[test]
