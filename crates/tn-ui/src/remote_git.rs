@@ -309,8 +309,14 @@ diff --git a/src/main.rs b/src/main.rs
         assert!(patch.contains("@@ -8 +8 @@"));
         assert!(patch.contains("+b"));
         assert!(!patch.contains("-old"));
-        assert_eq!(hunk_command_args(HunkAction::Apply), ["apply", "--cached", "-"]);
-        assert_eq!(hunk_command_args(HunkAction::Reject), ["apply", "--reverse", "-"]);
+        assert_eq!(
+            hunk_command_args(HunkAction::Apply),
+            ["apply", "--cached", "-"]
+        );
+        assert_eq!(
+            hunk_command_args(HunkAction::Reject),
+            ["apply", "--reverse", "-"]
+        );
     }
 
     #[test]

@@ -15,8 +15,8 @@ pub use local::LocalPty;
 mod ssh;
 pub use ssh::{list_ssh_config_hosts, SshBackend, SshConfig, SshHostEntry};
 
-pub mod remote_fs;
 pub mod remote_cmd;
+pub mod remote_fs;
 
 pub mod wsl;
 

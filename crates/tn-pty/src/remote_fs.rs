@@ -934,11 +934,18 @@ mod tests {
 
     #[test]
     fn write_open_payload_uses_write_create_truncate_flags() {
-        let payload = build_open_payload(41, "/home/alice/app.rs", SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
+        let payload = build_open_payload(
+            41,
+            "/home/alice/app.rs",
+            SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC,
+        );
         let mut r = PacketReader::new(&payload);
         assert_eq!(r.u32().unwrap(), 41);
         assert_eq!(r.string().unwrap(), b"/home/alice/app.rs");
-        assert_eq!(r.u32().unwrap(), SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC);
+        assert_eq!(
+            r.u32().unwrap(),
+            SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC
+        );
     }
 
     #[test]

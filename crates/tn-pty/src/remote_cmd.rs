@@ -144,10 +144,7 @@ async fn run_remote_command_inner(
                 .await
                 .context("send remote command stdin")?;
         }
-        channel
-            .eof()
-            .await
-            .context("finish remote command stdin")?;
+        channel.eof().await.context("finish remote command stdin")?;
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();

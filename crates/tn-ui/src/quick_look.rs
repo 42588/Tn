@@ -36,9 +36,210 @@ use tn_pty::remote_fs::{
 use crate::style::{
     col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, R_PANEL, UI_SANS,
 };
+#[cfg(test)]
+use tn_editor::{
+    char_to_byte, op_backspace, op_delete, op_delete_range, op_insert, op_insert_multiline,
+    op_move, op_newline, op_page,
+};
+use tn_editor::{line_chars, Document, SearchState, TextRange};
 
 /// A (row, char-col) position in the edit buffer.
 type Pos = (usize, usize);
+
+#[derive(Clone, Debug)]
+struct QuickLookEditState {
+    document: Document,
+    lines: Rc<RefCell<Vec<String>>>,
+}
+
+impl Default for QuickLookEditState {
+    fn default() -> Self {
+        Self::from_lines(Vec::new())
+    }
+}
+
+impl QuickLookEditState {
+    fn from_lines(lines: Vec<String>) -> Self {
+        let document = Document::from_lines(lines);
+        let lines = Rc::new(RefCell::new(document.lines().to_vec()));
+        Self { document, lines }
+    }
+
+    #[cfg(test)]
+    fn document(&self) -> &Document {
+        &self.document
+    }
+
+    fn lines(&self) -> Rc<RefCell<Vec<String>>> {
+        self.lines.clone()
+    }
+
+    fn line_count(&self) -> usize {
+        self.lines.borrow().len()
+    }
+
+    fn cursor(&self) -> Pos {
+        self.document.cursor()
+    }
+
+    fn selection_anchor(&self) -> Option<Pos> {
+        self.document.selection_anchor()
+    }
+
+    fn sel_range(&self) -> Option<(Pos, Pos)> {
+        self.document
+            .selection_range()
+            .map(|range| (range.start, range.end))
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.document.is_dirty()
+    }
+
+    fn mark_clean(&mut self) {
+        self.document.mark_clean();
+    }
+
+    fn sync_lines(&mut self) {
+        let Some(transaction) = self.document.last_transaction() else {
+            *self.lines.borrow_mut() = self.document.lines().to_vec();
+            return;
+        };
+        let start = transaction
+            .before()
+            .start_row()
+            .min(self.lines.borrow().len());
+        let end = (start + transaction.before().lines().len()).min(self.lines.borrow().len());
+        let mut lines = self.lines.borrow_mut();
+        lines.splice(start..end, transaction.after().lines().iter().cloned());
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+    }
+
+    fn line_chars(&self, row: usize) -> usize {
+        line_chars(self.document.lines(), row)
+    }
+
+    fn row_text(&self, row: usize) -> Option<&str> {
+        self.document.lines().get(row).map(String::as_str)
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        self.document.selected_text()
+    }
+
+    fn place_cursor(&mut self, row: usize, col: usize, extend: bool) {
+        let target = (row, col);
+        if extend {
+            let anchor = self
+                .document
+                .selection_anchor()
+                .unwrap_or(self.document.cursor());
+            self.document.select_range(anchor, target);
+        } else {
+            self.document.set_cursor(target);
+        }
+    }
+
+    #[cfg(test)]
+    fn select_range(&mut self, start: Pos, end: Pos) {
+        self.document.select_range(start, end);
+    }
+
+    fn select_all(&mut self) {
+        self.document.select_all();
+    }
+
+    fn type_char(&mut self, text: &str) {
+        self.document.type_text(text);
+        self.sync_lines();
+    }
+
+    fn newline(&mut self) {
+        self.document.newline();
+        self.sync_lines();
+    }
+
+    fn indent(&mut self) {
+        self.document.insert_text("    ");
+        self.sync_lines();
+    }
+
+    fn backspace(&mut self) -> bool {
+        let changed = self.document.backspace();
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+
+    fn delete_forward(&mut self) -> bool {
+        let changed = self.document.delete_forward();
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+
+    fn move_cursor(&mut self, key: &str, extend: bool) {
+        self.document.move_cursor(key, extend);
+    }
+
+    fn page(&mut self, dir: i32, extend: bool) {
+        self.document.page(dir, extend);
+    }
+
+    fn delete_current_line(&mut self) -> bool {
+        let changed = self.document.delete_current_line();
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+
+    fn insert_text(&mut self, text: &str) {
+        self.document.insert_text(text);
+        self.sync_lines();
+    }
+
+    fn find_next(&mut self, query: &str, forward: bool) -> Option<TextRange> {
+        let mut search = SearchState::new(query);
+        self.document.find_next(&mut search, forward)
+    }
+
+    fn replace_current(&mut self, query: &str, replacement: &str) -> bool {
+        let changed = self.document.replace_current(query, replacement);
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+
+    fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
+        let count = self.document.replace_all(query, replacement);
+        if count > 0 {
+            self.sync_lines();
+        }
+        count
+    }
+
+    fn undo(&mut self) -> bool {
+        let changed = self.document.undo();
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+
+    fn redo(&mut self) -> bool {
+        let changed = self.document.redo();
+        if changed {
+            self.sync_lines();
+        }
+        changed
+    }
+}
 
 /// Cap the lines read/stored on open (bounds one-time work; the list itself is
 /// virtualized via `uniform_list`, so only visible rows ever lay out / highlight).
@@ -78,6 +279,57 @@ const CODE_FS: f32 = 12.5;
 enum Tab {
     File,
     Diff,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PendingLeave {
+    Close,
+    Nav(i32),
+    Tab(Tab),
+    LocalOpen(PathBuf),
+    RemoteOpen {
+        cfg: tn_pty::SshConfig,
+        id: RemoteId,
+        size: Option<u64>,
+    },
+    LocalOpenForEdit(PathBuf),
+    LocalOpenDiff(PathBuf),
+    RemoteOpenDiff(crate::remote_git::RemoteGitFile),
+    Quit,
+}
+
+impl PendingLeave {
+    fn prompt(self) -> &'static str {
+        match self {
+            Self::Close => "关闭速览前保存更改？",
+            Self::Nav(_) | Self::LocalOpen(_) | Self::RemoteOpen { .. } => "切换文件前保存更改？",
+            Self::Tab(_) | Self::LocalOpenDiff(_) | Self::RemoteOpenDiff(_) => {
+                "切换视图前保存更改？"
+            }
+            Self::LocalOpenForEdit(_) => "打开编辑器前保存更改？",
+            Self::Quit => "退出 Tn 前保存更改？",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LeaveDecision {
+    Continue,
+    Confirm,
+}
+
+fn dirty_leave_decision(
+    dirty: bool,
+    pending: &mut Option<PendingLeave>,
+    action: PendingLeave,
+) -> LeaveDecision {
+    if dirty {
+        *pending = Some(action);
+        LeaveDecision::Confirm
+    } else {
+        *pending = None;
+        LeaveDecision::Continue
+    }
 }
 
 /// QuickLook data-fetch state machine — render-pure: zero I/O inside `render()`.
@@ -310,6 +562,10 @@ pub enum QuickLookEvent {
     Nav(i32),
     /// `Esc`/`Space` in preview: close the overlay (give space back to the terminal).
     Close,
+    /// User confirmed a dirty close, so the workspace should hide the overlay.
+    CloseConfirmed,
+    /// User confirmed app quit while a dirty Quick Look document was open.
+    QuitConfirmed,
     /// `Ctrl+S` wrote this file to disk — the workspace refreshes any agent pane's
     /// activity rail (本次改动) **synchronously**, instead of waiting on the file
     /// watcher (which can miss the edit: file outside the watched cwd, debounce, etc.).
@@ -353,6 +609,15 @@ struct RemoteSource {
 }
 
 enum RemoteSaveResult {
+    Saved {
+        guard: FileGuard,
+        lines: Vec<String>,
+    },
+    Conflict(Conflict),
+    Error(String),
+}
+
+enum LocalSaveResult {
     Saved {
         guard: FileGuard,
         lines: Vec<String>,
@@ -439,9 +704,9 @@ impl Conflict {
     fn label(self) -> &'static str {
         match self {
             Self::Clean => "无冲突",
-            Self::ModifiedOnDisk => "远端文件已被其他进程修改",
-            Self::MissingOnDisk => "远端文件已不存在",
-            Self::Unknown => "无法确认远端文件状态",
+            Self::ModifiedOnDisk => "文件已被其他进程修改",
+            Self::MissingOnDisk => "文件已不存在",
+            Self::Unknown => "无法确认文件状态",
         }
     }
 }
@@ -474,8 +739,7 @@ fn remote_save_conflict(
 
 fn remote_file_guard(stat: &RemoteFileStat, bytes: &[u8]) -> FileGuard {
     FileGuard::from_parts(
-        std::time::SystemTime::UNIX_EPOCH
-            + std::time::Duration::from_secs(stat.mtime.unwrap_or(0)),
+        std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(stat.mtime.unwrap_or(0)),
         stat.size.unwrap_or(bytes.len() as u64),
         file_sample_hash(bytes),
     )
@@ -593,6 +857,52 @@ fn encode_text_lines(lines: &[String], format: TextFormat) -> Vec<u8> {
     }
 }
 
+fn local_file_guard(path: &std::path::Path) -> Option<FileGuard> {
+    let bytes = std::fs::read(path).ok()?;
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime = meta.modified().ok()?;
+    Some(FileGuard::from_parts(
+        mtime,
+        meta.len(),
+        file_sample_hash(&bytes),
+    ))
+}
+
+fn save_local_text(
+    path: &std::path::Path,
+    lines: &[String],
+    format: TextFormat,
+    opened_guard: Option<&FileGuard>,
+    guard_mode: SaveGuardMode,
+) -> LocalSaveResult {
+    let current_guard = local_file_guard(path);
+    let conflict = match guard_mode {
+        SaveGuardMode::Check => detect_conflict(opened_guard, current_guard.as_ref()),
+        SaveGuardMode::Force => Conflict::Clean,
+    };
+    if conflict != Conflict::Clean {
+        return LocalSaveResult::Conflict(conflict);
+    }
+
+    let bytes = encode_text_lines(lines, format);
+    match std::fs::write(path, &bytes) {
+        Ok(()) => {
+            let guard = local_file_guard(path).unwrap_or_else(|| {
+                FileGuard::from_parts(
+                    SystemTime::UNIX_EPOCH,
+                    bytes.len() as u64,
+                    file_sample_hash(&bytes),
+                )
+            });
+            LocalSaveResult::Saved {
+                guard,
+                lines: lines.to_vec(),
+            }
+        }
+        Err(e) => LocalSaveResult::Error(e.to_string()),
+    }
+}
+
 fn preview_payload_from_bytes(
     bytes: Vec<u8>,
     ext: &str,
@@ -671,23 +981,19 @@ pub struct QuickLook {
     diff_dirty: bool,
     /// Edit state (our own small modeless editor — see §16 / 架构蓝图 §8 ①).
     editing: bool,
-    /// Editable buffer (copied from `file_lines` on entering edit; `Rc` so the
-    /// `'static` render closure captures it cheaply, `make_mut` on each edit).
-    buf: Rc<Vec<String>>,
-    /// Cursor as (row, char-col); also the selection head.
+    /// Document-backed editable state. The old renderer still reads an `Rc<Vec<_>>`
+    /// snapshot from this shell until `EditorElement` lands.
+    edit: QuickLookEditState,
+    /// Preview cursor/selection head for read-only File tab drag-select. Edit mode
+    /// reads cursor/selection from `edit.document` instead.
     cursor: Pos,
-    /// Selection anchor (head = `cursor`); `None` = no selection.
+    /// Preview selection anchor (head = `cursor`); `None` = no selection.
     sel_anchor: Option<Pos>,
     /// True while a left-drag text selection is in progress in the editor (mouse down
     /// on a row starts it, per-row mouse move extends it). Cleared on mouse up / when
     /// the button is found released (drag can end outside the panel — same bounds
     /// caveat as the horizontal scrollbar).
     edit_drag: bool,
-    /// Undo / redo stacks of (buffer, cursor) snapshots (`Rc` → cheap to keep).
-    undo: Vec<(Rc<Vec<String>>, Pos)>,
-    redo: Vec<(Rc<Vec<String>>, Pos)>,
-    /// Coalesce a run of single-char inserts into one undo step.
-    coalesce_insert: bool,
     /// Unsaved edits since the last write (drives the "编辑中 ●" badge).
     dirty: bool,
     /// IME composition (preedit) text while editing, set by the platform input
@@ -733,6 +1039,7 @@ pub struct QuickLook {
     save_conflict: Option<Conflict>,
     save_error: Option<String>,
     save_in_flight: bool,
+    pending_leave: Option<PendingLeave>,
     /// Deferred-edit flag: if `open_for_edit` is called while the file is still
     /// loading, this is set so the async completion handler enters edit afterwards.
     edit_on_ready: bool,
@@ -779,13 +1086,10 @@ impl QuickLook {
             diff: Rc::new(Vec::new()),
             diff_dirty: true,
             editing: false,
-            buf: Rc::new(Vec::new()),
+            edit: QuickLookEditState::default(),
             cursor: (0, 0),
             sel_anchor: None,
             edit_drag: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
-            coalesce_insert: false,
             dirty: false,
             char_w,
             ime_marked: None,
@@ -812,6 +1116,7 @@ impl QuickLook {
             save_conflict: None,
             save_error: None,
             save_in_flight: false,
+            pending_leave: None,
             edit_on_ready: false,
             diff_loading: false,
             diff_generation: 0,
@@ -829,6 +1134,33 @@ impl QuickLook {
     /// when there is one — an empty overlay would float over nothing).
     pub fn has_file(&self) -> bool {
         self.path.is_some()
+    }
+
+    pub fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
+        match self.request_leave(PendingLeave::Close, cx) {
+            LeaveDecision::Continue => {
+                self.close(cx);
+                true
+            }
+            LeaveDecision::Confirm => false,
+        }
+    }
+
+    pub fn request_quit(&mut self, cx: &mut Context<Self>) -> bool {
+        matches!(
+            self.request_leave(PendingLeave::Quit, cx),
+            LeaveDecision::Continue
+        )
+    }
+
+    fn request_leave(&mut self, action: PendingLeave, cx: &mut Context<Self>) -> LeaveDecision {
+        let decision = dirty_leave_decision(self.dirty, &mut self.pending_leave, action);
+        if decision == LeaveDecision::Confirm {
+            self.save_conflict = None;
+            self.save_error = None;
+            cx.notify();
+        }
+        decision
     }
 
     /// Whether the currently loaded file can be opened in the text editor.
@@ -875,10 +1207,8 @@ impl QuickLook {
         // --- MEMORY CAPACITY RELEASE ---
         self.path = None;
         self.file_data = QuickLookData::None;
-        self.buf = Rc::new(Vec::new());
+        self.edit = QuickLookEditState::default();
         self.diff = Rc::new(Vec::new());
-        self.undo = Vec::new();
-        self.redo = Vec::new();
         self.ime_marked = None;
 
         // Replace HashMaps entirely to return their capacity to the OS!
@@ -896,6 +1226,7 @@ impl QuickLook {
         self.save_conflict = None;
         self.save_error = None;
         self.save_in_flight = false;
+        self.pending_leave = None;
         self.hunk_busy = false;
         self.hunk_error = None;
 
@@ -930,6 +1261,7 @@ impl QuickLook {
         self.editing = false;
         self.sel_anchor = None; // 清上个文件残留的(预览)选区
         self.cursor = (0, 0);
+        self.edit = QuickLookEditState::default();
         self.edit_drag = false;
         self.hscroll_px = 0.0; // 新文件从最左开始
         self.last_follow_cursor = None;
@@ -950,6 +1282,7 @@ impl QuickLook {
         self.save_conflict = None;
         self.save_error = None;
         self.save_in_flight = false;
+        self.pending_leave = None;
         self.hunk_busy = false;
         self.hunk_error = None;
 
@@ -971,6 +1304,9 @@ impl QuickLook {
     pub fn open(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         if self.path.as_ref() == Some(&path) && self.loading_state == LoadingState::Ready {
             return; // unchanged, don't re-trigger async loading
+        }
+        if self.request_leave(PendingLeave::LocalOpen(path.clone()), cx) == LeaveDecision::Confirm {
+            return;
         }
 
         self.reset_for_open(path.clone(), false, cx);
@@ -1188,7 +1524,11 @@ impl QuickLook {
             let res = exec
                 .spawn(async move {
                     if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        return QuickLookData::None;
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
                     }
                     let meta = std::fs::metadata(&path).ok();
                     let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -1215,14 +1555,22 @@ impl QuickLook {
                                 let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
                                 for line in (&mut line_iter).take(MAX_LINES) {
                                     if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                        return QuickLookData::None;
+                                        return PreviewPayload {
+                                            data: QuickLookData::None,
+                                            format: None,
+                                            guard: None,
+                                        };
                                     }
                                     lines.push(line.to_string());
                                 }
                                 let truncated = line_iter.next().is_some();
-                                return QuickLookData::Text {
-                                    lines: Arc::new(lines),
-                                    truncated,
+                                return PreviewPayload {
+                                    data: QuickLookData::Text {
+                                        lines: Arc::new(lines),
+                                        truncated,
+                                    },
+                                    format: None,
+                                    guard: None,
                                 };
                             }
                         } else {
@@ -1237,7 +1585,11 @@ impl QuickLook {
                                     let mut row_iter = range.rows();
                                     for row in (&mut row_iter).take(MAX_LINES) {
                                         if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                            return QuickLookData::None;
+                                            return PreviewPayload {
+                                                data: QuickLookData::None,
+                                                format: None,
+                                                guard: None,
+                                            };
                                         }
                                         cells.push(
                                             row.iter()
@@ -1253,50 +1605,47 @@ impl QuickLook {
                                     }
                                     truncated = row_iter.next().is_some();
                                 }
-                                return QuickLookData::Text {
-                                    lines: Arc::new(align_table(&cells)),
-                                    truncated,
+                                return PreviewPayload {
+                                    data: QuickLookData::Text {
+                                        lines: Arc::new(align_table(&cells)),
+                                        truncated,
+                                    },
+                                    format: None,
+                                    guard: None,
                                 };
                             }
                         }
                     }
 
                     if size > MAX_FILE_SIZE || is_binary {
-                        return QuickLookData::Binary { size };
+                        return PreviewPayload {
+                            data: QuickLookData::Binary { size },
+                            format: None,
+                            guard: None,
+                        };
                     }
 
                     if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                        return QuickLookData::None;
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
                     }
 
-                    let mut text = String::new();
                     if let Ok(bytes) = std::fs::read(&path) {
-                        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
-                            text = String::from_utf8_lossy(&bytes[3..]).into_owned();
-                        } else if bytes.starts_with(&[0xFF, 0xFE]) {
-                            let (cow, _, _) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
-                            text = cow.into_owned();
-                        } else if bytes.starts_with(&[0xFE, 0xFF]) {
-                            let (cow, _, _) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
-                            text = cow.into_owned();
-                        } else {
-                            if let Ok(utf8_str) = std::str::from_utf8(&bytes) {
-                                text = utf8_str.to_string();
-                            } else {
-                                let (cow, _, _) = encoding_rs::GBK.decode(&bytes);
-                                text = cow.into_owned();
-                            }
-                        }
+                        let mut payload =
+                            preview_payload_from_bytes(bytes.clone(), &ext, Some(size), None);
+                        payload.guard =
+                            meta.as_ref().and_then(|m| m.modified().ok()).map(|mtime| {
+                                FileGuard::from_parts(mtime, size, file_sample_hash(&bytes))
+                            });
+                        return payload;
                     }
-                    let mut line_iter = text.lines();
-                    let mut lines = Vec::with_capacity(MAX_LINES.min(1000));
-                    for line in (&mut line_iter).take(MAX_LINES) {
-                        lines.push(line.to_string());
-                    }
-                    let truncated = line_iter.next().is_some();
-                    QuickLookData::Text {
-                        lines: Arc::new(lines),
-                        truncated,
+                    PreviewPayload {
+                        data: QuickLookData::Binary { size },
+                        format: None,
+                        guard: None,
                     }
                 })
                 .await;
@@ -1310,7 +1659,9 @@ impl QuickLook {
                 if v.generation != gen {
                     return;
                 }
-                v.file_data = res;
+                v.file_data = res.data;
+                v.text_format = res.format;
+                v.opened_guard = res.guard;
                 v.loading_state = LoadingState::Ready;
 
                 // Deferred edit: `open_for_edit` was called while loading.
@@ -1345,6 +1696,17 @@ impl QuickLook {
         if self.path.as_ref() == Some(&display_path)
             && self.loading_state == LoadingState::Ready
             && self.is_remote_source
+        {
+            return;
+        }
+        if self.request_leave(
+            PendingLeave::RemoteOpen {
+                cfg: cfg.clone(),
+                id: id.clone(),
+                size,
+            },
+            cx,
+        ) == LeaveDecision::Confirm
         {
             return;
         }
@@ -1424,6 +1786,11 @@ impl QuickLook {
     /// If the file is still loading (skeleton shown), the edit is deferred — the
     /// async completion handler enters edit once the content arrives.
     pub fn open_for_edit(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.request_leave(PendingLeave::LocalOpenForEdit(path.clone()), cx)
+            == LeaveDecision::Confirm
+        {
+            return;
+        }
         self.open(path.clone(), cx);
         if self.loading_state == LoadingState::Ready {
             self.enter_edit();
@@ -1435,8 +1802,13 @@ impl QuickLook {
     /// Open `path` straight on the Diff tab — the agent activity-rail card click
     /// ("点卡片 = 速览全 diff") lands here.
     pub fn open_diff(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        if self.request_leave(PendingLeave::LocalOpenDiff(path.clone()), cx)
+            == LeaveDecision::Confirm
+        {
+            return;
+        }
         self.open(path, cx);
-        self.select_tab(Tab::Diff, cx);
+        self.select_tab_now(Tab::Diff, cx);
     }
 
     pub(crate) fn open_remote_diff(
@@ -1444,11 +1816,16 @@ impl QuickLook {
         file: crate::remote_git::RemoteGitFile,
         cx: &mut Context<Self>,
     ) {
+        if self.request_leave(PendingLeave::RemoteOpenDiff(file.clone()), cx)
+            == LeaveDecision::Confirm
+        {
+            return;
+        }
         let id = RemoteId::new(&file.cfg, file.remote_path().as_str());
         self.open_remote(file.cfg.clone(), id, None, cx);
         self.remote_diff_file = Some(file);
         self.diff_dirty = true;
-        self.select_tab(Tab::Diff, cx);
+        self.select_tab_now(Tab::Diff, cx);
     }
 
     /// Recompute `diff` **asynchronously** — dispatched to the background executor.
@@ -1573,9 +1950,8 @@ impl QuickLook {
             let result: Result<(), String> = exec
                 .spawn(async move {
                     let service = SshCommandService::shared();
-                    let text =
-                        crate::remote_git::diff_for_remote_file(service.as_ref(), &file)
-                            .map_err(|e| e.to_string())?;
+                    let text = crate::remote_git::diff_for_remote_file(service.as_ref(), &file)
+                        .map_err(|e| e.to_string())?;
                     let parsed = crate::remote_git::parse_file_diff(&file.path, &text);
                     crate::remote_git::apply_remote_hunk(
                         service.as_ref(),
@@ -1613,32 +1989,98 @@ impl QuickLook {
 
     /// Switch tabs; computing the diff lazily (async) when entering the Diff tab.
     fn select_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
+        if self.tab == tab {
+            return;
+        }
+        if self.request_leave(PendingLeave::Tab(tab), cx) == LeaveDecision::Confirm {
+            return;
+        }
+        self.select_tab_now(tab, cx);
+    }
+
+    fn select_tab_now(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
+        self.editing = false;
+        self.sel_anchor = None;
+        self.edit_drag = false;
         self.hscroll_px = 0.0; // File↔Diff 内容宽不同,切换从最左开始,不残留横滚
         if tab == Tab::Diff {
             self.ensure_diff(cx);
         }
     }
 
+    fn continue_pending_leave(&mut self, cx: &mut Context<Self>) {
+        let Some(action) = self.pending_leave.take() else {
+            return;
+        };
+        self.dirty = false;
+        self.save_conflict = None;
+        self.save_error = None;
+        match action {
+            PendingLeave::Close => {
+                self.close(cx);
+                cx.emit(QuickLookEvent::CloseConfirmed);
+            }
+            PendingLeave::Nav(delta) => cx.emit(QuickLookEvent::Nav(delta)),
+            PendingLeave::Tab(tab) => self.select_tab_now(tab, cx),
+            PendingLeave::LocalOpen(path) => self.open(path, cx),
+            PendingLeave::RemoteOpen { cfg, id, size } => self.open_remote(cfg, id, size, cx),
+            PendingLeave::LocalOpenForEdit(path) => self.open_for_edit(path, cx),
+            PendingLeave::LocalOpenDiff(path) => self.open_diff(path, cx),
+            PendingLeave::RemoteOpenDiff(file) => self.open_remote_diff(file, cx),
+            PendingLeave::Quit => cx.emit(QuickLookEvent::QuitConfirmed),
+        }
+        cx.notify();
+    }
+
+    fn save_pending_leave(&mut self, cx: &mut Context<Self>) {
+        if self.pending_leave.is_none() {
+            return;
+        }
+        self.save(cx);
+        if !self.save_in_flight
+            && !self.dirty
+            && self.save_conflict.is_none()
+            && self.save_error.is_none()
+        {
+            self.continue_pending_leave(cx);
+        }
+    }
+
+    fn discard_pending_leave(&mut self, cx: &mut Context<Self>) {
+        if self.pending_leave.is_none() {
+            return;
+        }
+        self.continue_pending_leave(cx);
+    }
+
+    fn cancel_pending_leave(&mut self, cx: &mut Context<Self>) {
+        self.pending_leave = None;
+        self.save_conflict = None;
+        self.save_error = None;
+        cx.notify();
+    }
+
     /// Enter edit mode: copy the file into the editable buffer, cursor at (0,0).
     fn enter_edit(&mut self) {
-        if let QuickLookData::Text { lines, .. } = &self.file_data {
-            self.buf = Rc::new(lines.as_ref().clone());
+        if self.dirty && self.edit.line_count() > 0 {
+            self.editing = true;
+            self.sync_edit_mirror();
+            return;
+        }
+        let lines = if let QuickLookData::Text { lines, .. } = &self.file_data {
+            lines.as_ref().clone()
         } else {
-            self.buf = Rc::new(Vec::new());
-        }
-        if self.buf.is_empty() {
-            Rc::make_mut(&mut self.buf).push(String::new());
-        }
+            Vec::new()
+        };
+        self.edit = QuickLookEditState::from_lines(lines);
         self.cursor = (0, 0);
         self.sel_anchor = None;
-        self.undo.clear();
-        self.redo.clear();
-        self.coalesce_insert = false;
         self.hscroll_px = 0.0; // 进编辑从最左开始
         self.last_follow_cursor = None;
         self.editing = true;
         self.dirty = false;
+        self.edit.mark_clean();
     }
 
     /// Write the edit buffer back to disk, then refresh the preview + diff.
@@ -1655,18 +2097,23 @@ impl QuickLook {
             self.save_remote(path, source, SaveGuardMode::Check, cx);
             return;
         }
-        let joined = self.buf.join("\n");
-        let content = if joined.is_empty() {
-            joined
-        } else {
-            format!("{joined}\n")
-        };
-        match std::fs::write(&path, content) {
-            Ok(()) => {
+        let format = self.text_format.unwrap_or_default();
+        let lines = self.edit.lines();
+        match save_local_text(
+            &path,
+            &lines.borrow(),
+            format,
+            self.opened_guard.as_ref(),
+            SaveGuardMode::Check,
+        ) {
+            LocalSaveResult::Saved { guard, lines } => {
                 let update = save_state_after_success(false, false);
                 self.dirty = update.dirty;
+                self.edit.mark_clean();
+                self.opened_guard = Some(guard);
+                self.text_format = Some(format);
                 self.file_data = QuickLookData::Text {
-                    lines: Arc::new(self.buf.as_ref().clone()),
+                    lines: Arc::new(lines),
                     truncated: false,
                 };
                 // The diff is now stale; recompute lazily (only if the Diff tab is
@@ -1679,8 +2126,70 @@ impl QuickLook {
                 // Tell the workspace so it refreshes any agent pane's「本次改动」rail
                 // now — don't rely on the file watcher (debounce / cwd coverage gaps).
                 cx.emit(QuickLookEvent::FileSaved(path.clone()));
+                if self.pending_leave.is_some() {
+                    self.continue_pending_leave(cx);
+                }
             }
-            Err(e) => tracing::error!(path = %path.display(), error = %e, "quick look save failed"),
+            LocalSaveResult::Conflict(conflict) => {
+                self.save_conflict = Some(conflict);
+            }
+            LocalSaveResult::Error(e) => {
+                tracing::error!(path = %path.display(), error = %e, "quick look save failed");
+                self.save_error = Some(e);
+            }
+        }
+        cx.notify();
+    }
+
+    fn force_local_save(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        if self.save_in_flight {
+            return;
+        }
+        if self.remote_source.is_some() {
+            self.force_remote_save(cx);
+            return;
+        }
+        let format = self.text_format.unwrap_or_default();
+        let lines = self.edit.lines();
+        match save_local_text(
+            &path,
+            &lines.borrow(),
+            format,
+            self.opened_guard.as_ref(),
+            SaveGuardMode::Force,
+        ) {
+            LocalSaveResult::Saved { guard, lines } => {
+                let update = save_state_after_success(false, false);
+                self.dirty = update.dirty;
+                self.edit.mark_clean();
+                self.opened_guard = Some(guard);
+                self.text_format = Some(format);
+                self.file_data = QuickLookData::Text {
+                    lines: Arc::new(lines),
+                    truncated: false,
+                };
+                self.diff_dirty = update.diff_dirty;
+                self.diff_loading = false;
+                self.save_conflict = None;
+                self.save_error = None;
+                if self.tab == Tab::Diff {
+                    self.ensure_diff(cx);
+                }
+                cx.emit(QuickLookEvent::FileSaved(path));
+                if self.pending_leave.is_some() {
+                    self.continue_pending_leave(cx);
+                }
+            }
+            LocalSaveResult::Conflict(conflict) => {
+                self.save_conflict = Some(conflict);
+            }
+            LocalSaveResult::Error(e) => {
+                tracing::error!(path = %path.display(), error = %e, "quick look force save failed");
+                self.save_error = Some(e);
+            }
         }
         cx.notify();
     }
@@ -1693,8 +2202,10 @@ impl QuickLook {
         cx: &mut Context<Self>,
     ) {
         let format = self.text_format.unwrap_or_default();
-        let bytes = encode_text_lines(self.buf.as_ref(), format);
-        let lines = self.buf.as_ref().clone();
+        let edit_lines = self.edit.lines();
+        let edit_lines = edit_lines.borrow();
+        let bytes = encode_text_lines(&edit_lines, format);
+        let lines = edit_lines.clone();
         let opened_guard = self.opened_guard.clone();
         let remote_fs = self.remote_fs.clone();
         let cfg = source.cfg.clone();
@@ -1710,7 +2221,9 @@ impl QuickLook {
                 .spawn(async move {
                     let current_stat = match remote_fs.stat_file(&cfg, &remote_path) {
                         Ok(stat) => stat,
-                        Err(e) => return RemoteSaveResult::Error(format!("Remote stat failed: {e}")),
+                        Err(e) => {
+                            return RemoteSaveResult::Error(format!("Remote stat failed: {e}"))
+                        }
                     };
                     let current_bytes =
                         match remote_fs.read_file(&cfg, &remote_path, REMOTE_READ_LIMIT) {
@@ -1748,9 +2261,9 @@ impl QuickLook {
                 v.save_in_flight = false;
                 match result {
                     RemoteSaveResult::Saved { guard, lines } => {
-                        let update =
-                            save_state_after_success(true, v.remote_diff_file.is_some());
+                        let update = save_state_after_success(true, v.remote_diff_file.is_some());
                         v.dirty = update.dirty;
+                        v.edit.mark_clean();
                         v.opened_guard = Some(guard);
                         v.file_data = QuickLookData::Text {
                             lines: Arc::new(lines),
@@ -1764,6 +2277,9 @@ impl QuickLook {
                             v.ensure_diff(cx);
                         }
                         cx.emit(QuickLookEvent::FileSaved(path.clone()));
+                        if v.pending_leave.is_some() {
+                            v.continue_pending_leave(cx);
+                        }
                     }
                     RemoteSaveResult::Conflict(conflict) => {
                         v.save_conflict = Some(conflict);
@@ -1791,24 +2307,52 @@ impl QuickLook {
         self.save_remote(path, source, SaveGuardMode::Force, cx);
     }
 
+    fn force_save_current_source(&mut self, cx: &mut Context<Self>) {
+        if self.remote_source.is_some() {
+            self.force_remote_save(cx);
+        } else {
+            self.force_local_save(cx);
+        }
+    }
+
     fn cancel_save_conflict(&mut self, cx: &mut Context<Self>) {
         self.save_conflict = None;
         self.save_error = None;
         cx.notify();
     }
 
-    fn reload_remote_source(&mut self, cx: &mut Context<Self>) {
-        let Some(source) = self.remote_source.clone() else {
+    fn reload_current_source(&mut self, cx: &mut Context<Self>) {
+        self.pending_leave = None;
+        self.dirty = false;
+        if let Some(source) = self.remote_source.clone() {
+            self.loading_state = LoadingState::Loading;
+            self.open_remote(source.cfg, source.id, None, cx);
             return;
-        };
-        self.loading_state = LoadingState::Loading;
-        self.open_remote(source.cfg, source.id, None, cx);
+        }
+        if let Some(path) = self.path.clone() {
+            // `open()` skips when the same file is already ready. Clear the current
+            // path so conflict resolution can intentionally discard the edit buffer
+            // and reload the disk version.
+            self.path = None;
+            self.open(path, cx);
+        }
     }
 
     // ── selection / undo helpers ──
 
+    fn sync_edit_mirror(&mut self) {
+        if self.editing {
+            self.cursor = self.edit.cursor();
+            self.sel_anchor = self.edit.selection_anchor();
+            self.dirty = self.edit.is_dirty();
+        }
+    }
+
     /// Active selection range (normalized `start ≤ end`), or `None` when collapsed.
     fn sel_range(&self) -> Option<(Pos, Pos)> {
+        if self.editing {
+            return self.edit.sel_range();
+        }
         let a = self.sel_anchor?;
         if a == self.cursor {
             None
@@ -1819,154 +2363,61 @@ impl QuickLook {
         }
     }
 
-    fn has_sel(&self) -> bool {
-        self.sel_range().is_some()
-    }
-
-    /// Push the current (buffer, cursor) onto the undo stack (clearing redo).
-    /// `coalesce` = part of a run of single-char inserts → only the first snapshots.
-    fn snapshot(&mut self, coalesce: bool) {
-        if coalesce && self.coalesce_insert {
-            return; // same insert run — already captured at its start
-        }
-        self.undo.push((self.buf.clone(), self.cursor));
-        if self.undo.len() > 100 {
-            self.undo.remove(0);
-        }
-        self.redo.clear();
-        self.coalesce_insert = coalesce;
-    }
-
     fn undo(&mut self) {
-        if let Some((buf, cur)) = self.undo.pop() {
-            self.redo.push((self.buf.clone(), self.cursor));
-            self.buf = buf;
-            self.cursor = cur;
-            self.sel_anchor = None;
-            self.coalesce_insert = false;
-            self.dirty = true;
+        if self.edit.undo() {
+            self.sync_edit_mirror();
         }
     }
 
     fn redo(&mut self) {
-        if let Some((buf, cur)) = self.redo.pop() {
-            self.undo.push((self.buf.clone(), self.cursor));
-            self.buf = buf;
-            self.cursor = cur;
-            self.sel_anchor = None;
-            self.coalesce_insert = false;
-            self.dirty = true;
-        }
-    }
-
-    /// Delete the active selection (no snapshot — the caller already took one).
-    fn delete_sel_inner(&mut self) {
-        if let Some((s, e)) = self.sel_range() {
-            op_delete_range(Rc::make_mut(&mut self.buf), s, e);
-            self.cursor = s;
-            self.sel_anchor = None;
-            self.dirty = true;
+        if self.edit.redo() {
+            self.sync_edit_mirror();
         }
     }
 
     // ── editor ops (selection-aware; buffer math in pure `op_*` fns, unit-tested) ──
 
     fn type_char(&mut self, ch: &str) {
-        if self.has_sel() {
-            self.snapshot(false);
-            self.delete_sel_inner();
-        } else {
-            self.snapshot(true); // coalesce a typing run
-        }
-        op_insert(Rc::make_mut(&mut self.buf), &mut self.cursor, ch);
-        self.sel_anchor = None;
-        self.dirty = true;
+        self.edit.type_char(ch);
+        self.sync_edit_mirror();
     }
 
     fn newline(&mut self) {
-        self.snapshot(false);
-        self.delete_sel_inner();
-        op_newline(Rc::make_mut(&mut self.buf), &mut self.cursor);
-        self.sel_anchor = None;
-        self.dirty = true;
+        self.edit.newline();
+        self.sync_edit_mirror();
     }
 
     fn indent(&mut self) {
-        self.snapshot(false);
-        self.delete_sel_inner();
-        op_insert(Rc::make_mut(&mut self.buf), &mut self.cursor, "    ");
-        self.sel_anchor = None;
-        self.dirty = true;
+        self.edit.indent();
+        self.sync_edit_mirror();
     }
 
     fn backspace(&mut self) {
-        if self.has_sel() {
-            self.snapshot(false);
-            self.delete_sel_inner();
-            return;
-        }
-        if self.cursor == (0, 0) {
-            return; // no-op, don't pollute undo
-        }
-        self.snapshot(false);
-        self.dirty |= op_backspace(Rc::make_mut(&mut self.buf), &mut self.cursor);
+        self.edit.backspace();
+        self.sync_edit_mirror();
     }
 
     fn delete_forward(&mut self) {
-        if self.has_sel() {
-            self.snapshot(false);
-            self.delete_sel_inner();
-            return;
-        }
-        let (r, c) = self.cursor;
-        if r + 1 >= self.buf.len() && c >= line_chars(&self.buf, r) {
-            return; // at end of buffer, no-op
-        }
-        self.snapshot(false);
-        self.dirty |= op_delete(Rc::make_mut(&mut self.buf), &mut self.cursor);
+        self.edit.delete_forward();
+        self.sync_edit_mirror();
     }
 
     /// Move the cursor; `extend` keeps/starts the selection (Shift held).
     fn move_cursor(&mut self, key: &str, extend: bool) {
-        self.coalesce_insert = false;
-        if !extend {
-            // Collapsing a selection lands at its near/far edge per direction.
-            if let Some((s, e)) = self.sel_range() {
-                self.sel_anchor = None;
-                match key {
-                    "left" | "up" | "home" => {
-                        self.cursor = s;
-                        return;
-                    }
-                    "right" | "down" | "end" => {
-                        self.cursor = e;
-                        return;
-                    }
-                    _ => {}
-                }
-            }
-            self.sel_anchor = None;
-        } else if self.sel_anchor.is_none() {
-            self.sel_anchor = Some(self.cursor);
-        }
-        op_move(&self.buf, &mut self.cursor, key);
+        self.edit.move_cursor(key, extend);
+        self.sync_edit_mirror();
     }
 
     fn page(&mut self, dir: i32, extend: bool) {
-        self.coalesce_insert = false;
-        if extend && self.sel_anchor.is_none() {
-            self.sel_anchor = Some(self.cursor);
-        } else if !extend {
-            self.sel_anchor = None;
-        }
-        op_page(&self.buf, &mut self.cursor, dir);
+        self.edit.page(dir, extend);
+        self.sync_edit_mirror();
     }
 
     fn select_all(&mut self) {
-        self.coalesce_insert = false;
         let (last, last_len) = if self.editing {
-            let last = self.buf.len().saturating_sub(1);
-            (last, line_chars(&self.buf, last))
+            self.edit.select_all();
+            self.sync_edit_mirror();
+            return;
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let last = lines.len().saturating_sub(1);
             (
@@ -1982,11 +2433,10 @@ impl QuickLook {
 
     /// Place the cursor at (row, col) on click; `extend` = Shift-click selects.
     fn place_cursor(&mut self, row: usize, col: usize, extend: bool) {
-        self.coalesce_insert = false;
         // 行/列 clamp 的来源:编辑态是 `buf`,预览态(只读拖选)是 file_data 的 lines。
         let (r, c) = if self.editing {
-            let r = row.min(self.buf.len().saturating_sub(1));
-            (r, col.min(line_chars(&self.buf, r)))
+            let r = row.min(self.edit.line_count().saturating_sub(1));
+            (r, col.min(self.edit.line_chars(r)))
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let r = row.min(lines.len().saturating_sub(1));
             (
@@ -1996,6 +2446,11 @@ impl QuickLook {
         } else {
             return; // 非文本预览(图片 / PDF)不可选
         };
+        if self.editing {
+            self.edit.place_cursor(r, c, extend);
+            self.sync_edit_mirror();
+            return;
+        }
         if extend {
             if self.sel_anchor.is_none() {
                 self.sel_anchor = Some(self.cursor);
@@ -2010,7 +2465,7 @@ impl QuickLook {
     /// read-only preview → the `Text` file lines. `None` for non-text previews.
     fn row_text(&self, row: usize) -> Option<&str> {
         if self.editing {
-            self.buf.get(row).map(|s| s.as_str())
+            self.edit.row_text(row)
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             lines.get(row).map(|s| s.as_str())
         } else {
@@ -2048,13 +2503,12 @@ impl QuickLook {
 
     fn copy(&mut self, cx: &mut Context<Self>) {
         if self.editing {
-            let text = match self.sel_range() {
-                Some((s, e)) => selected_text(&self.buf, s, e),
-                None => format!(
+            let text = self.edit.selected_text().unwrap_or_else(|| {
+                format!(
                     "{}\n",
-                    self.buf.get(self.cursor.0).cloned().unwrap_or_default()
-                ),
-            };
+                    self.edit.row_text(self.edit.cursor().0).unwrap_or_default()
+                )
+            });
             cx.write_to_clipboard(ClipboardItem::new_string(text));
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             // 预览态(只读):仅在有选区时复制选中文本(基于 lines,不碰 buf)。
@@ -2065,26 +2519,19 @@ impl QuickLook {
     }
 
     fn cut(&mut self, cx: &mut Context<Self>) {
-        if self.has_sel() {
-            let (s, e) = self.sel_range().unwrap();
-            cx.write_to_clipboard(ClipboardItem::new_string(selected_text(&self.buf, s, e)));
-            self.snapshot(false);
-            self.delete_sel_inner();
+        if let Some(text) = self.edit.selected_text() {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            self.edit.insert_text("");
         } else {
-            let line = self.buf.get(self.cursor.0).cloned().unwrap_or_default();
+            let line = self
+                .edit
+                .row_text(self.edit.cursor().0)
+                .unwrap_or_default()
+                .to_string();
             cx.write_to_clipboard(ClipboardItem::new_string(format!("{line}\n")));
-            self.snapshot(false);
-            let r = self.cursor.0;
-            let buf = Rc::make_mut(&mut self.buf);
-            if buf.len() > 1 {
-                buf.remove(r);
-                self.cursor = (r.min(buf.len() - 1), 0);
-            } else {
-                buf[0].clear();
-                self.cursor = (0, 0);
-            }
-            self.dirty = true;
+            self.edit.delete_current_line();
         }
+        self.sync_edit_mirror();
     }
 
     fn paste(&mut self, cx: &mut Context<Self>) {
@@ -2095,11 +2542,8 @@ impl QuickLook {
             return;
         }
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
-        self.snapshot(false);
-        self.delete_sel_inner();
-        op_insert_multiline(Rc::make_mut(&mut self.buf), &mut self.cursor, &text);
-        self.sel_anchor = None;
-        self.dirty = true;
+        self.edit.insert_text(&text);
+        self.sync_edit_mirror();
     }
 
     // ── find / replace ──
@@ -2111,49 +2555,29 @@ impl QuickLook {
         // Prefill the query from a single-line selection.
         if let Some((s, e)) = self.sel_range() {
             if s.0 == e.0 {
-                self.find_query = selected_text(&self.buf, s, e);
+                self.find_query = self.edit.selected_text().unwrap_or_default();
             }
         }
     }
 
     /// Move to the next(`forward`)/prev match of the query (wraps), selecting it.
     fn find_next(&mut self, forward: bool) {
-        let matches = all_matches(&self.buf, &self.find_query);
-        if matches.is_empty() {
-            return;
+        if let Some(range) = self.edit.find_next(&self.find_query, forward) {
+            self.sync_edit_mirror();
+            self.scroll
+                .scroll_to_item(range.start.0, ScrollStrategy::Center);
         }
-        let cur = self.cursor;
-        let idx = if forward {
-            matches.iter().position(|(s, _)| *s > cur).unwrap_or(0)
-        } else {
-            matches
-                .iter()
-                .rposition(|(s, _)| *s < cur)
-                .unwrap_or(matches.len() - 1)
-        };
-        let (s, e) = matches[idx];
-        self.sel_anchor = Some(s);
-        self.cursor = e;
-        self.scroll.scroll_to_item(s.0, ScrollStrategy::Center);
     }
 
     fn replace_current(&mut self) {
         if self.find_query.is_empty() {
             return;
         }
-        if let Some((s, e)) = self.sel_range() {
-            if selected_text(&self.buf, s, e) == self.find_query {
-                self.snapshot(false);
-                op_delete_range(Rc::make_mut(&mut self.buf), s, e);
-                self.cursor = s;
-                self.sel_anchor = None;
-                op_insert_multiline(
-                    Rc::make_mut(&mut self.buf),
-                    &mut self.cursor,
-                    &self.replace_query,
-                );
-                self.dirty = true;
-            }
+        if self
+            .edit
+            .replace_current(&self.find_query, &self.replace_query)
+        {
+            self.sync_edit_mirror();
         }
         self.find_next(true);
     }
@@ -2162,16 +2586,9 @@ impl QuickLook {
         if self.find_query.is_empty() {
             return;
         }
-        self.snapshot(false);
-        let n = replace_all_in(
-            Rc::make_mut(&mut self.buf),
-            &self.find_query,
-            &self.replace_query,
-        );
+        let n = self.edit.replace_all(&self.find_query, &self.replace_query);
         if n > 0 {
-            self.dirty = true;
-            self.cursor = (0, 0);
-            self.sel_anchor = None;
+            self.sync_edit_mirror();
         }
     }
 
@@ -2346,11 +2763,15 @@ impl QuickLook {
             }
             match key {
                 "up" => {
-                    cx.emit(QuickLookEvent::Nav(-1));
+                    if self.request_leave(PendingLeave::Nav(-1), cx) == LeaveDecision::Continue {
+                        cx.emit(QuickLookEvent::Nav(-1));
+                    }
                     cx.stop_propagation();
                 }
                 "down" => {
-                    cx.emit(QuickLookEvent::Nav(1));
+                    if self.request_leave(PendingLeave::Nav(1), cx) == LeaveDecision::Continue {
+                        cx.emit(QuickLookEvent::Nav(1));
+                    }
                     cx.stop_propagation();
                 }
                 "tab" => {
@@ -2584,171 +3005,6 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
         .child(div().flex().flex_row().children(spans))
 }
 
-/// Char index → byte offset within `line` (cursor cols are char-based).
-fn char_to_byte(line: &str, col: usize) -> usize {
-    line.char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len())
-}
-
-/// Char length of buffer line `i` (0 if out of range).
-fn line_chars(buf: &[String], i: usize) -> usize {
-    buf.get(i).map(|l| l.chars().count()).unwrap_or(0)
-}
-
-// ── pure editor ops over (buffer, cursor) — unit-tested headless (no gpui) ──
-
-/// Insert `s` at the cursor (no newlines), advancing the cursor past it.
-fn op_insert(buf: &mut Vec<String>, cur: &mut (usize, usize), s: &str) {
-    if buf.is_empty() {
-        buf.push(String::new());
-    }
-    let (r, c) = *cur;
-    let byte = char_to_byte(&buf[r], c);
-    buf[r].insert_str(byte, s);
-    cur.1 = c + s.chars().count();
-}
-
-/// Split the line at the cursor → new line; cursor to its start.
-fn op_newline(buf: &mut Vec<String>, cur: &mut (usize, usize)) {
-    if buf.is_empty() {
-        buf.push(String::new());
-    }
-    let (r, c) = *cur;
-    let byte = char_to_byte(&buf[r], c);
-    let tail = buf[r].split_off(byte);
-    buf.insert(r + 1, tail);
-    *cur = (r + 1, 0);
-}
-
-/// Delete the char before the cursor (or merge with the previous line). Returns
-/// whether the buffer changed.
-fn op_backspace(buf: &mut Vec<String>, cur: &mut (usize, usize)) -> bool {
-    let (r, c) = *cur;
-    if c > 0 {
-        let b0 = char_to_byte(&buf[r], c - 1);
-        let b1 = char_to_byte(&buf[r], c);
-        buf[r].replace_range(b0..b1, "");
-        cur.1 = c - 1;
-        true
-    } else if r > 0 {
-        let line = buf.remove(r);
-        let prev_len = buf[r - 1].chars().count();
-        buf[r - 1].push_str(&line);
-        *cur = (r - 1, prev_len);
-        true
-    } else {
-        false
-    }
-}
-
-/// Delete the char at the cursor (or join the next line). Returns whether changed.
-fn op_delete(buf: &mut Vec<String>, cur: &mut (usize, usize)) -> bool {
-    let (r, c) = *cur;
-    let len = buf.get(r).map(|l| l.chars().count()).unwrap_or(0);
-    if c < len {
-        let b0 = char_to_byte(&buf[r], c);
-        let b1 = char_to_byte(&buf[r], c + 1);
-        buf[r].replace_range(b0..b1, "");
-        true
-    } else if r + 1 < buf.len() {
-        let next = buf.remove(r + 1);
-        buf[r].push_str(&next);
-        true
-    } else {
-        false
-    }
-}
-
-/// Move the cursor for an arrow / home / end key (clamps to line/buffer bounds).
-fn op_move(buf: &[String], cur: &mut (usize, usize), key: &str) {
-    let (r, c) = *cur;
-    match key {
-        "left" => {
-            if c > 0 {
-                cur.1 = c - 1;
-            } else if r > 0 {
-                *cur = (r - 1, line_chars(buf, r - 1));
-            }
-        }
-        "right" => {
-            if c < line_chars(buf, r) {
-                cur.1 = c + 1;
-            } else if r + 1 < buf.len() {
-                *cur = (r + 1, 0);
-            }
-        }
-        "up" => {
-            if r > 0 {
-                *cur = (r - 1, c.min(line_chars(buf, r - 1)));
-            }
-        }
-        "down" => {
-            if r + 1 < buf.len() {
-                *cur = (r + 1, c.min(line_chars(buf, r + 1)));
-            }
-        }
-        "home" => cur.1 = 0,
-        "end" => cur.1 = line_chars(buf, r),
-        _ => {}
-    }
-}
-
-/// Move the cursor a page (≈12 rows) up(-1)/down(+1), clamping the column.
-fn op_page(buf: &[String], cur: &mut (usize, usize), dir: i32) {
-    const PAGE: usize = 12;
-    let (r, c) = *cur;
-    let nr = if dir < 0 {
-        r.saturating_sub(PAGE)
-    } else {
-        (r + PAGE).min(buf.len().saturating_sub(1))
-    };
-    *cur = (nr, c.min(line_chars(buf, nr)));
-}
-
-/// Delete the normalized range `[s, e)` from the buffer (`s ≤ e`).
-fn op_delete_range(buf: &mut Vec<String>, s: (usize, usize), e: (usize, usize)) {
-    if buf.is_empty() {
-        return;
-    }
-    if s.0 == e.0 {
-        let b0 = char_to_byte(&buf[s.0], s.1);
-        let b1 = char_to_byte(&buf[s.0], e.1);
-        buf[s.0].replace_range(b0..b1, "");
-    } else {
-        let head: String = buf[s.0].chars().take(s.1).collect();
-        let tail: String = buf[e.0].chars().skip(e.1).collect();
-        buf.drain(s.0 + 1..=e.0.min(buf.len() - 1));
-        buf[s.0] = head + &tail;
-    }
-}
-
-/// Insert `text` (may contain `\n`) at the cursor, leaving it after the insert.
-fn op_insert_multiline(buf: &mut Vec<String>, cur: &mut (usize, usize), text: &str) {
-    let parts: Vec<&str> = text.split('\n').collect();
-    if parts.len() == 1 {
-        op_insert(buf, cur, parts[0]);
-        return;
-    }
-    if buf.is_empty() {
-        buf.push(String::new());
-    }
-    let (r, c) = *cur;
-    let byte = char_to_byte(&buf[r], c);
-    let tail = buf[r].split_off(byte);
-    buf[r].push_str(parts[0]);
-    let mut at = r + 1;
-    for mid in &parts[1..parts.len() - 1] {
-        buf.insert(at, mid.to_string());
-        at += 1;
-    }
-    let last = parts[parts.len() - 1];
-    let last_col = last.chars().count();
-    buf.insert(at, format!("{last}{tail}"));
-    *cur = (at, last_col);
-}
-
 /// The selected text for the normalized range `[s, e)` (joins lines with `\n`).
 fn selected_text(buf: &[String], s: (usize, usize), e: (usize, usize)) -> String {
     if s.0 == e.0 {
@@ -2789,6 +3045,7 @@ fn all_matches(buf: &[String], query: &str) -> Vec<((usize, usize), (usize, usiz
 }
 
 /// Replace every occurrence of `query` with `repl` (per line). Returns the count.
+#[cfg(test)]
 fn replace_all_in(buf: &mut Vec<String>, query: &str, repl: &str) -> usize {
     if query.is_empty() {
         return 0;
@@ -3325,7 +3582,7 @@ impl Render for QuickLook {
             _ => (Arc::new(Vec::new()), false),
         };
         let line_count = lines.len();
-        let buf = self.buf.clone();
+        let buf = self.edit.lines();
         let config = self.config.clone();
         let _ui = &config.theme.ui;
         let diff = self.diff.clone();
@@ -3352,7 +3609,7 @@ impl Render for QuickLook {
         let ime_entity = cx.entity();
         let ime_active = editing && !self.find_open;
         let count = if editing {
-            buf.len()
+            buf.borrow().len()
         } else if tab == Tab::Diff {
             self.diff.len()
         } else {
@@ -3471,7 +3728,11 @@ impl Render for QuickLook {
             // moves `lines`/`diff`. Drives the horizontal-scroll content width below.
             // `disp_width` counts CJK as 2 cols so wide-char lines aren't under-sized.
             let max_cols = if editing {
-                buf.iter().map(|l| disp_width(l)).max().unwrap_or(0)
+                buf.borrow()
+                    .iter()
+                    .map(|l| disp_width(l))
+                    .max()
+                    .unwrap_or(0)
             } else if tab == Tab::Diff {
                 diff.iter().map(|d| disp_width(&d.text)).max().unwrap_or(0)
             } else {
@@ -3482,6 +3743,7 @@ impl Render for QuickLook {
             // GUTTER + disp_width(前缀)×char_w;驱动横向 caret-follow(打字到右缘自动滚)。
             let caret_content_x = if editing {
                 let pre = buf
+                    .borrow()
                     .get(cursor.0)
                     .map(|l| disp_width(&l.chars().take(cursor.1).collect::<String>()))
                     .unwrap_or(0);
@@ -3496,7 +3758,8 @@ impl Render for QuickLook {
                         if editing {
                             // 编辑态不缓存高亮:可见行仅 ~30,每帧直接算够快;按行号缓存
                             // 会在删除/撤销后显示陈旧内容(审查⑫)。直接从 buf[i] 算最稳。
-                            let line = &buf[i];
+                            let bref = buf.borrow();
+                            let line = &bref[i];
                             let chars: Vec<char> = line.chars().collect();
                             let tints = tints_per_char(line);
                             let row =
@@ -3639,13 +3902,12 @@ impl Render for QuickLook {
                             let base = diff_row(&config, &diff, i);
                             // Remote Diff tab: each `@@` hunk header gets accept /
                             // reject buttons (`git apply --cached` / `--reverse`).
-                            let hunk_idx = if is_remote_diff
-                                && matches!(diff[i].kind, DiffKind::Hunk)
-                            {
-                                diff[i].hunk_index
-                            } else {
-                                None
-                            };
+                            let hunk_idx =
+                                if is_remote_diff && matches!(diff[i].kind, DiffKind::Hunk) {
+                                    diff[i].hunk_index
+                                } else {
+                                    None
+                                };
                             if let Some(hunk_index) = hunk_idx {
                                 let th = &config.theme;
                                 let hbtn = |label: &'static str, c: tn_config::Color| {
@@ -3673,42 +3935,38 @@ impl Render for QuickLook {
                                 let entity_a = entity.clone();
                                 let entity_r = entity.clone();
                                 base.child(div().flex_1().min_w(px(0.)))
-                                    .child(
-                                        hbtn("接受", th.ansi.green).on_mouse_down(
-                                            MouseButton::Left,
-                                            move |_e: &MouseDownEvent, _w, app| {
-                                                if hunk_busy {
-                                                    return;
-                                                }
-                                                let _ = entity_a.update(app, |this, cx| {
-                                                    this.apply_hunk(
-                                                        hunk_index,
-                                                        crate::remote_git::HunkAction::Apply,
-                                                        cx,
-                                                    );
-                                                });
-                                                app.stop_propagation();
-                                            },
-                                        ),
-                                    )
-                                    .child(
-                                        hbtn("拒绝", th.ansi.red).on_mouse_down(
-                                            MouseButton::Left,
-                                            move |_e: &MouseDownEvent, _w, app| {
-                                                if hunk_busy {
-                                                    return;
-                                                }
-                                                let _ = entity_r.update(app, |this, cx| {
-                                                    this.apply_hunk(
-                                                        hunk_index,
-                                                        crate::remote_git::HunkAction::Reject,
-                                                        cx,
-                                                    );
-                                                });
-                                                app.stop_propagation();
-                                            },
-                                        ),
-                                    )
+                                    .child(hbtn("接受", th.ansi.green).on_mouse_down(
+                                        MouseButton::Left,
+                                        move |_e: &MouseDownEvent, _w, app| {
+                                            if hunk_busy {
+                                                return;
+                                            }
+                                            let _ = entity_a.update(app, |this, cx| {
+                                                this.apply_hunk(
+                                                    hunk_index,
+                                                    crate::remote_git::HunkAction::Apply,
+                                                    cx,
+                                                );
+                                            });
+                                            app.stop_propagation();
+                                        },
+                                    ))
+                                    .child(hbtn("拒绝", th.ansi.red).on_mouse_down(
+                                        MouseButton::Left,
+                                        move |_e: &MouseDownEvent, _w, app| {
+                                            if hunk_busy {
+                                                return;
+                                            }
+                                            let _ = entity_r.update(app, |this, cx| {
+                                                this.apply_hunk(
+                                                    hunk_index,
+                                                    crate::remote_git::HunkAction::Reject,
+                                                    cx,
+                                                );
+                                            });
+                                            app.stop_propagation();
+                                        },
+                                    ))
                                     .gap(px(6.))
                             } else {
                                 base
@@ -3959,7 +4217,8 @@ impl Render for QuickLook {
                             })),
                     )
             };
-            let n = all_matches(&self.buf, &self.find_query).len();
+            let edit_lines = self.edit.lines();
+            let n = all_matches(&edit_lines.borrow(), &self.find_query).len();
             div()
                 .flex()
                 .flex_row()
@@ -4018,7 +4277,11 @@ impl Render for QuickLook {
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight(620.))
                         .text_color(col(if danger { th.ansi.red } else { ui.foreground }))
-                        .bg(if danger { cola(th.ansi.red, 0.10) } else { rgba(INSET) })
+                        .bg(if danger {
+                            cola(th.ansi.red, 0.10)
+                        } else {
+                            rgba(INSET)
+                        })
                         .border_1()
                         .border_color(if danger {
                             cola(th.ansi.red, 0.32)
@@ -4048,24 +4311,18 @@ impl Render for QuickLook {
                             .child(SharedString::from(conflict.label())),
                     )
                     .child(div().flex_1())
-                    .child(
-                        action("重新载入", false).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| this.reload_remote_source(cx)),
-                        ),
-                    )
-                    .child(
-                        action("取消", false).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| this.cancel_save_conflict(cx)),
-                        ),
-                    )
-                    .child(
-                        action("覆盖远端", true).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| this.force_remote_save(cx)),
-                        ),
-                    )
+                    .child(action("重新载入", false).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| this.reload_current_source(cx)),
+                    ))
+                    .child(action("取消", false).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| this.cancel_save_conflict(cx)),
+                    ))
+                    .child(action("覆盖保存", true).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| this.force_save_current_source(cx)),
+                    ))
             })
             .or_else(|| {
                 self.save_error.as_ref().map(|error| {
@@ -4109,6 +4366,63 @@ impl Render for QuickLook {
                         )
                 })
             });
+
+        let leave_notice = self.pending_leave.clone().map(|pending| {
+            let action = |label: &'static str, danger: bool| {
+                div()
+                    .px(px(9.))
+                    .py(px(2.))
+                    .rounded(px(7.))
+                    .text_size(px(10.5))
+                    .font_weight(gpui::FontWeight(620.))
+                    .text_color(col(if danger { th.ansi.red } else { ui.foreground }))
+                    .bg(if danger {
+                        cola(th.ansi.red, 0.10)
+                    } else {
+                        rgba(INSET)
+                    })
+                    .border_1()
+                    .border_color(if danger {
+                        cola(th.ansi.red, 0.32)
+                    } else {
+                        rgba(0xffffff14)
+                    })
+                    .child(label)
+            };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .px(px(13.))
+                .py(px(7.))
+                .flex_none()
+                .font_family(UI_SANS)
+                .text_size(px(10.5))
+                .text_color(col(ui.muted))
+                .bg(cola(th.ansi.yellow, 0.07))
+                .border_t_1()
+                .border_color(rgba(0xffffff0d))
+                .child(icon("alert", 13., th.ansi.yellow))
+                .child(
+                    div()
+                        .text_color(col(ui.foreground))
+                        .child(SharedString::from(pending.prompt())),
+                )
+                .child(div().flex_1())
+                .child(action("保存", false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| this.save_pending_leave(cx)),
+                ))
+                .child(action("放弃", true).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| this.discard_pending_leave(cx)),
+                ))
+                .child(action("取消", false).on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| this.cancel_pending_leave(cx)),
+                ))
+        });
 
         // Remote hunk apply/reject failure → dismissible red banner (independent of
         // the save banner; either can show).
@@ -4223,6 +4537,7 @@ impl Render for QuickLook {
             .when_some(find_bar, |d, fb| d.child(fb))
             .child(body)
             .when_some(save_notice, |d, n| d.child(n))
+            .when_some(leave_notice, |d, n| d.child(n))
             .when_some(hunk_notice, |d, n| d.child(n))
             .child(footer)
             .child(seam);
@@ -4415,6 +4730,40 @@ mod tests {
     }
 
     #[test]
+    fn edit_state_uses_document_as_source_of_truth() {
+        let mut edit = QuickLookEditState::from_lines(buf(&["abc"]));
+
+        edit.place_cursor(0, 1, false);
+        edit.type_char("X");
+
+        assert_eq!(edit.document().lines(), &buf(&["aXbc"]));
+        assert_eq!(*edit.lines().borrow(), buf(&["aXbc"]));
+        assert_eq!(edit.cursor(), (0, 2));
+        assert_eq!(edit.sel_range(), None);
+
+        edit.select_range((0, 1), (0, 3));
+        assert_eq!(edit.selected_text().as_deref(), Some("Xb"));
+
+        edit.undo();
+        assert_eq!(edit.document().lines(), &buf(&["abc"]));
+        assert_eq!(*edit.lines().borrow(), buf(&["abc"]));
+        assert_eq!(edit.cursor(), (0, 1));
+    }
+
+    #[test]
+    fn edit_state_updates_line_mirror_without_replacing_whole_buffer() {
+        let lines: Vec<String> = (0..MAX_LINES).map(|i| format!("line {i}")).collect();
+        let mut edit = QuickLookEditState::from_lines(lines);
+        let mirror = edit.lines();
+
+        edit.place_cursor(2000, 4, false);
+        edit.type_char("X");
+
+        assert!(Rc::ptr_eq(&mirror, &edit.lines()));
+        assert_eq!(edit.row_text(2000), Some("lineX 2000"));
+    }
+
+    #[test]
     fn highlight_terminates_on_alphanumeric_nonword_chars() {
         // Regression (踩过的坑): `①` (U+2460) is is_alphanumeric() but NOT
         // is_alphabetic()/is_ascii_digit(), so it fell through to the punct branch
@@ -4600,6 +4949,72 @@ mod tests {
     }
 
     #[test]
+    fn local_file_guard_hashes_current_file_bytes() {
+        let path = std::env::temp_dir().join(format!(
+            "tn-local-file-guard-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"hello").unwrap();
+
+        let guard = local_file_guard(&path).expect("guard for existing file");
+        assert_eq!(guard.size, 5);
+        assert_eq!(guard.hash, file_sample_hash(b"hello"));
+
+        std::fs::remove_file(&path).unwrap();
+        assert!(local_file_guard(&path).is_none());
+    }
+
+    #[test]
+    fn local_save_preserves_format_and_refuses_external_changes() {
+        let path = std::env::temp_dir().join(format!(
+            "tn-local-save-{}-{}.txt",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let original = [0xFF, 0xFE, b'a', 0, b'\r', 0, b'\n', 0, b'b', 0];
+        std::fs::write(&path, original).unwrap();
+        let opened_guard = local_file_guard(&path).expect("opened guard");
+        let decoded = decode_text_bytes(&std::fs::read(&path).unwrap(), "txt").unwrap();
+
+        std::fs::write(&path, b"changed on disk").unwrap();
+        let lines = buf(&["alpha", "beta"]);
+        let result = save_local_text(
+            &path,
+            &lines,
+            decoded.format,
+            Some(&opened_guard),
+            SaveGuardMode::Check,
+        );
+        assert!(matches!(
+            result,
+            LocalSaveResult::Conflict(Conflict::ModifiedOnDisk)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), b"changed on disk");
+
+        let result = save_local_text(
+            &path,
+            &lines,
+            decoded.format,
+            Some(&opened_guard),
+            SaveGuardMode::Force,
+        );
+        assert!(matches!(result, LocalSaveResult::Saved { .. }));
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            encode_text_lines(&lines, decoded.format)
+        );
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn decode_and_encode_preserves_newline_style_final_newline_and_encoding() {
         let lf = decode_text_bytes(b"one\ntwo", "txt").expect("utf8 text");
         assert_eq!(lf.lines, buf(&["one", "two"]));
@@ -4698,12 +5113,8 @@ mod tests {
             permissions: Some(0o100644),
             mtime: Some(30),
         };
-        let loaded = preview_payload_from_bytes(
-            b"one\r\ntwo\r\n".to_vec(),
-            "rs",
-            Some(14),
-            Some(&stat),
-        );
+        let loaded =
+            preview_payload_from_bytes(b"one\r\ntwo\r\n".to_vec(), "rs", Some(14), Some(&stat));
         let QuickLookData::Text { lines, truncated } = &loaded.data else {
             panic!("expected text payload");
         };
@@ -4753,5 +5164,40 @@ mod tests {
             },
             "remote git-card previews must refresh the remote diff after save"
         );
+    }
+
+    #[test]
+    fn dirty_leave_decision_requires_confirmation_and_remembers_action() {
+        let mut pending = None;
+
+        assert_eq!(
+            dirty_leave_decision(true, &mut pending, PendingLeave::Nav(1)),
+            LeaveDecision::Confirm
+        );
+        assert_eq!(pending, Some(PendingLeave::Nav(1)));
+
+        assert_eq!(
+            dirty_leave_decision(true, &mut pending, PendingLeave::Tab(Tab::Diff)),
+            LeaveDecision::Confirm
+        );
+        assert_eq!(pending, Some(PendingLeave::Tab(Tab::Diff)));
+
+        assert_eq!(
+            dirty_leave_decision(true, &mut pending, PendingLeave::Close),
+            LeaveDecision::Confirm
+        );
+        assert_eq!(pending, Some(PendingLeave::Close));
+
+        assert_eq!(
+            dirty_leave_decision(true, &mut pending, PendingLeave::Quit),
+            LeaveDecision::Confirm
+        );
+        assert_eq!(pending, Some(PendingLeave::Quit));
+
+        assert_eq!(
+            dirty_leave_decision(false, &mut pending, PendingLeave::Close),
+            LeaveDecision::Continue
+        );
+        assert_eq!(pending, None);
     }
 }

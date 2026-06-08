@@ -202,9 +202,7 @@ pub fn builtin_registry() -> AgentRegistry {
 ///
 /// This is the supported "user re-adds Claude/Codex telemetry" path: the platform
 /// (`tn-agent`) stays agent-agnostic; only this `tn-ai` function knows the names.
-pub fn builtin_adapter_for_manifest(
-    m: &tn_config::AgentManifest,
-) -> Option<Arc<dyn AgentAdapter>> {
+pub fn builtin_adapter_for_manifest(m: &tn_config::AgentManifest) -> Option<Arc<dyn AgentAdapter>> {
     // The command tokens this manifest would be identified by.
     let probes: Vec<String> = if m.aliases.is_empty() {
         vec![m.id.to_ascii_lowercase()]
@@ -305,7 +303,7 @@ mod tests {
         assert_eq!(d.accent, Some(Color::new(0xE0, 0xAF, 0x68))); // user's accent
         assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
         assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
-        // And it actually parses Claude logs (built-in behavior, not generic).
+                                                                 // And it actually parses Claude logs (built-in behavior, not generic).
         assert_eq!(
             a.parse_usage(CLAUDE_SAMPLE),
             claude::parse_claude_session(CLAUDE_SAMPLE)

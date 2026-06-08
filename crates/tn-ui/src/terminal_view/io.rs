@@ -572,6 +572,19 @@ impl TerminalView {
         }
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            // Gate: only watch inside a git repo. Watching a non-repo dir (e.g. the
+            // home dir when an agent runs in `~`) churns endlessly on AppData/cache
+            // writes for a diff that's always empty → periodic file-tree flicker.
+            // The repo check is bounded + blocking, so run it on the bg executor (not
+            // the UI thread). On false, drop the just-stored watcher so notify stops.
+            let probe_root = root.clone();
+            let is_repo = exec
+                .spawn(async move { crate::gitutil::is_inside_repo(&probe_root) })
+                .await;
+            if !is_repo {
+                let _ = this.update(cx, |v, _| v.change_watcher = None);
+                return;
+            }
             // Initial populate: pre-existing changes when the agent starts.
             if this.update(cx, |v, cx| v.refresh_changes(cx)).is_err() {
                 return;

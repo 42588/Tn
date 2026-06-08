@@ -12,6 +12,7 @@ tn-pty.workspace = true
 tn-config.workspace = true
 tn-shell.workspace = true
 tn-blocks.workspace = true
+tn-editor.workspace = true
 tn-agent.workspace = true
 tn-ai.workspace = true
 gpui.workspace = true

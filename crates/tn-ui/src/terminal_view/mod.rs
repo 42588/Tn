@@ -33,7 +33,7 @@ use tn_agent::{
 };
 use tn_blocks::BlockModel;
 use tn_config::Loaded;
-use tn_core::{CellRun, GridSize, Palette, Rgb, SelectKind, Terminal};
+use tn_core::{CellRun, GridSize, Palette, ResizeAnchoring, Rgb, SelectKind, Terminal};
 use tn_pty::{
     remote_cmd::SshCommandService, remote_fs::RemotePath, LocalPty, PtyBackend, PtySize, SpawnSpec,
     SshBackend,
@@ -194,6 +194,134 @@ const COLS: usize = 110;
 /// sizes to the *inset* area) — all relative to `content_bounds`.
 const BODY_PAD_X: f32 = 15.0;
 const BODY_PAD_Y: f32 = 11.0;
+const ACTIVITY_RAIL_W: f32 = 212.0;
+
+fn fit_grid_size_from_bounds(
+    bounds_w: f32,
+    bounds_h: f32,
+    cell_width: f32,
+    line_height: f32,
+) -> Option<GridSize> {
+    if !bounds_w.is_finite()
+        || !bounds_h.is_finite()
+        || !cell_width.is_finite()
+        || !line_height.is_finite()
+        || cell_width <= 0.0
+        || line_height <= 0.0
+    {
+        return None;
+    }
+
+    let avail_w = bounds_w - 2.0 * BODY_PAD_X;
+    let avail_h = bounds_h - 2.0 * BODY_PAD_Y;
+    if avail_w < cell_width || avail_h < line_height {
+        return None;
+    }
+
+    let cols = (avail_w / cell_width).floor() as usize;
+    let rows = (avail_h / line_height).floor() as usize;
+    Some(GridSize::new(rows, cols))
+}
+
+fn cell_at_from_bounds(
+    pos_x: f32,
+    pos_y: f32,
+    bounds_x: f32,
+    bounds_y: f32,
+    bounds_w: f32,
+    bounds_h: f32,
+    cell_width: f32,
+    line_height: f32,
+    size: GridSize,
+) -> Option<(usize, usize)> {
+    if fit_grid_size_from_bounds(bounds_w, bounds_h, cell_width, line_height).is_none()
+        || !pos_x.is_finite()
+        || !pos_y.is_finite()
+        || !bounds_x.is_finite()
+        || !bounds_y.is_finite()
+        || pos_x < bounds_x
+        || pos_y < bounds_y
+        || pos_x > bounds_x + bounds_w
+        || pos_y > bounds_y + bounds_h
+    {
+        return None;
+    }
+    let grid_x = bounds_x + BODY_PAD_X;
+    let grid_y = bounds_y + BODY_PAD_Y;
+    let grid_w = size.cols as f32 * cell_width;
+    let grid_h = size.rows as f32 * line_height;
+    if grid_w <= 0.0
+        || grid_h <= 0.0
+        || pos_x < grid_x
+        || pos_y < grid_y
+        || pos_x >= grid_x + grid_w
+        || pos_y >= grid_y + grid_h
+    {
+        return None;
+    }
+    let x = pos_x - grid_x;
+    let y = pos_y - grid_y;
+    let col = (x / cell_width) as usize;
+    let row = (y / line_height) as usize;
+    Some((
+        row.min(size.rows.saturating_sub(1)),
+        col.min(size.cols.saturating_sub(1)),
+    ))
+}
+
+fn should_scroll_to_bottom_before_input(offset: usize, _history: usize) -> bool {
+    offset > 0
+}
+
+fn resize_anchoring_for_pane(agent_active: bool, alt_screen: bool) -> ResizeAnchoring {
+    if agent_active || alt_screen {
+        ResizeAnchoring::Bottom
+    } else {
+        ResizeAnchoring::Top
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActivityRailLayout {
+    None,
+    Flex,
+    Overlay,
+}
+
+fn activity_rail_layout(
+    agent_active: bool,
+    agent_from_shell: bool,
+    git_diff_capable: bool,
+) -> ActivityRailLayout {
+    if !agent_active || !git_diff_capable {
+        ActivityRailLayout::None
+    } else if agent_from_shell {
+        ActivityRailLayout::Overlay
+    } else {
+        ActivityRailLayout::Flex
+    }
+}
+
+fn scroll_wheel_drives_terminal_app(_agent_active: bool, alt_screen: bool) -> bool {
+    alt_screen
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectionDragMove {
+    Idle,
+    EndLostMouseUp,
+    Update,
+}
+
+fn selection_drag_move(selecting: bool, pressed: Option<MouseButton>) -> SelectionDragMove {
+    if !selecting {
+        SelectionDragMove::Idle
+    } else if pressed == Some(MouseButton::Left) {
+        SelectionDragMove::Update
+    } else {
+        SelectionDragMove::EndLostMouseUp
+    }
+}
 
 /// Trailing-edge debounce(静默窗口) for the working-tree change watcher: refresh the
 /// rail `git diff` only after file events have been quiet this long. A single save fires
@@ -244,7 +372,9 @@ pub enum RailState {
 
 #[derive(Debug, Clone)]
 pub enum RailSource {
-    Local { root: std::path::PathBuf },
+    Local {
+        root: std::path::PathBuf,
+    },
     Remote {
         cfg: tn_pty::SshConfig,
         root: RemotePath,
@@ -255,11 +385,13 @@ impl RailSource {
     fn target_for(&self, path: &str) -> RailFileTarget {
         match self {
             Self::Local { root } => RailFileTarget::Local(root.join(path)),
-            Self::Remote { cfg, root } => RailFileTarget::Remote(crate::remote_git::RemoteGitFile {
-                cfg: cfg.clone(),
-                root: root.clone(),
-                path: path.to_string(),
-            }),
+            Self::Remote { cfg, root } => {
+                RailFileTarget::Remote(crate::remote_git::RemoteGitFile {
+                    cfg: cfg.clone(),
+                    root: root.clone(),
+                    path: path.to_string(),
+                })
+            }
         }
     }
 }
@@ -468,6 +600,19 @@ pub struct TerminalView {
     // C3 success feedback: the auth method that succeeded, appended to the
     // header's "已连接" label (密钥 / 密码 / 交互).
     ssh_conn_method: Option<tn_pty::AuthKind>,
+    // ── 渲染重复诊断探针(`TN_AGENT_DUP=1`,默认关) ─────────────────────────
+    // 内联 agent(Claude/Codex)正文重复/堆叠的归因工具:打印每次 ConPTY
+    // resize 与每次 resize_conpty 长高时 `scroll_up` 把活帧推进 scrollback
+    // 的细节。env 门控,关时零成本。
+    dup_probe: bool,
+    // 上一帧活动栏是否在场(`agent.is_some() && caps.git_diff`),用于探针检测
+    // agent rail 出现/消失。shell-detected agent 走 overlay,不应改变正文宽度。
+    dup_last_rail: bool,
+    // 上一帧光标位置(row, col),用于探针直接捕捉「光标跳回 row 0」这个 bug3 现象,
+    // 无论它是 resize / swap 恢复 / ConPTY 自发 repaint 引起。仅探针开启时有意义。
+    dup_last_cursor: (usize, usize),
+    // 探针:本帧是否触发了 resize(供光标跳变那行日志标注「是不是 resize 引起的」)。
+    dup_resized_this_frame: bool,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -851,6 +996,10 @@ impl TerminalView {
             ssh_hostkey_remember: true,
             ssh_conn: launch.ssh.as_ref().map(|_| SshConnState::Connecting),
             ssh_conn_method: None,
+            dup_probe: std::env::var("TN_AGENT_DUP").is_ok(),
+            dup_last_rail: false,
+            dup_last_cursor: (usize::MAX, usize::MAX),
+            dup_resized_this_frame: false,
         }
     }
 
@@ -1616,17 +1765,20 @@ impl TerminalView {
     }
 
     /// Map a window-space position to a viewport `(row, col)`, clamped to the grid.
-    fn cell_at(&self, pos: Point<Pixels>) -> (usize, usize) {
+    fn cell_at(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
         let b = self.content_bounds.borrow();
         // Subtract the body inset (mockup .body padding) so a click maps to the cell
         // under the cursor — the grid is drawn at +BODY_PAD from content_bounds.
-        let x = (f32::from(pos.x) - f32::from(b.origin.x) - BODY_PAD_X).max(0.0);
-        let y = (f32::from(pos.y) - f32::from(b.origin.y) - BODY_PAD_Y).max(0.0);
-        let col = (x / self.cell_width) as usize;
-        let row = (y / self.line_height) as usize;
-        (
-            row.min(self.size.rows.saturating_sub(1)),
-            col.min(self.size.cols.saturating_sub(1)),
+        cell_at_from_bounds(
+            f32::from(pos.x),
+            f32::from(pos.y),
+            f32::from(b.origin.x),
+            f32::from(b.origin.y),
+            f32::from(b.size.width),
+            f32::from(b.size.height),
+            self.cell_width,
+            self.line_height,
+            self.size,
         )
     }
 
@@ -1636,7 +1788,9 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (row, col) = self.cell_at(event.position);
+        let Some((row, col)) = self.cell_at(event.position) else {
+            return;
+        };
         // Click count picks the granularity: 1 = cell, 2 = word, 3+ = line
         // (待优化清单 §3.5). A following drag extends by that same granularity.
         let kind = match event.click_count {
@@ -1669,10 +1823,17 @@ impl TerminalView {
             self.drag_scrollbar(event.position.y.into(), cx);
             return;
         }
-        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
-            return;
+        match selection_drag_move(self.selecting, event.pressed_button) {
+            SelectionDragMove::Idle => return,
+            SelectionDragMove::EndLostMouseUp => {
+                self.finish_selection_drag(cx);
+                return;
+            }
+            SelectionDragMove::Update => {}
         }
-        let (row, col) = self.cell_at(event.position);
+        let Some((row, col)) = self.cell_at(event.position) else {
+            return;
+        };
         self.terminal.lock().unwrap().selection_update(row, col);
         cx.notify();
     }
@@ -1718,6 +1879,10 @@ impl TerminalView {
             cx.notify();
             return;
         }
+        self.finish_selection_drag(cx);
+    }
+
+    fn finish_selection_drag(&mut self, cx: &mut Context<Self>) {
         if !self.selecting {
             return;
         }
@@ -1902,7 +2067,7 @@ impl TerminalView {
             match crate::input::encode_key(&event.keystroke, mode) {
                 Some(b) => {
                     let (offset, hist) = t.scroll_position();
-                    let did_scroll = offset != hist;
+                    let did_scroll = should_scroll_to_bottom_before_input(offset, hist);
                     if did_scroll {
                         t.scroll_to_bottom();
                     }
@@ -1945,7 +2110,7 @@ impl TerminalView {
             return;
         }
         let mode = self.terminal.lock().unwrap().input_mode();
-        if mode.alt_screen {
+        if scroll_wheel_drives_terminal_app(self.agent.is_some(), mode.alt_screen) {
             if self.ssh_input_blocked() {
                 return;
             }
@@ -2113,6 +2278,7 @@ impl Render for TerminalView {
             self.focus_handle.focus(window);
             self.focused_once = true;
         }
+        self.dup_resized_this_frame = false; // 探针:每帧清零,resize 块命中时置位
 
         // Fit the grid to the pane's own content bounds (captured by the canvas
         // below on the previous frame). Skipping while unset keeps the initial
@@ -2121,14 +2287,10 @@ impl Render for TerminalView {
             let b = self.content_bounds.borrow();
             (f32::from(b.size.width), f32::from(b.size.height))
         };
-        if bw > 1.0 && bh > 1.0 {
+        if let Some(new_size) = fit_grid_size_from_bounds(bw, bh, self.cell_width, self.line_height)
+        {
             // Fit to the *inset* body area (mockup .body padding) — leave BODY_PAD on
             // each side so the grid matches where the cursor/grid are actually drawn.
-            let avail_w = (bw - 2.0 * BODY_PAD_X).max(self.cell_width);
-            let avail_h = (bh - 2.0 * BODY_PAD_Y).max(self.line_height);
-            let cols = ((avail_w / self.cell_width).floor() as usize).max(1);
-            let rows_n = ((avail_h / self.line_height).floor() as usize).max(1);
-            let new_size = GridSize::new(rows_n, cols);
             // ConPTY tracks the visible grid EXACTLY (rows ≠ alacritty rows caused
             // worse, frequent blanking — once output scrolls alacritty but not
             // ConPTY their cursors diverge and the prompt mislands; the reverted
@@ -2137,13 +2299,73 @@ impl Render for TerminalView {
             // ConPTY's top-anchored repaint can't clobber pulled-up history —
             // verified zero-loss by `TN_RESIZE_EXP=topgrow`.
             if new_size != self.size {
+                let old = self.size;
+                // 探针(机制 2):长高时 resize_conpty 会 `scroll_up(min(history, delta))`
+                // 把视口顶部那么多行推进 scrollback。对内联 agent 那几行就是「活帧」,
+                // ConPTY 随后又 repaint 一遍 → 同一帧在 scrollback + 视口各留一份(重复)。
+                if self.dup_probe {
+                    let history = self.terminal.lock().unwrap().scroll_position().1;
+                    let grow = new_size.rows > old.rows;
+                    let pulled = if grow {
+                        history.min(new_size.rows - old.rows)
+                    } else {
+                        0
+                    };
+                    tracing::info!(
+                        target: "tn::agent_dup",
+                        "resize {}x{} -> {}x{} grow={} pulled_into_scrollback={} \
+                         history_before={} inline_agent={} alt_screen={}",
+                        old.cols, old.rows, new_size.cols, new_size.rows, grow, pulled, history,
+                        self.agent_manages_cursor,
+                        self.terminal.lock().unwrap().input_mode().alt_screen,
+                    );
+                }
+                self.dup_resized_this_frame = true;
                 self.size = new_size;
-                self.terminal.lock().unwrap().resize_conpty(new_size);
+                let (anchoring, alt_screen) = {
+                    let mut terminal = self.terminal.lock().unwrap();
+                    let alt_screen = terminal.input_mode().alt_screen;
+                    let anchoring = resize_anchoring_for_pane(self.agent.is_some(), alt_screen);
+                    terminal.resize_conpty_with_anchoring(new_size, anchoring);
+                    (anchoring, alt_screen)
+                };
+                if self.dup_probe {
+                    tracing::info!(
+                        target: "tn::agent_dup",
+                        "resize anchoring={:?} agent_active={} alt_screen={}",
+                        anchoring,
+                        self.agent.is_some(),
+                        alt_screen
+                    );
+                }
                 let _ = self
                     .pty
                     .lock()
                     .unwrap()
-                    .resize(PtySize::new(rows_n as u16, cols as u16));
+                    .resize(PtySize::new(new_size.rows as u16, new_size.cols as u16));
+            }
+        }
+
+        // 探针:活动栏出现/消失。shell-detected agent 现在走 overlay,所以这不应
+        // 再伴随终端正文宽度变化;若仍有 resize 日志,说明另有布局源在改 bounds。
+        if self.dup_probe {
+            let rail = self.agent.is_some() && self.agent_caps.git_diff;
+            if rail != self.dup_last_rail {
+                let layout = activity_rail_layout(
+                    self.agent.is_some(),
+                    self.agent_from_shell,
+                    self.agent_caps.git_diff,
+                );
+                tracing::info!(
+                    target: "tn::agent_dup",
+                    "rail {} layout={:?} (agent={:?} git_diff_cap={} from_shell={})",
+                    if rail { "appeared" } else { "removed" },
+                    layout,
+                    self.agent_short.as_deref(),
+                    self.agent_caps.git_diff,
+                    self.agent_from_shell,
+                );
+                self.dup_last_rail = rail;
             }
         }
 
@@ -2196,6 +2418,28 @@ impl Render for TerminalView {
                 c.bg,
             )
         };
+        // ── 探针:直接捕捉「光标跳回 row 0」(bug3 现象本身) ──────────────────
+        if self.dup_probe {
+            // 启动确认:第一帧打一行,证明探针确实在跑(上次日志里啥都没有 = 没开)。
+            if self.dup_last_cursor == (usize::MAX, usize::MAX) {
+                tracing::info!(
+                    target: "tn::agent_dup",
+                    "probe ON for pane (agent={:?} git_diff_cap={})",
+                    self.agent_short.as_deref(), self.agent_caps.git_diff,
+                );
+            } else if cur_row == 0 && self.dup_last_cursor.0 > 0 {
+                // 光标从非顶部跳到了 row 0 —— 正是 bug3。把这一帧的成因证据全打出来:
+                // resize?generation 变没变(变=有新输出/restore)?滚动位置?
+                tracing::info!(
+                    target: "tn::agent_dup",
+                    "CURSOR JUMPED to row0 (was {:?} -> ({},{})) resized_this_frame={} \
+                     generation={} scroll_offset={} scroll_history={} agent={:?}",
+                    self.dup_last_cursor, cur_row, cur_col, self.dup_resized_this_frame,
+                    generation, scroll_offset, scroll_history, self.agent_short.as_deref(),
+                );
+            }
+            self.dup_last_cursor = (cur_row, cur_col);
+        }
         let bounds_cell = self.content_bounds.clone();
         // Captured into the canvas paint closure to register the IME input handler
         // (text input / 中文 composition) for this frame — see the `EntityInputHandler`
@@ -2537,21 +2781,43 @@ impl Render for TerminalView {
                 .when_some(scrollbar, |this, s| this.child(s))
                 .when_some(bell_overlay, |this, o| this.child(o));
 
-        // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail);
-        // 普通 shell:正文满宽，不再预留 212px 占位槽。
-        // 敲 claude/codex 切 agent 态时发生一次 resize 重排，比永久浪费 212px 更划算。
+        // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail).
+        // Launch-intent agents get a side-by-side rail from the first frame. Agents
+        // detected from a running shell command use an overlay rail so the terminal
+        // body width does not change mid-command and force a ConPTY repaint over
+        // the agent's startup screen.
         // The activity rail is a capability slot (`git_diff`): an agent that
         // declares it gets「本次改动」; one that doesn't hosts full-width.
-        let body_region = if self.agent.is_some() && self.agent_caps.git_diff {
-            div()
+        let rail_layout = activity_rail_layout(
+            self.agent.is_some(),
+            self.agent_from_shell,
+            self.agent_caps.git_diff,
+        );
+        let body_region = match rail_layout {
+            ActivityRailLayout::None => term_area,
+            ActivityRailLayout::Flex => div()
                 .flex_1()
                 .min_h(px(0.))
                 .flex()
                 .flex_row() // mockup .abody
                 .child(term_area)
-                .child(self.render_activity_rail(cx))
-        } else {
-            term_area
+                .child(self.render_activity_rail(cx)),
+            ActivityRailLayout::Overlay => div()
+                .relative()
+                .flex_1()
+                .min_h(px(0.))
+                .min_w(px(0.))
+                .overflow_hidden()
+                .child(term_area)
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(0.))
+                        .right(px(0.))
+                        .bottom(px(0.))
+                        .w(px(ACTIVITY_RAIL_W))
+                        .child(self.render_activity_rail(cx).h_full()),
+                ),
         };
 
         // ── SSH connection cards (B1 progress / C1 error / B3 password). Only one
@@ -3129,46 +3395,92 @@ impl Render for TerminalView {
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "外部 Agent".to_string());
             let allow = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(12.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .bg(cola(self.ui_accent, 0.16))
+                .text_color(col(self.ui_accent))
                 .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
                 .child(crate::style::icon("check", 13., self.ui_accent))
-                .child(div().text_size(px(12.)).child(SharedString::from("允许并连接")))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
-                    this.confirm_sidecar(cx);
-                }));
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .child(SharedString::from("允许并连接")),
+                )
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.confirm_sidecar(cx);
+                    }),
+                );
             let deny = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(12.))
+                .py(px(7.))
+                .rounded(px(8.))
+                .bg(rgba(crate::style::HOVER))
+                .text_color(col(self.ui_fg))
                 .hover(|s| s.bg(rgba(crate::style::INSET)))
                 .child(crate::style::icon("close", 13., self.ui_muted))
                 .child(div().text_size(px(12.)).child(SharedString::from("拒绝")))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
-                    this.deny_sidecar(cx);
-                }));
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.deny_sidecar(cx);
+                    }),
+                );
             card_chrome(
                 div()
-                    .child(card_header("alert", self.ui_yellow, "Agent 要联网", &agent_label))
+                    .child(card_header(
+                        "alert",
+                        self.ui_yellow,
+                        "Agent 要联网",
+                        &agent_label,
+                    ))
                     .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
                     .child(
-                        div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
+                        div()
+                            .px(px(14.))
+                            .pt(px(11.))
+                            .text_size(px(12.5))
+                            .text_color(col(self.ui_fg))
                             .child(SharedString::from(
                                 "这个 Agent 的遥测 sidecar 要联网。默认拒绝,确认后才运行。",
                             )),
                     )
                     .child(
-                        div().mx(px(14.)).mt(px(9.)).p(px(9.)).rounded(px(8.))
-                            .bg(rgba(crate::style::INSET)).border_1().border_color(rgba(crate::style::RIM))
+                        div()
+                            .mx(px(14.))
+                            .mt(px(9.))
+                            .p(px(9.))
+                            .rounded(px(8.))
+                            .bg(rgba(crate::style::INSET))
+                            .border_1()
+                            .border_color(rgba(crate::style::RIM))
                             .font_family(self.font_family.clone())
-                            .text_size(px(11.5)).text_color(col(self.ui_muted))
+                            .text_size(px(11.5))
+                            .text_color(col(self.ui_muted))
                             .child(SharedString::from(cmd)),
                     )
                     .child(div().h(px(1.)).bg(rgba(0xffffff0f)).mt(px(12.)))
                     .child(
-                        div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.))
-                            .child(deny).child(allow),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .justify_end()
+                            .p(px(11.))
+                            .child(deny)
+                            .child(allow),
                     ),
             )
         });
@@ -3386,6 +3698,201 @@ mod tests {
         assert!(
             LaunchSpec::from_profile(profile, &reg).is_none(),
             "the current launcher only produces PTY runtimes; structured/http agents need a dedicated runtime confirmation path"
+        );
+    }
+
+    #[test]
+    fn terminal_fit_ignores_tiny_hidden_bounds() {
+        assert_eq!(
+            fit_grid_size_from_bounds(3.0, 3.0, 8.0, 18.0),
+            None,
+            "tab switch/minimize can report a tiny non-zero canvas; it must not resize the PTY to 1x1"
+        );
+    }
+
+    #[test]
+    fn mouse_hit_test_ignores_tiny_hidden_bounds() {
+        assert_eq!(
+            cell_at_from_bounds(
+                50.0,
+                50.0,
+                0.0,
+                0.0,
+                3.0,
+                3.0,
+                8.0,
+                18.0,
+                GridSize::new(24, 80),
+            ),
+            None,
+            "after a tab switch, stale tiny canvas bounds must not turn the next click into row 0/col 0"
+        );
+    }
+
+    #[test]
+    fn mouse_hit_test_rejects_body_padding_not_grid_cells() {
+        assert_eq!(
+            cell_at_from_bounds(
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                800.0,
+                500.0,
+                8.0,
+                18.0,
+                GridSize::new(24, 80),
+            ),
+            None,
+            "tab restore can report a transient (0,0) mouse position; body padding must not clamp it to cell 0,0"
+        );
+        assert_eq!(
+            cell_at_from_bounds(
+                BODY_PAD_X - 1.0,
+                BODY_PAD_Y + 4.0,
+                0.0,
+                0.0,
+                800.0,
+                500.0,
+                8.0,
+                18.0,
+                GridSize::new(24, 80),
+            ),
+            None,
+            "left body padding is visual chrome, not terminal cell 0"
+        );
+    }
+
+    #[test]
+    fn mouse_hit_test_rejects_space_beyond_rendered_grid() {
+        assert_eq!(
+            cell_at_from_bounds(
+                BODY_PAD_X + 80.0 * 8.0 + 1.0,
+                BODY_PAD_Y + 4.0,
+                0.0,
+                0.0,
+                800.0,
+                500.0,
+                8.0,
+                18.0,
+                GridSize::new(24, 80),
+            ),
+            None,
+            "right-side spare body space must not clamp to the last terminal column"
+        );
+        assert_eq!(
+            cell_at_from_bounds(
+                BODY_PAD_X + 4.0,
+                BODY_PAD_Y + 24.0 * 18.0 + 1.0,
+                0.0,
+                0.0,
+                800.0,
+                500.0,
+                8.0,
+                18.0,
+                GridSize::new(24, 80),
+            ),
+            None,
+            "bottom spare body space must not clamp to the last terminal row"
+        );
+    }
+
+    #[test]
+    fn selection_drag_ends_when_mouse_up_was_lost() {
+        assert_eq!(
+            selection_drag_move(false, None),
+            SelectionDragMove::Idle,
+            "no active selection drag means mouse moves are ignored"
+        );
+        assert_eq!(
+            selection_drag_move(true, Some(MouseButton::Left)),
+            SelectionDragMove::Update,
+            "an active drag with the left button still down updates the selection"
+        );
+        assert_eq!(
+            selection_drag_move(true, None),
+            SelectionDragMove::EndLostMouseUp,
+            "tab switches/minimize can swallow mouse_up; the next move must clear stale drag state"
+        );
+        assert_eq!(
+            selection_drag_move(true, Some(MouseButton::Right)),
+            SelectionDragMove::EndLostMouseUp,
+            "any non-left pressed button is not a live text-selection drag"
+        );
+    }
+
+    #[test]
+    fn input_scrolls_to_bottom_for_any_scrollback_offset() {
+        assert!(
+            !should_scroll_to_bottom_before_input(0, 8),
+            "offset 0 is already the live bottom"
+        );
+        assert!(
+            should_scroll_to_bottom_before_input(1, 8),
+            "any non-zero offset means the viewport is reading history"
+        );
+        assert!(
+            should_scroll_to_bottom_before_input(8, 8),
+            "the top of history is still not the live bottom"
+        );
+    }
+
+    #[test]
+    fn agent_and_alt_screen_resize_uses_bottom_anchoring() {
+        assert_eq!(
+            resize_anchoring_for_pane(false, false),
+            tn_core::ResizeAnchoring::Top,
+            "plain shells keep the ConPTY history-preserving top anchor"
+        );
+        assert_eq!(
+            resize_anchoring_for_pane(true, false),
+            tn_core::ResizeAnchoring::Bottom,
+            "agent/TUI-like panes must not push their live screen into scrollback on resize"
+        );
+        assert_eq!(
+            resize_anchoring_for_pane(false, true),
+            tn_core::ResizeAnchoring::Bottom,
+            "alternate-screen programs own their viewport and should resize bottom-anchored"
+        );
+    }
+
+    #[test]
+    fn agent_and_alt_screen_scroll_wheel_drives_terminal_app() {
+        assert!(
+            !scroll_wheel_drives_terminal_app(false, false),
+            "plain shell panes use the mouse wheel for terminal scrollback"
+        );
+        assert!(
+            !scroll_wheel_drives_terminal_app(true, false),
+            "main-screen agent panes still need Tn scrollback and rail scrolling; only alt-screen owns the wheel"
+        );
+        assert!(
+            scroll_wheel_drives_terminal_app(false, true),
+            "alternate-screen programs own the wheel"
+        );
+    }
+
+    #[test]
+    fn shell_detected_agents_overlay_the_rail_without_resizing_terminal_body() {
+        assert_eq!(
+            activity_rail_layout(false, false, true),
+            ActivityRailLayout::None,
+            "plain shells do not show an activity rail"
+        );
+        assert_eq!(
+            activity_rail_layout(true, false, true),
+            ActivityRailLayout::Flex,
+            "launch-intent agents start with a side-by-side rail"
+        );
+        assert_eq!(
+            activity_rail_layout(true, true, true),
+            ActivityRailLayout::Overlay,
+            "shell-detected agents must not change terminal width mid-command"
+        );
+        assert_eq!(
+            activity_rail_layout(true, true, false),
+            ActivityRailLayout::None,
+            "agents without the git-diff slot do not need the activity rail"
         );
     }
 

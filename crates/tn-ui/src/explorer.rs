@@ -351,6 +351,14 @@ impl ExplorerRoot {
     }
 }
 
+pub fn default_host_root() -> ExplorerRoot {
+    let root = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    ExplorerRoot::host(root)
+}
+
 fn remote_path_under(path: &RemotePath, root: &RemotePath) -> bool {
     let p = path.as_str().trim_end_matches('/');
     let r = root.as_str().trim_end_matches('/');
@@ -508,11 +516,7 @@ fn tree_row(
 
 impl ExplorerView {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
-        let root = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let root = ExplorerRoot::host(root);
+        let root = default_host_root();
         let mut me = Self {
             config,
             root: root.clone(),

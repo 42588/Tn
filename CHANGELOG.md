@@ -14,10 +14,12 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 ## [Unreleased] — SFTP 远端文件服务与远端改动流首版(2026-06)
 
 ### Added
+- **`tn-editor` headless 编辑核心首版**:新增 workspace crate,无 GPUI 依赖;迁移 Quick Look 的 `char_to_byte`、`line_chars`、insert/newline/backspace/delete/move/page/delete-range/insert-multiline 等纯文本编辑函数,并新增 `Document`、`Selection`、`CursorSet`、`EditTransaction`、`UndoStack`、`SearchState` headless 模型和独立单测。`tn-ui::quick_look` 编辑态已通过 `QuickLookEditState` 薄壳把打字、选区、剪切/粘贴、查找/替换、撤销/重做和保存接入 `Document` 主状态;旧 `uniform_list` renderer 暂继续读取适配后的 `Rc<Vec<String>>` 快照,为 LineLayout / EditorElement 上移打基础,用户可见行为保持不变。
 - **`tn-pty::remote_fs` SFTP v3 后端**:`RemoteFileService` + `SftpFileService` 支持 SSH 远端列目录、有界读文件、stat 元数据和写回文件,复用 SSH 配置/密钥/内存密码,后台探测不弹 host-key/password UI。
 - **`tn-pty::remote_cmd` 远端命令执行**:新增有界 SSH exec 服务,支持 POSIX shell quoting、stdout/stderr/exit-status 捕获和 stdin 传入,供远端 git / hunk patch 使用。
 - **SSH Explorer root**:`ExplorerRoot::Ssh` / `ExplorerPath::Remote` 用 `RemoteId` 表示远端路径,焦点 SSH pane 的 cwd 可驱动左侧远端文件树;展开目录通过 SFTP 枚举,不再把 `/home/...` 伪装成本机 `PathBuf`。
 - **Quick Look 远端预览 + 编辑写回**:Explorer 打开远端文件时走 `QuickLook::open_remote`,最多读取 `REMOTE_READ_LIMIT`;文本文件可进入编辑态,保存前用 SFTP stat + 内容 hash guard 检测远端变化,冲突时显示「重新载入 / 取消 / 覆盖远端」,避免静默覆盖。
+- **Quick Look 本地 guarded save**:本地文本打开时记录 `TextFormat` 与 `FileGuard`;保存前检测磁盘外部修改/删除,冲突时显示「重新载入 / 取消 / 覆盖保存」,正常写回保留原编码与 LF/CRLF 风格。
 - **远端 git 数据流**:`remote_git` 通过远端 `git diff --numstat` 渲染 SSH agent 活动栏,改动卡可打开远端 full diff;新增 hunk 解析、单 hunk patch 构造和 `git apply -` stdin helper。
 
 ### Changed
@@ -29,10 +31,15 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **失败提示 + 防并发**:apply 期间 `hunk_busy` 禁用按钮(防双击发两条冲突补丁);失败 → `hunk_error` 红色横幅(复用 save_error 范式,显示 `git apply` stderr + 关闭);开新文件即清。
 
 ### Fixed(2026-06-07 续:真机连 SSH 后暴露的远端文件树/picker bug)
+- **标签切换 / 最小化恢复后终端光标偶发落到左上角**:终端正文 canvas 在隐藏 / 恢复帧可能回报很小但非零的 bounds,旧 resize 逻辑把不足一个 cell / row 的区域兜成 `1x1` 并写给 alacritty + ConPTY。新增 `fit_grid_size_from_bounds`,不足一个完整单元格 / 行的临时 bounds 本帧跳过 resize,避免真实 PTY 被缩成 `1x1` 后覆盖历史。进一步收紧鼠标命中:只有 `BODY_PAD` 内侧的真实网格矩形才映射成 cell,恢复帧临时 `(0,0)` / padding / 右下空白不再 clamp 到左上角或最后一格;文本拖选也补 `pressed_button` 兜底,标签切换/最小化吞掉 `mouse_up` 后下一次 move 会结束旧拖选状态,不继续改历史区选区。
+- **scrollback 光标误投影与 Codex 滚轮翻出重复旧帧**:`Terminal::snapshot` 现在在 `display_offset > 0` 时隐藏 live cursor;输入前回到底部改按 `display_offset > 0` 判断,避免滚到历史顶部(`offset == history`)时仍停在历史视图。agent / alt-screen pane 的鼠标滚轮改交给程序自身(方向键),普通 shell 才滚 Tn scrollback;ConPTY grow resize 增 `ResizeAnchoring`,普通 shell 顶锚定保历史,agent / TUI 底锚定避免把当前主屏帧推进 scrollback。
 - **SSH 文件树 / 「打开文件夹」一直停在 Windows 主机目录**:`TerminalView::cwd()` 只读逐 block cwd(`current()`/`last_finished()`),而 SSH 注入脚本只发裸 `OSC 633;P;Cwd`(无 A/B/C/D 标记)→ 不建 block → cwd 恒 None。修:`cwd()` 兜底 `BlockModel::cwd()`(模型级);注入脚本钩好后立即 `__tn_pc` 当下报 cwd。
 - **WSL「打开文件夹」开成 Windows 原生选择器**:把 `RemoteDirPicker` 泛化为 `PickerSource::{Ssh,Wsl}` + `PickerEntry`(解耦 SSH `RemoteId`),WSL 经 `\\wsl$\<distro>` 本地 `std::fs` 列目录。`open_folder_should_use_native_picker` 现只对 Host/欢迎页返回 true;SSH 与 WSL 都走应用内导航 picker。`fallback_remote_root` 在 cwd 未知时从 `/` 起。
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
+
+### Performance(2026-06-08:TnE-07 编辑核心增量化守卫)
+- **去除每键整 buffer 深拷,锁死「每键 O(1)」不变量**:复核确认增量机制随 TnE-05/06 已落地——`tn-editor::Document` 的 undo/redo 用 `EditTransaction` + 行区间 `EditSnapshot`(`capture_line_span` 只拷受影响行,不存整 buffer),连续打字按 `start_row` `coalesce` 成一条仍行有界的记录、移动光标即断开;Quick Look 薄壳 `sync_lines` 仅按 `last_transaction` 的行区间 `splice` 镜像,不再每键 `to_vec()` 整 buffer(仅开文件那一次兜底)。本轮补回归守卫把不变量钉死:`tn-editor` 新增 `continuous_typing_keeps_undo_records_line_bounded`(4000 行连打 500 字 + 换行,undo 栈合并为 1 条且 before/after 行数 < 8,移动光标后第二条记录仍有界),与既有 `undo_history_does_not_store_full_buffer_for_single_line_edit`、`tn-ui::edit_state_updates_line_mirror_without_replacing_whole_buffer`(`Rc::ptr_eq` 证镜像未被整 Vec 重建)合围。真机 4000 行连打手感待肉眼验证。
 
 ### Still TODO
 - **SSH/SFTP 真机端到端回归(剩余)**:hunk 按钮真改远端 working tree、`git apply` 拒绝补丁的失败文案、并发/超时;远端目录 picker hunk 头随长行水平滚动(极长行需常驻浮起按钮)。远端文件树/「打开文件夹」/picker 键鼠导航 **已真机确认可用(2026-06-07)**。

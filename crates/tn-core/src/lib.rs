@@ -79,6 +79,17 @@ impl Dimensions for GridSize {
     }
 }
 
+/// How a ConPTY-backed resize should treat row grows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ResizeAnchoring {
+    /// Preserve the visible top row and open new blank rows at the bottom. This
+    /// protects normal shell scrollback from ConPTY's top-anchored repaint.
+    Top,
+    /// Use alacritty's normal bottom anchoring. Prefer this for full-screen /
+    /// TUI-like programs whose live screen should not be pushed into scrollback.
+    Bottom,
+}
+
 /// 24-bit RGB color.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rgb {
@@ -674,13 +685,18 @@ impl Terminal {
     /// scrollback. (This also matches how native Windows consoles grow — content
     /// stays put, blank space opens below — rather than Unix's reveal-history.)
     pub fn resize_conpty(&mut self, size: GridSize) {
+        self.resize_conpty_with_anchoring(size, ResizeAnchoring::Top);
+    }
+
+    /// Resize a ConPTY-backed pane with an explicit grow anchoring policy.
+    pub fn resize_conpty_with_anchoring(&mut self, size: GridSize, anchoring: ResizeAnchoring) {
         self.restore_if_swapped();
         let old_rows = self.size.rows;
         // History present *before* the grow == the pool grow_lines pulls from.
         let history_before = self.term.grid().history_size();
         self.size = size;
         self.term.resize(size);
-        if size.rows > old_rows {
+        if anchoring == ResizeAnchoring::Top && size.rows > old_rows {
             let delta = size.rows - old_rows;
             // grow_lines pulled `min(history_before, delta)` rows up; push exactly
             // those back down into scrollback (scroll_up over the full viewport
@@ -893,13 +909,15 @@ impl Terminal {
 
         let cur = content.cursor.point;
         let cursor_row = (cur.line.0 + offset).max(0) as usize;
+        let cursor_visible = content.display_offset == 0
+            && self.term.mode().contains(TermMode::SHOW_CURSOR)
+            && content.cursor.shape != CursorShape::Hidden;
         TerminalSnapshot {
             rows: self.size.rows,
             cols: self.size.cols,
             cursor: (cursor_row, cur.column.0),
             cursor_shape: content.cursor.shape,
-            cursor_visible: self.term.mode().contains(TermMode::SHOW_CURSOR)
-                && content.cursor.shape != CursorShape::Hidden,
+            cursor_visible,
             scroll_offset: content.display_offset,
             scroll_history: self.term.grid().history_size(),
             fg: self.palette.fg,
@@ -1158,6 +1176,41 @@ mod tests {
             "scroll-to-bottom restores live view"
         );
         assert_eq!(t.snapshot().scroll_offset, 0);
+    }
+
+    #[test]
+    fn scrolled_snapshot_keeps_rows_at_viewport_origin() {
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        for i in 0..10 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+
+        t.scroll(2);
+        let rows = t.snapshot().rows_text();
+
+        assert!(
+            rows[0].starts_with("line"),
+            "scrolling into history must still render the first visible history row at viewport row 0, got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn scrolled_snapshot_hides_live_cursor() {
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        for i in 0..10 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+
+        assert!(
+            t.snapshot().cursor_visible,
+            "the live bottom should draw the cursor"
+        );
+        t.scroll(2);
+
+        assert!(
+            !t.snapshot().cursor_visible,
+            "while reading scrollback, the live cursor must not be projected into the history viewport"
+        );
     }
 
     #[test]

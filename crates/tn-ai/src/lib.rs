@@ -19,9 +19,7 @@ mod claude;
 mod codex;
 mod detect;
 
-pub use adapter::{
-    builtin_adapter_for_manifest, builtin_registry, ClaudeAdapter, CodexAdapter,
-};
+pub use adapter::{builtin_adapter_for_manifest, builtin_registry, ClaudeAdapter, CodexAdapter};
 pub use detect::{adapter_session_mtimes, resolve_pane_session};
 
 // The usage + pricing model lives in the `tn-agent` platform crate (the

@@ -54,6 +54,22 @@ pub(crate) fn is_noise_path(p: &Path) -> bool {
     })
 }
 
+/// Whether `root` lives inside a git work tree (`git rev-parse --is-inside-work-tree`).
+/// **Bounded** — blocking, **call off the UI thread**. Used to gate the agent rail's
+/// recursive change-watcher: watching a non-repo directory (e.g. the user's home dir
+/// when an agent runs in `~`) churns endlessly on AppData/cache writes for a `git diff`
+/// that is always empty — the cause of the periodic file-tree flicker. Returns `false`
+/// on timeout / spawn failure (no repo → don't watch).
+pub(crate) fn is_inside_repo(root: &Path) -> bool {
+    capture_bounded(
+        root,
+        &["rev-parse", "--is-inside-work-tree"],
+        Duration::from_millis(800),
+    )
+    .map(|s| s.trim() == "true")
+    .unwrap_or(false)
+}
+
 /// One changed file from `git diff --numstat`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FileChange {

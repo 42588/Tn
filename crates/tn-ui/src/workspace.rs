@@ -14,15 +14,17 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
-    AnyElement, App, AppContext, AsyncApp, Bounds, Context, ElementInputHandler, Entity,
-    EntityInputHandler, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
-    uniform_list, MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba,
-    ScrollStrategy, SharedString, Subscription, UTF16Selection, UniformListScrollHandle,
-    WeakEntity, Window, WindowControlArea,
+    uniform_list, AnyElement, App, AppContext, AsyncApp, Bounds, Context, ElementInputHandler,
+    Entity, EntityInputHandler, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba, ScrollStrategy,
+    SharedString, Subscription, UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
+    WindowControlArea,
 };
 use tn_config::Loaded;
 
-use crate::explorer::{ExplorerFile, ExplorerRoot, ExplorerSnapshot, ExplorerView, OpenFile};
+use crate::explorer::{
+    default_host_root, ExplorerFile, ExplorerRoot, ExplorerSnapshot, ExplorerView, OpenFile,
+};
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
@@ -405,10 +407,7 @@ fn open_folder_should_use_native_picker(spec: Option<&LaunchSpec>) -> bool {
 fn fallback_remote_root(spec: Option<&LaunchSpec>) -> Option<ExplorerRoot> {
     let spec = spec?;
     match &spec.file_namespace {
-        FileNamespace::Ssh => spec
-            .ssh
-            .clone()
-            .map(|cfg| ExplorerRoot::ssh(cfg, "/")),
+        FileNamespace::Ssh => spec.ssh.clone().map(|cfg| ExplorerRoot::ssh(cfg, "/")),
         FileNamespace::Wsl {
             distro: Some(distro),
         } => Some(ExplorerRoot::wsl(
@@ -659,6 +658,18 @@ impl Tab {
             welcome: false,
         }
     }
+}
+
+fn should_reset_explorer_for_welcome_tab(
+    active_tab: &Tab,
+    explorer_pane: Option<PaneId>,
+    current_root: &ExplorerRoot,
+    default_root: &ExplorerRoot,
+) -> bool {
+    if !active_tab.welcome || explorer_pane == Some(WELCOME_DUMMY) {
+        return false;
+    }
+    explorer_pane.is_some() || current_root != default_root
 }
 
 actions!(
@@ -1114,10 +1125,26 @@ impl Workspace {
                     }
                 }
                 QuickLookEvent::Close => {
-                    ws.quick_look.update(cx, |v, cx| v.close(cx));
+                    let closed = ws.quick_look.update(cx, |v, cx| v.request_close(cx));
+                    if closed {
+                        ws.quick_look_open = false;
+                        ws.ql_rail_pane = None; // reset on close
+                        ws.ql_refocus_pane = true; // refocus the pane in next render
+                    }
+                    cx.notify();
+                }
+                QuickLookEvent::CloseConfirmed => {
                     ws.quick_look_open = false;
-                    ws.ql_rail_pane = None; // reset on close
-                    ws.ql_refocus_pane = true; // refocus the pane in next render
+                    ws.ql_rail_pane = None;
+                    ws.ql_refocus_pane = true;
+                    cx.notify();
+                }
+                QuickLookEvent::QuitConfirmed => {
+                    crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+                        crate::platform::remove_tray_icon(th.0);
+                    }
+                    cx.quit();
                     cx.notify();
                 }
                 QuickLookEvent::FileSaved(_path) => {
@@ -1642,6 +1669,35 @@ impl Workspace {
         cx.notify();
     }
 
+    fn reset_explorer_for_welcome_tab(&mut self, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(self.active) else {
+            return;
+        };
+        let default_root = default_host_root();
+        let current_root = self.explorer.read(cx).root();
+        if !should_reset_explorer_for_welcome_tab(
+            tab,
+            self.explorer_pane,
+            &current_root,
+            &default_root,
+        ) {
+            return;
+        }
+
+        if let Some(prev) = self.explorer_pane {
+            if prev != WELCOME_DUMMY && self.panes.contains_key(&prev) {
+                let snap = self.explorer.read(cx).snapshot();
+                self.explorer_states.insert(prev, snap);
+            }
+            self.explorer_states
+                .retain(|id, _| self.panes.contains_key(id));
+        }
+
+        self.explorer
+            .update(cx, |e, cx| e.set_browser_root(default_root, cx));
+        self.explorer_pane = Some(WELCOME_DUMMY);
+    }
+
     // ---- command palette (M4) ----
 
     /// Open/close the launcher (Ctrl+Shift+P). Open steals key focus; close
@@ -1680,16 +1736,17 @@ impl Workspace {
     ) {
         self.quick_look_open = !self.quick_look_open;
         if !self.quick_look_open {
-            self.refocus_after_quick_look(window, cx);
+            let closed = self.quick_look.update(cx, |v, cx| v.request_close(cx));
+            if closed {
+                self.refocus_after_quick_look(window, cx);
+            } else {
+                self.quick_look_open = true;
+            }
         }
         cx.notify();
     }
 
-    fn open_quick_look_diff_target(
-        &mut self,
-        target: RailFileTarget,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_quick_look_diff_target(&mut self, target: RailFileTarget, cx: &mut Context<Self>) {
         self.quick_look.update(cx, |v, cx| match target {
             RailFileTarget::Local(path) => v.open_diff(path, cx),
             RailFileTarget::Remote(file) => v.open_remote_diff(file, cx),
@@ -1712,6 +1769,22 @@ impl Workspace {
         } else {
             self.refocus_active(window, cx);
         }
+    }
+
+    fn request_quit(&mut self, cx: &mut Context<Self>) {
+        if self.quick_look_open {
+            let can_quit = self.quick_look.update(cx, |v, cx| v.request_quit(cx));
+            if !can_quit {
+                self.app_menu_open = false;
+                cx.notify();
+                return;
+            }
+        }
+        crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
+            crate::platform::remove_tray_icon(th.0);
+        }
+        cx.quit();
     }
 
     /// The palette's current rows (aggregated + drill-resolved + query-filtered).
@@ -1829,6 +1902,7 @@ impl Workspace {
         // there launches the chosen session into this tab.
         self.tabs.push(Tab::welcome());
         self.active = self.tabs.len() - 1;
+        self.explorer_pane = None;
         cx.notify();
     }
 
@@ -2493,13 +2567,7 @@ impl Workspace {
                     "退出",
                     Some("⌃⇧Q"),
                     true,
-                    Box::new(|_t, _w, cx| {
-                        crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
-                        if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
-                            crate::platform::remove_tray_icon(th.0);
-                        }
-                        cx.quit();
-                    }),
+                    Box::new(|this, _w, cx| this.request_quit(cx)),
                 )),
             vec![soft_shadow(30.0, 80.0, -24.0, 0.9)], // mockup .appmenu shadow
         );
@@ -2693,7 +2761,8 @@ impl Workspace {
                 if let Some(picker) = self.remote_dir_picker.as_mut() {
                     picker.move_selection(-1);
                     let sel = picker.selected;
-                    self.remote_dir_scroll.scroll_to_item(sel, ScrollStrategy::Center);
+                    self.remote_dir_scroll
+                        .scroll_to_item(sel, ScrollStrategy::Center);
                     cx.notify();
                 }
             }
@@ -2701,7 +2770,8 @@ impl Workspace {
                 if let Some(picker) = self.remote_dir_picker.as_mut() {
                     picker.move_selection(1);
                     let sel = picker.selected;
-                    self.remote_dir_scroll.scroll_to_item(sel, ScrollStrategy::Center);
+                    self.remote_dir_scroll
+                        .scroll_to_item(sel, ScrollStrategy::Center);
                     cx.notify();
                 }
             }
@@ -2979,9 +3049,9 @@ impl Workspace {
                 .items_center()
                 .bg(rgba(0x0a0b118c))
                 .track_focus(&self.remote_dir_focus)
-                .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
-                    this.on_remote_dir_key(ev, w, cx)
-                }))
+                .on_key_down(
+                    cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_remote_dir_key(ev, w, cx)),
+                )
                 .child(div().h(px(110.)))
                 .child(panel),
         )
@@ -5860,7 +5930,6 @@ impl Render for Workspace {
             }
         }
         let focused = self.tabs[active].focused;
-        let ui = &self.config.theme.ui;
 
         // Explorer follows the focused pane's effective cwd. Two distinct cases,
         // each with its own tree-state policy (面板解耦):
@@ -5870,12 +5939,15 @@ impl Render for Workspace {
         //   • Same pane, cwd changed (OSC 7 `cd`) → `follow_root`, which keeps the
         //     expansion for the direct ancestry (子目录保留展开态).
         // Compare roots before re-rooting so we only rebuild when the path
-        // actually changed (never every frame). Skip welcome tabs (no panes).
-        if !self.tabs[active].welcome {
+        // actually changed (never every frame). Welcome tabs have no real pane,
+        // so they reset the shared explorer to the default Host root.
+        if self.tabs[active].welcome {
+            self.reset_explorer_for_welcome_tab(cx);
+        } else {
             if Some(focused) != self.explorer_pane {
                 // Focus switched panes — stash the old pane's state, load the new.
                 if let Some(prev) = self.explorer_pane {
-                    if self.panes.contains_key(&prev) {
+                    if prev != WELCOME_DUMMY && self.panes.contains_key(&prev) {
                         let snap = self.explorer.read(cx).snapshot();
                         self.explorer_states.insert(prev, snap);
                     }
@@ -5902,6 +5974,7 @@ impl Render for Workspace {
                 }
             }
         }
+        let ui = &self.config.theme.ui;
 
         // Each tab labels itself with its focused pane's OSC title, falling back
         // to "Term N", and carries that pane's agent for an identity dot.
@@ -6247,8 +6320,11 @@ impl Render for Workspace {
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|ws, _e, _w, cx| {
-                        ws.quick_look_open = false;
-                        ws.ql_refocus_pane = true;
+                        let closed = ws.quick_look.update(cx, |v, cx| v.request_close(cx));
+                        if closed {
+                            ws.quick_look_open = false;
+                            ws.ql_refocus_pane = true;
+                        }
                         cx.notify();
                     }),
                 )
@@ -6300,13 +6376,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_explorer))
             .on_action(cx.listener(Self::toggle_quick_look))
             .on_action(cx.listener(Self::new_session))
-            .on_action(cx.listener(|_this, _: &Quit, _w, cx| {
-                crate::platform::QUITTING.store(true, std::sync::atomic::Ordering::Release);
-                if let Some(th) = cx.try_global::<crate::TrayHwnd>() {
-                    crate::platform::remove_tray_icon(th.0);
-                }
-                cx.quit();
-            }))
+            .on_action(cx.listener(|this, _: &Quit, _w, cx| this.request_quit(cx)))
             // Divider drag: the handle's mouse-down sets `divider_drag`; the move
             // (tracked at the root so it keeps working when the cursor leaves the
             // thin handle) recomputes weights; mouse-up anywhere ends it.
@@ -6580,19 +6650,31 @@ mod tests {
         let out = dedup_agent_profiles(vec![
             agent("claude", "claude", 0xF79AC0), // stale leftover
             shell.clone(),
-            agent("codex", "codex", 0x000000), // stale leftover
+            agent("codex", "codex", 0x000000),   // stale leftover
             agent("claude", "claude", 0x7AA2F7), // user's new one → kept (latest)
-            agent("codex", "codex", 0x73DACA),  // user's new one → kept
+            agent("codex", "codex", 0x73DACA),   // user's new one → kept
         ]);
         // Exactly one claude + one codex + the shell.
         assert_eq!(out.len(), 3);
-        let claude: Vec<_> = out.iter().filter(|p| p.agent.as_deref() == Some("claude")).collect();
-        let codex: Vec<_> = out.iter().filter(|p| p.agent.as_deref() == Some("codex")).collect();
+        let claude: Vec<_> = out
+            .iter()
+            .filter(|p| p.agent.as_deref() == Some("claude"))
+            .collect();
+        let codex: Vec<_> = out
+            .iter()
+            .filter(|p| p.agent.as_deref() == Some("codex"))
+            .collect();
         assert_eq!(claude.len(), 1);
         assert_eq!(codex.len(), 1);
         // Latest (last) occurrence wins → the user's accents, not the stale ones.
-        assert_eq!(claude[0].accent, Some(tn_config::Color::new(0x7A, 0xA2, 0xF7)));
-        assert_eq!(codex[0].accent, Some(tn_config::Color::new(0x73, 0xDA, 0xCA)));
+        assert_eq!(
+            claude[0].accent,
+            Some(tn_config::Color::new(0x7A, 0xA2, 0xF7))
+        );
+        assert_eq!(
+            codex[0].accent,
+            Some(tn_config::Color::new(0x73, 0xDA, 0xCA))
+        );
         // Non-agent profiles are never deduped.
         assert!(out.iter().any(|p| p.name == "pwsh"));
     }
@@ -6669,6 +6751,22 @@ mod tests {
         ssh.file_namespace = FileNamespace::Ssh;
         ssh.ssh = Some(ssh_cfg());
         assert!(!open_folder_should_use_native_picker(Some(&ssh)));
+    }
+
+    #[test]
+    fn welcome_tab_resets_explorer_from_previous_pane() {
+        let previous_root = ExplorerRoot::ssh(ssh_cfg(), "/home/alice/project");
+        let default_root = ExplorerRoot::host(std::path::PathBuf::from(r"C:\Users\Alice"));
+
+        assert!(
+            should_reset_explorer_for_welcome_tab(
+                &Tab::welcome(),
+                Some(42),
+                &previous_root,
+                &default_root,
+            ),
+            "welcome tabs must not keep the explorer root/state from the last real pane"
+        );
     }
 
     fn split(axis: Axis, kids: Vec<Node>) -> Node {

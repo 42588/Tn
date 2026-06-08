@@ -7387,6 +7387,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tn-editor"
+version = "0.0.0"
+
+[[package]]
 name = "tn-pty"
 version = "0.0.0"
 dependencies = [
@@ -7430,6 +7434,7 @@ dependencies = [
  "tn-blocks",
  "tn-config",
  "tn-core",
+ "tn-editor",
  "tn-pty",
  "tn-shell",
  "tracing",

@@ -58,7 +58,12 @@ impl RemoteDirPicker {
     }
 
     pub(crate) fn visible_dirs(&self) -> Vec<PickerEntry> {
-        let mut dirs: Vec<_> = self.entries.iter().filter(|entry| entry.is_dir).cloned().collect();
+        let mut dirs: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.is_dir)
+            .cloned()
+            .collect();
         dirs.sort_by(|a, b| {
             a.name
                 .to_ascii_lowercase()
@@ -82,7 +87,9 @@ impl RemoteDirPicker {
 
     pub(crate) fn apply_entries(&mut self, entries: Vec<PickerEntry>) {
         self.entries = entries;
-        self.selected = self.selected.min(self.visible_dirs().len().saturating_sub(1));
+        self.selected = self
+            .selected
+            .min(self.visible_dirs().len().saturating_sub(1));
         self.loading = false;
         self.error = None;
     }

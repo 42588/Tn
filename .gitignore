@@ -1,4 +1,6 @@
 /target
+# Alternate target dirs (e.g. CARGO_TARGET_DIR to avoid locking a running tn.exe)
+/target-*
 *.pdb
 *.rs.bk
 .DS_Store
