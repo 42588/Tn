@@ -40,7 +40,8 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 
 ### Fixed(2026-06-08:TnE-12 首刀 — 自绘路径下查找三项真机回归)
 - **查找跳转**:`find_next` 在 `el_render` 下走新增 `el_center_row`(命中行滚到视口纵向居中)并 pin `last_follow_cursor`,防 render 顶的 `el_follow_caret` 把它边缘弹走(旧实现只调 `uniform_list::scroll_to_item`,自绘路径无效 → 不跳)。
-- **命中高亮(突出显示)**:`file_element` 实时算 `all_matches(query)`,`paint_file_preview` 加 `matches` 参数,逐行画 `cola(ui.accent_alt,0.20)` 底色(与当前命中的选区 `accent 0.22` 异色)。此前自绘只画选区(当前一处),无「全部命中」高亮。
+- **命中高亮(突出显示)**:`file_element` 实时算 `all_matches(query)`,`paint_file_preview` 加 `matches` 参数,逐行画底色(与当前命中的选区 `accent` 异色)。此前自绘只画选区(当前一处),无「全部命中」高亮。**底色不醒目复修**:从 `cola(accent_alt,0.20)` 纯填充升为 `gpui::quad`(`accent_alt 0.38` 填充 + `0.85` 1px 描边 + 2px 圆角),在密集语法着色行上也清晰可辨。
+- **查找横向跟随**:命中落在需横滚才可见的长行位置时不跳过去——`find_next` 在 `el_center_row`(纵向居中)外新增 `el_reveal_col`(命中列超出视口时把 `hscroll_px` 横向居中到该列),纵横双轴都跟随。
 - **查找框输入中文**:根因——查找开时不注册 IME handler、且 `on_key` 对可打印键 `stop_propagation`(gpui 跳过 `translate_message`,微软拼音无法合成,同编辑器旧坑)。修:`find_key` 只接管 Esc/Enter/Tab/Backspace 返回 `handled`,**可打印键放行**给 IME handler;`handle_input` 改 editing 即注册(不再 gate `!find_open`);`replace_text_in_range` 按 `find_open` 把提交/合成文本路由进 `find_query`/`replace_query`(`find_input`),查找条 active 字段回显 `ime_marked` preedit、正文不重复画。`cargo test -p tn-ui --lib` 140 测全绿。真机待:拼音打查找 + 高亮 + Enter 居中跳转。
 
 ### Changed(2026-06-08:TnE-10 收尾 + TnE-11 自绘编辑器,默认翻转)

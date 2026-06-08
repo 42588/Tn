@@ -2916,10 +2916,12 @@ impl QuickLook {
             self.sync_edit_mirror();
             self.scroll
                 .scroll_to_item(range.start.0, ScrollStrategy::Center);
-            // Self-paint path: center the match row and pin the de-bounced follow so
-            // the render-time `el_follow_caret` keeps it (won't edge-snap it away).
+            // Self-paint path: center the match row + reveal its column (long lines
+            // need a horizontal scroll), then pin the de-bounced follow so the
+            // render-time `el_follow_caret` keeps it (won't edge-snap it away).
             if self.el_render {
                 self.el_center_row(range.start.0);
+                self.el_reveal_col(range.start.0, range.start.1);
                 self.last_follow_cursor = Some(self.cursor);
             }
         }
@@ -2945,6 +2947,44 @@ impl QuickLook {
         let content_h = total as f32 * ROW_H;
         let vmin = (vh - content_h).min(0.0);
         self.el_scroll_y = target.clamp(vmin, 0.0);
+    }
+
+    /// Self-paint: horizontally scroll so char `col` on `row` is comfortably in view —
+    /// centered when it would otherwise be off-screen (long lines need this for find-
+    /// jump). Leaves `hscroll_px` alone when the column is already within a margin.
+    fn el_reveal_col(&mut self, row: usize, col: usize) {
+        let vw = f32::from(self.code_bounds.borrow().size.width);
+        if vw <= 0.0 {
+            return;
+        }
+        let char_w = self.char_w;
+        let line = self.row_text(row).unwrap_or("").to_string();
+        let caret_x =
+            CODE_GUTTER + crate::editor::geometry::prefix_cols(&line, col) as f32 * char_w;
+        let max_disp = if self.editing {
+            self.edit
+                .lines()
+                .borrow()
+                .iter()
+                .map(|l| disp_width(l))
+                .max()
+                .unwrap_or(0)
+        } else {
+            match &self.file_data {
+                QuickLookData::Text { lines, .. } => {
+                    lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
+                }
+                _ => 0,
+            }
+        };
+        let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+        let max_off = (content_w - vw).max(0.0);
+        let margin = char_w * 4.0;
+        // caret_x is in content coords (gutter + cols, pre-scroll); the visible band is
+        // [hscroll_px, hscroll_px + vw]. Re-center only when it falls outside the margin.
+        if caret_x < self.hscroll_px + margin || caret_x > self.hscroll_px + vw - margin {
+            self.hscroll_px = (caret_x - vw * 0.5).clamp(0.0, max_off);
+        }
     }
 
     fn replace_current(&mut self) {
@@ -3691,8 +3731,11 @@ fn paint_file_preview(
     let gutter_color: Hsla = col(ui.muted).into();
     let sel_bg: Hsla = cola(ui.accent, 0.22).into();
     // Find highlight (every occurrence) — a distinct hue from the selection so the
-    // current match (selection, accent) stands out among the rest (accent_alt).
-    let match_bg: Hsla = cola(ui.accent_alt, 0.20).into();
+    // current match (selection, accent) stands out among the rest (accent_alt). When
+    // a find is active each occurrence gets a clearly visible fill + a thin accent_alt
+    // outline so it reads as "highlighted" even on busy syntax-colored lines.
+    let match_bg: Hsla = cola(ui.accent_alt, 0.38).into();
+    let match_border: Hsla = cola(ui.accent_alt, 0.85).into();
     // Reverse-block caret (terminal-style) + IME preedit colors (editing only).
     let caret_bg: Hsla = col(ui.foreground).into();
     let caret_fg: Hsla = col(ui.chrome_bg).into();
@@ -3721,18 +3764,23 @@ fn paint_file_preview(
         for row in pre.rows.clone() {
             let Some(line) = lines.get(row) else { continue };
             let y = px(top + row_top(row, scroll_y, ROW_H));
-            // Find highlights (突出显示): every query occurrence on this row, painted
-            // under the text + selection (matches are single-line: start.0 == end.0).
+            // Find highlights (突出显示): every query occurrence on this row, a clearly
+            // visible fill + thin outline so it reads as highlighted on busy lines.
+            // Painted under the text + selection (matches are single-line: s.0 == e.0).
             for (ms, me) in matches.iter().filter(|(s, _)| s.0 == row) {
                 let xs = left + pre.content_x + prefix_cols(line, ms.1) as f32 * char_w;
                 let xe = left + pre.content_x + prefix_cols(line, me.1) as f32 * char_w;
                 if xe > xs {
-                    window.paint_quad(fill(
+                    window.paint_quad(gpui::quad(
                         Bounds {
                             origin: point(px(xs), y),
                             size: size(px(xe - xs), line_h),
                         },
+                        px(2.0),
                         match_bg,
+                        px(1.0),
+                        match_border,
+                        gpui::BorderStyle::Solid,
                     ));
                 }
             }
