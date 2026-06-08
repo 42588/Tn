@@ -3,6 +3,10 @@
 //! This crate intentionally has no GPUI dependency. UI hosts such as Quick Look
 //! consume these primitives instead of owning editor behavior themselves.
 
+pub mod line_layout;
+
+pub use line_layout::{LineLayout, VisualLine, WrapMode};
+
 /// Cursor position in logical `(row, char_column)` coordinates.
 pub type Cursor = (usize, usize);
 
