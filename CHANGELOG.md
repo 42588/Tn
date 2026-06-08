@@ -38,6 +38,9 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Added(2026-06-08:TnE-10 自绘预览选区/复制/CJK 命中 + 横滚轮)
+- **自绘 File 预览的只读选区 / 复制 / CJK 命中**(`TN_QL_ELEMENT=1`):`file_element` 加鼠标 down/move/up——行号由 y 反推(含纵向滚动、clamp)、列经 `caret_col_at_x`(点击)/`hover_char_at_x`(拖选,含光标字符语义)+ `hscroll_px` 偏移 + CJK 双宽,`pressed_button` 兜底结束拖选;`paint_file_preview` 加 `sel` 画 `cola(accent,0.22)` 选区底色。复用既有 `place_cursor`/`copy`/`select_all`,`Ctrl+C`/`Ctrl+A` 即生效。另补 Shift+滚轮 / 触控板横向滚动。`cargo test -p tn-ui --lib` 140 测全绿。旧 `uniform_list` File 路径暂留默认 fallback,真机确认 parity 后再下线。
+
 ### Added(2026-06-08:TnE-09 只读自绘 File 预览,env 门控)
 - **`TN_QL_ELEMENT=1` 自绘只读 File 预览**:新增 `paint_file_preview` + `QuickLook::file_element`,File 只读预览可改走 GPUI `canvas` 自绘(行号右对齐 / 语法着色文本 / 横滚 thumb),用 `editor::{geometry,prepaint}` 模型按 1/2 列网格逐段 `shape_line`+`paint`(ASCII 连排、CJK 单字 2 列步进)复刻固定单元格防漂移;纵向 `el_scroll_y` 滚轮驱动 + clamp,横向复用 `hscroll_px`,文本经 `with_content_mask` 裁到 gutter 右侧。**默认关**——不设 env 即旧 `uniform_list` 路径(一键回退)。`cargo test -p tn-ui --lib` 140 测全绿、默认路径零改动;真机肉眼对照待 owner(选区/复制是 TnE-10)。
 

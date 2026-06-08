@@ -2123,11 +2123,15 @@ impl QuickLook {
         let char_w = self.char_w;
         let scroll_y = self.el_scroll_y;
         let hscroll = self.hscroll_px;
+        let sel = self.sel_range();
         let bounds_cell = self.code_bounds.clone();
         let total = lines.len();
         let max_disp = lines.iter().map(|l| disp_width(l)).max().unwrap_or(0);
         let lines_paint = lines.clone();
 
+        // Row under a pointer y (from the stashed viewport bounds + vertical scroll),
+        // clamped to the document. Column comes from `row_text` + a CJK-aware hit-test
+        // (`rel + hscroll_px`), exactly like the old `uniform_list` per-row handlers.
         div()
             .flex_1()
             .min_h(px(0.))
@@ -2156,10 +2160,62 @@ impl QuickLook {
                 }
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                    let row = el_row_at(this, f32::from(ev.position.y), total);
+                    let rel = el_rel_x(this, f32::from(ev.position.x));
+                    let col = this
+                        .row_text(row)
+                        .map(|l| caret_col_at_x(l, rel, char_w))
+                        .unwrap_or(0);
+                    this.place_cursor(row, col, ev.modifiers.shift);
+                    this.edit_drag = true;
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
+                // Left-drag → extend selection; release-elsewhere fallback ends the drag
+                // (mouse_up can be missed if the pointer leaves the overlay — 踩过的坑).
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    if this.edit_drag {
+                        this.edit_drag = false;
+                    }
+                    return;
+                }
+                if !this.edit_drag {
+                    return;
+                }
+                let row = el_row_at(this, f32::from(ev.position.y), total);
+                let rel = el_rel_x(this, f32::from(ev.position.x));
+                let hover = this
+                    .row_text(row)
+                    .map(|l| hover_char_at_x(l, rel, char_w))
+                    .unwrap_or(0);
+                let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                // Include the hovered char when dragging right (selection is half-open).
+                let col = if (row, hover) >= anchor {
+                    hover + 1
+                } else {
+                    hover
+                };
+                this.place_cursor(row, col, true);
+                cx.notify();
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
+                    if this.edit_drag {
+                        this.edit_drag = false;
+                        cx.notify();
+                    }
+                }),
+            )
             .child(
                 canvas(
                     move |bounds, _window, _app| {
-                        // Stash the viewport bounds so the wheel handler can clamp.
+                        // Stash the viewport bounds so wheel + hit-test can read it.
                         *bounds_cell.borrow_mut() = bounds;
                     },
                     move |bounds, _prepaint, window, cx| {
@@ -2169,6 +2225,7 @@ impl QuickLook {
                             char_w,
                             scroll_y,
                             hscroll,
+                            sel,
                             &config,
                             window,
                             cx,
@@ -3342,23 +3399,40 @@ fn coalesce_spans(line: &str) -> Vec<(smol_str::SmolStr, Tint)> {
     out
 }
 
+/// Document row under a viewport y for the self-paint File preview, clamped to the
+/// document. Uses the stashed canvas bounds + vertical scroll (`el_scroll_y` ≤ 0).
+fn el_row_at(ql: &QuickLook, pos_y: f32, total: usize) -> usize {
+    let top = f32::from(ql.code_bounds.borrow().origin.y);
+    let r = ((pos_y - top - ql.el_scroll_y) / ROW_H).floor();
+    (r.max(0.0) as usize).min(total.saturating_sub(1))
+}
+
+/// Pointer x relative to the glyph start (after the gutter) plus horizontal scroll,
+/// for the self-paint File preview hit-test (feeds `caret_col_at_x`/`hover_char_at_x`).
+fn el_rel_x(ql: &QuickLook, pos_x: f32) -> f32 {
+    let left = f32::from(ql.code_bounds.borrow().origin.x);
+    pos_x - left - CODE_GUTTER + ql.hscroll_px
+}
+
 /// TnE-09: read-only **self-painted** File preview (env-gated `TN_QL_ELEMENT`).
 /// Draws line numbers + syntax-tinted text + a horizontal scrollbar via the shared
 /// `editor::{geometry,prepaint}` model. Each glyph is positioned on the 1/2-col
 /// grid (CJK = 2 cols) — ASCII runs shaped together, each CJK char placed at its
 /// 2-col step — so columns stay aligned exactly like the `uniform_list` fixed-cell
 /// path (no CJK drift, see 踩过的坑). `scroll_y` ≤ 0 (vertical), `hscroll` ≥ 0.
+#[allow(clippy::too_many_arguments)]
 fn paint_file_preview(
     bounds: Bounds<Pixels>,
     lines: &[String],
     char_w: f32,
     scroll_y: f32,
     hscroll: f32,
+    sel: Option<((usize, usize), (usize, usize))>,
     config: &Loaded,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    use crate::editor::geometry::Metrics;
+    use crate::editor::geometry::{prefix_cols, Metrics};
     use crate::editor::prepaint::{gutter_label, prepaint_readonly, row_top};
 
     let m = Metrics::new(char_w);
@@ -3373,6 +3447,7 @@ fn paint_file_preview(
     let font = gpui::font(&config.font().family);
     let ui = &config.theme.ui;
     let gutter_color: Hsla = col(ui.muted).into();
+    let sel_bg: Hsla = cola(ui.accent, 0.22).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
     let gutter = m.gutter;
@@ -3396,6 +3471,25 @@ fn paint_file_preview(
         for row in pre.rows.clone() {
             let Some(line) = lines.get(row) else { continue };
             let y = px(top + row_top(row, scroll_y, ROW_H));
+            // Selection background (read-only preview drag-select). Per-row char span
+            // [ss, ee) → display-col x range, painted under the text. Mirrors
+            // `edit_row_cached`: full line for interior rows, accent @ 0.22.
+            if let Some((s, e)) = sel {
+                if row >= s.0 && row <= e.0 {
+                    let nchars = line.chars().count();
+                    let ss = if row == s.0 { s.1 } else { 0 };
+                    let ee = if row == e.0 { e.1 } else { nchars };
+                    if ss < ee {
+                        let xs = left + pre.content_x + prefix_cols(line, ss) as f32 * char_w;
+                        let xe = left + pre.content_x + prefix_cols(line, ee) as f32 * char_w;
+                        let rect = Bounds {
+                            origin: point(px(xs), y),
+                            size: size(px((xe - xs).max(0.0)), line_h),
+                        };
+                        window.paint_quad(fill(rect, sel_bg));
+                    }
+                }
+            }
             let mut cols = 0.0f32; // display columns consumed so far on this row
             for (text, tint) in coalesce_spans(line) {
                 let color: Hsla = tint_color(config, tint).into();
