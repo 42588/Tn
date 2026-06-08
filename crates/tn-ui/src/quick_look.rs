@@ -2125,6 +2125,7 @@ impl QuickLook {
         let hscroll = self.hscroll_px;
         let bounds_cell = self.code_bounds.clone();
         let total = lines.len();
+        let max_disp = lines.iter().map(|l| disp_width(l)).max().unwrap_or(0);
         let lines_paint = lines.clone();
 
         div()
@@ -2134,11 +2135,25 @@ impl QuickLook {
             .overflow_hidden()
             .bg(rgba(0x1e1e1e))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
-                let vh = f32::from(this.code_bounds.borrow().size.height);
-                let dy = f32::from(ev.delta.pixel_delta(px(ROW_H)).y);
-                let content_h = total as f32 * ROW_H;
-                let min = (vh - content_h).min(0.0); // ≤ 0; 0 when content fits
-                this.el_scroll_y = (this.el_scroll_y + dy).clamp(min, 0.0);
+                let (vw, vh) = {
+                    let b = this.code_bounds.borrow();
+                    (f32::from(b.size.width), f32::from(b.size.height))
+                };
+                let d = ev.delta.pixel_delta(px(ROW_H));
+                let (dx, dy) = (f32::from(d.x), f32::from(d.y));
+                // Horizontal: Shift+wheel (no native x axis) or a trackpad x delta.
+                // Content width mirrors the renderer (gutter + longest line + 1 col).
+                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                let hmax = (content_w - vw).max(0.0);
+                if ev.modifiers.shift && hmax > 0.0 {
+                    this.hscroll_px = (this.hscroll_px - dy).clamp(0.0, hmax);
+                } else if dx != 0.0 && hmax > 0.0 {
+                    this.hscroll_px = (this.hscroll_px - dx).clamp(0.0, hmax);
+                } else {
+                    let content_h = total as f32 * ROW_H;
+                    let vmin = (vh - content_h).min(0.0); // ≤ 0; 0 when content fits
+                    this.el_scroll_y = (this.el_scroll_y + dy).clamp(vmin, 0.0);
+                }
                 cx.notify();
             }))
             .child(
