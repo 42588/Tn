@@ -3592,6 +3592,23 @@ fn align_table(rows: &[Vec<String>]) -> Vec<String> {
         .collect()
 }
 
+fn is_diff_metadata_line(line: &str) -> bool {
+    line.starts_with("diff ")
+        || line.starts_with("index ")
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("old mode")
+        || line.starts_with("new mode")
+        || line.starts_with("new file")
+        || line.starts_with("deleted file")
+        || line.starts_with("similarity")
+        || line.starts_with("dissimilarity")
+        || line.starts_with("rename ")
+        || line.starts_with("copy ")
+        || line.starts_with("Binary files")
+        || line.starts_with('\\')
+}
+
 /// Parse `git diff --no-color` output into renderable lines (tracking new-file line
 /// numbers from each hunk header). Pure → unit-testable headless.
 fn parse_diff(text: &str) -> Vec<DiffLine> {
@@ -3602,15 +3619,7 @@ fn parse_diff(text: &str) -> Vec<DiffLine> {
     // header maps back to the right `FileDiff` hunk for accept/reject.
     let mut hunk_no = 0usize;
     for line in text.lines() {
-        if line.starts_with("diff ")
-            || line.starts_with("index ")
-            || line.starts_with("--- ")
-            || line.starts_with("+++ ")
-            || line.starts_with("old mode")
-            || line.starts_with("new mode")
-            || line.starts_with("similarity")
-            || line.starts_with("rename ")
-        {
+        if is_diff_metadata_line(line) {
             continue;
         }
         if let Some(rest) = line.strip_prefix("@@") {
@@ -6020,6 +6029,31 @@ mod tests {
         assert_eq!(d[4].new_no, Some(12));
         // empty input → no lines
         assert!(parse_diff("").is_empty());
+    }
+
+    #[test]
+    fn parse_diff_skips_new_file_metadata_before_hunk() {
+        let raw = concat!(
+            "diff --git a/tne13_diff_smoke.txt b/tne13_diff_smoke.txt\n",
+            "new file mode 100644\n",
+            "index 0000000..1111111\n",
+            "--- /dev/null\n",
+            "+++ b/tne13_diff_smoke.txt\n",
+            "@@ -0,0 +1,3 @@\n",
+            "+one\n",
+            "+中文 line\n",
+            "+very very long line\n",
+        );
+
+        let d = parse_diff(raw);
+
+        assert_eq!(d.len(), 4);
+        assert_eq!(d[0].kind, DiffKind::Hunk);
+        assert_eq!(d[0].text, "@@ -0,0 +1,3 @@");
+        assert_eq!(d[1].new_no, Some(1));
+        assert_eq!(d[1].text, "one");
+        assert_eq!(d[2].new_no, Some(2));
+        assert_eq!(d[3].new_no, Some(3));
     }
 
     #[test]
