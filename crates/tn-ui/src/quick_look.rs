@@ -13,7 +13,7 @@
 //! explorer keyboard focus + an editable text buffer); this is the visual overlay
 //! + click-to-open + Diff/File toggle. See docs/架构蓝图 §8 ①.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -1067,6 +1067,10 @@ pub struct QuickLook {
     el_render: bool,
     /// 自绘 File 预览的纵向滚动偏移(px,≤0 向下滚)。仅自绘路径用。
     el_scroll_y: f32,
+    /// TnE-12:查找/替换栏激活字段输入框的窗口坐标(每帧由 find_bar 里的占位
+    /// canvas 写入)。`bounds_for_range` 在 `find_open` 时据此把 IME 候选框定位到
+    /// 查找框旁,而非代码区光标(中文搜索时候选框才不会飘到正文)。
+    find_field_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 impl QuickLook {
@@ -1136,6 +1140,7 @@ impl QuickLook {
             // 强制回退旧 `uniform_list`(紧急逃生口)。
             el_render: std::env::var("TN_QL_LEGACY").is_err(),
             el_scroll_y: 0.0,
+            find_field_bounds: Rc::new(Cell::new(None)),
         }
     }
 
@@ -4100,6 +4105,18 @@ impl EntityInputHandler for QuickLook {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        // 查找/替换栏开着时,IME 合成文本进的是查找框 → 候选框必须贴查找框,而非
+        // 代码区光标(否则中文搜索时候选框飘到正文,与系统输入框心智不符)。find_bar
+        // 里的占位 canvas 每帧把激活字段输入框的窗口坐标写进 `find_field_bounds`;
+        // 取到则把候选框对齐到该框左缘、底缘(候选窗自然落在框下方)。
+        if self.find_open {
+            if let Some(b) = self.find_field_bounds.get() {
+                return Some(Bounds {
+                    origin: point(b.origin.x, b.origin.y + b.size.height),
+                    size: size(px(self.char_w.max(1.0)), px(ROW_H)),
+                });
+            }
+        }
         // Candidate window at the cursor: column is exact (gutter + col×char_w); the
         // row is approximated to the code area's vertical center (edits scroll the
         // cursor to center, and `uniform_list`'s scroll offset isn't readable in
@@ -4867,7 +4884,11 @@ impl Render for QuickLook {
         // ── 查找/替换条(编辑态 Ctrl+F / Ctrl+H 唤出;输入由 on_key 的 find_key 捕获)──
         let mono = SharedString::from(self.config.font().family.clone());
         let find_bar = (self.editing && self.find_open).then(|| {
+            let field_bounds = self.find_field_bounds.clone();
             let field = |label: &'static str, text: &str, active: bool| {
+                // 激活字段的输入框挂占位 canvas,把窗口坐标写进 `find_field_bounds`,
+                // 供 `bounds_for_range` 把 IME 候选框定位到查找框旁(TnE-12)。
+                let bounds_sink = active.then(|| field_bounds.clone());
                 div()
                     .flex()
                     .flex_row()
@@ -4881,6 +4902,7 @@ impl Render for QuickLook {
                     )
                     .child(
                         div()
+                            .relative()
                             .min_w(px(140.))
                             .px(px(7.))
                             .py(px(2.))
@@ -4904,7 +4926,17 @@ impl Render for QuickLook {
                                 }
                             } else {
                                 text.to_string()
-                            })),
+                            }))
+                            .when_some(bounds_sink, |d, sink| {
+                                d.child(
+                                    canvas(
+                                        move |bounds, _w, _cx| sink.set(Some(bounds)),
+                                        |_b, _s, _w, _cx| {},
+                                    )
+                                    .absolute()
+                                    .size_full(),
+                                )
+                            }),
                     )
             };
             let edit_lines = self.edit.lines();
