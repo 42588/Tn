@@ -2182,6 +2182,28 @@ impl QuickLook {
                     if this.edit_drag {
                         this.edit_drag = false;
                     }
+                    if this.hscroll_drag.is_some() {
+                        this.hscroll_drag = None;
+                    }
+                    return;
+                }
+                // Dragging the horizontal scrollbar thumb takes precedence over text drag.
+                if let Some(grab) = this.hscroll_drag {
+                    let (left, vw) = {
+                        let b = this.code_bounds.borrow();
+                        (f32::from(b.origin.x), f32::from(b.size.width))
+                    };
+                    let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                    let max_off = (content_w - vw).max(0.0);
+                    this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
+                        f32::from(ev.position.x),
+                        left,
+                        grab,
+                        content_w,
+                        vw,
+                        max_off,
+                    );
+                    cx.notify();
                     return;
                 }
                 if !this.edit_drag {
@@ -2206,8 +2228,9 @@ impl QuickLook {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
-                    if this.edit_drag {
+                    if this.edit_drag || this.hscroll_drag.is_some() {
                         this.edit_drag = false;
+                        this.hscroll_drag = None;
                         cx.notify();
                     }
                 }),
@@ -2233,6 +2256,59 @@ impl QuickLook {
                     },
                 )
                 .size_full(),
+            )
+            // Horizontal scrollbar hit strip (transparent, ~14px tall, bottom). The
+            // visible thin thumb is painted in the canvas; this strip makes it
+            // draggable. Down on the thumb → grab; down on the track → jump there.
+            // Bubbles to the container (no stop) when there's no overflow, so a click
+            // in the bottom row still selects text.
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(14.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            let (left, vw) = {
+                                let b = this.code_bounds.borrow();
+                                (f32::from(b.origin.x), f32::from(b.size.width))
+                            };
+                            let content_w =
+                                (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                            let max_off = (content_w - vw).max(0.0);
+                            if max_off <= 0.0 {
+                                return; // no overflow → let it bubble to selection
+                            }
+                            let thumb = crate::editor::geometry::h_scroll_thumb(
+                                content_w,
+                                vw,
+                                this.hscroll_px,
+                                max_off,
+                            );
+                            let rel = f32::from(ev.position.x) - left; // x within the track
+                            let grab =
+                                if rel >= thumb.thumb_x && rel <= thumb.thumb_x + thumb.thumb_w {
+                                    rel - thumb.thumb_x // grab the thumb where clicked
+                                } else {
+                                    // Click on the empty track → jump so the thumb centers here.
+                                    thumb.thumb_w / 2.0
+                                };
+                            this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
+                                f32::from(ev.position.x),
+                                left,
+                                grab,
+                                content_w,
+                                vw,
+                                max_off,
+                            );
+                            this.hscroll_drag = Some(grab);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
             )
     }
 
