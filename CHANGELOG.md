@@ -38,6 +38,10 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Changed(2026-06-08:TnE-10 收尾 + TnE-11 自绘编辑器,默认翻转)
+- **自绘 File 预览/编辑器现为默认**:`el_render` 默认开(`new()` 看 `TN_QL_LEGACY` 未设);`TN_QL_LEGACY=1` 强制回退旧 `uniform_list`(紧急逃生口,Diff 仍用旧路)。File 预览的选区/复制/CJK 命中/横滚已真机签收(owner)。
+- **TnE-11 编辑态自绘**:`file_element` 同时承载预览 + 编辑——编辑态行源走 `edit` 镜像(借用、不每帧深拷);`paint_file_preview` 加 `editing/caret/ime`:画瞬时反相块 caret(foreground 底 + chrome_bg 字)、选区底色、IME preedit(composing 串覆盖绘制 + accent 下划线);editing 时 `window.handle_input` 注册输入处理器(中文合成/WM_CHAR);新增 `el_follow_caret`(cursor 变才跟随的去抖,纵 `el_scroll_y` + 横 `follow_h_offset`)。输入 transaction 经 `Document`。`cargo build --workspace` + `cargo test -p tn-ui --lib` 140 测全绿。真机待验:连打/中文 IME/选区/查找滚动/保存;问题回退 `TN_QL_LEGACY=1`。完整 IME/鼠标/滚动 parity 收尾 = TnE-12。
+
 ### Added(2026-06-08:TnE-10 自绘预览选区/复制/CJK 命中 + 横滚轮)
 - **自绘 File 预览的只读选区 / 复制 / CJK 命中**(`TN_QL_ELEMENT=1`):`file_element` 加鼠标 down/move/up——行号由 y 反推(含纵向滚动、clamp)、列经 `caret_col_at_x`(点击)/`hover_char_at_x`(拖选,含光标字符语义)+ `hscroll_px` 偏移 + CJK 双宽,`pressed_button` 兜底结束拖选;`paint_file_preview` 加 `sel` 画 `cola(accent,0.22)` 选区底色。复用既有 `place_cursor`/`copy`/`select_all`,`Ctrl+C`/`Ctrl+A` 即生效。另补 Shift+滚轮 / 触控板横向滚动 + **横滚条 thumb 可拖拽**(底部 14px 命中条 + `h_scroll_thumb`/`h_offset_from_drag`,点 thumb 抓取 / 点轨道跳转)。`cargo test -p tn-ui --lib` 140 测全绿。真机已验选区/复制/CJK 命中(2026-06-08 owner);旧 `uniform_list` File 路径暂留默认 fallback,真机确认 parity 后再下线。
 

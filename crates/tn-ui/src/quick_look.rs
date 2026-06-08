@@ -1132,7 +1132,9 @@ impl QuickLook {
             hscroll_drag: None,
             hscroll_content_w: 0.0,
             last_follow_cursor: None,
-            el_render: std::env::var("TN_QL_ELEMENT").is_ok(),
+            // TnE-10 收尾:自绘 File 预览/编辑器现为默认路径;`TN_QL_LEGACY=1`
+            // 强制回退旧 `uniform_list`(紧急逃生口)。
+            el_render: std::env::var("TN_QL_LEGACY").is_err(),
             el_scroll_y: 0.0,
         }
     }
@@ -2113,21 +2115,98 @@ impl QuickLook {
         }
     }
 
+    /// TnE-11: caret-follow for the self-paint editor. Only when the cursor *changes*
+    /// (de-bounced via `last_follow_cursor`) — otherwise it would fight the user's
+    /// manual wheel/thumb scroll every frame (踩过的坑). Mutates `el_scroll_y`
+    /// (vertical) + `hscroll_px` (horizontal) so a freshly-moved caret is visible.
+    fn el_follow_caret(&mut self) {
+        if !self.editing {
+            return;
+        }
+        let cursor = self.cursor;
+        if self.last_follow_cursor == Some(cursor) {
+            return;
+        }
+        let (vw, vh) = {
+            let b = self.code_bounds.borrow();
+            (f32::from(b.size.width), f32::from(b.size.height))
+        };
+        if vw <= 0.0 || vh <= 0.0 {
+            return;
+        }
+        self.last_follow_cursor = Some(cursor);
+        let char_w = self.char_w;
+        // Horizontal: keep the caret within a 4-col margin of the viewport edges.
+        let line: String = self.edit.row_text(cursor.0).unwrap_or_default().to_string();
+        let caret_x =
+            CODE_GUTTER + crate::editor::geometry::prefix_cols(&line, cursor.1) as f32 * char_w;
+        let max_disp = self
+            .edit
+            .lines()
+            .borrow()
+            .iter()
+            .map(|l| disp_width(l))
+            .max()
+            .unwrap_or(0);
+        let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+        let max_off = (content_w - vw).max(0.0);
+        self.hscroll_px = crate::editor::geometry::follow_h_offset(
+            caret_x,
+            self.hscroll_px,
+            vw,
+            max_off,
+            char_w * 4.0,
+        );
+        // Vertical: scroll the caret row into view if it left the window.
+        let first = (-self.el_scroll_y / ROW_H).floor().max(0.0) as usize;
+        let rows = (vh / ROW_H).floor() as usize;
+        let last = first + rows.saturating_sub(1);
+        if cursor.0 < first {
+            self.el_scroll_y = -(cursor.0 as f32) * ROW_H;
+        } else if cursor.0 > last {
+            self.el_scroll_y = -((cursor.0 + 1) as f32 * ROW_H - vh);
+        }
+        let content_h = self.edit.line_count() as f32 * ROW_H;
+        let vmin = (vh - content_h).min(0.0);
+        self.el_scroll_y = self.el_scroll_y.clamp(vmin, 0.0);
+    }
+
     /// TnE-09: read-only self-painted File preview element (env-gated). A scrollable
     /// container whose `canvas` paints via [`paint_file_preview`]; vertical scroll is
     /// `el_scroll_y` driven by the wheel here (clamped to the content), horizontal is
     /// the shared `hscroll_px`. Default off — `render` only calls this when
     /// `TN_QL_ELEMENT` is set, so the `uniform_list` path stays the one-key fallback.
-    fn file_element(&self, lines: Arc<Vec<String>>, cx: &mut Context<Self>) -> impl IntoElement {
+    fn file_element(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let config = self.config.clone();
         let char_w = self.char_w;
         let scroll_y = self.el_scroll_y;
         let hscroll = self.hscroll_px;
         let sel = self.sel_range();
+        let editing = self.editing;
+        let caret = self.cursor;
+        let ime = self.ime_marked.clone();
+        let find_open = self.find_open;
+        let focus = self.focus_handle.clone();
+        let entity = cx.entity();
         let bounds_cell = self.code_bounds.clone();
-        let total = lines.len();
-        let max_disp = lines.iter().map(|l| disp_width(l)).max().unwrap_or(0);
-        let lines_paint = lines.clone();
+
+        // Line source: the edit-buffer mirror while editing (borrowed in paint — no
+        // per-frame clone), else the read-only `file_data` lines.
+        let edit_mirror = editing.then(|| self.edit.lines());
+        let view_lines = match &self.file_data {
+            QuickLookData::Text { lines, .. } if !editing => lines.clone(),
+            _ => Arc::new(Vec::new()),
+        };
+        let total = if editing {
+            self.edit.line_count()
+        } else {
+            view_lines.len()
+        };
+        let max_disp = if let Some(rc) = &edit_mirror {
+            rc.borrow().iter().map(|l| disp_width(l)).max().unwrap_or(0)
+        } else {
+            view_lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
+        };
 
         // Row under a pointer y (from the stashed viewport bounds + vertical scroll),
         // clamped to the document. Column comes from `row_text` + a CJK-aware hit-test
@@ -2242,13 +2321,34 @@ impl QuickLook {
                         *bounds_cell.borrow_mut() = bounds;
                     },
                     move |bounds, _prepaint, window, cx| {
+                        // Register the IME/text input handler while editing (no find
+                        // bar), exactly like the old uniform_list canvas — so 中文
+                        // composition + WM_CHAR land in `replace_text_in_range`.
+                        if editing && !find_open {
+                            window.handle_input(
+                                &focus,
+                                ElementInputHandler::new(bounds, entity.clone()),
+                                cx,
+                            );
+                        }
+                        let guard;
+                        let lines: &[String] = match &edit_mirror {
+                            Some(rc) => {
+                                guard = rc.borrow();
+                                guard.as_slice()
+                            }
+                            None => view_lines.as_slice(),
+                        };
                         paint_file_preview(
                             bounds,
-                            &lines_paint,
+                            lines,
                             char_w,
                             scroll_y,
                             hscroll,
                             sel,
+                            editing,
+                            caret,
+                            ime.as_deref(),
                             &config,
                             window,
                             cx,
@@ -3504,6 +3604,9 @@ fn paint_file_preview(
     scroll_y: f32,
     hscroll: f32,
     sel: Option<((usize, usize), (usize, usize))>,
+    editing: bool,
+    caret: (usize, usize),
+    ime: Option<&str>,
     config: &Loaded,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -3524,6 +3627,11 @@ fn paint_file_preview(
     let ui = &config.theme.ui;
     let gutter_color: Hsla = col(ui.muted).into();
     let sel_bg: Hsla = cola(ui.accent, 0.22).into();
+    // Reverse-block caret (terminal-style) + IME preedit colors (editing only).
+    let caret_bg: Hsla = col(ui.foreground).into();
+    let caret_fg: Hsla = col(ui.chrome_bg).into();
+    let accent: Hsla = col(ui.accent).into();
+    let view_bg: Hsla = rgba(0x1e1e1e).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
     let gutter = m.gutter;
@@ -3594,6 +3702,58 @@ fn paint_file_preview(
                         let _ = shaped.paint(point(x, y), line_h, window, cx);
                         cols += 2.0;
                         k += 1;
+                    }
+                }
+            }
+            // Reverse-block caret + IME preedit (editing only) on the caret row.
+            if editing && row == caret.0 {
+                let nchars = line.chars().count();
+                let cc = caret.1.min(nchars);
+                let cx0 = left + pre.content_x + prefix_cols(line, cc) as f32 * char_w;
+                if let Some(pre_s) = ime.filter(|s| !s.is_empty()) {
+                    // Composing: draw the preedit over the caret, covering following
+                    // text so it stays readable, with an accent underline.
+                    let pw = (disp_width(pre_s) as f32 * char_w).max(char_w);
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(cx0), y),
+                            size: size(px(pw), line_h),
+                        },
+                        view_bg,
+                    ));
+                    let run = mk_run(pre_s, col(ui.foreground).into());
+                    let shaped =
+                        window
+                            .text_system()
+                            .shape_line(pre_s.to_string().into(), fs, &[run], None);
+                    let _ = shaped.paint(point(px(cx0), y), line_h, window, cx);
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(cx0), px(f32::from(y) + ROW_H - 2.0)),
+                            size: size(px(pw), px(1.5)),
+                        },
+                        accent,
+                    ));
+                } else {
+                    // Solid reverse block: foreground fill, char redrawn in bg color.
+                    let ch = line.chars().nth(cc);
+                    let cell_cols = ch
+                        .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
+                        .unwrap_or(1.0);
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(cx0), y),
+                            size: size(px(cell_cols * char_w), line_h),
+                        },
+                        caret_bg,
+                    ));
+                    if let Some(c) = ch {
+                        let run = mk_run(&c.to_string(), caret_fg);
+                        let shaped =
+                            window
+                                .text_system()
+                                .shape_line(c.to_string().into(), fs, &[run], None);
+                        let _ = shaped.paint(point(px(cx0), y), line_h, window, cx);
                     }
                 }
             }
@@ -3840,6 +4000,12 @@ impl Render for QuickLook {
         if self.needs_focus {
             self.focus_handle.focus(window);
             self.needs_focus = false;
+        }
+        // Keep a freshly-moved caret visible in the self-paint editor (de-bounced).
+        // Done here, before any immutable `&self` borrows below, so the `&mut self`
+        // call doesn't conflict (it self-guards on `editing`).
+        if self.el_render {
+            self.el_follow_caret();
         }
         let ui = &self.config.theme.ui;
         let th = &self.config.theme;
@@ -4104,11 +4270,14 @@ impl Render for QuickLook {
             );
         } else if self.el_render
             && tab == Tab::File
-            && !editing
             && matches!(self.file_data, QuickLookData::Text { .. })
         {
-            // TnE-09: env-gated read-only self-painted File preview (default off).
-            body = body.child(self.file_element(lines.clone(), cx));
+            // TnE-09/10/11: self-painted File preview + editor (default on; set
+            // TN_QL_LEGACY=1 to force the old `uniform_list` path). Read-only preview
+            // and the live editor both render here; the old File branch below is the
+            // emergency fallback (Diff still uses it). caret-follow ran at the top of
+            // render (before the immutable borrows here).
+            body = body.child(self.file_element(cx));
         } else {
             let _sel_anchor = sel.as_ref().map(|s| s.0);
             // Longest line's display width (cols), computed BEFORE the list closure
