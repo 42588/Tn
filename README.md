@@ -101,11 +101,12 @@ tn-cli     headless ConPTY 烟雾测试工具
 
 ## 文档
 
-职责三分(**架构 · 设计 · 实现**)+ 参考:
+职责分层(**架构 · 产品体验 · 样式实现**)+ 参考:
 
-- [docs/架构蓝图.md](docs/架构蓝图.md) — **架构**:系统怎么搭(crate 划分、数据流、技术决策、路线图、开发指南)。
-- [docs/样式还原手册.md](docs/样式还原手册.md) — **实现**:HTML 原型 → gpui 的译法 + 权威数值表 §16(图形界面必走此路)。
-- [docs/参考资料.md](docs/参考资料.md) — 从 Windows Terminal 与 Ghostty 源码提炼、映射到 Tn 的设计要点。
+- [docs/系统架构索引.md](docs/系统架构索引.md) — **架构**:系统怎么搭(crate 划分、数据流、技术决策、路线图、开发指南)。
+- [docs/产品体验索引.md](docs/产品体验索引.md) — **产品体验**:用户可见 UX、交互原则、页面/面板入口。
+- [docs/界面样式实现规则.md](docs/界面样式实现规则.md) — **样式实现**:HTML 原型 → gpui 的译法 + 权威数值表 §16(图形界面必走此路)。
+- [docs/外部参考资料索引.md](docs/外部参考资料索引.md) — 从 Windows Terminal 与 Ghostty 源码提炼、映射到 Tn 的设计要点。
 - [CHANGELOG.md](CHANGELOG.md) — 各里程碑变更。
 - 设计原型:[design/mockup.html](design/mockup.html)(全窗)· [design/panels/](design/panels/)(逐面板,共享 calm-glass.css)。
 

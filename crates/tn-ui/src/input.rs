@@ -1,7 +1,7 @@
 //! Keyboard → terminal byte encoding.
 //!
 //! Follows the Windows Terminal `_encodeRegular` algorithm
-//! (`terminalInput.cpp`; see docs/参考资料.md §1). The single entry point is
+//! (`terminalInput.cpp`; see docs/外部参考资料索引.md §1). The single entry point is
 //! [`encode_key`], whose behavior is parameterized by [`InputMode`] (DECCKM /
 //! LNM, pulled live from the alacritty `Term` via `tn-core`). Four output
 //! shapes: `CSI <num>;<mod> <final>`, `SS3 <final>`, a literal byte string, or

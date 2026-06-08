@@ -1,6 +1,6 @@
 //! The unified usage model every agent reports through. Adapters translate
 //! their private logs into this shape; the UI renders it as a context ring /
-//! status bar (see docs/产品设计.md §5). Moved here from `tn-ai` so it's the
+//! status bar (see docs/产品体验索引.md §5). Moved here from `tn-ai` so it's the
 //! platform's contract, not a Claude/Codex-specific type.
 
 use serde::{Deserialize, Serialize};

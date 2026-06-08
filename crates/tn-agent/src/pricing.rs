@@ -3,7 +3,7 @@
 //! Maintained by hand (LiteLLM-style). Unknown models fall back to a zero-cost
 //! entry so the UI still shows tokens / context but never a wrong dollar figure.
 //! Subscription plans (Claude Max / Codex) should read these as "equivalent API
-//! cost", not a literal bill — see docs/产品设计.md §5.
+//! cost", not a literal bill — see docs/产品体验索引.md §5.
 
 /// Per-million-token rates + context window for a model family.
 #[derive(Clone, Copy, Debug, PartialEq)]

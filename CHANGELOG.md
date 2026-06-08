@@ -1,7 +1,7 @@
 # Changelog — Tn 终端
 
 本文件记录 Tn 各里程碑的变更,遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。
-版本对应开发蓝图([docs/架构蓝图.md](docs/架构蓝图.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
+版本对应开发蓝图([docs/系统架构索引.md](docs/系统架构索引.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
 
 > Tn 是 **Windows 优先、Rust、GPU 加速**的终端,为 vibe coding 设计:托管 Claude Code /
 > Codex 等 AI CLI,灵活平铺,原生 WSL + SSH。技术栈:GPUI(DX11 + DirectWrite)·
@@ -91,7 +91,7 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 ### Changed
 - **「打开文件夹」收敛到焦点 pane**:`cd_panes_to_root`(广播给所有非 agent pane)→ `cd_pane_to_root(id, …)`(单 pane);`menu_open_folder` 只 `cd` + `set_rail_root` 当前焦点 pane,其它 pane 保持各自目录,agent pane 永不被 `cd`。SSH pane 跳过本机 picker,打开当前远端 root 的应用内 SFTP 浏览并只向该 pane 发送远端 `cd`。
 
-> Agent 身份/用量环/「本次改动」/git watcher 早已 per-pane(在 `TerminalView` 上),本轮只验证不回归。逐项见 [docs/架构蓝图.md](docs/架构蓝图.md);坑 + 操作见 [CLAUDE.md](CLAUDE.md)。
+> Agent 身份/用量环/「本次改动」/git watcher 早已 per-pane(在 `TerminalView` 上),本轮只验证不回归。逐项见 [docs/系统架构索引.md](docs/系统架构索引.md);坑 + 操作见 [CLAUDE.md](CLAUDE.md)。
 
 ## [Unreleased] — Agent Host 平台化(2026-06)
 

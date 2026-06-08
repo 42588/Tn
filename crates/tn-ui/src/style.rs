@@ -14,7 +14,7 @@ use gpui::{
 };
 
 // Calm Glass white-on-glass overlay tokens (alpha-only — depth from layered
-// translucency + a top mirror highlight, never from glow). docs/产品设计 §6.1.
+// translucency + a top mirror highlight, never from glow). docs/产品体验索引 §6.1.
 pub(crate) const RIM: u32 = 0xffffff12; // glass edge (~white .07) — replaces hard borders
 pub(crate) const SHEEN: u32 = 0xffffff1a; // top 1px mirror highlight (~white .10)
 pub(crate) const INSET: u32 = 0xffffff0a; // header / inset card overlay (~white .04)
@@ -38,7 +38,7 @@ pub(crate) const G1_MID: u32 = 0x191f3685; // rgba(25,31,54,0.52) ← midpoint o
 /// terminal/code font. Ships on Windows 10/11.
 pub(crate) const UI_SANS: &str = "Segoe UI";
 
-// Calm Glass corner radii (px): window 16, panel 14, card 11. docs/产品设计 §6.1.
+// Calm Glass corner radii (px): window 16, panel 14, card 11. docs/产品体验索引 §6.1.
 pub(crate) const R_WINDOW: f32 = 16.0;
 pub(crate) const R_PANEL: f32 = 14.0;
 pub(crate) const R_CARD: f32 = 11.0;
@@ -66,7 +66,7 @@ pub(crate) fn col(c: impl Rgb8) -> Rgba {
 }
 
 /// Color with explicit alpha. Calm Glass surfaces are translucent so the window
-/// material shows through, instead of being filled opaque. See 产品设计 §6.1.
+/// material shows through, instead of being filled opaque. See 产品体验索引 §6.1.
 pub(crate) fn cola(c: impl Rgb8, a: f32) -> Rgba {
     let (r, g, b) = c.channels();
     Rgba {
@@ -380,7 +380,7 @@ pub(crate) fn icon(name: &str, size: f32, color: impl Rgb8) -> Svg {
         .text_color(col(color))
 }
 
-/// Drift guard (see docs/样式还原手册.md §1): assert the design prototype
+/// Drift guard (see docs/界面样式实现规则.md §1): assert the design prototype
 /// `design/mockup.html` and the shipped implementation agree on every
 /// color/material/radius token. The mockup is the canonical source ("设计稿为准"),
 /// so when someone tweaks either side and they diverge, this test fails and names
@@ -619,7 +619,7 @@ mod token_drift {
 }
 
 /// Spec generator: mechanically extract `design/mockup.html` into the
-/// **auto-generated §16 of `docs/样式还原手册.md`** (between the `SPEC:AUTO-*`
+/// **auto-generated §16 of `docs/界面样式实现规则.md`** (between the `SPEC:AUTO-*`
 /// markers) — a per-component table of exact px/weight/radius/color values
 /// (`var()` resolved) + a single-source token registry built from the live
 /// `tn-dark.toml` + `style.rs`. Implementing a gpui view then copies numbers
@@ -879,7 +879,7 @@ mod spec_gen {
         o
     }
 
-    const DOC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/样式还原手册.md");
+    const DOC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/界面样式实现规则.md");
     const MARK_START: &str = "<!-- SPEC:AUTO-START -->";
     const MARK_END: &str = "<!-- SPEC:AUTO-END -->";
 
@@ -899,10 +899,10 @@ mod spec_gen {
         let doc = std::fs::read_to_string(DOC).unwrap_or_else(|e| panic!("read {DOC}: {e}"));
         let si = doc
             .find(MARK_START)
-            .expect("样式还原手册.md missing SPEC:AUTO-START");
+            .expect("界面样式实现规则.md missing SPEC:AUTO-START");
         let ei = doc
             .find(MARK_END)
-            .expect("样式还原手册.md missing SPEC:AUTO-END");
+            .expect("界面样式实现规则.md missing SPEC:AUTO-END");
         assert!(si < ei, "SPEC markers out of order");
 
         // TN_GEN_SPEC=1 → splice the generated body between the markers (idempotent).
@@ -915,7 +915,7 @@ mod spec_gen {
     }
 }
 
-/// Guard (样式还原手册.md §3 约定): UI code must use `col()`/`cola()` for theme
+/// Guard (界面样式实现规则.md §3 约定): UI code must use `col()`/`cola()` for theme
 /// colors, never a raw `rgb(0x..)`/`rgba(0x..)` whose RGB equals a theme token —
 /// otherwise theme switching silently breaks. Scans `tn-ui/src/**.rs` and fails,
 /// naming the offender, if any literal's RGB matches a token. White overlays,
@@ -1011,7 +1011,7 @@ mod no_hardcoded_theme_colors {
         }
         assert!(
             bad.is_empty(),
-            "UI 代码出现硬编码主题色(必须走 col()/cola(),见 样式还原手册.md §3 约定):\n{}",
+            "UI 代码出现硬编码主题色(必须走 col()/cola(),见 界面样式实现规则.md §3 约定):\n{}",
             bad.join("\n")
         );
     }

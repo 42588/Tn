@@ -1348,16 +1348,16 @@ mod tests {
     fn porcelain_matches_utf8_paths_when_quotepath_off() {
         // With core.quotePath=false git emits raw UTF-8 (no quotes / octal escapes),
         // so the parsed key equals the tree row's real path. Regression for: CJK-named
-        // files (优化日志.md, 未修复.md …) showed no git tag while their ASCII ancestor
+        // files (修复与优化记录索引.md, 已知问题索引.md …) showed no git tag while their ASCII ancestor
         // dir (docs) did — octal-escaped quoted paths produced unmatchable keys after
         // the `\`→`/` step (symptom: 文件夹有 M、中文文件无标识).
-        let m = parse_porcelain(" M docs/优化日志.md\n?? 新增模块.md\n");
+        let m = parse_porcelain(" M docs/修复与优化记录索引.md\n?? 新增模块索引.md\n");
         assert_eq!(
-            m.get("docs/优化日志.md"),
+            m.get("docs/修复与优化记录索引.md"),
             Some(&'M'),
             "CJK file path matches its real key"
         );
-        assert_eq!(m.get("新增模块.md"), Some(&'U'));
+        assert_eq!(m.get("新增模块索引.md"), Some(&'U'));
         // (Ancestor-dir aggregation lives in `compute_git_status`, not here.)
     }
 
