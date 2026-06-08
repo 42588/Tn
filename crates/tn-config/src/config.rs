@@ -22,6 +22,8 @@ pub struct Config {
     pub font: Font,
     pub appearance: Appearance,
     #[serde(default)]
+    pub editor: Editor,
+    #[serde(default)]
     pub quick_terminal: QuickTerminal,
     #[serde(default)]
     pub profiles: Vec<Profile>,
@@ -144,6 +146,68 @@ impl General {
             "codex" => self.codex_billing,
             _ => None,
         })
+    }
+}
+
+/// Editor animation level (`[editor] animations`). Drives the renderer's motion
+/// policy; the actual effects (TnE-18) are separate. `subtle` is the default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum EditorAnimations {
+    /// No motion: the caret is an instant inverse block, no glide / settle.
+    Off,
+    /// Gentle, perf-gated typing feedback (caret glide, char settle).
+    #[default]
+    Subtle,
+    /// All `subtle` effects without the conservative perf caps.
+    Full,
+}
+
+/// The motion policy a renderer should actually apply this frame, after folding in
+/// runtime conditions (OS reduced-motion, high render load). Anything other than
+/// the user's plain setting collapses to [`EffectiveMotion::Instant`] so motion
+/// never fights performance or accessibility — see [`Editor::effective_motion`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectiveMotion {
+    /// Snap everything immediately (no animation). The TnE-12 baseline behavior.
+    Instant,
+    /// Apply the gentle, perf-capped effects.
+    Subtle,
+    /// Apply effects without the conservative caps.
+    Full,
+}
+
+/// `[editor]`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct Editor {
+    /// Animation level for the editor / Quick Look renderer. Default `subtle`.
+    pub animations: EditorAnimations,
+}
+
+impl Default for Editor {
+    fn default() -> Self {
+        Self {
+            animations: EditorAnimations::default(),
+        }
+    }
+}
+
+impl Editor {
+    /// Resolve the motion policy a renderer should apply, given runtime conditions.
+    /// `off`, OS reduced-motion, or a high render load all force
+    /// [`EffectiveMotion::Instant`] so the caret stays exact and input never lags
+    /// (the renderer must behave exactly like TnE-12 in that case). Otherwise the
+    /// user's `subtle` / `full` choice passes through.
+    pub fn effective_motion(&self, reduced_motion: bool, high_load: bool) -> EffectiveMotion {
+        if reduced_motion || high_load {
+            return EffectiveMotion::Instant;
+        }
+        match self.animations {
+            EditorAnimations::Off => EffectiveMotion::Instant,
+            EditorAnimations::Subtle => EffectiveMotion::Subtle,
+            EditorAnimations::Full => EffectiveMotion::Full,
+        }
     }
 }
 
@@ -344,6 +408,56 @@ mod tests {
         let c = Config::from_toml_str("[font]\nsize = 16.0\n").expect("partial parses");
         assert_eq!(c.quick_terminal, crate::QuickTerminal::default());
         assert!(c.quick_terminal.enabled);
+    }
+
+    #[test]
+    fn editor_animations_default_subtle_and_parse() {
+        // Absent section → subtle.
+        let c = Config::from_toml_str("[font]\nsize = 16.0\n").expect("partial parses");
+        assert_eq!(c.editor.animations, EditorAnimations::Subtle);
+        // Explicit values parse (lowercase).
+        for (toml, want) in [
+            ("off", EditorAnimations::Off),
+            ("subtle", EditorAnimations::Subtle),
+            ("full", EditorAnimations::Full),
+        ] {
+            let c = Config::from_toml_str(&format!("[editor]\nanimations = \"{toml}\"\n"))
+                .expect("editor parses");
+            assert_eq!(c.editor.animations, want);
+        }
+    }
+
+    #[test]
+    fn editor_effective_motion_degrades_for_off_reduced_and_load() {
+        let subtle = Editor {
+            animations: EditorAnimations::Subtle,
+        };
+        // Plain conditions pass the user's choice through.
+        assert_eq!(
+            subtle.effective_motion(false, false),
+            EffectiveMotion::Subtle
+        );
+        // Reduced-motion or high load → instant, regardless of setting.
+        assert_eq!(
+            subtle.effective_motion(true, false),
+            EffectiveMotion::Instant
+        );
+        assert_eq!(
+            subtle.effective_motion(false, true),
+            EffectiveMotion::Instant
+        );
+
+        let full = Editor {
+            animations: EditorAnimations::Full,
+        };
+        assert_eq!(full.effective_motion(false, false), EffectiveMotion::Full);
+        assert_eq!(full.effective_motion(false, true), EffectiveMotion::Instant);
+
+        let off = Editor {
+            animations: EditorAnimations::Off,
+        };
+        // Off is always instant — the TnE-12 baseline.
+        assert_eq!(off.effective_motion(false, false), EffectiveMotion::Instant);
     }
 
     #[test]

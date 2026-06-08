@@ -25,6 +25,13 @@ theme = "Tn Dark"             # 主题名 = %APPDATA%\Tn\themes\*.toml 里的 na
 # opacity  = 0.96            # 覆盖主题的窗口不透明度(暂未启用)
 # backdrop = "mica"          # mica | acrylic | solid,覆盖主题窗口质感(暂未启用)
 
+# 编辑器(Quick Look / Editor Pane 共享)。
+[editor]
+animations = "subtle"          # off | subtle | full —— 打字反馈动画级别(默认 subtle)。
+                               # off = 光标瞬时反相块、零动画;subtle = 轻量且按性能降级;
+                               # full = 不加保守性能上限。系统「减少动态效果」或高渲染负载时
+                               # 一律降级为瞬时(光标始终精确、输入不卡)。
+
 # Quick Terminal —— Quake/Guake 式下拉悬浮终端(M5)。全局热键随时唤出/隐藏,
 # 边缘滑入,失焦自动隐藏;最适合不打断当前工作就召唤通用 Agent 或 shell。见 docs/架构蓝图.md §8 M5。
 [quick_terminal]

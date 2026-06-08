@@ -19,8 +19,8 @@ use std::path::{Path, PathBuf};
 
 pub use color::{Color, ColorError, ACCENT_SWATCHES};
 pub use config::{
-    Action, AgentManifest, Appearance, BillingMode, Config, Font, General, Keybinding, Profile,
-    ProfileKind, DEFAULT_CONFIG_TOML,
+    Action, AgentManifest, Appearance, BillingMode, Config, Editor, EditorAnimations,
+    EffectiveMotion, Font, General, Keybinding, Profile, ProfileKind, DEFAULT_CONFIG_TOML,
 };
 pub use paths::{config_dir, config_path, themes_dir};
 pub use quick_terminal::{

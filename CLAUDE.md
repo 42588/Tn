@@ -42,6 +42,7 @@ tn-pty     PtyBackend trait + LocalPty(ConPTY,Drop 杀子进程)+ wsl.rs(parse_d
            **结构化连接事件** `PtyEvent::{SshProgress(phase),SshFailed(kind,offered),NeedPassword(error),NeedHostKeyConfirm(fingerprint),Connected(method),Disconnected}` 驱动 UI 进度/错误/密码/指纹卡 + 连接态;host-key TOFU 经 `HostKeyVerdict` 回传;`list_ssh_config_hosts`/`parse_host_aliases` 枚举 `~/.ssh/config` 的 `Host` 别名 = 连接器第三段 A4)。WSL 复用 LocalPty 跑 wsl.exe。
 tn-config  配置 + 主题(TOML schema、%APPDATA%\Tn、首次写默认、热重载源)+ quick_terminal.rs
            ([quick_terminal] schema + 滑入几何 shown/hidden/frame_rect + ease_out_cubic + 热键解析 parse_hotkey)
+           + **`[editor]`(TnE-17)**:`EditorAnimations{Off|Subtle|Full}`(默认 subtle)+ `Editor::effective_motion(reduced_motion,high_load)`→`EffectiveMotion{Instant|Subtle|Full}`(off/减少动态/高负载降级为瞬时=TnE-12 基线;动画绘制是 TnE-18)
            + append_profile/profiles_toml_fragment(把单个 `[[profiles]]` 片段**追加**写回 config.toml、不丢注释;当前 SSH 连接器不再提供「保存为连接」入口,保留为兼容/手编配置工具,见坑)
            + **append_agent/remove_agent + agents_toml_fragment**(应用内 Agent 编辑器用:`[[agents]]` 块级追加/删除,泛化的 `block_ranges` 保注释)+ **ACCENT_SWATCHES**(agent 编辑器颜色预设,放 config 域避开 tn-ui 硬编码守卫)。`AgentManifest.sidecar`(stdio/JSONL 遥测 sidecar 命令)+ `runtime_support`/`allow_network`(非 PTY 运行时 + 网络默认拒绝)。
 tn-shell   shell 集成:旁路 vte::Parser 把 OSC 133/633/7 解析成 BlockEvent + pwsh 集成脚本/nonce。

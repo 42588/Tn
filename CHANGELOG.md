@@ -38,6 +38,9 @@ M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地(下方各 `[Unreleased]` 段
 - **远端目录 picker 无法切目录 + 列表被裁切**:① 顶部加可点击「`..` 上级目录」行(鼠标上行路径);② 目录列表改 `uniform_list` 虚拟化 + `track_scroll`(滚轮可滚),键盘 `↑↓` 配 `scroll_to_item(Center)`。
 - **远端目录 picker 键盘完全无反应(真凶)**:`Workspace::render` 的「焦点反射块」gate 在 `overlay_focused`,该列表**漏了 `remote_dir_picker`** → picker 开着时该块判定「无 pane 持焦点」→ 每帧 `workspace_focus.focus()` 把焦点从 picker 抢回根 → `on_key_down` 永不触发。修:`overlay_focused` 加 `remote_dir_picker.is_some()`。附:`disable_ime` 也补 picker/split/layout/palette(无 `EntityInputHandler` 的导航浮层须关 IME,免活动 CJK IME 把导航键当 `VK_PROCESSKEY` 吞掉)。
 
+### Added(2026-06-08:TnE-17 [editor] 配置 + motion policy)
+- **`tn-config [editor]` 段 + 降级策略模型**:新增 `EditorAnimations{Off|Subtle|Full}`(默认 `subtle`)、`Editor{animations}`、`EffectiveMotion{Instant|Subtle|Full}` 与 `Editor::effective_motion(reduced_motion,high_load)`——`off`/OS 减少动态效果/高渲染负载一律降级为 `Instant`(光标瞬时反相块=TnE-12 基线),否则 `subtle`/`full` 透传。默认 `config/config.toml` 加 `[editor] animations` 段。3 个单测;`cargo test --workspace --lib` 全绿(tn-config 42)。不绘动画、不改命中(动画效果是 TnE-18)。
+
 ### Added(2026-06-08:TnE-15 LineLayout 软换行 headless 模型)
 - **`tn-editor::line_layout` logical→visual 映射**:新增 `WrapMode{None | Word{width_cols}}`、`VisualLine`、`LineLayout::build`(贪心词换行:空格优先 / 硬断 / 超宽单字独占 / CJK=2 列 / 空行保一条)+ `logical_to_visual`(换行边界归下一行首)/`visual_to_logical`/`range_segments`(选区·查找 TextRange→跨 visual·跨 logical 的局部列段)/`hit_test`(visual 行内 CJK 命中)。纯 headless 模型,9 个单测;`cargo test --workspace --lib` 全绿(tn-editor 27)。不接 GPUI renderer、不改代码文件默认横滚(软换行接入 File/Edit 是 TnE-16)。
 
