@@ -2,11 +2,11 @@
 
 本文件只记录发布向变更摘要,遵循 [Keep a Changelog](https://keepachangelog.com/) 风格。详细设计、根因分析、验证记录和后续计划进入专题子文档。
 
-版本对应开发蓝图([docs/系统架构索引.md](docs/系统架构索引.md) §8)的里程碑。日期格式 `YYYY-MM-DD`。
+版本对应开发蓝图的里程碑,入口见 [路线图与开发流程](docs/架构/路线图与开发流程.md)。日期格式 `YYYY-MM-DD`。
 
 > Tn 是 Windows 优先、Rust、GPU 加速的终端,为 vibe coding 设计:托管 Claude Code / Codex 等 AI CLI,灵活平铺,原生 WSL + SSH。技术栈:GPUI(DX11 + DirectWrite) / alacritty_terminal(VT 引擎) / portable-pty(ConPTY) / russh(SSH,M2)。许可证 GPL-3.0-or-later。
 
-**当前状态(2026-05):M0-M5 全部落地**(执行顺序 M0->M1->M3->M4->M5->M2)。M1 已 tag 为 `[0.1.0]`;M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地,尚未打新 tag。**唯一未完成:M2 的 SSH**:已编译 + headless 单测,owner 决定暂停(parked),等有远程登录需求再做端到端。
+**当前状态(2026-06):M0-M5 主线已落地**(执行顺序 M0->M1->M3->M4->M5->M2)。M1 已 tag 为 `[0.1.0]`;M3/M4/M5/M2-WSL 在 `main` 上以单次提交落地,尚未打新 tag。SSH/SFTP/远端文件服务已有实现与 headless 覆盖,剩余真实远端端到端回归和低优打磨见 [远端文件服务与改动流](docs/新增模块/远端文件服务与改动流.md)、[安全外壳连接体验](docs/新增模块/安全外壳连接体验.md) 与 [远端文件系统端到端验证](docs/已知问题/远端文件系统端到端验证.md)。
 
 ## [Unreleased] - 远端文件服务与改动流首版(2026-06)
 

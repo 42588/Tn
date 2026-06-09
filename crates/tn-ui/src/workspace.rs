@@ -42,7 +42,7 @@ use tn_pty::remote_fs::{RemoteFileService, RemotePath, SftpFileService};
 pub(crate) type PaneId = u64;
 
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
-// now live in `crate::style` — single source of truth (待优化清单 §4.1).
+// now live in `crate::style` — single source of truth (see docs/修复与优化/基础性能与审查勘误.md).
 use crate::style::{
     col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, DIVIDER, HOVER, INSET, RIM,
     R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
@@ -114,7 +114,7 @@ pub(crate) fn short_cwd(p: &str) -> String {
 
 /// The current git branch of the app's cwd, if it's a repo (for the status bar).
 /// Returns `None` both when not in a repo (silent — expected) and when `git`
-/// can't be spawned (logged once — likely not installed / PATH). (待优化清单 §8.2)
+/// can't be spawned (logged once — likely not installed / PATH). See docs/修复与优化/智能体活动栏与正文显示.md.
 fn git_branch() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let out = match std::process::Command::new("git")
@@ -881,7 +881,7 @@ pub struct Workspace {
     /// the overlay is rendered) doesn't reliably land, so keys leaked to the
     /// terminal underneath; we focus it in render where the element exists.
     palette_needs_focus: bool,
-    /// Opt-in render instrumentation (TN_PERF, 待优化清单 §2.2): how often the
+    /// Opt-in render instrumentation (TN_PERF, see docs/修复与优化/基础性能与审查勘误.md): how often the
     /// workspace chrome re-renders and how long it takes. Panes are embedded as
     /// entities, so terminal output frames don't trigger this — only the
     /// workspace's own notifies (usage updates, tab/split/focus, palette) do.
@@ -5894,7 +5894,7 @@ impl Render for Workspace {
             self.refocus_after_quick_look(window, cx);
         }
 
-        // Time the chrome build (待优化清单 §2.2) when TN_PERF is on. Panes are
+        // Time the chrome build when TN_PERF is on. Panes are
         // embedded as entities, so this fires only on the workspace's own
         // notifies (usage/tab/split/focus/palette), not per terminal frame.
         let perf_t0 = self.perf.enabled().then(Instant::now);
@@ -6069,7 +6069,7 @@ impl Render for Workspace {
                             })
                             // Type icon in agent identity color: spark for agents
                             // agent accent, terminal glyph (accent) for
-                            // a plain shell. See docs/产品体验索引 §6.2 tab agent accent.
+                            // a plain shell. See docs/产品体验/窗口框架与面板映射.md tab agent accent.
                             .child(if agent_dot.is_some() {
                                 icon("spark", 13., dot)
                             } else {

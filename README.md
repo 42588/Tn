@@ -29,7 +29,7 @@ Tn 做的事 = **取代 Windows 默认的 conhost**:同一套机制能跑 `power
 
 **方式一:下载预构建包(无需 Rust)**
 
-1. 从 [GitHub Releases](../../releases) 下载最新 `tn.zip`
+1. 从 [GitHub Releases](https://github.com/42588/Tn/releases) 下载最新 `tn.zip`
 2. 解压,右键 `install.ps1` → 使用 PowerShell 运行
 3. 完成后 `Win+R` 输入 `tn` 回车
 
@@ -105,7 +105,7 @@ tn-cli     headless ConPTY 烟雾测试工具
 
 - [docs/系统架构索引.md](docs/系统架构索引.md) — **架构**:系统怎么搭(crate 划分、数据流、技术决策、路线图、开发指南)。
 - [docs/产品体验索引.md](docs/产品体验索引.md) — **产品体验**:用户可见 UX、交互原则、页面/面板入口。
-- [docs/界面样式实现规则.md](docs/界面样式实现规则.md) — **样式实现**:HTML 原型 → gpui 的译法 + 权威数值表 §16(图形界面必走此路)。
+- [docs/界面样式实现规则.md](docs/界面样式实现规则.md) — **样式实现**:HTML 原型 → gpui 的入口规则;译法与权威数值表见 `docs/界面样式/`。
 - [docs/外部参考资料索引.md](docs/外部参考资料索引.md) — 从 Windows Terminal 与 Ghostty 源码提炼、映射到 Tn 的设计要点。
 - [CHANGELOG.md](CHANGELOG.md) — 各里程碑变更。
 - 设计原型:[design/mockup.html](design/mockup.html)(全窗)· [design/panels/](design/panels/)(逐面板,共享 calm-glass.css)。

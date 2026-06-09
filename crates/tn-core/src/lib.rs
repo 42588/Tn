@@ -969,7 +969,7 @@ mod tests {
     #[test]
     fn bel_byte_emits_bell_event() {
         // The BEL control byte (0x07) must surface as a `TermEvent::Bell` so the
-        // UI can flash/beep (待优化清单 §3.8). alacritty raises it via the event
+        // UI can flash/beep. alacritty raises it via the event
         // proxy; we just confirm it reaches `drain_events`.
         let mut t = Terminal::new(GridSize::new(2, 10));
         t.advance(b"a\x07b");
@@ -1367,7 +1367,7 @@ mod tests {
 
     #[test]
     fn golden_snapshot_of_a_representative_ansi_program() {
-        // Regression guard for the whole VT pipeline (待优化清单 §7.2): one fixed
+        // Regression guard for the whole VT pipeline: one fixed
         // input mixing SGR color, bold, a background fill, carriage-return
         // overwrite, and absolute cursor positioning must always yield this exact
         // grid + colors. Catches silent behavior drift when alacritty_terminal is
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn generation_bumps_on_mutation_only() {
-        // The render cache (待优化清单 §2.1) keys on `generation`: it must advance
+        // The render cache keys on `generation`: it must advance
         // on every grid-affecting mutation and stay put for read-only calls (so a
         // cursor-blink repaint, which mutates nothing here, reuses the cache).
         let mut t = Terminal::new(GridSize::new(4, 20));

@@ -517,7 +517,7 @@ mod tests {
 
     #[test]
     fn encode_key_never_panics_or_returns_empty() {
-        // 待优化清单 §7.5: sweep key × modifiers × mode. `encode_key` must never
+        // Sweep key × modifiers × mode. `encode_key` must never
         // panic (the test would crash) and a `Some` result must be a NON-empty
         // byte sequence — encoding a handled key to zero bytes would silently
         // swallow the keystroke. Guards the many branches without a proptest dep.

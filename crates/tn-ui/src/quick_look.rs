@@ -11,7 +11,7 @@
 //! Keyboard nav (Space toggle · ↑↓ change file · Enter edit) + real in-place
 //! editing (Ctrl+S) are the prototype's full model but are ⏳ deferred (need
 //! explorer keyboard focus + an editable text buffer); this is the visual overlay
-//! + click-to-open + Diff/File toggle. See docs/系统架构索引 §8 ①.
+//! + click-to-open + Diff/File toggle. See docs/架构/编辑器与快速预览.md.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -1016,9 +1016,10 @@ pub struct QuickLook {
     /// `git diff` is computed **lazily** (only when the Diff tab is shown) — it's a
     /// blocking subprocess and was freezing the UI when run eagerly on every file
     /// open / navigation. `true` = the cached `diff` is stale and must be recomputed
-    /// the next time the Diff tab is viewed. (See 踩过的坑 + 系统架构索引 §8 ①.)
+    /// the next time the Diff tab is viewed. (See 踩坑记录 + docs/架构/编辑器与快速预览.md.)
     diff_dirty: bool,
-    /// Edit state (our own small modeless editor — see §16 / 系统架构索引 §8 ①).
+    /// Edit state (our own small modeless editor — see docs/界面样式/组件规格与自动生成数值.md
+    /// and docs/架构/编辑器与快速预览.md).
     editing: bool,
     /// Document-backed editable state. The old renderer still reads an `Rc<Vec<_>>`
     /// snapshot from this shell until `EditorElement` lands.

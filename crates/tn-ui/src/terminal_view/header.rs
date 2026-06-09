@@ -1,4 +1,4 @@
-//! Agent pane header UI (待优化清单 §6.2): the avatar + name/model + context
+//! Agent pane header UI: the avatar + name/model + context
 //! usage ring shown above agent panes. Split out of `mod.rs` to keep the
 //! render core lean; `impl super::TerminalView` so it can read the view's
 //! private agent/usage/palette state. Only [`render_pane_header`] is called from

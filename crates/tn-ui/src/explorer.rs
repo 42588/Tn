@@ -41,7 +41,7 @@ fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
 
 /// Parse `git status --porcelain` output into a map of forward-slash, relative
 /// path → one-letter tag (`U`ntracked / `A`dded / `D`eleted / `R`enamed /
-/// `M`odified). Pure (no IO) so it's unit-testable (待优化清单 §7.4); the priority
+/// `M`odified). Pure (no IO) so it's unit-testable; the priority
 /// order matches how a combined index+worktree status (`MM`, `AM`, …) collapses
 /// to a single chip. Assumes the caller ran git with `core.quotePath=false`, so
 /// non-ASCII paths arrive as raw UTF-8 (the `\`→`/` normalization below would
@@ -625,7 +625,7 @@ impl ExplorerView {
     /// expansion state** for the direct ancestry: `expanded` holds absolute paths,
     /// so entries under the new root stay open and the tree does not collapse when
     /// you `cd` into a subdirectory. When backing out, direct ancestors remain
-    /// expanded, though distant siblings are pruned to prevent memory leaks (待优化清单 §7).
+    /// expanded, though distant siblings are pruned to prevent memory leaks.
     /// The selection is kept only while it still points inside the new root.
     pub fn follow_root(&mut self, root: ExplorerRoot, cx: &mut Context<Self>) {
         if !root.is_browsable() {

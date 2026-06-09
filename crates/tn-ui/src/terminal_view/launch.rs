@@ -165,7 +165,7 @@ impl LaunchSpec {
         reg: &AgentRegistry,
         persist: bool,
     ) -> Option<Self> {
-        // One launch path per profile kind (待优化清单 §6.3). WSL/SSH ignore the
+        // One launch path per profile kind. WSL/SSH ignore the
         // command field; everything else needs a command, then forks on whether
         // it's a native pwsh (run directly + integrated) or another program
         // (hosted inside pwsh, since Windows can't `CreateProcessW` an npm shim).

@@ -1,4 +1,4 @@
-//! Integration test (待优化清单 §7.1): the full ConPTY → tn-core pipeline.
+//! Integration test: the full ConPTY → tn-core pipeline.
 //!
 //! The workspace's unit tests are all headless-pure; nothing exercised a real
 //! child process end to end. This spawns one through the local ConPTY backend,

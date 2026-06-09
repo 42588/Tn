@@ -99,16 +99,15 @@ pub(crate) fn launch_tile_sub(p: &Profile, agent: Option<&AgentId>, reg: &AgentR
     }
 }
 
-// ── Launch-surface aggregation (WSL → one card, SSH → placeholder) ──────────────
+// ── Launch-surface aggregation (WSL → one card, SSH → one connector card) ───────
 // The launch surfaces (welcome / Quick Terminal / split launcher) used to render one
 // tile per discovered profile — including *every* WSL distro, which piles up. To cut
 // the选择负担 we collapse all distros into ONE "WSL" card (drill in to pick a distro,
-// or auto-launch when there's only one) and append a single "SSH" placeholder card
-// (the SSH backend is parked — see CLAUDE.md). Shared here so every surface aggregates
-// identically.
+// or auto-launch when there's only one) and append a single "SSH" connector card.
+// Shared here so every surface aggregates identically.
 
 /// A launch tile's visual identity — everything a surface needs to draw one card,
-/// whether it's a profile, the WSL group, or the SSH placeholder.
+/// whether it's a profile, the WSL group, or the SSH connector.
 pub(crate) struct CardId {
     pub name: String,
     pub sub: String,

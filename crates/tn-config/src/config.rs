@@ -249,7 +249,7 @@ pub struct Appearance {
     pub opacity: Option<f32>,
     pub backdrop: Option<Backdrop>,
     /// Flash the pane briefly when the terminal rings the bell (BEL / `\x07`).
-    /// On by default — a quiet visual cue, no sound. (待优化清单 §3.8)
+    /// On by default — a quiet visual cue, no sound.
     pub visual_bell: bool,
     /// Also play the system beep on bell. Off by default (audible bells are
     /// widely disliked); opt in for parity with classic terminals.
@@ -470,7 +470,7 @@ mod tests {
 
     #[test]
     fn bell_defaults_visual_on_audio_off_and_override() {
-        // Default: quiet visual flash on, system beep off (待优化清单 §3.8).
+        // Default: quiet visual flash on, system beep off.
         let c = Config::default();
         assert!(c.appearance.visual_bell);
         assert!(!c.appearance.audio_bell);

@@ -133,7 +133,7 @@ pub use launch::FileNamespace;
 pub use launch::LaunchSpec;
 pub use launch::ShellIntegration;
 
-/// Cached per-frame render data (待优化清单 §2.1), keyed by the engine's
+/// Cached per-frame render data (see docs/修复与优化/基础性能与审查勘误.md), keyed by the engine's
 /// [`generation`](tn_core::Terminal::generation). A repaint that changed nothing
 /// the grid renders (the ~530ms cursor blink, an unfocused-pane notify) reuses
 /// this instead of rebuilding the snapshot + run batches. `rows` is `Rc` so the
@@ -330,9 +330,9 @@ fn selection_drag_move(selecting: bool, pressed: Option<MouseButton>) -> Selecti
 /// 300ms balances responsiveness with coalescing (was 1000ms 固定窗口 — 审查③: 1000ms
 /// 钝化手动编辑响应, 且固定窗口在长构建时每窗口刷一次).
 const RAIL_WATCH_DEBOUNCE_MS: u64 = 300;
-/// Cursor blink half-period (待优化清单 §3.1). ~530ms matches common terminals.
+/// Cursor blink half-period (see docs/产品体验/终端交互体验.md). ~530ms matches common terminals.
 const CURSOR_BLINK_MS: u64 = 530;
-/// Smooth cursor glide (待优化清单 §3.1): the cursor eases toward its new cell over
+/// Smooth cursor glide (see docs/产品体验/终端交互体验.md): the cursor eases toward its new cell over
 /// this window instead of teleporting, so typing/deleting reads as fluid. Short
 /// enough to feel responsive (the glyph is already there; only the block catches up).
 const CURSOR_GLIDE_MS: u64 = 90;
@@ -340,7 +340,7 @@ const CURSOR_GLIDE_MS: u64 = 90;
 /// (line wrap, prompt redraw, screen clear, vertical nav) snap — a long swoosh
 /// across the grid looks worse than an honest jump.
 const CURSOR_GLIDE_MAX_COLS: i64 = 12;
-/// Visual-bell flash duration (待优化清单 §3.8): a short fade so a bell registers
+/// Visual-bell flash duration (see docs/产品体验/终端交互体验.md): a short fade so a bell registers
 /// without being a distraction. ~180ms ≈ a quick blink.
 const BELL_FLASH_MS: u64 = 180;
 /// Sentinel window title a hosted **agent** pane emits *after* the agent exits
@@ -435,13 +435,13 @@ pub struct TerminalView {
     // True while a left-drag selection is in progress.
     selecting: bool,
     focused_once: bool,
-    // Cursor blink (待优化清单 §3.1): `cursor_on` is the current blink phase,
+    // Cursor blink: `cursor_on` is the current blink phase,
     // toggled ~530ms by the blink task *only while focused*; `focused` caches the
     // last render's focus so the task knows whether to blink (and so an unfocused
     // pane stays idle — zero wakes). Typing forces `cursor_on = true`.
     cursor_on: bool,
     focused: bool,
-    // Smooth cursor glide (待优化清单 §3.1): `cursor_px` is the cursor block's
+    // Smooth cursor glide: `cursor_px` is the cursor block's
     // currently-drawn top-left (term-area coords, incl. BODY_PAD); it eases toward
     // the target cell instead of teleporting. `cursor_cell` caches the last target
     // (so a move is detected), `cursor_glide_from`/`cursor_glide_start` define the
@@ -515,7 +515,7 @@ pub struct TerminalView {
     // so the pane reverts to a plain shell (no stale header). Only agent panes
     // emit the sentinel, so a plain shell never trips this.
     agent_exited: Arc<AtomicBool>,
-    // Set by the reader on a BEL byte (待优化清单 §3.8); the foreground turns the
+    // Set by the reader on a BEL byte; the foreground turns the
     // false->true edge into a flash/beep, then clears it. An atomic (not a wake
     // event) so a bell during a quiet moment still rides the next repaint.
     bell: Arc<AtomicBool>,
@@ -571,8 +571,9 @@ pub struct TerminalView {
     // this clears. Without an input handler, IME-composed text never arrives — the
     // root cause of "终端无法输入中文" (only ASCII `key_char` reached `encode_key`).
     ime_marked: Option<String>,
-    // Cached render data + the engine generation it was built from (待优化清单
-    // §2.1). Reused when a repaint changed nothing renderable (cursor blink).
+    // Cached render data + the engine generation it was built from (see
+    // docs/修复与优化/基础性能与审查勘误.md). Reused when a repaint changed nothing
+    // renderable (cursor blink).
     render_cache: Option<RenderCache>,
     // Opt-in render instrumentation (TN_PERF): render rate + cache hit-rate +
     // rebuild timing, logged to `tn::perf` ~1/s.
@@ -1792,7 +1793,7 @@ impl TerminalView {
             return;
         };
         // Click count picks the granularity: 1 = cell, 2 = word, 3+ = line
-        // (待优化清单 §3.5). A following drag extends by that same granularity.
+        // A following drag extends by that same granularity.
         let kind = match event.click_count {
             0 | 1 => SelectKind::Cell,
             2 => SelectKind::Word,
@@ -2369,7 +2370,7 @@ impl Render for TerminalView {
             }
         }
 
-        // Render-data cache (待优化清单 §2.1): rebuild the snapshot + per-row run
+        // Render-data cache: rebuild the snapshot + per-row run
         // batches only when the engine generation changed since the last paint.
         // A cursor-blink or unfocused-pane repaint changes nothing renderable, so
         // it reuses the cached `rows` (a cheap Rc clone) instead of re-walking the
@@ -2469,7 +2470,7 @@ impl Render for TerminalView {
         // 那个每 16ms notify 的驱动任务(否则 Claude 每移一次光标就白拉起一轮重绘循环)。
         let force_hide_cursor = self.agent_manages_cursor;
 
-        // ── Smooth cursor glide (待优化清单 §3.1) ──────────────────────────────
+        // ── Smooth cursor glide ─────────────────────────────────────────────
         // Ease the drawn block toward the target cell instead of teleporting. Only
         // small same-row moves glide (typing / deleting / local nav); bigger jumps
         // (line wrap, prompt redraw, screen clear, vertical nav) and the first frame
@@ -2650,7 +2651,7 @@ impl Render for TerminalView {
                 .child(SharedString::from(s))
         });
 
-        // Scrollbar (待优化清单 §3.2): a thin right-edge indicator of the viewport's
+        // Scrollbar: a thin right-edge indicator of the viewport's
         // position within scrollback. Shown only when there's history; brighter
         // while actually scrolled up. The thumb's size = viewport / total content.
         let scrollbar = (scroll_history > 0).then(|| {
@@ -2686,7 +2687,7 @@ impl Render for TerminalView {
                 )
         });
 
-        // Visual bell (待优化清单 §3.8): a brief translucent flash over the grid
+        // Visual bell: a brief translucent flash over the grid
         // that fades out, so a BEL registers without sound. `spawn_bell_fade`
         // drives the per-frame notifies and clears `bell_flash_at` when done.
         let bell_overlay = self.bell_flash_at.and_then(|t| {
@@ -3567,7 +3568,7 @@ mod tests {
         assert_eq!(spec.args, vec!["--cd".to_string(), "~".to_string()]);
     }
 
-    // ── Launch-path coverage (待优化清单 §6.3) ─────────────────────────────────
+    // ── Launch-path coverage ────────────────────────────────────────────────
     // The SSH / native-pwsh / hosted-agent paths were previously untested; these
     // pin each one so the per-kind refactor (and future edits) stay honest.
 
@@ -3898,7 +3899,7 @@ mod tests {
 
     #[test]
     fn inner_catch_unwind_leaves_the_lock_unpoisoned() {
-        // The reader (待优化清单 §8.1) catches an alacritty panic *inside* the lock
+        // The reader catches an alacritty panic *inside* the lock
         // scope, so the stack unwinds only to the catch and the guard drops
         // normally — the Mutex is NOT poisoned, so the foreground (GPUI callbacks,
         // non-unwinding) can still lock it instead of aborting the whole process.

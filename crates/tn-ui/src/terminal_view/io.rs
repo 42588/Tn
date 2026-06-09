@@ -1,4 +1,4 @@
-//! A pane's off-thread workers (待优化清单 §6.2), split out of `mod.rs` to keep
+//! A pane's off-thread workers, split out of `mod.rs` to keep
 //! the view's render core readable: the PTY reader thread, the foreground
 //! repaint pump, the cursor-blink loop, the child-exit watcher, the headless
 //! self-test, and the AI-usage poller.
@@ -53,7 +53,7 @@ impl TerminalView {
             // thread stack small.
             let mut buf = vec![0u8; 16384];
             let mut replies = Vec::new();
-            // Outer guard (待优化清单 §8.1): a panic anywhere in the reader loop is
+            // Outer guard: a panic anywhere in the reader loop is
             // logged with context instead of the thread dying silently (which
             // would leave the pane frozen with no clue why).
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loop {
@@ -93,14 +93,14 @@ impl TerminalView {
                                         TermEvent::ResetTitle => *title.lock().unwrap() = None,
                                         // BEL (\x07): flag it; the foreground turns
                                         // this into a brief flash / optional beep on
-                                        // the next wake (待优化清单 §3.8).
+                                        // the next wake.
                                         TermEvent::Bell => bell.store(true, Ordering::Relaxed),
                                         _ => {}
                                     }
                                 }
                                 // The cursor anchor is only used when this batch
                                 // produced block events — the common case is none,
-                                // so skip the extra grid borrow (待优化清单 §2.4).
+                                // so skip the extra grid borrow.
                                 if events.is_empty() {
                                     0
                                 } else {
@@ -141,7 +141,7 @@ impl TerminalView {
                         {
                             break; // view dropped
                         }
-                        // (待优化清单 §8.1 / §2.4) Terminal-lock 争用缓解。reader 持
+                        // Terminal-lock 争用缓解。reader 持
                         // `terminal` 锁跑 `advance()`,前台 render/on_key 要同一把锁;
                         // Claude Code(Ink)每秒数十次整屏重绘 → reader 连续抢锁会饿死
                         // 前台(输入卡顿)。刚释放锁、也唤醒了前台,这里主动让出一次调度:
@@ -195,7 +195,7 @@ impl TerminalView {
                         // Typed `claude`/`codex` at a plain-shell prompt → flip to
                         // agent state (and back when it finishes) via shell integration.
                         view.sync_shell_agent(cx);
-                        // BEL on this batch → start the flash / beep (待优化清单 §3.8).
+                        // BEL on this batch → start the flash / beep.
                         view.handle_bell_if_rung(cx);
 
                         // Check if the current working directory has changed and emit CwdChanged
@@ -243,8 +243,8 @@ impl TerminalView {
         .detach();
     }
 
-    /// React to a bell flagged by the reader since the last repaint (待优化清单
-    /// §3.8): optionally beep, and (if `visual_bell`) start a brief flash. Called
+    /// React to a bell flagged by the reader since the last repaint: optionally
+    /// beep, and (if `visual_bell`) start a brief flash. Called
     /// from the foreground repaint, so it's safe to touch view state + spawn.
     pub(super) fn handle_bell_if_rung(&mut self, cx: &mut Context<Self>) {
         if !self.bell.swap(false, Ordering::Relaxed) {
@@ -292,7 +292,7 @@ impl TerminalView {
         .detach();
     }
 
-    /// Drive the smooth cursor glide (待优化清单 §3.1): notify every frame until the
+    /// Drive the smooth cursor glide: notify every frame until the
     /// ease window elapses, then stop. `cursor_gliding` ensures a single task — a new
     /// move mid-glide just refreshes `cursor_glide_start` (extends, not stacks). Mirror
     /// of `spawn_bell_fade`; render reads the elapsed time to interpolate the position.

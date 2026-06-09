@@ -1,4 +1,4 @@
-//! Hot-path benchmarks for the terminal engine (待优化清单 §7.3).
+//! Hot-path benchmarks for the terminal engine.
 //!
 //! Two paths dominate runtime cost: parsing PTY bytes ([`Terminal::advance`])
 //! and building per-frame render data ([`TerminalSnapshot::row_runs`], which the
