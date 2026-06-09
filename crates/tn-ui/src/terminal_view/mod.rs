@@ -288,6 +288,13 @@ enum ActivityRailLayout {
     Overlay,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BodyRegionContainerLayout {
+    Direct,
+    FlexRow,
+    OverlayFlexColumn,
+}
+
 fn activity_rail_layout(
     agent_active: bool,
     agent_from_shell: bool,
@@ -302,8 +309,24 @@ fn activity_rail_layout(
     }
 }
 
-fn scroll_wheel_drives_terminal_app(_agent_active: bool, alt_screen: bool) -> bool {
-    alt_screen
+fn body_region_container_layout(rail_layout: ActivityRailLayout) -> BodyRegionContainerLayout {
+    match rail_layout {
+        ActivityRailLayout::None => BodyRegionContainerLayout::Direct,
+        ActivityRailLayout::Flex => BodyRegionContainerLayout::FlexRow,
+        ActivityRailLayout::Overlay => BodyRegionContainerLayout::OverlayFlexColumn,
+    }
+}
+
+fn terminal_app_owns_viewport(agent_active: bool, alt_screen: bool) -> bool {
+    agent_active || alt_screen
+}
+
+fn should_render_block_bar(agent_active: bool, alt_screen: bool) -> bool {
+    !terminal_app_owns_viewport(agent_active, alt_screen)
+}
+
+fn scroll_wheel_drives_terminal_app(agent_active: bool, alt_screen: bool) -> bool {
+    terminal_app_owns_viewport(agent_active, alt_screen)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -614,6 +637,9 @@ pub struct TerminalView {
     dup_last_cursor: (usize, usize),
     // 探针:本帧是否触发了 resize(供光标跳变那行日志标注「是不是 resize 引起的」)。
     dup_resized_this_frame: bool,
+    // Diagnostic frames after a shell command is promoted to an agent surface.
+    // Kept tiny and one-shot so default info logging stays useful without noise.
+    agent_surface_probe_frames: u8,
 }
 
 /// A clean shell name from a program path (`…\powershell.exe` → `pwsh`).
@@ -1001,6 +1027,7 @@ impl TerminalView {
             dup_last_rail: false,
             dup_last_cursor: (usize::MAX, usize::MAX),
             dup_resized_this_frame: false,
+            agent_surface_probe_frames: 0,
         }
     }
 
@@ -1371,12 +1398,16 @@ impl TerminalView {
             bm.current()
                 .filter(|b| b.is_running())
                 .and_then(|b| b.command.as_deref())
-                .and_then(|cmd| cmd.split_whitespace().next())
-                .and_then(|tok| registry.match_command(tok))
+                .and_then(|cmd| {
+                    let tok = cmd.split_whitespace().next()?;
+                    registry
+                        .match_command(tok)
+                        .map(|id| (id, tok.to_string(), cmd.to_string()))
+                })
         };
         match (running_agent, self.agent.is_some()) {
             // A typed agent command started in a plain (non-agent) shell.
-            (Some(id), false) => {
+            (Some((id, token, command)), false) => {
                 self.agent = Some(id.clone());
                 self.agent_from_shell = true;
                 self.usage = None;
@@ -1395,6 +1426,17 @@ impl TerminalView {
                 self.agent_manages_cursor = v.manages_cursor;
                 self.agent_caps = v.caps;
                 self.usage_mode = v.usage_mode;
+                self.agent_surface_probe_frames = 4;
+                tracing::info!(
+                    target: "tn::agent_surface",
+                    agent = %id,
+                    token = %token,
+                    command = %command,
+                    git_diff_cap = self.agent_caps.git_diff,
+                    usage_cap = self.agent_caps.usage,
+                    manages_cursor = self.agent_manages_cursor,
+                    "shell command promoted to agent surface"
+                );
                 // Bind usage to the session this just-typed command starts (created
                 // ~now); the grace in resolve_pane_session absorbs detection lag.
                 // Only an agent with a usage adapter is polled.
@@ -1414,6 +1456,11 @@ impl TerminalView {
             // (Launch-intent agents have `agent_from_shell == false` → left alone;
             // they clear via the exit sentinel instead.)
             (None, true) if self.agent_from_shell => {
+                tracing::info!(
+                    target: "tn::agent_surface",
+                    agent = ?self.agent.as_ref(),
+                    "shell agent command finished; reverting pane to shell surface"
+                );
                 self.clear_agent();
                 cx.emit(UsageUpdated);
             }
@@ -1723,10 +1770,11 @@ impl TerminalView {
     }
 
     /// Build the Warp-style command-block bar shown at the bottom of the pane,
-    /// or `None` on the alternate screen (vim/less) or before any command runs.
+    /// or `None` when a full-screen app or detected agent owns the viewport.
     fn render_block_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.terminal.lock().unwrap().input_mode().alt_screen {
-            return None; // full-screen app owns the viewport — no chrome
+        let alt_screen = self.terminal.lock().unwrap().input_mode().alt_screen;
+        if !should_render_block_bar(self.agent.is_some(), alt_screen) {
+            return None; // Terminal apps own the viewport, so shell chrome stays out.
         }
         let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap())?;
         // Chrome tokens (mockup .block uses --fg/--muted/--accent), + ANSI green/red for status.
@@ -2794,6 +2842,31 @@ impl Render for TerminalView {
             self.agent_from_shell,
             self.agent_caps.git_diff,
         );
+        if self.agent_surface_probe_frames > 0 {
+            let nonblank_rows = rows
+                .iter()
+                .filter(|runs| runs.iter().any(|r| !r.text.trim().is_empty()))
+                .count();
+            tracing::info!(
+                target: "tn::agent_surface",
+                frames_left = self.agent_surface_probe_frames,
+                rail_layout = ?rail_layout,
+                body_container = ?body_region_container_layout(rail_layout),
+                agent_from_shell = self.agent_from_shell,
+                agent = ?self.agent.as_ref(),
+                bounds_w = bw,
+                bounds_h = bh,
+                grid_cols = self.size.cols,
+                grid_rows = self.size.rows,
+                nonblank_rows,
+                generation,
+                scroll_offset,
+                scroll_history,
+                block_bar_visible = block_bar.is_some(),
+                "agent surface render probe"
+            );
+            self.agent_surface_probe_frames -= 1;
+        }
         let body_region = match rail_layout {
             ActivityRailLayout::None => term_area,
             ActivityRailLayout::Flex => div()
@@ -2808,6 +2881,8 @@ impl Render for TerminalView {
                 .flex_1()
                 .min_h(px(0.))
                 .min_w(px(0.))
+                .flex()
+                .flex_col()
                 .overflow_hidden()
                 .child(term_area)
                 .child(
@@ -3864,12 +3939,32 @@ mod tests {
             "plain shell panes use the mouse wheel for terminal scrollback"
         );
         assert!(
-            !scroll_wheel_drives_terminal_app(true, false),
-            "main-screen agent panes still need Tn scrollback and rail scrolling; only alt-screen owns the wheel"
+            scroll_wheel_drives_terminal_app(true, false),
+            "main-screen agent panes own their viewport even when they do not enter alt-screen"
         );
         assert!(
             scroll_wheel_drives_terminal_app(false, true),
             "alternate-screen programs own the wheel"
+        );
+    }
+
+    #[test]
+    fn agent_panes_hide_shell_block_bar_even_without_alt_screen() {
+        assert!(
+            should_render_block_bar(false, false),
+            "plain main-screen shells show command block chrome"
+        );
+        assert!(
+            !should_render_block_bar(false, true),
+            "alternate-screen programs own the whole viewport"
+        );
+        assert!(
+            !should_render_block_bar(true, false),
+            "agent panes own the whole viewport even when their TUI stays on the main screen"
+        );
+        assert!(
+            !should_render_block_bar(true, true),
+            "agent alternate-screen panes also hide shell block chrome"
         );
     }
 
@@ -3894,6 +3989,16 @@ mod tests {
             activity_rail_layout(true, true, false),
             ActivityRailLayout::None,
             "agents without the git-diff slot do not need the activity rail"
+        );
+        assert_eq!(
+            body_region_container_layout(ActivityRailLayout::Overlay),
+            BodyRegionContainerLayout::OverlayFlexColumn,
+            "overlay rail must still host the terminal body in a flex column so flex_1 does not collapse"
+        );
+        assert_eq!(
+            body_region_container_layout(ActivityRailLayout::Flex),
+            BodyRegionContainerLayout::FlexRow,
+            "launch-intent agents keep the side-by-side body/rail flex row"
         );
     }
 

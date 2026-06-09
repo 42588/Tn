@@ -36,11 +36,13 @@ mod imp {
         AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
         DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW, LoadImageW, PostMessageW,
         PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SendMessageW, SetForegroundWindow,
-        SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, CS_HREDRAW,
-        CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, HICON, HWND_MESSAGE, HWND_TOPMOST, IMAGE_ICON,
-        LR_LOADFROMFILE, MF_STRING, MSG, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
-        TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON, WM_DESTROY, WM_HOTKEY, WM_KEYDOWN,
-        WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_SETICON, WNDCLASSW, WS_EX_TOPMOST,
+        SetWindowLongPtrW, SetWindowPos, ShowWindow, SystemParametersInfoW, TrackPopupMenu,
+        TranslateMessage, CS_HREDRAW, CS_VREDRAW, GWLP_USERDATA, GWL_EXSTYLE, HICON, HWND_MESSAGE,
+        HWND_TOPMOST, IMAGE_ICON, LR_LOADFROMFILE, MF_STRING, MSG, SPI_GETCLIENTAREAANIMATION,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE, SW_SHOW,
+        SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, TPM_BOTTOMALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+        WM_DESTROY, WM_HOTKEY, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_NULL, WM_RBUTTONUP, WM_SETICON,
+        WNDCLASSW, WS_EX_TOPMOST,
     };
 
     fn as_hwnd(h: isize) -> HWND {
@@ -329,6 +331,20 @@ mod imp {
         unsafe {
             let _ = MessageBeep(MB_OK);
         }
+    }
+
+    pub fn reduced_motion_enabled() -> bool {
+        let mut enabled = 1i32;
+        let ok = unsafe {
+            SystemParametersInfoW(
+                SPI_GETCLIENTAREAANIMATION,
+                0,
+                Some((&mut enabled) as *mut _ as *mut std::ffi::c_void),
+                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS::default(),
+            )
+            .is_ok()
+        };
+        ok && enabled == 0
     }
 
     // ── IME key-routing fix (中文输入「输入法被限制」根治) ──────────────────────
@@ -711,6 +727,9 @@ mod stub {
         None
     }
     pub fn system_beep() {}
+    pub fn reduced_motion_enabled() -> bool {
+        false
+    }
     pub fn install_ime_keyfix(_h: isize) {}
     pub fn set_ime_enabled(_h: isize, _enabled: bool) {}
 

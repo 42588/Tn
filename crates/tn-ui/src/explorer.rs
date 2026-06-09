@@ -189,6 +189,9 @@ pub enum ExplorerFile {
 /// Emitted when a file row is clicked, so the workspace can open it in the viewer.
 pub struct OpenFile(pub ExplorerFile);
 
+/// Emitted after the explorer's directory watcher observes a filesystem change.
+pub struct ExplorerChanged;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExplorerFs {
     Host,
@@ -586,7 +589,13 @@ impl ExplorerView {
                             Either::Right(((), _)) => break,
                         }
                     }
-                    if this.update(cx, |this, cx| this.rebuild(cx)).is_err() {
+                    if this
+                        .update(cx, |this, cx| {
+                            this.rebuild(cx);
+                            cx.emit(ExplorerChanged);
+                        })
+                        .is_err()
+                    {
                         return;
                     }
                 }
@@ -1130,6 +1139,7 @@ impl ExplorerView {
 }
 
 impl gpui::EventEmitter<OpenFile> for ExplorerView {}
+impl gpui::EventEmitter<ExplorerChanged> for ExplorerView {}
 
 impl Render for ExplorerView {
     fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {

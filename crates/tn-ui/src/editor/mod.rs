@@ -16,7 +16,10 @@
 
 pub mod diff;
 pub mod geometry;
+pub mod motion;
+pub mod pane;
 pub mod prepaint;
+pub mod session;
 
 #[allow(unused_imports)]
 pub use diff::{classify_diff_line, hunk_header_rows, next_hunk, prev_hunk, DiffRowKind};
@@ -25,6 +28,11 @@ pub use geometry::{
     caret_abs_x, caret_col_at_x, caret_x, content_width, disp_width, follow_h_offset,
     h_offset_from_drag, h_scroll_thumb, hover_char_at_x, max_cols, max_h_offset, prefix_cols,
     row_out_of_view, visible_rows, HScrollThumb, Metrics, VisibleRows, CODE_GUTTER, ROW_H,
+};
+#[allow(unused_imports)]
+pub use motion::{
+    motion_snapshot, CaretMotionInput, CaretMotionState, MotionKind, MotionSnapshot, MotionTrigger,
+    SettleGlyph,
 };
 #[allow(unused_imports)]
 pub use prepaint::{

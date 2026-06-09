@@ -17,7 +17,7 @@ use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
     canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
@@ -33,6 +33,11 @@ use tn_pty::remote_fs::{
     REMOTE_READ_LIMIT,
 };
 
+use crate::editor::motion::{
+    inserted_char_from_text, large_file_motion_gate, motion_snapshot, visual_col_for_prefix,
+    CaretMotionInput, CaretMotionState, MotionSnapshot, MotionTrigger,
+};
+use crate::editor::session::DocumentSession;
 use crate::style::{
     col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, R_PANEL, UI_SANS,
 };
@@ -41,205 +46,12 @@ use tn_editor::{
     char_to_byte, op_backspace, op_delete, op_delete_range, op_insert, op_insert_multiline,
     op_move, op_newline, op_page,
 };
-use tn_editor::{line_chars, Document, SearchState, TextRange};
+use tn_editor::{line_chars, LineLayout, TextRange, VisualLine, WrapMode};
 
 /// A (row, char-col) position in the edit buffer.
 type Pos = (usize, usize);
 
-#[derive(Clone, Debug)]
-struct QuickLookEditState {
-    document: Document,
-    lines: Rc<RefCell<Vec<String>>>,
-}
-
-impl Default for QuickLookEditState {
-    fn default() -> Self {
-        Self::from_lines(Vec::new())
-    }
-}
-
-impl QuickLookEditState {
-    fn from_lines(lines: Vec<String>) -> Self {
-        let document = Document::from_lines(lines);
-        let lines = Rc::new(RefCell::new(document.lines().to_vec()));
-        Self { document, lines }
-    }
-
-    #[cfg(test)]
-    fn document(&self) -> &Document {
-        &self.document
-    }
-
-    fn lines(&self) -> Rc<RefCell<Vec<String>>> {
-        self.lines.clone()
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines.borrow().len()
-    }
-
-    fn cursor(&self) -> Pos {
-        self.document.cursor()
-    }
-
-    fn selection_anchor(&self) -> Option<Pos> {
-        self.document.selection_anchor()
-    }
-
-    fn sel_range(&self) -> Option<(Pos, Pos)> {
-        self.document
-            .selection_range()
-            .map(|range| (range.start, range.end))
-    }
-
-    fn is_dirty(&self) -> bool {
-        self.document.is_dirty()
-    }
-
-    fn mark_clean(&mut self) {
-        self.document.mark_clean();
-    }
-
-    fn sync_lines(&mut self) {
-        let Some(transaction) = self.document.last_transaction() else {
-            *self.lines.borrow_mut() = self.document.lines().to_vec();
-            return;
-        };
-        let start = transaction
-            .before()
-            .start_row()
-            .min(self.lines.borrow().len());
-        let end = (start + transaction.before().lines().len()).min(self.lines.borrow().len());
-        let mut lines = self.lines.borrow_mut();
-        lines.splice(start..end, transaction.after().lines().iter().cloned());
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-    }
-
-    fn line_chars(&self, row: usize) -> usize {
-        line_chars(self.document.lines(), row)
-    }
-
-    fn row_text(&self, row: usize) -> Option<&str> {
-        self.document.lines().get(row).map(String::as_str)
-    }
-
-    fn selected_text(&self) -> Option<String> {
-        self.document.selected_text()
-    }
-
-    fn place_cursor(&mut self, row: usize, col: usize, extend: bool) {
-        let target = (row, col);
-        if extend {
-            let anchor = self
-                .document
-                .selection_anchor()
-                .unwrap_or(self.document.cursor());
-            self.document.select_range(anchor, target);
-        } else {
-            self.document.set_cursor(target);
-        }
-    }
-
-    #[cfg(test)]
-    fn select_range(&mut self, start: Pos, end: Pos) {
-        self.document.select_range(start, end);
-    }
-
-    fn select_all(&mut self) {
-        self.document.select_all();
-    }
-
-    fn type_char(&mut self, text: &str) {
-        self.document.type_text(text);
-        self.sync_lines();
-    }
-
-    fn newline(&mut self) {
-        self.document.newline();
-        self.sync_lines();
-    }
-
-    fn indent(&mut self) {
-        self.document.insert_text("    ");
-        self.sync_lines();
-    }
-
-    fn backspace(&mut self) -> bool {
-        let changed = self.document.backspace();
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-
-    fn delete_forward(&mut self) -> bool {
-        let changed = self.document.delete_forward();
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-
-    fn move_cursor(&mut self, key: &str, extend: bool) {
-        self.document.move_cursor(key, extend);
-    }
-
-    fn page(&mut self, dir: i32, extend: bool) {
-        self.document.page(dir, extend);
-    }
-
-    fn delete_current_line(&mut self) -> bool {
-        let changed = self.document.delete_current_line();
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-
-    fn insert_text(&mut self, text: &str) {
-        self.document.insert_text(text);
-        self.sync_lines();
-    }
-
-    fn find_next(&mut self, query: &str, forward: bool) -> Option<TextRange> {
-        let mut search = SearchState::new(query);
-        self.document.find_next(&mut search, forward)
-    }
-
-    fn replace_current(&mut self, query: &str, replacement: &str) -> bool {
-        let changed = self.document.replace_current(query, replacement);
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-
-    fn replace_all(&mut self, query: &str, replacement: &str) -> usize {
-        let count = self.document.replace_all(query, replacement);
-        if count > 0 {
-            self.sync_lines();
-        }
-        count
-    }
-
-    fn undo(&mut self) -> bool {
-        let changed = self.document.undo();
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-
-    fn redo(&mut self) -> bool {
-        let changed = self.document.redo();
-        if changed {
-            self.sync_lines();
-        }
-        changed
-    }
-}
+type QuickLookEditState = DocumentSession;
 
 /// Cap the lines read/stored on open (bounds one-time work; the list itself is
 /// virtualized via `uniform_list`, so only visible rows ever lay out / highlight).
@@ -569,6 +381,12 @@ impl DiffRenderRow {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DiffFileJump {
+    row: usize,
+    highlight_row: usize,
+}
+
 fn diff_render_rows(diff: &[DiffLine]) -> Vec<DiffRenderRow> {
     diff.iter()
         .map(|line| DiffRenderRow {
@@ -585,6 +403,203 @@ fn diff_render_rows(diff: &[DiffLine]) -> Vec<DiffRenderRow> {
         .collect()
 }
 
+fn normalized_range(a: Pos, b: Pos) -> Option<(Pos, Pos)> {
+    if a == b {
+        None
+    } else if a <= b {
+        Some((a, b))
+    } else {
+        Some((b, a))
+    }
+}
+
+fn diff_row_chars(rows: &[DiffRenderRow], row: usize) -> usize {
+    rows.get(row).map(|r| r.text.chars().count()).unwrap_or(0)
+}
+
+fn diff_selected_text(rows: &[DiffRenderRow], s: Pos, e: Pos) -> String {
+    let Some((mut s, mut e)) = normalized_range(s, e) else {
+        return String::new();
+    };
+    if rows.is_empty() {
+        return String::new();
+    }
+    let last = rows.len() - 1;
+    s.0 = s.0.min(last);
+    e.0 = e.0.min(last);
+    s.1 = s.1.min(diff_row_chars(rows, s.0));
+    e.1 = e.1.min(diff_row_chars(rows, e.0));
+    if s == e {
+        return String::new();
+    }
+    if s.0 == e.0 {
+        return rows[s.0]
+            .text
+            .chars()
+            .skip(s.1)
+            .take(e.1.saturating_sub(s.1))
+            .collect();
+    }
+    let mut out: String = rows[s.0].text.chars().skip(s.1).collect();
+    for row in rows.iter().take(e.0).skip(s.0 + 1) {
+        out.push('\n');
+        out.push_str(&row.text);
+    }
+    out.push('\n');
+    out.push_str(&rows[e.0].text.chars().take(e.1).collect::<String>());
+    out
+}
+
+fn diff_cursor_from_point(
+    rows: &[DiffRenderRow],
+    row: usize,
+    x_in_viewport: f32,
+    char_w: f32,
+    hscroll: f32,
+) -> Pos {
+    if rows.is_empty() {
+        return (0, 0);
+    }
+    let row = row.min(rows.len() - 1);
+    let rel = x_in_viewport - CODE_GUTTER + hscroll;
+    let col = caret_col_at_x(&rows[row].text, rel, char_w).min(diff_row_chars(rows, row));
+    (row, col)
+}
+
+fn diff_drag_cursor_from_point(
+    rows: &[DiffRenderRow],
+    anchor: Pos,
+    row: usize,
+    x_in_viewport: f32,
+    char_w: f32,
+    hscroll: f32,
+) -> Pos {
+    if rows.is_empty() {
+        return (0, 0);
+    }
+    let row = row.min(rows.len() - 1);
+    let rel = x_in_viewport - CODE_GUTTER + hscroll;
+    let hover = hover_char_at_x(&rows[row].text, rel, char_w);
+    let col = if (row, hover) >= anchor {
+        hover + 1
+    } else {
+        hover
+    }
+    .min(diff_row_chars(rows, row));
+    (row, col)
+}
+
+fn diff_selection_span_cols(
+    rows: &[DiffRenderRow],
+    row: usize,
+    range: (Pos, Pos),
+) -> Option<(usize, usize)> {
+    let (s, e) = normalized_range(range.0, range.1)?;
+    let line = rows.get(row).map(|r| r.text.as_str())?;
+    if row < s.0 || row > e.0 {
+        return None;
+    }
+    let nchars = line.chars().count();
+    let ss = if row == s.0 { s.1.min(nchars) } else { 0 };
+    let ee = if row == e.0 { e.1.min(nchars) } else { nchars };
+    if ss >= ee {
+        return None;
+    }
+    Some((
+        crate::editor::geometry::prefix_cols(line, ss),
+        crate::editor::geometry::prefix_cols(line, ee),
+    ))
+}
+
+fn parse_diff_hunk_new_start(text: &str) -> Option<u32> {
+    let rest = text.strip_prefix("@@")?;
+    let plus = rest.split('+').nth(1)?;
+    let num: String = plus.chars().take_while(|c| c.is_ascii_digit()).collect();
+    num.parse().ok()
+}
+
+fn diff_target_new_line(rows: &[DiffRenderRow], row: usize) -> Option<u32> {
+    if rows.is_empty() {
+        return None;
+    }
+    let row = row.min(rows.len() - 1);
+    if let Some(no) = rows[row].new_no {
+        return Some(no);
+    }
+    if rows[row].kind == crate::editor::DiffRowKind::HunkHeader {
+        return parse_diff_hunk_new_start(&rows[row].text);
+    }
+    let mut prev = None;
+    for i in (0..row).rev() {
+        if let Some(no) = rows[i].new_no {
+            prev = Some((i, no));
+            break;
+        }
+        if rows[i].kind == crate::editor::DiffRowKind::HunkHeader {
+            prev = parse_diff_hunk_new_start(&rows[i].text).map(|no| (i, no));
+            break;
+        }
+    }
+    let mut next = None;
+    for (i, item) in rows.iter().enumerate().skip(row + 1) {
+        if item.kind == crate::editor::DiffRowKind::HunkHeader {
+            break;
+        }
+        if let Some(no) = item.new_no {
+            next = Some((i, no));
+            break;
+        }
+    }
+    match (prev, next) {
+        (Some((pi, pn)), Some((ni, nn))) => {
+            if row.saturating_sub(pi) <= ni.saturating_sub(row) {
+                Some(pn)
+            } else {
+                Some(nn)
+            }
+        }
+        (Some((_, no)), None) | (None, Some((_, no))) => Some(no),
+        (None, None) => None,
+    }
+}
+
+fn diff_target_file_row(rows: &[DiffRenderRow], row: usize) -> Option<usize> {
+    diff_target_new_line(rows, row).map(|line| line.saturating_sub(1) as usize)
+}
+
+fn diff_file_jump_target(rows: &[DiffRenderRow], row: usize) -> Option<DiffFileJump> {
+    let row = diff_target_file_row(rows, row)?;
+    Some(DiffFileJump {
+        row,
+        highlight_row: row,
+    })
+}
+
+fn diff_file_jump_target_for_file_len(
+    rows: &[DiffRenderRow],
+    row: usize,
+    file_len: usize,
+) -> Option<DiffFileJump> {
+    if file_len == 0 {
+        return None;
+    }
+    let mut jump = diff_file_jump_target(rows, row)?;
+    let last = file_len - 1;
+    jump.row = jump.row.min(last);
+    jump.highlight_row = jump.highlight_row.min(last);
+    Some(jump)
+}
+
+fn diff_hunk_jump_row(rows: &[DiffRenderRow], from: usize, forward: bool) -> Option<usize> {
+    let kinds: Vec<_> = rows.iter().map(|row| row.kind).collect();
+    let headers = crate::editor::hunk_header_rows(&kinds);
+    if forward {
+        crate::editor::next_hunk(&headers, from)
+    } else {
+        crate::editor::prev_hunk(&headers, from)
+    }
+}
+
 fn should_self_paint_diff(
     el_render: bool,
     editing: bool,
@@ -592,6 +607,270 @@ fn should_self_paint_diff(
     file_data: &QuickLookData,
 ) -> bool {
     el_render && !editing && tab == Tab::Diff && matches!(file_data, QuickLookData::Text { .. })
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct QuickLookFileLayout {
+    layout: LineLayout,
+    pre: crate::editor::prepaint::ReadOnlyPrepaint,
+    wrap_mode: WrapMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaretPaintRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaretVisualRect {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    radius: f32,
+}
+
+const QUICKLOOK_CARET_RADIUS: f32 = 1.0;
+const QUICKLOOK_CARET_FONT_PAD_Y: f32 = 4.0;
+
+fn caret_visual_height(row_h: f32, code_fs: f32) -> f32 {
+    (code_fs + QUICKLOOK_CARET_FONT_PAD_Y).min(row_h).max(1.0)
+}
+
+fn caret_visual_rect(
+    cell_x: f32,
+    row_y: f32,
+    cell_w: f32,
+    row_h: f32,
+    code_fs: f32,
+    scale_x: f32,
+    scale_y: f32,
+    dx: f32,
+    dy: f32,
+) -> CaretVisualRect {
+    let base_w = cell_w.max(1.0);
+    let base_h = caret_visual_height(row_h, code_fs);
+    let scale_x = scale_x.max(0.55);
+    let scale_y = scale_y.max(0.55);
+    let width = base_w * scale_x;
+    let height = base_h * scale_y;
+    CaretVisualRect {
+        x: cell_x + dx - (width - base_w) * 0.5,
+        y: row_y + dy + (row_h - base_h) * 0.5 - (height - base_h) * 0.5,
+        width,
+        height,
+        radius: QUICKLOOK_CARET_RADIUS,
+    }
+}
+
+fn soft_wrap_extension(ext: &str) -> bool {
+    matches!(
+        ext,
+        "md" | "markdown"
+            | "mdown"
+            | "mkd"
+            | "txt"
+            | "text"
+            | "log"
+            | "rst"
+            | "adoc"
+            | "asciidoc"
+            | "org"
+            | "tex"
+            | "csv"
+            | "tsv"
+    )
+}
+
+fn soft_wrap_file_name(name: &str) -> bool {
+    matches!(
+        name,
+        "readme"
+            | "license"
+            | "licence"
+            | "copying"
+            | "notice"
+            | "changelog"
+            | "changes"
+            | "authors"
+            | "contributors"
+    )
+}
+
+fn file_wrap_mode_for_path(path: &std::path::Path, width_cols: usize) -> WrapMode {
+    let width_cols = width_cols.max(1);
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if soft_wrap_extension(&ext) || soft_wrap_file_name(&stem) {
+        WrapMode::Word { width_cols }
+    } else {
+        WrapMode::None
+    }
+}
+
+fn wrap_width_cols(viewport_w: f32, char_w: f32) -> usize {
+    if viewport_w <= CODE_GUTTER || char_w <= 0.0 {
+        return 1;
+    }
+    ((viewport_w - CODE_GUTTER) / char_w).floor().max(1.0) as usize
+}
+
+fn visual_line_text(line: &str, visual: VisualLine) -> String {
+    line.chars()
+        .skip(visual.char_start)
+        .take(visual.len())
+        .collect()
+}
+
+fn visual_prefix_cols(line: &str, visual: VisualLine, local_col: usize) -> usize {
+    crate::editor::geometry::prefix_cols(line, visual.char_start + local_col).saturating_sub(
+        crate::editor::geometry::prefix_cols(line, visual.char_start),
+    )
+}
+
+fn quicklook_file_layout(
+    lines: &[String],
+    path: &std::path::Path,
+    viewport_w: f32,
+    viewport_h: f32,
+    offset_y: f32,
+    h_offset: f32,
+    char_w: f32,
+) -> QuickLookFileLayout {
+    use crate::editor::geometry::{content_width, max_cols, max_h_offset, Metrics};
+    use crate::editor::prepaint::{visible_row_indices, ReadOnlyPrepaint};
+
+    let m = Metrics::new(char_w);
+    let wrap_mode = file_wrap_mode_for_path(path, wrap_width_cols(viewport_w, char_w));
+    let layout = LineLayout::build(lines, wrap_mode);
+    let visual_count = layout.visual_count();
+    let rows = visible_row_indices(offset_y, viewport_h, m.row_h, visual_count);
+    let (content_w, max_off, h_offset, thumb, content_x) = match wrap_mode {
+        WrapMode::None => {
+            let content_w = content_width(max_cols(lines), m, viewport_w);
+            let max_off = max_h_offset(content_w, viewport_w);
+            let h_offset = h_offset.clamp(0.0, max_off);
+            let thumb = (max_off > 8.0 && viewport_w > 0.0).then(|| {
+                crate::editor::geometry::h_scroll_thumb(content_w, viewport_w, h_offset, max_off)
+            });
+            (content_w, max_off, h_offset, thumb, m.gutter - h_offset)
+        }
+        WrapMode::Word { .. } => (viewport_w.max(0.0), 0.0, 0.0, None, m.gutter),
+    };
+    QuickLookFileLayout {
+        layout,
+        pre: ReadOnlyPrepaint {
+            content_w,
+            max_off,
+            h_offset,
+            rows,
+            thumb,
+            content_x,
+        },
+        wrap_mode,
+    }
+}
+
+fn quicklook_caret_paint_rect(
+    lines: &[String],
+    path: &std::path::Path,
+    cursor: Pos,
+    viewport_w: f32,
+    viewport_h: f32,
+    scroll_y: f32,
+    hscroll: f32,
+    char_w: f32,
+) -> Option<CaretPaintRect> {
+    if lines.is_empty() || char_w <= 0.0 || viewport_w <= 0.0 || viewport_h <= 0.0 {
+        return None;
+    }
+    let layout = quicklook_file_layout(
+        lines, path, viewport_w, viewport_h, scroll_y, hscroll, char_w,
+    );
+    let row = cursor.0.min(lines.len().saturating_sub(1));
+    let col = cursor.1.min(line_chars(lines, row));
+    let (visual_row, local_col) = layout.layout.logical_to_visual((row, col));
+    let visual = layout.layout.visual_line(visual_row)?;
+    let line = lines.get(row).map(String::as_str).unwrap_or("");
+    let x = layout.pre.content_x
+        + visual_prefix_cols(line, visual, local_col.min(visual.len())) as f32 * char_w;
+    let y = crate::editor::prepaint::row_top(visual_row, scroll_y, ROW_H);
+    Some(CaretPaintRect {
+        x,
+        y,
+        width: char_w.max(1.0),
+        height: ROW_H,
+    })
+}
+
+fn quicklook_visual_vertical_cursor(
+    lines: &[String],
+    path: &std::path::Path,
+    cursor: Pos,
+    dir: i32,
+    viewport_w: f32,
+    viewport_h: f32,
+    scroll_y: f32,
+    hscroll: f32,
+    char_w: f32,
+) -> Option<Pos> {
+    if lines.is_empty() || dir == 0 || viewport_w <= 0.0 || viewport_h <= 0.0 || char_w <= 0.0 {
+        return None;
+    }
+    let file_layout = quicklook_file_layout(
+        lines, path, viewport_w, viewport_h, scroll_y, hscroll, char_w,
+    );
+    if file_layout.wrap_mode == WrapMode::None {
+        return None;
+    }
+    let row = cursor.0.min(lines.len().saturating_sub(1));
+    let col = cursor.1.min(line_chars(lines, row));
+    let (visual_row, local_col) = file_layout.layout.logical_to_visual((row, col));
+    let target_visual = if dir < 0 {
+        visual_row.checked_sub(1)?
+    } else {
+        let next = visual_row + 1;
+        (next < file_layout.layout.visual_count()).then_some(next)?
+    };
+    let current_visual = file_layout.layout.visual_line(visual_row)?;
+    let current_line = lines.get(current_visual.logical_row)?;
+    let target_x_cols = visual_prefix_cols(current_line, current_visual, local_col);
+    Some(
+        file_layout
+            .layout
+            .hit_test(lines, target_visual, target_x_cols as f32 * char_w, char_w),
+    )
+}
+
+fn should_center_after_text_commit(el_render: bool) -> bool {
+    !el_render
+}
+
+fn text_motion_trigger(text: &str, before: Pos, after: Pos) -> Option<MotionTrigger> {
+    let inserted = inserted_char_from_text(text)?;
+    (before != after).then_some(MotionTrigger::Insert {
+        from: before,
+        to: after,
+        inserted: Some(inserted),
+    })
+}
+
+fn delete_motion_trigger(before: Pos, after: Pos) -> Option<MotionTrigger> {
+    (before != after).then_some(MotionTrigger::Delete {
+        from: before,
+        to: after,
+    })
 }
 
 /// Emitted to the workspace for the few cross-entity needs (keyboard focus lives
@@ -605,6 +884,8 @@ pub enum QuickLookEvent {
     CloseConfirmed,
     /// User confirmed app quit while a dirty Quick Look document was open.
     QuitConfirmed,
+    /// Promote the current text document session into a long-lived editor pane.
+    OpenAsEditor(EditorHandoff),
     /// `Ctrl+S` wrote this file to disk — the workspace refreshes any agent pane's
     /// activity rail (本次改动) **synchronously**, instead of waiting on the file
     /// watcher (which can miss the edit: file outside the watched cwd, debounce, etc.).
@@ -639,6 +920,34 @@ struct PreviewPayload {
     data: QuickLookData,
     format: Option<TextFormat>,
     guard: Option<FileGuard>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EditorHandoff {
+    pub session: DocumentSession,
+    pub path: Option<PathBuf>,
+    pub title: String,
+}
+
+fn editor_handoff_from_session(
+    session: DocumentSession,
+    path: Option<PathBuf>,
+    _format: Option<TextFormat>,
+    _opened_guard: Option<FileGuard>,
+    _remote_source: Option<RemoteSource>,
+    _is_remote_source: bool,
+) -> Option<EditorHandoff> {
+    let title = path
+        .as_ref()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    Some(EditorHandoff {
+        session,
+        path,
+        title,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -762,6 +1071,34 @@ fn detect_conflict(opened: Option<&FileGuard>, disk: Option<&FileGuard>) -> Conf
         (Some(_), None) => Conflict::MissingOnDisk,
         (Some(opened), Some(disk)) if opened == disk => Conflict::Clean,
         (Some(_), Some(_)) => Conflict::ModifiedOnDisk,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExternalReloadDecision {
+    Unchanged,
+    Reload,
+    Conflict(Conflict),
+}
+
+fn external_reload_decision(
+    editing: bool,
+    dirty: bool,
+    opened: Option<&FileGuard>,
+    disk: Option<&FileGuard>,
+) -> ExternalReloadDecision {
+    if editing {
+        return ExternalReloadDecision::Unchanged;
+    }
+    match detect_conflict(opened, disk) {
+        Conflict::Clean => ExternalReloadDecision::Unchanged,
+        conflict => {
+            if dirty {
+                ExternalReloadDecision::Conflict(conflict)
+            } else {
+                ExternalReloadDecision::Reload
+            }
+        }
     }
 }
 
@@ -1058,6 +1395,9 @@ pub struct QuickLook {
     file_highlight_cache: std::rc::Rc<
         std::cell::RefCell<std::collections::HashMap<usize, Vec<(smol_str::SmolStr, Tint)>>>,
     >,
+    /// One-shot visual target after jumping from Diff back to File. It does not use
+    /// selection state, so Ctrl+C and subsequent drag-select keep normal semantics.
+    file_jump_highlight: Option<usize>,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
     /// Grab focus in the next render (focusing in an event/open callback doesn't
@@ -1099,6 +1439,8 @@ pub struct QuickLook {
     hscroll_px: f32,
     hscroll_drag: Option<f32>,
     hscroll_content_w: f32,
+    caret_motion: CaretMotionState,
+    motion_cleanup_pending: bool,
     /// 编辑态横向 caret-follow 的去抖:只在光标**变化**时跟随一次,否则手动拖横滚条会被
     /// 每帧的 follow 立刻拉回(=「光标固定后拖不动」)。`None` ⇒ 下一帧无条件跟随一次。
     last_follow_cursor: Option<(usize, usize)>,
@@ -1151,6 +1493,7 @@ impl QuickLook {
             file_highlight_cache: std::rc::Rc::new(std::cell::RefCell::new(
                 std::collections::HashMap::new(),
             )),
+            file_jump_highlight: None,
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
             focus_handle: cx.focus_handle(),
@@ -1175,6 +1518,8 @@ impl QuickLook {
             hscroll_px: 0.0,
             hscroll_drag: None,
             hscroll_content_w: 0.0,
+            caret_motion: CaretMotionState::default(),
+            motion_cleanup_pending: false,
             last_follow_cursor: None,
             // TnE-10 收尾:自绘 File 预览/编辑器现为默认路径;`TN_QL_LEGACY=1`
             // 强制回退旧 `uniform_list`(紧急逃生口)。
@@ -1188,6 +1533,37 @@ impl QuickLook {
     /// when there is one — an empty overlay would float over nothing).
     pub fn has_file(&self) -> bool {
         self.path.is_some()
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+
+    pub fn refresh_after_external_change(&mut self, cx: &mut Context<Self>) {
+        if self.is_remote_source || self.remote_source.is_some() || self.save_in_flight {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let disk_guard = local_file_guard(&path);
+        match external_reload_decision(
+            self.editing,
+            self.dirty,
+            self.opened_guard.as_ref(),
+            disk_guard.as_ref(),
+        ) {
+            ExternalReloadDecision::Unchanged => {}
+            ExternalReloadDecision::Reload => {
+                self.path = None;
+                self.open(path, cx);
+            }
+            ExternalReloadDecision::Conflict(conflict) => {
+                self.save_conflict = Some(conflict);
+                self.save_error = None;
+                cx.notify();
+            }
+        }
     }
 
     pub fn request_close(&mut self, cx: &mut Context<Self>) -> bool {
@@ -1268,6 +1644,8 @@ impl QuickLook {
         // Replace HashMaps entirely to return their capacity to the OS!
         self.file_highlight_cache =
             std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+        self.file_jump_highlight = None;
+        self.snap_caret_motion();
 
         // Cancel any pending async tasks.
         self.cancel_token
@@ -1329,6 +1707,8 @@ impl QuickLook {
         self.needs_focus = true;
         self.find_open = false;
         self.file_highlight_cache.borrow_mut().clear();
+        self.file_jump_highlight = None;
+        self.snap_caret_motion();
         self.is_remote_source = is_remote;
         self.remote_source = None;
         self.remote_diff_file = None;
@@ -2059,6 +2439,7 @@ impl QuickLook {
         self.sel_anchor = None;
         self.edit_drag = false;
         self.hscroll_px = 0.0; // File↔Diff 内容宽不同,切换从最左开始,不残留横滚
+        self.file_jump_highlight = None;
         if tab == Tab::Diff {
             self.ensure_diff(cx);
         }
@@ -2121,6 +2502,7 @@ impl QuickLook {
         if self.dirty && self.edit.line_count() > 0 {
             self.editing = true;
             self.sync_edit_mirror();
+            self.snap_caret_motion();
             return;
         }
         let lines = if let QuickLookData::Text { lines, .. } = &self.file_data {
@@ -2136,6 +2518,7 @@ impl QuickLook {
         self.editing = true;
         self.dirty = false;
         self.edit.mark_clean();
+        self.snap_caret_motion();
     }
 
     /// After leaving edit mode back to the File preview, mirror the (possibly
@@ -2160,6 +2543,38 @@ impl QuickLook {
         }
     }
 
+    fn editor_handoff(&mut self) -> Option<EditorHandoff> {
+        if !self.is_editable() {
+            return None;
+        }
+        let session = if self.editing || self.dirty || self.edit.line_count() > 0 {
+            self.edit.clone()
+        } else {
+            let QuickLookData::Text { lines, .. } = &self.file_data else {
+                return None;
+            };
+            let session = QuickLookEditState::from_lines(lines.as_ref().clone());
+            session.mark_clean();
+            self.edit = session.clone();
+            session
+        };
+        editor_handoff_from_session(
+            session,
+            self.path.clone(),
+            self.text_format,
+            self.opened_guard.clone(),
+            self.remote_source.clone(),
+            self.is_remote_source,
+        )
+    }
+
+    fn open_as_editor(&mut self, cx: &mut Context<Self>) {
+        if let Some(handoff) = self.editor_handoff() {
+            self.sync_edit_mirror();
+            cx.emit(QuickLookEvent::OpenAsEditor(handoff));
+        }
+    }
+
     /// TnE-11: caret-follow for the self-paint editor. Only when the cursor *changes*
     /// (de-bounced via `last_follow_cursor`) — otherwise it would fight the user's
     /// manual wheel/thumb scroll every frame (踩过的坑). Mutates `el_scroll_y`
@@ -2181,37 +2596,41 @@ impl QuickLook {
         }
         self.last_follow_cursor = Some(cursor);
         let char_w = self.char_w;
-        // Horizontal: keep the caret within a 4-col margin of the viewport edges.
-        let line: String = self.edit.row_text(cursor.0).unwrap_or_default().to_string();
-        let caret_x =
-            CODE_GUTTER + crate::editor::geometry::prefix_cols(&line, cursor.1) as f32 * char_w;
-        let max_disp = self
-            .edit
-            .lines()
-            .borrow()
-            .iter()
-            .map(|l| disp_width(l))
-            .max()
-            .unwrap_or(0);
-        let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
-        let max_off = (content_w - vw).max(0.0);
-        self.hscroll_px = crate::editor::geometry::follow_h_offset(
-            caret_x,
-            self.hscroll_px,
-            vw,
-            max_off,
-            char_w * 4.0,
-        );
-        // Vertical: scroll the caret row into view if it left the window.
+        let lines_ref = self.edit.lines();
+        let lines = lines_ref.borrow();
+        let wrap_mode = self.file_wrap_mode_for_viewport(vw);
+        let layout = LineLayout::build(&lines, wrap_mode);
+        let (visual_row, _) = layout.logical_to_visual(cursor);
+        let line = lines.get(cursor.0).map(String::as_str).unwrap_or("");
+        match wrap_mode {
+            WrapMode::None => {
+                let caret_x = CODE_GUTTER
+                    + crate::editor::geometry::prefix_cols(line, cursor.1) as f32 * char_w;
+                let max_disp = lines.iter().map(|l| disp_width(l)).max().unwrap_or(0);
+                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                let max_off = (content_w - vw).max(0.0);
+                self.hscroll_px = crate::editor::geometry::follow_h_offset(
+                    caret_x,
+                    self.hscroll_px,
+                    vw,
+                    max_off,
+                    char_w * 4.0,
+                );
+            }
+            WrapMode::Word { .. } => {
+                self.hscroll_px = 0.0;
+            }
+        }
+        // Vertical: scroll the caret visual row into view if it left the window.
         let first = (-self.el_scroll_y / ROW_H).floor().max(0.0) as usize;
         let rows = (vh / ROW_H).floor() as usize;
         let last = first + rows.saturating_sub(1);
-        if cursor.0 < first {
-            self.el_scroll_y = -(cursor.0 as f32) * ROW_H;
-        } else if cursor.0 > last {
-            self.el_scroll_y = -((cursor.0 + 1) as f32 * ROW_H - vh);
+        if visual_row < first {
+            self.el_scroll_y = -(visual_row as f32) * ROW_H;
+        } else if visual_row > last {
+            self.el_scroll_y = -((visual_row + 1) as f32 * ROW_H - vh);
         }
-        let content_h = self.edit.line_count() as f32 * ROW_H;
+        let content_h = layout.visual_count() as f32 * ROW_H;
         let vmin = (vh - content_h).min(0.0);
         self.el_scroll_y = self.el_scroll_y.clamp(vmin, 0.0);
     }
@@ -2221,7 +2640,7 @@ impl QuickLook {
     /// `el_scroll_y` driven by the wheel here (clamped to the content), horizontal is
     /// the shared `hscroll_px`. Default off — `render` only calls this when
     /// `TN_QL_ELEMENT` is set, so the `uniform_list` path stays the one-key fallback.
-    fn file_element(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn file_element(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let config = self.config.clone();
         let char_w = self.char_w;
         let scroll_y = self.el_scroll_y;
@@ -2229,6 +2648,8 @@ impl QuickLook {
         let sel = self.sel_range();
         let editing = self.editing;
         let caret = self.cursor;
+        let motion = motion_snapshot(&mut self.caret_motion, Instant::now());
+        let file_jump_highlight = (!editing).then_some(self.file_jump_highlight).flatten();
         // While the find bar is open the IME preedit belongs to the query field, not
         // the editor caret — suppress the body preedit so it isn't drawn twice.
         let find_open = self.find_open;
@@ -2240,6 +2661,7 @@ impl QuickLook {
         let focus = self.focus_handle.clone();
         let entity = cx.entity();
         let bounds_cell = self.code_bounds.clone();
+        let wrap_path = self.path.clone().unwrap_or_else(|| PathBuf::from(""));
 
         // Line source: the edit-buffer mirror while editing (borrowed in paint — no
         // per-frame clone), else the read-only `file_data` lines.
@@ -2247,16 +2669,6 @@ impl QuickLook {
         let view_lines = match &self.file_data {
             QuickLookData::Text { lines, .. } if !editing => lines.clone(),
             _ => Arc::new(Vec::new()),
-        };
-        let total = if editing {
-            self.edit.line_count()
-        } else {
-            view_lines.len()
-        };
-        let max_disp = if let Some(rc) = &edit_mirror {
-            rc.borrow().iter().map(|l| disp_width(l)).max().unwrap_or(0)
-        } else {
-            view_lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
         };
 
         // Find highlights: every occurrence of the live query (突出显示), tinted under
@@ -2290,30 +2702,79 @@ impl QuickLook {
                 let (dx, dy) = (f32::from(d.x), f32::from(d.y));
                 // Horizontal: Shift+wheel (no native x axis) or a trackpad x delta.
                 // Content width mirrors the renderer (gutter + longest line + 1 col).
-                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
-                let hmax = (content_w - vw).max(0.0);
+                let lines_ref;
+                let lines: &[String] = if editing {
+                    lines_ref = this.edit.lines();
+                    &lines_ref.borrow()
+                } else {
+                    match &this.file_data {
+                        QuickLookData::Text { lines, .. } => lines.as_slice(),
+                        _ => &[],
+                    }
+                };
+                let layout = quicklook_file_layout(
+                    lines,
+                    this.file_wrap_path(),
+                    vw,
+                    vh,
+                    this.el_scroll_y,
+                    this.hscroll_px,
+                    char_w,
+                );
+                let hmax = layout.pre.max_off;
                 if ev.modifiers.shift && hmax > 0.0 {
                     this.hscroll_px = (this.hscroll_px - dy).clamp(0.0, hmax);
                 } else if dx != 0.0 && hmax > 0.0 {
                     this.hscroll_px = (this.hscroll_px - dx).clamp(0.0, hmax);
                 } else {
-                    let content_h = total as f32 * ROW_H;
+                    let content_h = layout.layout.visual_count() as f32 * ROW_H;
                     let vmin = (vh - content_h).min(0.0); // ≤ 0; 0 when content fits
                     this.el_scroll_y = (this.el_scroll_y + dy).clamp(vmin, 0.0);
+                    if matches!(layout.wrap_mode, WrapMode::Word { .. }) {
+                        this.hscroll_px = 0.0;
+                    }
                 }
+                this.snap_caret_motion();
                 cx.notify();
             }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
-                    let row = el_row_at(this, f32::from(ev.position.y), total);
-                    let rel = el_rel_x(this, f32::from(ev.position.x));
-                    let col = this
-                        .row_text(row)
-                        .map(|l| caret_col_at_x(l, rel, char_w))
-                        .unwrap_or(0);
-                    this.place_cursor(row, col, ev.modifiers.shift);
+                    let (vw, vh, left) = {
+                        let b = this.code_bounds.borrow();
+                        (
+                            f32::from(b.size.width),
+                            f32::from(b.size.height),
+                            f32::from(b.origin.x),
+                        )
+                    };
+                    let lines_ref;
+                    let lines: &[String] = if editing {
+                        lines_ref = this.edit.lines();
+                        &lines_ref.borrow()
+                    } else {
+                        match &this.file_data {
+                            QuickLookData::Text { lines, .. } => lines.as_slice(),
+                            _ => &[],
+                        }
+                    };
+                    let layout = quicklook_file_layout(
+                        lines,
+                        this.file_wrap_path(),
+                        vw,
+                        vh,
+                        this.el_scroll_y,
+                        this.hscroll_px,
+                        char_w,
+                    );
+                    let row =
+                        el_row_at(this, f32::from(ev.position.y), layout.layout.visual_count());
+                    let rel = f32::from(ev.position.x) - left - CODE_GUTTER + layout.pre.h_offset;
+                    let (logical_row, col) = layout.layout.hit_test(lines, row, rel, char_w);
+                    this.file_jump_highlight = None;
+                    this.place_cursor(logical_row, col, ev.modifiers.shift);
                     this.edit_drag = true;
+                    this.snap_caret_motion();
                     cx.notify();
                     cx.stop_propagation();
                 }),
@@ -2336,36 +2797,80 @@ impl QuickLook {
                         let b = this.code_bounds.borrow();
                         (f32::from(b.origin.x), f32::from(b.size.width))
                     };
-                    let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
-                    let max_off = (content_w - vw).max(0.0);
+                    let lines_ref;
+                    let lines: &[String] = if editing {
+                        lines_ref = this.edit.lines();
+                        &lines_ref.borrow()
+                    } else {
+                        match &this.file_data {
+                            QuickLookData::Text { lines, .. } => lines.as_slice(),
+                            _ => &[],
+                        }
+                    };
+                    let layout = quicklook_file_layout(
+                        lines,
+                        this.file_wrap_path(),
+                        vw,
+                        0.0,
+                        this.el_scroll_y,
+                        this.hscroll_px,
+                        char_w,
+                    );
                     this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
                         f32::from(ev.position.x),
                         left,
                         grab,
-                        content_w,
+                        layout.pre.content_w,
                         vw,
-                        max_off,
+                        layout.pre.max_off,
                     );
+                    this.snap_caret_motion();
                     cx.notify();
                     return;
                 }
                 if !this.edit_drag {
                     return;
                 }
-                let row = el_row_at(this, f32::from(ev.position.y), total);
-                let rel = el_rel_x(this, f32::from(ev.position.x));
-                let hover = this
-                    .row_text(row)
-                    .map(|l| hover_char_at_x(l, rel, char_w))
-                    .unwrap_or(0);
+                let (vw, vh, left) = {
+                    let b = this.code_bounds.borrow();
+                    (
+                        f32::from(b.size.width),
+                        f32::from(b.size.height),
+                        f32::from(b.origin.x),
+                    )
+                };
+                let lines_ref;
+                let lines: &[String] = if editing {
+                    lines_ref = this.edit.lines();
+                    &lines_ref.borrow()
+                } else {
+                    match &this.file_data {
+                        QuickLookData::Text { lines, .. } => lines.as_slice(),
+                        _ => &[],
+                    }
+                };
+                let layout = quicklook_file_layout(
+                    lines,
+                    this.file_wrap_path(),
+                    vw,
+                    vh,
+                    this.el_scroll_y,
+                    this.hscroll_px,
+                    char_w,
+                );
+                let row = el_row_at(this, f32::from(ev.position.y), layout.layout.visual_count());
+                let rel = f32::from(ev.position.x) - left - CODE_GUTTER + layout.pre.h_offset;
+                let hover = layout.layout.hit_test(lines, row, rel, char_w);
                 let anchor = this.sel_anchor.unwrap_or(this.cursor);
                 // Include the hovered char when dragging right (selection is half-open).
-                let col = if (row, hover) >= anchor {
-                    hover + 1
+                let target = if hover >= anchor {
+                    let line_len = lines.get(hover.0).map(|l| l.chars().count()).unwrap_or(0);
+                    (hover.0, (hover.1 + 1).min(line_len))
                 } else {
                     hover
                 };
-                this.place_cursor(row, col, true);
+                this.place_cursor(target.0, target.1, true);
+                this.snap_caret_motion();
                 cx.notify();
             }))
             .on_mouse_up(
@@ -2374,6 +2879,7 @@ impl QuickLook {
                     if this.edit_drag || this.hscroll_drag.is_some() {
                         this.edit_drag = false;
                         this.hscroll_drag = None;
+                        this.snap_caret_motion();
                         cx.notify();
                     }
                 }),
@@ -2407,14 +2913,17 @@ impl QuickLook {
                         paint_file_preview(
                             bounds,
                             lines,
+                            &wrap_path,
                             char_w,
                             scroll_y,
                             hscroll,
                             sel,
                             &matches,
+                            file_jump_highlight,
                             editing,
                             caret,
                             ime.as_deref(),
+                            motion,
                             &config,
                             window,
                             cx,
@@ -2442,9 +2951,27 @@ impl QuickLook {
                                 let b = this.code_bounds.borrow();
                                 (f32::from(b.origin.x), f32::from(b.size.width))
                             };
-                            let content_w =
-                                (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
-                            let max_off = (content_w - vw).max(0.0);
+                            let lines_ref;
+                            let lines: &[String] = if editing {
+                                lines_ref = this.edit.lines();
+                                &lines_ref.borrow()
+                            } else {
+                                match &this.file_data {
+                                    QuickLookData::Text { lines, .. } => lines.as_slice(),
+                                    _ => &[],
+                                }
+                            };
+                            let layout = quicklook_file_layout(
+                                lines,
+                                this.file_wrap_path(),
+                                vw,
+                                0.0,
+                                this.el_scroll_y,
+                                this.hscroll_px,
+                                char_w,
+                            );
+                            let content_w = layout.pre.content_w;
+                            let max_off = layout.pre.max_off;
                             if max_off <= 0.0 {
                                 return; // no overflow → let it bubble to selection
                             }
@@ -2493,6 +3020,9 @@ impl QuickLook {
         let entity = cx.entity().downgrade();
         let is_remote_diff = self.remote_diff_file.is_some();
         let hunk_busy = self.hunk_busy;
+        let sel = self.sel_range();
+        let rows_for_down = rows.clone();
+        let rows_for_move = rows.clone();
 
         let mut root = div()
             .flex_1()
@@ -2520,37 +3050,92 @@ impl QuickLook {
                 }
                 cx.notify();
             }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                    if rows_for_down.is_empty() {
+                        return;
+                    }
+                    let row = el_row_at(this, f32::from(ev.position.y), rows_for_down.len());
+                    let left = f32::from(this.code_bounds.borrow().origin.x);
+                    let x = f32::from(ev.position.x) - left;
+                    let cursor = diff_cursor_from_point(
+                        rows_for_down.as_slice(),
+                        row,
+                        x,
+                        char_w,
+                        this.hscroll_px,
+                    );
+                    this.place_cursor(cursor.0, cursor.1, ev.modifiers.shift);
+                    this.edit_drag = true;
+                    if ev.click_count >= 2 {
+                        this.goto_diff_target(cx);
+                    }
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_move(cx.listener(move |this, ev: &MouseMoveEvent, _w, cx| {
                 if ev.pressed_button != Some(MouseButton::Left) {
+                    let mut changed = false;
+                    if this.edit_drag {
+                        this.edit_drag = false;
+                        changed = true;
+                    }
                     if this.hscroll_drag.is_some() {
                         this.hscroll_drag = None;
+                        changed = true;
+                    }
+                    if changed {
                         cx.notify();
                     }
                     return;
                 }
-                let Some(grab) = this.hscroll_drag else {
+                if let Some(grab) = this.hscroll_drag {
+                    let (left, vw) = {
+                        let b = this.code_bounds.borrow();
+                        (f32::from(b.origin.x), f32::from(b.size.width))
+                    };
+                    let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
+                    let max_off = (content_w - vw).max(0.0);
+                    this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
+                        f32::from(ev.position.x),
+                        left,
+                        grab,
+                        content_w,
+                        vw,
+                        max_off,
+                    );
+                    cx.notify();
                     return;
-                };
-                let (left, vw) = {
-                    let b = this.code_bounds.borrow();
-                    (f32::from(b.origin.x), f32::from(b.size.width))
-                };
-                let content_w = (CODE_GUTTER + (max_disp as f32 + 1.0) * char_w).max(vw);
-                let max_off = (content_w - vw).max(0.0);
-                this.hscroll_px = crate::editor::geometry::h_offset_from_drag(
-                    f32::from(ev.position.x),
-                    left,
-                    grab,
-                    content_w,
-                    vw,
-                    max_off,
+                }
+                if !this.edit_drag || rows_for_move.is_empty() {
+                    return;
+                }
+                let row = el_row_at(this, f32::from(ev.position.y), rows_for_move.len());
+                let left = f32::from(this.code_bounds.borrow().origin.x);
+                let x = f32::from(ev.position.x) - left;
+                let anchor = this.sel_anchor.unwrap_or(this.cursor);
+                let cursor = diff_drag_cursor_from_point(
+                    rows_for_move.as_slice(),
+                    anchor,
+                    row,
+                    x,
+                    char_w,
+                    this.hscroll_px,
                 );
+                this.place_cursor(cursor.0, cursor.1, true);
                 cx.notify();
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
-                    if this.hscroll_drag.take().is_some() {
+                    let mut changed = this.hscroll_drag.take().is_some();
+                    if this.edit_drag {
+                        this.edit_drag = false;
+                        changed = true;
+                    }
+                    if changed {
                         cx.notify();
                     }
                 }),
@@ -2569,6 +3154,7 @@ impl QuickLook {
                                 char_w,
                                 scroll_y,
                                 hscroll,
+                                sel,
                                 &config,
                                 window,
                                 cx,
@@ -2977,64 +3563,113 @@ impl QuickLook {
         if self.editing {
             return self.edit.sel_range();
         }
-        let a = self.sel_anchor?;
-        if a == self.cursor {
-            None
-        } else if a <= self.cursor {
-            Some((a, self.cursor))
-        } else {
-            Some((self.cursor, a))
-        }
+        normalized_range(self.sel_anchor?, self.cursor)
     }
 
     fn undo(&mut self) {
         if self.edit.undo() {
             self.sync_edit_mirror();
+            self.snap_caret_motion();
         }
     }
 
     fn redo(&mut self) {
         if self.edit.redo() {
             self.sync_edit_mirror();
+            self.snap_caret_motion();
         }
     }
 
     // ── editor ops (selection-aware; buffer math in pure `op_*` fns, unit-tested) ──
 
     fn type_char(&mut self, ch: &str) {
+        let before = self.cursor;
+        let had_selection = self.sel_range().is_some();
         self.edit.type_char(ch);
         self.sync_edit_mirror();
+        if had_selection {
+            self.snap_caret_motion();
+        } else if let Some(trigger) = text_motion_trigger(ch, before, self.cursor) {
+            self.record_caret_motion(trigger, before);
+        } else {
+            self.snap_caret_motion();
+        }
     }
 
     fn newline(&mut self) {
         self.edit.newline();
         self.sync_edit_mirror();
+        self.snap_caret_motion();
     }
 
     fn indent(&mut self) {
         self.edit.indent();
         self.sync_edit_mirror();
+        self.snap_caret_motion();
     }
 
     fn backspace(&mut self) {
+        let before = self.cursor;
+        let had_selection = self.sel_range().is_some();
         self.edit.backspace();
         self.sync_edit_mirror();
+        if had_selection {
+            self.snap_caret_motion();
+        } else if let Some(trigger) = delete_motion_trigger(before, self.cursor) {
+            self.record_caret_motion(trigger, before);
+        } else {
+            self.snap_caret_motion();
+        }
     }
 
     fn delete_forward(&mut self) {
+        let before = self.cursor;
+        let had_selection = self.sel_range().is_some();
         self.edit.delete_forward();
         self.sync_edit_mirror();
+        if had_selection {
+            self.snap_caret_motion();
+        } else if let Some(trigger) = delete_motion_trigger(before, self.cursor) {
+            self.record_caret_motion(trigger, before);
+        } else {
+            self.snap_caret_motion();
+        }
     }
 
     /// Move the cursor; `extend` keeps/starts the selection (Shift held).
     fn move_cursor(&mut self, key: &str, extend: bool) {
-        self.edit.move_cursor(key, extend);
-        self.sync_edit_mirror();
+        let visual_target = if matches!(key, "up" | "down") && self.el_render {
+            let lines = self.edit.lines();
+            let lines = lines.borrow();
+            let b = self.code_bounds.borrow();
+            quicklook_visual_vertical_cursor(
+                &lines,
+                self.file_wrap_path(),
+                self.cursor,
+                if key == "up" { -1 } else { 1 },
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+                self.el_scroll_y,
+                self.hscroll_px,
+                self.char_w,
+            )
+        } else {
+            None
+        };
+        if let Some(target) = visual_target {
+            self.edit.place_cursor(target.0, target.1, extend);
+            self.sync_edit_mirror();
+        } else {
+            self.edit.move_cursor(key, extend);
+            self.sync_edit_mirror();
+        }
+        self.snap_caret_motion();
     }
 
     fn page(&mut self, dir: i32, extend: bool) {
         self.edit.page(dir, extend);
         self.sync_edit_mirror();
+        self.snap_caret_motion();
     }
 
     fn select_all(&mut self) {
@@ -3042,6 +3677,10 @@ impl QuickLook {
             self.edit.select_all();
             self.sync_edit_mirror();
             return;
+        } else if self.tab == Tab::Diff {
+            let rows = diff_render_rows(&self.diff);
+            let last = rows.len().saturating_sub(1);
+            (last, diff_row_chars(&rows, last))
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let last = lines.len().saturating_sub(1);
             (
@@ -3057,10 +3696,20 @@ impl QuickLook {
 
     /// Place the cursor at (row, col) on click; `extend` = Shift-click selects.
     fn place_cursor(&mut self, row: usize, col: usize, extend: bool) {
+        if !self.editing && self.tab == Tab::File {
+            self.file_jump_highlight = None;
+        }
         // 行/列 clamp 的来源:编辑态是 `buf`,预览态(只读拖选)是 file_data 的 lines。
         let (r, c) = if self.editing {
             let r = row.min(self.edit.line_count().saturating_sub(1));
             (r, col.min(self.edit.line_chars(r)))
+        } else if self.tab == Tab::Diff {
+            let rows = diff_render_rows(&self.diff);
+            if rows.is_empty() {
+                return;
+            }
+            let r = row.min(rows.len().saturating_sub(1));
+            (r, col.min(diff_row_chars(&rows, r)))
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             let r = row.min(lines.len().saturating_sub(1));
             (
@@ -3073,6 +3722,7 @@ impl QuickLook {
         if self.editing {
             self.edit.place_cursor(r, c, extend);
             self.sync_edit_mirror();
+            self.snap_caret_motion();
             return;
         }
         if extend {
@@ -3083,18 +3733,131 @@ impl QuickLook {
             self.sel_anchor = None;
         }
         self.cursor = (r, c);
+        self.snap_caret_motion();
     }
 
     /// Text of display row `row` for mouse hit-testing: editing → live `buf`,
     /// read-only preview → the `Text` file lines. `None` for non-text previews.
-    fn row_text(&self, row: usize) -> Option<&str> {
+    fn row_text(&self, row: usize) -> Option<String> {
         if self.editing {
             self.edit.row_text(row)
+        } else if self.tab == Tab::Diff {
+            self.diff.get(row).map(|line| line.text.clone())
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
-            lines.get(row).map(|s| s.as_str())
+            lines.get(row).cloned()
         } else {
             None
         }
+    }
+
+    fn file_text_line_count(&self) -> usize {
+        match &self.file_data {
+            QuickLookData::Text { lines, .. } => lines.len(),
+            _ => 0,
+        }
+    }
+
+    fn file_wrap_path(&self) -> &std::path::Path {
+        self.path
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(""))
+    }
+
+    fn file_wrap_mode_for_viewport(&self, viewport_w: f32) -> WrapMode {
+        file_wrap_mode_for_path(
+            self.file_wrap_path(),
+            wrap_width_cols(viewport_w, self.char_w),
+        )
+    }
+
+    fn motion_policy(&self) -> tn_config::EffectiveMotion {
+        let high_load = self.motion_high_load();
+        self.config
+            .config
+            .editor
+            .effective_motion(crate::platform::reduced_motion_enabled(), high_load)
+    }
+
+    fn motion_high_load(&self) -> bool {
+        std::env::var_os("TN_QL_MOTION_SNAP").is_some()
+            || !self.el_render
+            || large_file_motion_gate(self.edit.line_count())
+    }
+
+    fn visual_cursor_for_motion(&self, cursor: Pos) -> Option<(usize, usize)> {
+        let lines = self.edit.lines();
+        let lines = lines.borrow();
+        let b = self.code_bounds.borrow();
+        let vw = f32::from(b.size.width).max(1.0);
+        let vh = f32::from(b.size.height).max(1.0);
+        let layout = quicklook_file_layout(
+            &lines,
+            self.file_wrap_path(),
+            vw,
+            vh,
+            self.el_scroll_y,
+            self.hscroll_px,
+            self.char_w,
+        );
+        let (visual_row, local_col) = layout.layout.logical_to_visual(cursor);
+        let visual = layout.layout.visual_line(visual_row)?;
+        let line = lines.get(cursor.0).map(String::as_str).unwrap_or("");
+        Some((
+            visual_row,
+            visual_col_for_prefix(line, visual.char_start + local_col)
+                .saturating_sub(visual_col_for_prefix(line, visual.char_start)),
+        ))
+    }
+
+    fn record_caret_motion(&mut self, trigger: MotionTrigger, before: Pos) {
+        let after = self.cursor;
+        let visual_from = self.visual_cursor_for_motion(before);
+        let visual_to = self.visual_cursor_for_motion(after);
+        self.caret_motion.record(
+            trigger,
+            Instant::now(),
+            CaretMotionInput {
+                policy: self.motion_policy(),
+                high_load: self.motion_high_load(),
+                ime_active: self.ime_marked.as_ref().is_some_and(|s| !s.is_empty()),
+                selecting: self.sel_anchor.is_some() || self.edit_drag,
+                visual_from,
+                visual_to,
+                char_w: self.char_w,
+                line_h: ROW_H,
+                large_file: large_file_motion_gate(self.edit.line_count()),
+            },
+        );
+    }
+
+    fn snap_caret_motion(&mut self) {
+        self.caret_motion.snap();
+        self.motion_cleanup_pending = false;
+    }
+
+    fn schedule_motion_cleanup(&mut self, cx: &mut Context<Self>) {
+        if self.motion_cleanup_pending {
+            return;
+        }
+        self.motion_cleanup_pending = true;
+        let exec = cx.background_executor().clone();
+        cx.spawn(
+            async move |this: WeakEntity<Self>, cx: &mut AsyncApp| loop {
+                exec.timer(Duration::from_millis(16)).await;
+                let again = this.update(cx, |v, cx| {
+                    let active = v.caret_motion.is_animating(Instant::now());
+                    if !active {
+                        v.snap_caret_motion();
+                    }
+                    cx.notify();
+                    active
+                });
+                if !matches!(again, Ok(true)) {
+                    break;
+                }
+            },
+        )
+        .detach();
     }
 
     /// Drag the bottom horizontal scrollbar thumb → update `hscroll_px`. `cursor_x`
@@ -3120,6 +3883,7 @@ impl QuickLook {
         let usable = (track_w - thumb_w).max(1.0);
         let thumb_left = (cursor_x - track_left - inset - grab).clamp(0.0, usable);
         self.hscroll_px = thumb_left / usable * max_off;
+        self.snap_caret_motion();
         cx.notify();
     }
 
@@ -3134,6 +3898,14 @@ impl QuickLook {
                 )
             });
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+        } else if self.tab == Tab::Diff {
+            if let Some((s, e)) = self.sel_range() {
+                let rows = diff_render_rows(&self.diff);
+                let text = diff_selected_text(&rows, s, e);
+                if !text.is_empty() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text));
+                }
+            }
         } else if let QuickLookData::Text { lines, .. } = &self.file_data {
             // 预览态(只读):仅在有选区时复制选中文本(基于 lines,不碰 buf)。
             if let Some((s, e)) = self.sel_range() {
@@ -3194,23 +3966,53 @@ impl QuickLook {
             // need a horizontal scroll), then pin the de-bounced follow so the
             // render-time `el_follow_caret` keeps it (won't edge-snap it away).
             if self.el_render {
-                self.el_center_row(range.start.0);
+                self.el_center_file_cursor(range.start);
                 self.el_reveal_col(range.start.0, range.start.1);
                 self.last_follow_cursor = Some(self.cursor);
             }
         }
     }
 
-    /// Self-paint: scroll so logical `row` sits at the viewport's vertical center
+    /// Self-paint: scroll so visual `row` sits at the viewport's vertical center
     /// (clamped to the content). Used by find-jump so a match never lands flush
     /// against an edge. `el_scroll_y ≤ 0`.
-    fn el_center_row(&mut self, row: usize) {
+    fn el_center_visual_row(&mut self, row: usize, total: usize) {
         let vh = f32::from(self.code_bounds.borrow().size.height);
         if vh <= 0.0 {
             return;
         }
         let target = -(row as f32 * ROW_H) + (vh * 0.5 - ROW_H * 0.5);
-        let total = if self.editing {
+        let content_h = total as f32 * ROW_H;
+        let vmin = (vh - content_h).min(0.0);
+        self.el_scroll_y = target.clamp(vmin, 0.0);
+    }
+
+    /// Self-paint: scroll so a logical File/Edit cursor sits at the viewport's
+    /// vertical center. Soft-wrapped prose maps the logical cursor to a visual row.
+    fn el_center_file_cursor(&mut self, cursor: Pos) {
+        let vw = f32::from(self.code_bounds.borrow().size.width);
+        if vw <= 0.0 {
+            return;
+        }
+        if self.editing {
+            let lines_ref = self.edit.lines();
+            let lines = lines_ref.borrow();
+            let layout = LineLayout::build(&lines, self.file_wrap_mode_for_viewport(vw));
+            let (visual_row, _) = layout.logical_to_visual(cursor);
+            self.el_center_visual_row(visual_row, layout.visual_count());
+        } else if let QuickLookData::Text { lines, .. } = &self.file_data {
+            let layout = LineLayout::build(lines, self.file_wrap_mode_for_viewport(vw));
+            let (visual_row, _) = layout.logical_to_visual(cursor);
+            self.el_center_visual_row(visual_row, layout.visual_count());
+        }
+    }
+
+    /// Self-paint: scroll so logical `row` sits at the viewport's vertical center.
+    /// Diff is one visual row per render row; File/Edit uses `el_center_file_cursor`.
+    fn el_center_row(&mut self, row: usize) {
+        let total = if self.tab == Tab::Diff {
+            self.diff.len()
+        } else if self.editing {
             self.edit.line_count()
         } else {
             match &self.file_data {
@@ -3218,9 +4020,7 @@ impl QuickLook {
                 _ => 0,
             }
         };
-        let content_h = total as f32 * ROW_H;
-        let vmin = (vh - content_h).min(0.0);
-        self.el_scroll_y = target.clamp(vmin, 0.0);
+        self.el_center_visual_row(row, total);
     }
 
     /// Self-paint: horizontally scroll so char `col` on `row` is comfortably in view —
@@ -3231,8 +4031,14 @@ impl QuickLook {
         if vw <= 0.0 {
             return;
         }
+        if (self.editing || self.tab == Tab::File)
+            && matches!(self.file_wrap_mode_for_viewport(vw), WrapMode::Word { .. })
+        {
+            self.hscroll_px = 0.0;
+            return;
+        }
         let char_w = self.char_w;
-        let line = self.row_text(row).unwrap_or("").to_string();
+        let line = self.row_text(row).unwrap_or_default();
         let caret_x =
             CODE_GUTTER + crate::editor::geometry::prefix_cols(&line, col) as f32 * char_w;
         let max_disp = if self.editing {
@@ -3248,6 +4054,12 @@ impl QuickLook {
                 QuickLookData::Text { lines, .. } => {
                     lines.iter().map(|l| disp_width(l)).max().unwrap_or(0)
                 }
+                _ if self.tab == Tab::Diff => self
+                    .diff
+                    .iter()
+                    .map(|l| disp_width(&l.text))
+                    .max()
+                    .unwrap_or(0),
                 _ => 0,
             }
         };
@@ -3259,6 +4071,42 @@ impl QuickLook {
         if caret_x < self.hscroll_px + margin || caret_x > self.hscroll_px + vw - margin {
             self.hscroll_px = (caret_x - vw * 0.5).clamp(0.0, max_off);
         }
+    }
+
+    fn jump_diff_hunk(&mut self, forward: bool) -> bool {
+        if self.tab != Tab::Diff {
+            return false;
+        }
+        let rows = diff_render_rows(&self.diff);
+        let Some(row) = diff_hunk_jump_row(&rows, self.cursor.0, forward) else {
+            return false;
+        };
+        self.sel_anchor = None;
+        self.cursor = (row, 0);
+        self.edit_drag = false;
+        self.el_center_row(row);
+        self.el_reveal_col(row, 0);
+        true
+    }
+
+    fn goto_diff_target(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.tab != Tab::Diff {
+            return false;
+        }
+        let rows = diff_render_rows(&self.diff);
+        let Some(jump) =
+            diff_file_jump_target_for_file_len(&rows, self.cursor.0, self.file_text_line_count())
+        else {
+            return false;
+        };
+        self.select_tab_now(Tab::File, cx);
+        self.place_cursor(jump.row, 0, false);
+        self.file_jump_highlight = Some(jump.highlight_row);
+        self.edit_drag = false;
+        self.scroll.scroll_to_item(jump.row, ScrollStrategy::Center);
+        self.el_center_file_cursor((jump.row, 0));
+        self.el_reveal_col(jump.row, 0);
+        true
     }
 
     fn replace_current(&mut self) {
@@ -3345,6 +4193,10 @@ impl QuickLook {
                 let handled = match key {
                     "enter" if self.find_open && self.replacing => {
                         self.replace_all(); // Ctrl+Enter in replace = replace all
+                        true
+                    }
+                    "enter" if !m.alt && self.is_editable() => {
+                        self.open_as_editor(cx);
                         true
                     }
                     "s" if !m.alt => {
@@ -3453,6 +4305,11 @@ impl QuickLook {
                 // 预览态只读:放行 Ctrl+C(复制选中) / Ctrl+A(全选),其余控制键忽略。
                 if m.control && !m.alt && !m.platform {
                     match key {
+                        "enter" if self.is_editable() => {
+                            self.open_as_editor(cx);
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
                         "c" => {
                             self.copy(cx);
                             cx.stop_propagation();
@@ -3468,6 +4325,21 @@ impl QuickLook {
                 return;
             }
             match key {
+                "enter" if self.tab == Tab::Diff => {
+                    self.goto_diff_target(cx);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "pageup" if self.tab == Tab::Diff => {
+                    self.jump_diff_hunk(false);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "pagedown" if self.tab == Tab::Diff => {
+                    self.jump_diff_hunk(true);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
                 "up" => {
                     if self.request_leave(PendingLeave::Nav(-1), cx) == LeaveDecision::Continue {
                         cx.emit(QuickLookEvent::Nav(-1));
@@ -3615,15 +4487,24 @@ fn is_diff_metadata_line(line: &str) -> bool {
 fn parse_diff(text: &str) -> Vec<DiffLine> {
     let mut lines = Vec::new();
     let mut new_no = 0u32;
+    let mut in_hunk = false;
     // 0-based hunk counter — kept in lockstep with `remote_git::parse_file_diff`
     // (both skip the same header lines, count `@@` in order) so a clicked hunk
     // header maps back to the right `FileDiff` hunk for accept/reject.
     let mut hunk_no = 0usize;
     for line in text.lines() {
-        if is_diff_metadata_line(line) {
+        if line.starts_with('\\') {
+            continue;
+        }
+        if line.starts_with("diff ") {
+            in_hunk = false;
+            continue;
+        }
+        if !in_hunk && is_diff_metadata_line(line) {
             continue;
         }
         if let Some(rest) = line.strip_prefix("@@") {
+            in_hunk = true;
             // @@ -a,b +c,d @@  → start tracking at c
             if let Some(plus) = rest.split('+').nth(1) {
                 let num: String = plus.chars().take_while(|c| c.is_ascii_digit()).collect();
@@ -3784,8 +4665,9 @@ fn replace_all_in(buf: &mut Vec<String>, query: &str, repl: &str) -> usize {
 fn cursor_block(config: &Loaded) -> gpui::Div {
     div()
         .w(px(7.5))
-        .h(px(16.))
+        .h(px(caret_visual_height(ROW_H, CODE_FS)))
         .flex_none()
+        .rounded(px(QUICKLOOK_CARET_RADIUS))
         .bg(col(config.theme.ui.foreground))
 }
 
@@ -3968,13 +4850,6 @@ fn el_row_at(ql: &QuickLook, pos_y: f32, total: usize) -> usize {
     (r.max(0.0) as usize).min(total.saturating_sub(1))
 }
 
-/// Pointer x relative to the glyph start (after the gutter) plus horizontal scroll,
-/// for the self-paint File preview hit-test (feeds `caret_col_at_x`/`hover_char_at_x`).
-fn el_rel_x(ql: &QuickLook, pos_x: f32) -> f32 {
-    let left = f32::from(ql.code_bounds.borrow().origin.x);
-    pos_x - left - CODE_GUTTER + ql.hscroll_px
-}
-
 /// TnE-09: read-only **self-painted** File preview (env-gated `TN_QL_ELEMENT`).
 /// Draws line numbers + syntax-tinted text + a horizontal scrollbar via the shared
 /// `editor::{geometry,prepaint}` model. Each glyph is positioned on the 1/2-col
@@ -3985,20 +4860,23 @@ fn el_rel_x(ql: &QuickLook, pos_x: f32) -> f32 {
 fn paint_file_preview(
     bounds: Bounds<Pixels>,
     lines: &[String],
+    wrap_path: &std::path::Path,
     char_w: f32,
     scroll_y: f32,
     hscroll: f32,
     sel: Option<((usize, usize), (usize, usize))>,
     matches: &[((usize, usize), (usize, usize))],
+    file_jump_highlight: Option<usize>,
     editing: bool,
     caret: (usize, usize),
     ime: Option<&str>,
+    motion: MotionSnapshot,
     config: &Loaded,
     window: &mut Window,
     cx: &mut gpui::App,
 ) {
-    use crate::editor::geometry::{prefix_cols, Metrics};
-    use crate::editor::prepaint::{gutter_label, prepaint_readonly, row_top};
+    use crate::editor::geometry::Metrics;
+    use crate::editor::prepaint::{gutter_label, row_top};
 
     let m = Metrics::new(char_w);
     let vw = f32::from(bounds.size.width);
@@ -4006,7 +4884,12 @@ fn paint_file_preview(
     if vw <= 0.0 || vh <= 0.0 {
         return;
     }
-    let pre = prepaint_readonly(lines, vw, vh, scroll_y, hscroll, m);
+    let file_layout = quicklook_file_layout(lines, wrap_path, vw, vh, scroll_y, hscroll, char_w);
+    let layout = &file_layout.layout;
+    let pre = &file_layout.pre;
+    let sel_segments = sel
+        .map(|(s, e)| layout.range_segments(TextRange::new(s, e)))
+        .unwrap_or_default();
     let fs = px(CODE_FS);
     let line_h = px(ROW_H);
     let font = gpui::font(&config.font().family);
@@ -4023,6 +4906,8 @@ fn paint_file_preview(
     let caret_bg: Hsla = col(ui.foreground).into();
     let caret_fg: Hsla = col(ui.chrome_bg).into();
     let accent: Hsla = col(ui.accent).into();
+    let jump_bg: Hsla = cola(ui.accent_alt, 0.16).into();
+    let jump_bar: Hsla = cola(ui.accent_alt, 0.90).into();
     let view_bg: Hsla = rgba(0x1e1e1e).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
@@ -4037,6 +4922,29 @@ fn paint_file_preview(
         strikethrough: None,
     };
 
+    if let Some(row) = file_jump_highlight {
+        for visual_row in layout.visual_range_of_row(row) {
+            if !pre.rows.contains(&visual_row) {
+                continue;
+            }
+            let y = px(top + row_top(visual_row, scroll_y, ROW_H));
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(bounds.origin.x, y),
+                    size: size(bounds.size.width, line_h),
+                },
+                jump_bg,
+            ));
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(px(left + gutter - 3.0), y),
+                    size: size(px(2.0), line_h),
+                },
+                jump_bar,
+            ));
+        }
+    }
+
     // Text content, clipped to the area right of the gutter so horizontally-scrolled
     // glyphs never bleed into the gutter / line numbers.
     let text_area = Bounds {
@@ -4044,20 +4952,35 @@ fn paint_file_preview(
         size: size(px((vw - gutter).max(0.0)), bounds.size.height),
     };
     window.with_content_mask(Some(ContentMask { bounds: text_area }), |window| {
-        for row in pre.rows.clone() {
-            let Some(line) = lines.get(row) else { continue };
-            let y = px(top + row_top(row, scroll_y, ROW_H));
+        for visual_row in pre.rows.clone() {
+            let Some(visual) = layout.visual_line(visual_row) else {
+                continue;
+            };
+            let Some(logical_line) = lines.get(visual.logical_row) else {
+                continue;
+            };
+            let line = visual_line_text(logical_line, visual);
+            let y = px(top + row_top(visual_row, scroll_y, ROW_H));
             // Find highlights (突出显示): every query occurrence on this row, a clearly
             // visible fill + thin outline so it reads as highlighted on busy lines.
             // Painted under the text + selection (matches are single-line: s.0 == e.0).
-            for (ms, me) in matches.iter().filter(|(s, _)| s.0 == row) {
-                let xs = left + pre.content_x + prefix_cols(line, ms.1) as f32 * char_w;
-                let xe = left + pre.content_x + prefix_cols(line, me.1) as f32 * char_w;
-                if xe > xs {
+            for (ms, me) in matches.iter().filter(|(s, _)| s.0 == visual.logical_row) {
+                let start = ms.1.max(visual.char_start);
+                let end = me.1.min(visual.char_end);
+                if start < end {
+                    let xs = left
+                        + pre.content_x
+                        + visual_prefix_cols(logical_line, visual, start - visual.char_start)
+                            as f32
+                            * char_w;
+                    let xe = left
+                        + pre.content_x
+                        + visual_prefix_cols(logical_line, visual, end - visual.char_start) as f32
+                            * char_w;
                     window.paint_quad(gpui::quad(
                         Bounds {
                             origin: point(px(xs), y),
-                            size: size(px(xe - xs), line_h),
+                            size: size(px((xe - xs).max(0.0)), line_h),
                         },
                         px(2.0),
                         match_bg,
@@ -4070,24 +4993,23 @@ fn paint_file_preview(
             // Selection background (read-only preview drag-select). Per-row char span
             // [ss, ee) → display-col x range, painted under the text. Mirrors
             // `edit_row_cached`: full line for interior rows, accent @ 0.22.
-            if let Some((s, e)) = sel {
-                if row >= s.0 && row <= e.0 {
-                    let nchars = line.chars().count();
-                    let ss = if row == s.0 { s.1 } else { 0 };
-                    let ee = if row == e.0 { e.1 } else { nchars };
-                    if ss < ee {
-                        let xs = left + pre.content_x + prefix_cols(line, ss) as f32 * char_w;
-                        let xe = left + pre.content_x + prefix_cols(line, ee) as f32 * char_w;
-                        let rect = Bounds {
-                            origin: point(px(xs), y),
-                            size: size(px((xe - xs).max(0.0)), line_h),
-                        };
-                        window.paint_quad(fill(rect, sel_bg));
-                    }
+            for &(_, ss, ee) in sel_segments.iter().filter(|(idx, _, _)| *idx == visual_row) {
+                let xs = left
+                    + pre.content_x
+                    + visual_prefix_cols(logical_line, visual, ss) as f32 * char_w;
+                let xe = left
+                    + pre.content_x
+                    + visual_prefix_cols(logical_line, visual, ee) as f32 * char_w;
+                if xe > xs {
+                    let rect = Bounds {
+                        origin: point(px(xs), y),
+                        size: size(px((xe - xs).max(0.0)), line_h),
+                    };
+                    window.paint_quad(fill(rect, sel_bg));
                 }
             }
             let mut cols = 0.0f32; // display columns consumed so far on this row
-            for (text, tint) in coalesce_spans(line) {
+            for (text, tint) in coalesce_spans(&line) {
                 let color: Hsla = tint_color(config, tint).into();
                 let chars: Vec<char> = text.chars().collect();
                 let mut k = 0;
@@ -4117,11 +5039,29 @@ fn paint_file_preview(
                     }
                 }
             }
+            if let Some(settle) = motion.settle.filter(|s| s.row == visual.logical_row) {
+                if settle.col >= visual.char_start && settle.col < visual.char_end {
+                    let local_col = settle.col - visual.char_start;
+                    let x = px(left
+                        + pre.content_x
+                        + visual_prefix_cols(logical_line, visual, local_col) as f32 * char_w);
+                    let color: Hsla = cola(ui.accent, settle.alpha).into();
+                    let s = settle.ch.to_string();
+                    let run = mk_run(&s, color);
+                    let shaped = window.text_system().shape_line(s.into(), fs, &[run], None);
+                    let _ = shaped.paint(point(x, y), line_h, window, cx);
+                }
+            }
             // Reverse-block caret + IME preedit (editing only) on the caret row.
-            if editing && row == caret.0 {
-                let nchars = line.chars().count();
-                let cc = caret.1.min(nchars);
-                let cx0 = left + pre.content_x + prefix_cols(line, cc) as f32 * char_w;
+            if editing
+                && caret.0 == visual.logical_row
+                && caret.1 >= visual.char_start
+                && caret.1 <= visual.char_end
+            {
+                let cc = caret.1.min(visual.char_end) - visual.char_start;
+                let cx0 = left
+                    + pre.content_x
+                    + visual_prefix_cols(logical_line, visual, cc) as f32 * char_w;
                 if let Some(pre_s) = ime.filter(|s| !s.is_empty()) {
                     // Composing: draw the preedit over the caret, covering following
                     // text so it stays readable, with an accent underline.
@@ -4152,12 +5092,28 @@ fn paint_file_preview(
                     let cell_cols = ch
                         .map(|c| if c.is_ascii() { 1.0 } else { 2.0 })
                         .unwrap_or(1.0);
-                    window.paint_quad(fill(
+                    let cell_w = cell_cols * char_w;
+                    let visual = caret_visual_rect(
+                        cx0,
+                        f32::from(y),
+                        cell_w,
+                        ROW_H,
+                        CODE_FS,
+                        motion.caret_scale_x,
+                        motion.caret_scale_y,
+                        motion.caret_dx,
+                        motion.caret_dy,
+                    );
+                    window.paint_quad(gpui::quad(
                         Bounds {
-                            origin: point(px(cx0), y),
-                            size: size(px(cell_cols * char_w), line_h),
+                            origin: point(px(visual.x), px(visual.y)),
+                            size: size(px(visual.width), px(visual.height)),
                         },
+                        px(visual.radius),
                         caret_bg,
+                        px(0.0),
+                        rgba(0x00000000),
+                        gpui::BorderStyle::Solid,
                     ));
                     if let Some(c) = ch {
                         let run = mk_run(&c.to_string(), caret_fg);
@@ -4165,7 +5121,7 @@ fn paint_file_preview(
                             window
                                 .text_system()
                                 .shape_line(c.to_string().into(), fs, &[run], None);
-                        let _ = shaped.paint(point(px(cx0), y), line_h, window, cx);
+                        let _ = shaped.paint(point(px(visual.x), y), line_h, window, cx);
                     }
                 }
             }
@@ -4174,9 +5130,16 @@ fn paint_file_preview(
 
     // Line numbers, right-aligned in the gutter (content is masked out of the gutter
     // region above, so they never overlap scrolled text).
-    for row in pre.rows.clone() {
-        let y = px(top + row_top(row, scroll_y, ROW_H));
-        let label = gutter_label(row);
+    for visual_row in pre.rows.clone() {
+        let Some(visual) = layout.visual_line(visual_row) else {
+            continue;
+        };
+        let y = px(top + row_top(visual_row, scroll_y, ROW_H));
+        let label = if visual.char_start == 0 {
+            gutter_label(visual.logical_row)
+        } else {
+            String::new()
+        };
         let run = mk_run(&label, gutter_color);
         let shaped = window
             .text_system()
@@ -4203,6 +5166,7 @@ fn paint_diff_preview(
     char_w: f32,
     scroll_y: f32,
     hscroll: f32,
+    sel: Option<(Pos, Pos)>,
     config: &Loaded,
     window: &mut Window,
     cx: &mut gpui::App,
@@ -4223,6 +5187,7 @@ fn paint_diff_preview(
     let font = gpui::font(&config.font().family);
     let th = &config.theme;
     let gutter_color: Hsla = gpui::rgb(0x474E72).into();
+    let sel_bg: Hsla = cola(th.ui.accent, 0.22).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
     let gutter = m.gutter;
@@ -4280,6 +5245,21 @@ fn paint_diff_preview(
                     },
                     bg,
                 ));
+            }
+            if let Some(range) = sel {
+                if let Some((ss, ee)) = diff_selection_span_cols(rows, row_ix, range) {
+                    let xs = left + pre.content_x + ss as f32 * char_w;
+                    let xe = left + pre.content_x + ee as f32 * char_w;
+                    if xe > xs {
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(xs), y),
+                                size: size(px(xe - xs), line_h),
+                            },
+                            sel_bg,
+                        ));
+                    }
+                }
             }
 
             let mut cols = 0.0f32;
@@ -4515,8 +5495,11 @@ impl EntityInputHandler for QuickLook {
                 self.find_input(text);
             } else {
                 self.type_char(text);
-                self.scroll
-                    .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                self.schedule_motion_cleanup(cx);
+                if should_center_after_text_commit(self.el_render) {
+                    self.scroll
+                        .scroll_to_item(self.cursor.0, ScrollStrategy::Center);
+                }
             }
         }
         self.ime_marked = None;
@@ -4532,6 +5515,7 @@ impl EntityInputHandler for QuickLook {
         cx: &mut Context<Self>,
     ) {
         self.ime_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        self.snap_caret_motion();
         cx.notify();
     }
 
@@ -4554,16 +5538,30 @@ impl EntityInputHandler for QuickLook {
                 });
             }
         }
-        // Candidate window at the cursor: column is exact (gutter + col×char_w); the
-        // row is approximated to the code area's vertical center (edits scroll the
-        // cursor to center, and `uniform_list`'s scroll offset isn't readable in
-        // production — see坑), which is close enough for the IME popup.
-        let x =
-            f32::from(element_bounds.origin.x) + CODE_GUTTER + self.cursor.1 as f32 * self.char_w;
-        let y = f32::from(element_bounds.origin.y) + f32::from(element_bounds.size.height) * 0.5;
+        let lines = self.edit.lines();
+        let lines = lines.borrow();
+        let caret = quicklook_caret_paint_rect(
+            &lines,
+            self.file_wrap_path(),
+            self.cursor,
+            f32::from(element_bounds.size.width),
+            f32::from(element_bounds.size.height),
+            self.el_scroll_y,
+            self.hscroll_px,
+            self.char_w,
+        )
+        .unwrap_or(CaretPaintRect {
+            x: CODE_GUTTER,
+            y: 0.0,
+            width: self.char_w.max(1.0),
+            height: ROW_H,
+        });
         Some(Bounds {
-            origin: point(px(x), px(y)),
-            size: size(px(self.char_w.max(1.0)), px(ROW_H)),
+            origin: point(
+                px(f32::from(element_bounds.origin.x) + caret.x),
+                px(f32::from(element_bounds.origin.y) + caret.y + caret.height),
+            ),
+            size: size(px(caret.width.max(1.0)), px(caret.height)),
         })
     }
 
@@ -4595,8 +5593,9 @@ impl Render for QuickLook {
         if self.el_render {
             self.el_follow_caret();
         }
-        let ui = &self.config.theme.ui;
-        let th = &self.config.theme;
+        let ui = self.config.theme.ui;
+        let ansi = self.config.theme.ansi;
+        let agent_claude = self.config.theme.agents.claude;
 
         // ── .vh header:file icon + path(dir muted / name accent) + 已改动 badge + Diff/File tabset ──
         let rel = self
@@ -4680,19 +5679,19 @@ impl Render for QuickLook {
                     || self.save_error.is_some(),
                 |d| {
                     let (label, color) = if self.save_in_flight {
-                        ("保存中", th.ansi.yellow)
+                        ("保存中", ansi.yellow)
                     } else if self.save_conflict.is_some() {
-                        ("保存冲突", th.ansi.red)
+                        ("保存冲突", ansi.red)
                     } else if self.save_error.is_some() {
-                        ("保存失败", th.ansi.red)
+                        ("保存失败", ansi.red)
                     } else if self.editing {
                         if self.dirty {
-                            ("编辑中 ●", th.agents.claude)
+                            ("编辑中 ●", agent_claude)
                         } else {
-                            ("编辑中", th.agents.claude)
+                            ("编辑中", agent_claude)
                         }
                     } else {
-                        ("已改动", th.agents.claude)
+                        ("已改动", agent_claude)
                     };
                     d.child(
                         div()
@@ -4727,6 +5726,9 @@ impl Render for QuickLook {
         // Remote Diff tab → per-hunk accept/reject buttons on each `@@` row.
         let is_remote_diff = self.remote_diff_file.is_some();
         let hunk_busy = self.hunk_busy;
+        let file_jump_highlight = (!editing && tab == Tab::File)
+            .then_some(self.file_jump_highlight)
+            .flatten();
         // Per-row click → place cursor (mouse). The row index `i` is known here, so
         // we only map x → column (gutter + measured char width); no scroll-offset
         // math needed. Capture a weak handle (the 'static closure can't borrow self).
@@ -4928,7 +5930,7 @@ impl Render for QuickLook {
                                         let col = this
                                             .row_text(i)
                                             .map(|l| {
-                                                caret_col_at_x(l, rel + this.hscroll_px, char_w)
+                                                caret_col_at_x(&l, rel + this.hscroll_px, char_w)
                                             })
                                             .unwrap_or(0);
                                         this.place_cursor(i, col, shift);
@@ -4958,7 +5960,7 @@ impl Render for QuickLook {
                                         let hover = this
                                             .row_text(i)
                                             .map(|l| {
-                                                hover_char_at_x(l, rel + this.hscroll_px, char_w)
+                                                hover_char_at_x(&l, rel + this.hscroll_px, char_w)
                                             })
                                             .unwrap_or(0);
                                         let anchor = this.sel_anchor.unwrap_or(this.cursor);
@@ -4977,7 +5979,7 @@ impl Render for QuickLook {
                             // 选区触及本行 → 按 char 渲染(复用 edit_row_cached,caret=(MAX,MAX)
                             // 永不命中任何行 = 预览态不画光标)以显选区底色;否则用缓存的 tint
                             // spans(快)。预览态拖选 + Ctrl+C 复制,只读不改。
-                            let row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
+                            let mut row = if sel.map_or(false, |(s, e)| i >= s.0 && i <= e.0) {
                                 let chars: Vec<char> = line.chars().collect();
                                 let tints = tints_per_char(line);
                                 edit_row_cached(
@@ -4994,6 +5996,12 @@ impl Render for QuickLook {
                                     f_cache.entry(i).or_insert_with(|| coalesce_spans(line));
                                 file_row_cached(&config, spans, i, char_w)
                             };
+                            if file_jump_highlight == Some(i) {
+                                row = row
+                                    .bg(cola(config.theme.ui.accent_alt, 0.16))
+                                    .border_l(px(2.))
+                                    .border_color(cola(config.theme.ui.accent_alt, 0.90));
+                            }
                             let entity = entity.clone();
                             let entity_mv = entity.clone();
                             let bounds = row_bounds.clone();
@@ -5008,7 +6016,7 @@ impl Render for QuickLook {
                                         let col = this
                                             .row_text(i)
                                             .map(|l| {
-                                                caret_col_at_x(l, rel + this.hscroll_px, char_w)
+                                                caret_col_at_x(&l, rel + this.hscroll_px, char_w)
                                             })
                                             .unwrap_or(0);
                                         this.place_cursor(i, col, shift);
@@ -5032,7 +6040,7 @@ impl Render for QuickLook {
                                         let hover = this
                                             .row_text(i)
                                             .map(|l| {
-                                                hover_char_at_x(l, rel + this.hscroll_px, char_w)
+                                                hover_char_at_x(&l, rel + this.hscroll_px, char_w)
                                             })
                                             .unwrap_or(0);
                                         let anchor = this.sel_anchor.unwrap_or(this.cursor);
@@ -5280,6 +6288,25 @@ impl Render for QuickLook {
             .text_color(col(ui.muted))
             .border_t_1()
             .border_color(rgba(0xffffff0d)); // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
+        let open_editor_action = {
+            let entity = cx.entity().clone();
+            move |_e: &MouseDownEvent, _w: &mut Window, app: &mut gpui::App| {
+                let _ = entity.update(app, |this, cx| this.open_as_editor(cx));
+                app.stop_propagation();
+            }
+        };
+        let open_editor_btn = || {
+            div()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(5.))
+                .bg(cola(ui.accent, 0.14))
+                .text_color(cola(ui.foreground, 0.92))
+                .border_1()
+                .border_color(cola(ui.accent, 0.35))
+                .child("打开为编辑器")
+                .on_mouse_down(MouseButton::Left, open_editor_action.clone())
+        };
         let footer = if self.editing {
             // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销
             footer_base
@@ -5296,6 +6323,22 @@ impl Render for QuickLook {
                 .child("复制粘贴 ·")
                 .child(kcap("Ctrl+Z"))
                 .child("撤销")
+                .child(div().flex_1())
+                .child(kcap("Ctrl+Enter"))
+                .child(open_editor_btn())
+        } else if self.tab == Tab::Diff {
+            footer_base
+                .child(kcap("↑↓"))
+                .child("换文件 ·")
+                .child(kcap("PgUp/Dn"))
+                .child("跳 hunk ·")
+                .child(kcap("Enter"))
+                .child("到 File 行")
+                .child(div().flex_1())
+                .child(kcap("Ctrl+C/A"))
+                .child("复制/全选 ·")
+                .child(kcap("Esc"))
+                .child("关闭")
         } else if self.is_editable() {
             // 预览态(可编辑文本文件):↑↓ 换文件 · ⇥ 切 File · Enter 编辑 · Esc 关闭
             footer_base
@@ -5306,7 +6349,9 @@ impl Render for QuickLook {
                 .child(kcap("Enter"))
                 .child("编辑")
                 .child(div().flex_1())
-                .child("Diff 只读审阅 ·")
+                .child(kcap("Ctrl+Enter"))
+                .child(open_editor_btn())
+                .child(" · Diff 只读审阅 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
         } else {
@@ -5451,15 +6496,15 @@ impl Render for QuickLook {
                         .rounded(px(7.))
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight(620.))
-                        .text_color(col(if danger { th.ansi.red } else { ui.foreground }))
+                        .text_color(col(if danger { ansi.red } else { ui.foreground }))
                         .bg(if danger {
-                            cola(th.ansi.red, 0.10)
+                            cola(ansi.red, 0.10)
                         } else {
                             rgba(INSET)
                         })
                         .border_1()
                         .border_color(if danger {
-                            cola(th.ansi.red, 0.32)
+                            cola(ansi.red, 0.32)
                         } else {
                             rgba(0xffffff14)
                         })
@@ -5476,13 +6521,13 @@ impl Render for QuickLook {
                     .font_family(UI_SANS)
                     .text_size(px(10.5))
                     .text_color(col(ui.muted))
-                    .bg(cola(th.ansi.red, 0.06))
+                    .bg(cola(ansi.red, 0.06))
                     .border_t_1()
                     .border_color(rgba(0xffffff0d))
-                    .child(icon("alert", 13., th.ansi.red))
+                    .child(icon("alert", 13., ansi.red))
                     .child(
                         div()
-                            .text_color(col(th.ansi.red))
+                            .text_color(col(ansi.red))
                             .child(SharedString::from(conflict.label())),
                     )
                     .child(div().flex_1())
@@ -5512,13 +6557,13 @@ impl Render for QuickLook {
                         .font_family(UI_SANS)
                         .text_size(px(10.5))
                         .text_color(col(ui.muted))
-                        .bg(cola(th.ansi.red, 0.06))
+                        .bg(cola(ansi.red, 0.06))
                         .border_t_1()
                         .border_color(rgba(0xffffff0d))
-                        .child(icon("alert", 13., th.ansi.red))
+                        .child(icon("alert", 13., ansi.red))
                         .child(
                             div()
-                                .text_color(col(th.ansi.red))
+                                .text_color(col(ansi.red))
                                 .child(SharedString::from(error.clone())),
                         )
                         .child(div().flex_1())
@@ -5550,15 +6595,15 @@ impl Render for QuickLook {
                     .rounded(px(7.))
                     .text_size(px(10.5))
                     .font_weight(gpui::FontWeight(620.))
-                    .text_color(col(if danger { th.ansi.red } else { ui.foreground }))
+                    .text_color(col(if danger { ansi.red } else { ui.foreground }))
                     .bg(if danger {
-                        cola(th.ansi.red, 0.10)
+                        cola(ansi.red, 0.10)
                     } else {
                         rgba(INSET)
                     })
                     .border_1()
                     .border_color(if danger {
-                        cola(th.ansi.red, 0.32)
+                        cola(ansi.red, 0.32)
                     } else {
                         rgba(0xffffff14)
                     })
@@ -5575,10 +6620,10 @@ impl Render for QuickLook {
                 .font_family(UI_SANS)
                 .text_size(px(10.5))
                 .text_color(col(ui.muted))
-                .bg(cola(th.ansi.yellow, 0.07))
+                .bg(cola(ansi.yellow, 0.07))
                 .border_t_1()
                 .border_color(rgba(0xffffff0d))
-                .child(icon("alert", 13., th.ansi.yellow))
+                .child(icon("alert", 13., ansi.yellow))
                 .child(
                     div()
                         .text_color(col(ui.foreground))
@@ -5613,13 +6658,13 @@ impl Render for QuickLook {
                 .font_family(UI_SANS)
                 .text_size(px(10.5))
                 .text_color(col(ui.muted))
-                .bg(cola(th.ansi.red, 0.06))
+                .bg(cola(ansi.red, 0.06))
                 .border_t_1()
                 .border_color(rgba(0xffffff0d))
-                .child(icon("alert", 13., th.ansi.red))
+                .child(icon("alert", 13., ansi.red))
                 .child(
                     div()
-                        .text_color(col(th.ansi.red))
+                        .text_color(col(ansi.red))
                         .child(SharedString::from(format!("应用失败:{error}"))),
                 )
                 .child(div().flex_1())
@@ -5906,12 +6951,12 @@ mod tests {
 
     #[test]
     fn edit_state_uses_document_as_source_of_truth() {
-        let mut edit = QuickLookEditState::from_lines(buf(&["abc"]));
+        let edit = QuickLookEditState::from_lines(buf(&["abc"]));
 
         edit.place_cursor(0, 1, false);
         edit.type_char("X");
 
-        assert_eq!(edit.document().lines(), &buf(&["aXbc"]));
+        assert_eq!(edit.document_lines(), buf(&["aXbc"]));
         assert_eq!(*edit.lines().borrow(), buf(&["aXbc"]));
         assert_eq!(edit.cursor(), (0, 2));
         assert_eq!(edit.sel_range(), None);
@@ -5920,7 +6965,7 @@ mod tests {
         assert_eq!(edit.selected_text().as_deref(), Some("Xb"));
 
         edit.undo();
-        assert_eq!(edit.document().lines(), &buf(&["abc"]));
+        assert_eq!(edit.document_lines(), buf(&["abc"]));
         assert_eq!(*edit.lines().borrow(), buf(&["abc"]));
         assert_eq!(edit.cursor(), (0, 1));
     }
@@ -5928,14 +6973,42 @@ mod tests {
     #[test]
     fn edit_state_updates_line_mirror_without_replacing_whole_buffer() {
         let lines: Vec<String> = (0..MAX_LINES).map(|i| format!("line {i}")).collect();
-        let mut edit = QuickLookEditState::from_lines(lines);
+        let edit = QuickLookEditState::from_lines(lines);
         let mirror = edit.lines();
 
         edit.place_cursor(2000, 4, false);
         edit.type_char("X");
 
         assert!(Rc::ptr_eq(&mirror, &edit.lines()));
-        assert_eq!(edit.row_text(2000), Some("lineX 2000"));
+        assert_eq!(edit.row_text(2000).as_deref(), Some("lineX 2000"));
+    }
+
+    #[test]
+    fn editor_handoff_shares_quicklook_session_state() {
+        let session = QuickLookEditState::from_lines(buf(&["abc"]));
+        session.place_cursor(0, 1, false);
+        session.type_char("X");
+
+        let handoff = editor_handoff_from_session(
+            session.clone(),
+            Some(PathBuf::from("note.md")),
+            Some(TextFormat::default()),
+            None,
+            None,
+            false,
+        )
+        .expect("editable text handoff");
+        let session = handoff.session.clone();
+
+        assert_eq!(session.lines().borrow().as_slice(), &buf(&["aXbc"]));
+        assert_eq!(session.cursor(), (0, 2));
+        assert!(session.is_dirty());
+
+        session.undo();
+
+        assert_eq!(handoff.session.lines().borrow().as_slice(), &buf(&["abc"]));
+        assert_eq!(handoff.session.cursor(), (0, 1));
+        assert!(handoff.session.is_dirty());
     }
 
     #[test]
@@ -6105,6 +7178,217 @@ mod tests {
     }
 
     #[test]
+    fn markdown_file_uses_visual_soft_wrap_while_code_keeps_horizontal_scroll() {
+        use tn_editor::WrapMode;
+
+        let lines = buf(&["alpha beta gamma delta epsilon"]);
+        let markdown = file_wrap_mode_for_path(std::path::Path::new("notes.md"), 16);
+        let code = file_wrap_mode_for_path(std::path::Path::new("main.rs"), 16);
+
+        assert_eq!(markdown, WrapMode::Word { width_cols: 16 });
+        assert_eq!(code, WrapMode::None);
+
+        let prose = quicklook_file_layout(
+            &lines,
+            std::path::Path::new("notes.md"),
+            180.0,
+            80.0,
+            0.0,
+            999.0,
+            10.0,
+        );
+        assert!(
+            prose.layout.visual_count() > lines.len(),
+            "long markdown prose should paint more visual rows than logical rows"
+        );
+        assert_eq!(prose.pre.max_off, 0.0);
+        assert_eq!(prose.pre.h_offset, 0.0);
+        assert!(prose.pre.thumb.is_none());
+        assert_eq!(
+            prose.layout.hit_test(&lines, 1, 20.0, 10.0),
+            (0, 13),
+            "the second visual row must map back into the original logical line"
+        );
+
+        let code_layout = quicklook_file_layout(
+            &lines,
+            std::path::Path::new("main.rs"),
+            180.0,
+            80.0,
+            0.0,
+            999.0,
+            10.0,
+        );
+        assert_eq!(code_layout.layout.visual_count(), lines.len());
+        assert!(
+            code_layout.pre.max_off > 0.0,
+            "code keeps the existing horizontal overflow model"
+        );
+        assert_eq!(code_layout.pre.h_offset, code_layout.pre.max_off);
+        assert!(code_layout.pre.thumb.is_some());
+    }
+
+    #[test]
+    fn ime_caret_rect_uses_soft_wrap_cjk_and_scroll_offsets() {
+        let lines = buf(&["abc def 中文 ghi"]);
+        let rect = quicklook_caret_paint_rect(
+            &lines,
+            std::path::Path::new("notes.md"),
+            (0, 10),
+            160.0,
+            80.0,
+            -20.0,
+            999.0,
+            10.0,
+        )
+        .expect("caret rect");
+
+        assert_eq!(
+            rect,
+            CaretPaintRect {
+                x: CODE_GUTTER + 4.0 * 10.0,
+                y: 0.0,
+                width: 10.0,
+                height: ROW_H,
+            },
+            "IME candidate anchor must match the same soft-wrapped/CJK-aware paint coordinates as the caret"
+        );
+    }
+
+    #[test]
+    fn self_painted_caret_visual_matches_terminal_radius_and_text_scale() {
+        let visual = caret_visual_rect(100.0, 40.0, 9.0, ROW_H, CODE_FS, 1.0, 1.0, 0.0, 0.0);
+        assert_eq!(
+            visual,
+            CaretVisualRect {
+                x: 100.0,
+                y: 41.75,
+                width: 9.0,
+                height: 16.5,
+                radius: 1.0,
+            },
+            "Quick Look's block cursor should keep terminal-like radius while visually matching the code glyph scale"
+        );
+
+        let animated = caret_visual_rect(100.0, 40.0, 9.0, ROW_H, CODE_FS, 1.2, 0.8, -3.0, 2.0);
+        assert_eq!(
+            animated,
+            CaretVisualRect {
+                x: 96.1,
+                y: 45.4,
+                width: 10.8,
+                height: 13.2,
+                radius: 1.0,
+            },
+            "animation scales around the visual cursor block, not the full selection row box"
+        );
+    }
+
+    #[test]
+    fn soft_wrapped_vertical_motion_moves_between_visual_rows() {
+        let lines = buf(&["abcdefghijklmnopqrstuvwxy"]);
+
+        assert_eq!(
+            quicklook_visual_vertical_cursor(
+                &lines,
+                std::path::Path::new("notes.md"),
+                (0, 3),
+                1,
+                166.0,
+                80.0,
+                0.0,
+                0.0,
+                10.0,
+            ),
+            Some((0, 13)),
+            "Down should move to the next visual row inside the same logical line"
+        );
+        assert_eq!(
+            quicklook_visual_vertical_cursor(
+                &lines,
+                std::path::Path::new("notes.md"),
+                (0, 13),
+                -1,
+                166.0,
+                80.0,
+                0.0,
+                0.0,
+                10.0,
+            ),
+            Some((0, 3)),
+            "Up should return to the previous visual row at the same local column"
+        );
+        assert_eq!(
+            quicklook_visual_vertical_cursor(
+                &lines,
+                std::path::Path::new("main.rs"),
+                (0, 3),
+                1,
+                166.0,
+                80.0,
+                0.0,
+                0.0,
+                10.0,
+            ),
+            None,
+            "code files keep the logical-line movement model and horizontal scroll"
+        );
+    }
+
+    #[test]
+    fn text_commit_only_centers_legacy_uniform_list_renderer() {
+        assert!(!should_center_after_text_commit(true));
+        assert!(should_center_after_text_commit(false));
+    }
+
+    #[test]
+    fn motion_triggers_only_for_text_insert_and_delete() {
+        assert_eq!(
+            text_motion_trigger("x", (0, 1), (0, 2)),
+            Some(MotionTrigger::Insert {
+                from: (0, 1),
+                to: (0, 2),
+                inserted: Some('x'),
+            })
+        );
+        assert_eq!(text_motion_trigger("xy", (0, 1), (0, 3)), None);
+        assert_eq!(
+            delete_motion_trigger((0, 3), (0, 2)),
+            Some(MotionTrigger::Delete {
+                from: (0, 3),
+                to: (0, 2),
+            })
+        );
+        assert_eq!(delete_motion_trigger((0, 3), (0, 3)), None);
+    }
+
+    #[test]
+    fn soft_wrapped_selection_projects_to_visual_rows_without_changing_copy_text() {
+        let lines = buf(&["alpha beta gamma delta epsilon"]);
+        let prose = quicklook_file_layout(
+            &lines,
+            std::path::Path::new("notes.md"),
+            180.0,
+            80.0,
+            0.0,
+            0.0,
+            10.0,
+        );
+
+        let range = TextRange::new((0, 6), (0, 22));
+        assert_eq!(
+            prose.layout.range_segments(range),
+            vec![(0, 6, 11), (1, 0, 6), (2, 0, 5)],
+            "selection paint must split at visual wrap boundaries"
+        );
+        assert_eq!(
+            selected_text(&lines, range.start, range.end),
+            "beta gamma delta",
+            "copy remains based on logical document coordinates"
+        );
+    }
+
+    #[test]
     fn parse_diff_numbers_hunks_in_lockstep_with_remote_file_diff() {
         // The Diff-tab `@@` rows must carry the same 0-based hunk index that
         // `remote_git::parse_file_diff` assigns, so an "接受/拒绝" click rebuilds
@@ -6137,6 +7421,261 @@ mod tests {
         assert_eq!(parsed.hunks.len(), 2);
         assert_eq!(parsed.hunks[0].index, 0);
         assert_eq!(parsed.hunks[1].index, 1);
+    }
+
+    #[test]
+    fn diff_selection_copies_content_text_across_rows() {
+        let raw = concat!(
+            "@@ -1,2 +1,3 @@\n",
+            " ctx\n",
+            "-old line\n",
+            "+new line\n",
+            "+中文 line\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            diff_selected_text(&rows, (1, 1), (4, 2)),
+            "tx\nold line\nnew line\n中文"
+        );
+    }
+
+    #[test]
+    fn diff_drag_selection_uses_cjk_and_horizontal_scroll_hit_test() {
+        let rows = vec![
+            DiffRenderRow {
+                kind: crate::editor::DiffRowKind::Context,
+                new_no: Some(1),
+                text: "a中b".to_string(),
+                hunk_index: None,
+            },
+            DiffRenderRow {
+                kind: crate::editor::DiffRowKind::Addition,
+                new_no: Some(2),
+                text: "tail".to_string(),
+                hunk_index: None,
+            },
+        ];
+
+        let down = diff_cursor_from_point(&rows, 0, CODE_GUTTER + 16.0, 10.0, 0.0);
+        let drag = diff_drag_cursor_from_point(&rows, down, 0, CODE_GUTTER + 44.0, 10.0, 0.0);
+        assert_eq!(
+            down,
+            (0, 1),
+            "click just past 'a' lands before the CJK char"
+        );
+        assert_eq!(
+            drag,
+            (0, 3),
+            "dragging right over 'b' includes the hovered character"
+        );
+
+        let scrolled = diff_cursor_from_point(&rows, 0, CODE_GUTTER + 6.0, 10.0, 20.0);
+        assert_eq!(
+            scrolled,
+            (0, 2),
+            "horizontal scroll is included before CJK-aware hit testing"
+        );
+    }
+
+    #[test]
+    fn diff_selection_spans_match_rendered_display_columns() {
+        let rows = vec![
+            DiffRenderRow {
+                kind: crate::editor::DiffRowKind::Context,
+                new_no: Some(1),
+                text: "a中b".to_string(),
+                hunk_index: None,
+            },
+            DiffRenderRow {
+                kind: crate::editor::DiffRowKind::Addition,
+                new_no: Some(2),
+                text: "cd".to_string(),
+                hunk_index: None,
+            },
+        ];
+
+        assert_eq!(
+            diff_selection_span_cols(&rows, 0, ((0, 1), (1, 1))),
+            Some((1, 4)),
+            "first row selection spans the CJK glyph as two display columns"
+        );
+        assert_eq!(
+            diff_selection_span_cols(&rows, 1, ((0, 1), (1, 1))),
+            Some((0, 1))
+        );
+        assert_eq!(diff_selection_span_cols(&rows, 1, ((0, 0), (0, 1))), None);
+    }
+
+    #[test]
+    fn diff_enter_target_maps_to_zero_based_file_row() {
+        let raw = concat!(
+            "@@ -10,3 +20,4 @@ fn main() {\n",
+            "-removed before first new line\n",
+            "+added\n",
+            " ctx\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(diff_target_file_row(&rows, 0), Some(19));
+        assert_eq!(diff_target_file_row(&rows, 1), Some(19));
+        assert_eq!(diff_target_file_row(&rows, 3), Some(20));
+    }
+
+    #[test]
+    fn diff_jump_target_carries_file_highlight_row() {
+        let raw = concat!(
+            "@@ -10,3 +20,4 @@ fn main() {\n",
+            " ctx before\n",
+            "-removed\n",
+            " ctx after\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            diff_file_jump_target(&rows, 2),
+            Some(DiffFileJump {
+                row: 19,
+                highlight_row: 19,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_diff_keeps_hunk_body_lines_that_look_like_file_headers() {
+        let raw = concat!(
+            "diff --git a/x b/x\n",
+            "index 111..222 100644\n",
+            "--- a/x\n",
+            "+++ b/x\n",
+            "@@ -1,4 +1,4 @@\n",
+            " keep 1\n",
+            "--- removed markdown rule\n",
+            "+++ added markdown rule\n",
+            " keep 2\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            rows.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
+            vec![
+                "@@ -1,4 +1,4 @@",
+                "keep 1",
+                "-- removed markdown rule",
+                "++ added markdown rule",
+                "keep 2",
+            ],
+            "only file-level headers are metadata; hunk body lines may start with ---/+++"
+        );
+        assert_eq!(
+            rows.iter().map(|r| r.new_no).collect::<Vec<_>>(),
+            vec![None, Some(1), None, Some(2), Some(3)],
+            "skipping body-like headers would shift later new-file line numbers"
+        );
+        assert_eq!(
+            diff_file_jump_target(&rows, 4),
+            Some(DiffFileJump {
+                row: 2,
+                highlight_row: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn diff_jump_target_clamps_highlight_to_actual_file_rows() {
+        let raw = concat!(
+            "@@ -20,3 +20,0 @@\n",
+            "-removed a\n",
+            "-removed b\n",
+            "-removed c\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            diff_file_jump_target(&rows, 2),
+            Some(DiffFileJump {
+                row: 19,
+                highlight_row: 19,
+            })
+        );
+        assert_eq!(
+            diff_file_jump_target_for_file_len(&rows, 2, 12),
+            Some(DiffFileJump {
+                row: 11,
+                highlight_row: 11,
+            }),
+            "the visible highlight must follow the row that place_cursor can actually reach"
+        );
+        assert_eq!(
+            diff_file_jump_target_for_file_len(&rows, 2, 0),
+            None,
+            "an empty File tab has no row to jump or highlight"
+        );
+    }
+
+    #[test]
+    fn diff_hunk_navigation_uses_render_rows() {
+        let raw = concat!(
+            "@@ -1 +1 @@\n",
+            "+one\n",
+            "@@ -8 +9 @@\n",
+            " ctx\n",
+            "@@ -20 +21 @@\n",
+            "-old\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(diff_hunk_jump_row(&rows, 0, true), Some(2));
+        assert_eq!(diff_hunk_jump_row(&rows, 3, false), Some(2));
+        assert_eq!(diff_hunk_jump_row(&rows, 4, true), None);
+        assert_eq!(diff_hunk_jump_row(&rows, 0, false), None);
+    }
+
+    #[test]
+    fn diff_rows_map_to_file_line_targets() {
+        let raw = concat!(
+            "@@ -10,3 +20,4 @@ fn main() {\n",
+            "-removed before first new line\n",
+            "+added\n",
+            " ctx\n",
+            "-removed after context\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(diff_target_new_line(&rows, 0), Some(20));
+        assert_eq!(diff_target_new_line(&rows, 1), Some(20));
+        assert_eq!(diff_target_new_line(&rows, 2), Some(20));
+        assert_eq!(diff_target_new_line(&rows, 3), Some(21));
+        assert_eq!(diff_target_new_line(&rows, 4), Some(21));
+    }
+
+    #[test]
+    fn diff_deleted_rows_prefer_nearest_surviving_file_line() {
+        let raw = concat!(
+            "@@ -10,5 +20,3 @@ fn main() {\n",
+            "-removed before first new line\n",
+            " ctx before\n",
+            "-removed between context\n",
+            " ctx after\n",
+            "-removed at hunk end\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+
+        assert_eq!(
+            diff_target_new_line(&rows, 1),
+            Some(20),
+            "a deletion before any new-file row lands at the hunk start"
+        );
+        assert_eq!(
+            diff_target_new_line(&rows, 3),
+            Some(20),
+            "a deletion between two surviving rows lands on the nearest row; ties prefer the previous row"
+        );
+        assert_eq!(
+            diff_target_new_line(&rows, 5),
+            Some(21),
+            "a deletion at hunk end falls back to the previous surviving row"
+        );
     }
 
     #[test]
@@ -6193,6 +7732,49 @@ mod tests {
         );
         assert_eq!(detect_conflict(Some(&guard), None), Conflict::MissingOnDisk);
         assert_eq!(detect_conflict(None, Some(&changed)), Conflict::Unknown);
+    }
+
+    #[test]
+    fn external_reload_decision_refreshes_clean_file_but_preserves_dirty_edit() {
+        let opened = FileGuard::from_parts(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(10),
+            5,
+            file_sample_hash(b"hello"),
+        );
+        let changed = FileGuard::from_parts(
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(11),
+            5,
+            file_sample_hash(b"hullo"),
+        );
+
+        assert_eq!(
+            external_reload_decision(false, false, Some(&opened), Some(&opened)),
+            ExternalReloadDecision::Unchanged
+        );
+        assert_eq!(
+            external_reload_decision(false, false, Some(&opened), Some(&changed)),
+            ExternalReloadDecision::Reload,
+            "preview Quick Look content should follow an external save"
+        );
+        assert_eq!(
+            external_reload_decision(true, false, Some(&opened), Some(&changed)),
+            ExternalReloadDecision::Unchanged,
+            "edit mode must not be reloaded or interrupted by an external save"
+        );
+        assert_eq!(
+            external_reload_decision(true, true, Some(&opened), Some(&changed)),
+            ExternalReloadDecision::Unchanged,
+            "dirty edit mode keeps the buffer; save-time guards report the conflict"
+        );
+        assert_eq!(
+            external_reload_decision(false, true, Some(&opened), Some(&changed)),
+            ExternalReloadDecision::Conflict(Conflict::ModifiedOnDisk),
+            "dirty preview state still shows conflict instead of auto-refreshing"
+        );
+        assert_eq!(
+            external_reload_decision(false, true, Some(&opened), None),
+            ExternalReloadDecision::Conflict(Conflict::MissingOnDisk)
+        );
     }
 
     #[test]
