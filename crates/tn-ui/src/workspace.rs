@@ -22,7 +22,6 @@ use gpui::{
 };
 use tn_config::Loaded;
 
-use crate::editor::pane::{EditorCloseDecision, EditorCloseIntent, EditorPane, EditorPaneEvent};
 use crate::explorer::{
     default_host_root, ExplorerChanged, ExplorerFile, ExplorerRoot, ExplorerSnapshot, ExplorerView,
     OpenFile,
@@ -46,8 +45,8 @@ pub(crate) type PaneId = u64;
 // Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
 // now live in `crate::style` — single source of truth (see docs/修复与优化/基础性能与审查勘误.md).
 use crate::style::{
-    col, cola, glass_pane, icon, pane_fill, shadowed, soft_shadow, DIVIDER, HOVER, INSET, RIM,
-    R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
+    app_menu_shadows, col, cola, glass_pane, icon, overlay_panel_shadows, pane_fill, shadowed,
+    soft_shadow, DIVIDER, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -680,18 +679,6 @@ impl Tab {
     }
 }
 
-fn insert_editor_leaf(tab: &mut Tab, target: PaneId, new_id: PaneId) {
-    if tab.welcome {
-        *tab = Tab::panes(Node::Leaf(new_id), new_id);
-        return;
-    }
-    if !tab.root.split(target, new_id, Axis::Row, false) {
-        let fallback = first_leaf(&tab.root);
-        tab.root.split(fallback, new_id, Axis::Row, false);
-    }
-    tab.focused = new_id;
-}
-
 fn should_reset_explorer_for_welcome_tab(
     active_tab: &Tab,
     explorer_pane: Option<PaneId>,
@@ -807,7 +794,6 @@ pub struct Workspace {
     tabs: Vec<Tab>,
     active: usize,
     panes: HashMap<PaneId, Entity<TerminalView>>,
-    editor_panes: HashMap<PaneId, Entity<EditorPane>>,
     /// Each live pane's launch spec — lets `打开文件夹` know which panes are plain
     /// local shells (safe to `cd`) and (later) lets layouts re-spawn panes.
     pane_specs: HashMap<PaneId, LaunchSpec>,
@@ -1181,11 +1167,7 @@ impl Workspace {
                 QuickLookEvent::QuitConfirmed => {
                     ws.quick_look_open = false;
                     ws.ql_rail_pane = None;
-                    ws.force_quit_after_editor_close(cx);
-                    cx.notify();
-                }
-                QuickLookEvent::OpenAsEditor(handoff) => {
-                    ws.open_editor_handoff(handoff.clone(), cx);
+                    ws.finish_quit(cx);
                 }
                 QuickLookEvent::FileSaved(_path) => {
                     // Editor saved a file → refresh every agent pane's「本次改动」now
@@ -1226,7 +1208,6 @@ impl Workspace {
             tabs: Vec::new(),
             active: 0,
             panes: HashMap::new(),
-            editor_panes: HashMap::new(),
             pane_specs: HashMap::new(),
             next_id: 0,
             focused_init: false,
@@ -1508,48 +1489,7 @@ impl Workspace {
     }
 
     fn leaf_exists(&self, id: PaneId) -> bool {
-        self.panes.contains_key(&id) || self.editor_panes.contains_key(&id)
-    }
-
-    fn open_editor_handoff(
-        &mut self,
-        handoff: crate::quick_look::EditorHandoff,
-        cx: &mut Context<Self>,
-    ) {
-        let id = self.next_id;
-        self.next_id += 1;
-        let config = self.config.clone();
-        let editor = cx.new(|cx| EditorPane::new(handoff, config, cx));
-        cx.subscribe(
-            &editor,
-            move |ws, _editor, ev: &EditorPaneEvent, cx| match ev {
-                EditorPaneEvent::CloseConfirmed(EditorCloseIntent::Pane) => {
-                    ws.force_close_pane_id(id, cx);
-                }
-                EditorPaneEvent::CloseConfirmed(EditorCloseIntent::Tab(tab)) => {
-                    let tab_still_exists = ws.remove_pane_id_if_present(id);
-                    if tab_still_exists && ws.request_tab_close(*tab, cx) {
-                        ws.force_close_tab_index(*tab, cx);
-                    } else {
-                        cx.notify();
-                    }
-                }
-                EditorPaneEvent::CloseConfirmed(EditorCloseIntent::App) => {
-                    ws.remove_pane_id_if_present(id);
-                    ws.force_quit_after_editor_close(cx);
-                }
-            },
-        )
-        .detach();
-        self.editor_panes.insert(id, editor);
-
-        let active = self.active;
-        let target = self.tabs[active].focused;
-        insert_editor_leaf(&mut self.tabs[active], target, id);
-        self.quick_look_open = false;
-        self.ql_rail_pane = None;
-        self.ql_refocus_active_pane = true;
-        cx.notify();
+        self.panes.contains_key(&id)
     }
 
     /// Split the focused pane along `axis` without touching GPUI focus (demo).
@@ -1674,15 +1614,6 @@ impl Workspace {
     /// in an event callback). If this is the last pane in the last tab, fall back
     /// to the welcome launchpad so SSH cancel/close never leaves a dead card behind.
     fn close_pane_id(&mut self, id: PaneId, cx: &mut Context<Self>) {
-        if let Some(editor) = self.editor_panes.get(&id).cloned() {
-            if editor.update(cx, |editor, _cx| {
-                editor.request_close(EditorCloseIntent::Pane)
-            }) == EditorCloseDecision::ConfirmDirty
-            {
-                cx.notify();
-                return;
-            }
-        }
         self.force_close_pane_id(id, cx);
     }
 
@@ -1698,29 +1629,16 @@ impl Workspace {
         cx.notify();
     }
 
-    fn remove_pane_id_if_present(&mut self, id: PaneId) -> bool {
-        let Some(ti) = self.tabs.iter().position(|t| {
-            let mut leaves = Vec::new();
-            collect_leaves(&t.root, &mut leaves);
-            leaves.contains(&id)
-        }) else {
-            return false;
-        };
-        self.remove_pane_from_tab(ti, id)
-    }
-
     fn remove_pane_from_tab(&mut self, ti: usize, id: PaneId) -> bool {
         if self.tabs[ti].root.leaf_count() <= 1 {
             // Last pane in its tab: drop the whole tab if another remains.
             if self.tabs.len() > 1 {
                 self.panes.remove(&id);
-                self.editor_panes.remove(&id);
                 self.pane_specs.remove(&id);
                 self.tabs.remove(ti);
                 self.active = self.active.min(self.tabs.len() - 1);
             } else {
                 self.panes.remove(&id);
-                self.editor_panes.remove(&id);
                 self.pane_specs.remove(&id);
                 self.tabs[ti] = Tab::welcome();
                 self.active = ti;
@@ -1730,7 +1648,6 @@ impl Workspace {
         let root = std::mem::replace(&mut self.tabs[ti].root, Node::Leaf(0));
         self.tabs[ti].root = prune(root, id).expect("tree non-empty");
         self.panes.remove(&id);
-        self.editor_panes.remove(&id);
         self.pane_specs.remove(&id);
         if self.tabs[ti].focused == id {
             self.tabs[ti].focused = first_leaf(&self.tabs[ti].root);
@@ -1738,37 +1655,9 @@ impl Workspace {
         true
     }
 
-    fn activate_pane_id(&mut self, id: PaneId) {
-        let Some(ti) = self.tabs.iter().position(|t| {
-            let mut leaves = Vec::new();
-            collect_leaves(&t.root, &mut leaves);
-            leaves.contains(&id)
-        }) else {
-            return;
-        };
-        self.active = ti;
-        if !self.tabs[ti].welcome {
-            self.tabs[ti].focused = id;
-        }
-    }
-
-    fn request_tab_close(&mut self, tab_index: usize, cx: &mut Context<Self>) -> bool {
+    fn request_tab_close(&mut self, tab_index: usize, _cx: &mut Context<Self>) -> bool {
         if tab_index >= self.tabs.len() || self.tabs[tab_index].welcome {
             return true;
-        }
-        let mut leaves = Vec::new();
-        collect_leaves(&self.tabs[tab_index].root, &mut leaves);
-        for id in leaves {
-            if let Some(editor) = self.editor_panes.get(&id).cloned() {
-                if editor.update(cx, |editor, _cx| {
-                    editor.request_close(EditorCloseIntent::Tab(tab_index))
-                }) == EditorCloseDecision::ConfirmDirty
-                {
-                    self.activate_pane_id(id);
-                    cx.notify();
-                    return false;
-                }
-            }
         }
         true
     }
@@ -1782,7 +1671,6 @@ impl Workspace {
             collect_leaves(&self.tabs[i].root, &mut leaves);
             for id in leaves {
                 self.panes.remove(&id);
-                self.editor_panes.remove(&id);
                 self.pane_specs.remove(&id);
             }
         }
@@ -1794,30 +1682,6 @@ impl Workspace {
             self.active = self.active.min(self.tabs.len() - 1);
         }
         cx.notify();
-    }
-
-    fn request_editor_quit(&mut self, cx: &mut Context<Self>) -> bool {
-        let ids: Vec<_> = self.editor_panes.keys().copied().collect();
-        for id in ids {
-            if let Some(editor) = self.editor_panes.get(&id).cloned() {
-                if editor.update(cx, |editor, _cx| {
-                    editor.request_close(EditorCloseIntent::App)
-                }) == EditorCloseDecision::ConfirmDirty
-                {
-                    self.activate_pane_id(id);
-                    cx.notify();
-                    return false;
-                }
-            }
-        }
-        true
-    }
-
-    fn force_quit_after_editor_close(&mut self, cx: &mut Context<Self>) {
-        if !self.request_editor_quit(cx) {
-            return;
-        }
-        self.finish_quit(cx);
     }
 
     fn finish_quit(&mut self, cx: &mut Context<Self>) {
@@ -1870,8 +1734,6 @@ impl Workspace {
     fn focus_pane(&mut self, id: PaneId, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(view) = self.panes.get(&id) {
             view.read(cx).focus_handle().focus(window);
-        } else if let Some(view) = self.editor_panes.get(&id) {
-            view.read(cx).focus_handle().focus(window);
         }
         if let Some(tab) = self.tabs.get_mut(self.active) {
             tab.focused = id;
@@ -1902,7 +1764,6 @@ impl Workspace {
             let live_ids: std::collections::HashSet<PaneId> = self
                 .panes
                 .keys()
-                .chain(self.editor_panes.keys())
                 .copied()
                 .collect();
             self.explorer_states.retain(|id, _| live_ids.contains(id));
@@ -1997,11 +1858,6 @@ impl Workspace {
             self.quick_look_open = false;
             self.ql_rail_pane = None;
             self.ql_refocus_active_pane = true;
-        }
-        if !self.request_editor_quit(cx) {
-            self.app_menu_open = false;
-            cx.notify();
-            return;
         }
         self.finish_quit(cx);
     }
@@ -2330,25 +2186,6 @@ impl Workspace {
                         )
                         .into_any_element();
                 }
-                if let Some(view) = self.editor_panes.get(&id).cloned() {
-                    let accent = self.config.theme.ui.accent;
-                    let inner = div()
-                        .size_full()
-                        .relative()
-                        .rounded(px(R_PANEL - 1.))
-                        .overflow_hidden()
-                        .bg(pane_fill(self.config.theme.ui.chrome_bg))
-                        .child(crate::style::specular_wash(is_focused, accent))
-                        .child(view);
-                    return glass_pane(inner, is_focused, accent)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _ev, window, cx| {
-                                this.focus_pane(id, window, cx);
-                            }),
-                        )
-                        .into_any_element();
-                }
                 // Inner content: g1 glass, rounded ONE px tighter than the outer so
                 // the 1px gradient-border ring shows through (see `glass_pane`).
                 // The TerminalView fills it + rounds its own corners to match; gpui
@@ -2592,8 +2429,8 @@ impl Workspace {
             // mockup .status bg:linear-gradient(180, transparent → black .2)
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(rgba(0x00000000), 0.),
-                linear_color_stop(rgba(0x00000033), 1.), // black @ .2
+                linear_color_stop(rgba(0xffffff05), 0.),
+                linear_color_stop(rgba(0x00000036), 1.), // black @ .21
             ))
             .text_size(px(11.))
             .font_weight(gpui::FontWeight(510.)) // §16 .status weight 510
@@ -2712,7 +2549,11 @@ impl Workspace {
                 .rounded(px(R_CARD))
                 .border_1()
                 .border_color(rgba(RIM))
-                .bg(pane_fill(ui.chrome_bg)) // opaque deep glass (popup floats over content)
+                .bg(linear_gradient(
+                    180.,
+                    linear_color_stop(cola(ui.palette_bg, 0.97), 0.),
+                    linear_color_stop(rgba(0x161826f7), 1.),
+                )) // mockup .appmenu deep glass
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|_this, _e, _w, cx| cx.stop_propagation()),
@@ -2810,7 +2651,7 @@ impl Workspace {
                     true,
                     Box::new(|this, _w, cx| this.request_quit(cx)),
                 )),
-            vec![soft_shadow(30.0, 80.0, -24.0, 0.9)], // mockup .appmenu shadow
+            app_menu_shadows(), // mockup .appmenu shadow
         );
 
         // Full-window click-away scrim (transparent): a click outside closes it.
@@ -3278,7 +3119,7 @@ impl Workspace {
                                 .child("确认"),
                         ),
                 ),
-            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)],
+            overlay_panel_shadows(),
         );
 
         Some(
@@ -4058,7 +3899,7 @@ impl Workspace {
                         .size_full(),
                     )
                 }),
-            vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
+            overlay_panel_shadows(),
         );
 
         let pl = if self.explorer_open {
@@ -4262,7 +4103,7 @@ impl Workspace {
                         .gap(px(2.))
                         .children(row_divs),
                 ), // .plist padding 6
-            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)], // mockup .palette box-shadow
+            overlay_panel_shadows(), // mockup .palette box-shadow
         );
 
         Some(
@@ -4718,7 +4559,6 @@ impl Workspace {
         let first = first_leaf(&new_root);
         for id in old {
             self.panes.remove(&id); // drop view → kill child
-            self.editor_panes.remove(&id);
             self.pane_specs.remove(&id);
         }
         self.tabs[active] = Tab::panes(new_root, first);
@@ -5824,7 +5664,7 @@ impl Workspace {
                         .size_full(),
                     )
                 }),
-            vec![soft_shadow(40.0, 120.0, -30.0, 0.9)],
+            overlay_panel_shadows(),
         );
 
         let pl = if self.explorer_open {
@@ -6057,11 +5897,7 @@ impl Render for Workspace {
                                 ws.ql_rail_pane = None;
                                 ws.ql_refocus_active_pane = true;
                             }
-                            if !ws.request_editor_quit(cx) {
-                                false
-                            } else {
-                                true
-                            }
+                            true
                         })
                         .unwrap_or(true)
                     });
@@ -6194,10 +6030,6 @@ impl Render for Workspace {
                 self.panes
                     .get(id)
                     .is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
-                    || self
-                        .editor_panes
-                        .get(id)
-                        .is_some_and(|v| v.read(cx).focus_handle().is_focused(window))
             }) {
                 self.tabs[active].focused = id;
             } else {
@@ -6242,7 +6074,6 @@ impl Render for Workspace {
                     let live_ids: std::collections::HashSet<PaneId> = self
                         .panes
                         .keys()
-                        .chain(self.editor_panes.keys())
                         .copied()
                         .collect();
                     self.explorer_states.retain(|id, _| live_ids.contains(id));
@@ -6284,11 +6115,6 @@ impl Render for Workspace {
                 let pane = self.panes.get(&tab.focused);
                 let label = pane
                     .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
-                    .or_else(|| {
-                        self.editor_panes
-                            .get(&tab.focused)
-                            .map(|v| truncate_label(&v.read(cx).tab_label(), 24))
-                    })
                     .unwrap_or_else(|| "shell".into());
                 let agent = pane.and_then(|v| v.read(cx).agent());
                 let dot = agent.as_ref().map(|id| self.agent_color(Some(id), cx));
@@ -6325,9 +6151,12 @@ impl Render for Workspace {
                             // agent-color accent bar at the top. Inactive sits flat and
                             // lifts a touch on hover. No glow.
                             .when(is_active, |d| {
-                                // Use the theme's tab_active_bg to match the card pane background
                                 d.text_color(col(ui.foreground))
-                                    .bg(col(ui.tab_active_bg))
+                                    .bg(linear_gradient(
+                                        180.,
+                                        linear_color_stop(rgba(0xffffff0e), 0.),
+                                        linear_color_stop(rgba(0xffffff03), 1.),
+                                    ))
                                     // ::after 强调色条(agent 色),left/right 13,top 0,2px
                                     .child(
                                         div()
@@ -7062,29 +6891,47 @@ mod tests {
     }
 
     #[test]
-    fn inserting_editor_leaf_keeps_existing_terminal_leaf_and_focuses_editor() {
-        let mut tab = Tab::panes(Node::Leaf(1), 1);
+    fn standalone_editor_pane_feature_is_removed() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let workspace = std::fs::read_to_string(src.join("workspace.rs")).unwrap();
+        let quick_look = std::fs::read_to_string(src.join("quick_look.rs")).unwrap();
+        let editor_mod = std::fs::read_to_string(src.join("editor").join("mod.rs")).unwrap();
 
-        insert_editor_leaf(&mut tab, 1, 2);
+        let editor_pane = format!("Editor{}", "Pane");
+        let editor_map = format!("editor_{}", "panes");
+        let open_handoff = format!("open_editor_{}", "handoff");
+        let open_as_editor = format!("OpenAs{}", "Editor");
+        let open_button = format!("打开为{}", "编辑器");
+        let pane_mod = format!("pub mod {}", "pane");
 
-        let mut leaves = Vec::new();
-        collect_leaves(&tab.root, &mut leaves);
-        assert_eq!(leaves, vec![1, 2]);
-        assert_eq!(tab.focused, 2);
-        assert!(!tab.welcome);
-    }
-
-    #[test]
-    fn inserting_editor_leaf_replaces_welcome_tab() {
-        let mut tab = Tab::welcome();
-
-        insert_editor_leaf(&mut tab, WELCOME_DUMMY, 7);
-
-        let mut leaves = Vec::new();
-        collect_leaves(&tab.root, &mut leaves);
-        assert_eq!(leaves, vec![7]);
-        assert_eq!(tab.focused, 7);
-        assert!(!tab.welcome);
+        assert!(
+            !src.join("editor").join("pane.rs").exists(),
+            "standalone editor-pane file should be removed"
+        );
+        assert!(
+            !workspace.contains(&editor_pane),
+            "workspace should not import or render the removed pane type"
+        );
+        assert!(
+            !workspace.contains(&editor_map),
+            "workspace should not keep an editor pane registry"
+        );
+        assert!(
+            !workspace.contains(&open_handoff),
+            "workspace should not promote Quick Look into an editor pane"
+        );
+        assert!(
+            !quick_look.contains(&open_as_editor),
+            "Quick Look should not emit the removed editor-pane event"
+        );
+        assert!(
+            !quick_look.contains(&open_button),
+            "Quick Look footer should not expose the standalone editor pane action"
+        );
+        assert!(
+            !editor_mod.contains(&pane_mod),
+            "editor module should not export the removed pane module"
+        );
     }
 
     #[test]

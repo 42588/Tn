@@ -2,110 +2,196 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 面板原型 · ② 工作区窗格(Agent / Shell)</title>
-<link rel="stylesheet" href="../calm-glass.css" />
+<title>Tn 磷光 · 02 工作区窗格</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  /* Agent 头像方标 */
+  .amark{ width:22px; height:22px; border-radius:5px; flex:none; display:grid; place-items:center;
+          font:600 12px var(--mono); border:1px solid; }
+  .amark.claude{ color:var(--claude); border-color:rgba(201,168,255,.35); background:var(--claude-soft); }
+  .amark.codex{ color:var(--codex); border-color:rgba(111,179,232,.35); background:var(--codex-soft); }
+  .amark.gen{ color:var(--ph); border-color:var(--ph-dim); background:var(--ph-soft); }
+  /* Agent 工具流 */
+  .feed{ padding:12px 16px; display:flex; flex-direction:column; gap:8px; font:12.5px var(--mono); }
+  .frow{ display:flex; align-items:center; gap:9px; color:var(--t1); min-width:0; }
+  .frow .st{ width:7px; height:7px; border-radius:50%; flex:none; }
+  .frow .st.done{ background:var(--ok); }
+  .frow .st.busy{ background:var(--ph); }
+  .frow .verb{ color:var(--t0); font-weight:600; }
+  .frow .obj{ color:var(--t2); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .frow .meta{ color:var(--t3); font-size:11px; flex:none; }
+  .say{ margin:6px 0 2px; padding:10px 12px; background:var(--l2); border:1px solid var(--h0);
+        border-radius:var(--r-card); font:13px/1.8 var(--sans); color:var(--t1); }
+  .say code{ font:12px var(--mono); color:var(--ph); background:var(--ph-soft); padding:1px 5px; border-radius:3px; }
+  /* 活动栏(agent pane 内右列) */
+  .rail{ width:248px; flex:none; border-left:1px solid var(--h0); background:var(--l1);
+         display:flex; flex-direction:column; }
+  .rail-head{ display:flex; align-items:center; gap:8px; height:30px; padding:0 12px;
+              border-bottom:1px solid var(--h0); font:10px var(--mono); color:var(--t2); }
+  .dcard{ margin:8px 10px 0; padding:8px 10px; background:var(--l2); border:1px solid var(--h0);
+          border-radius:var(--r-card); display:flex; align-items:center; gap:8px; font:11px var(--mono); }
+  .dcard:hover{ border-color:var(--h1); background:var(--l4); }
+  .dcard .fn{ color:var(--t0); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .dn{ color:var(--ok); } .dd{ color:var(--err); }
+  /* pane 内底部块条 */
+  .blockbar{ border-top:1px solid var(--h0); background:var(--l2); display:flex; align-items:center;
+             gap:10px; height:30px; padding:0 12px; font:11px var(--mono); position:relative; }
+  .blockbar::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--ph); }
+  /* 自绘滚动条(可见条细 / 命中区大 — 坑位规范) */
+  .sbar{ position:absolute; right:2px; top:38px; bottom:34px; width:10px; }
+  .sbar i{ position:absolute; right:1px; top:22%; width:3px; height:60px; border-radius:2px; background:var(--h2); }
+  .anat{ display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start; }
+  .anat .cell{ display:flex; flex-direction:column; gap:10px; }
+  .anat .cap{ font:10px var(--mono); color:var(--t2); }
+  .strip{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-plate); padding:12px; display:flex; gap:12px; align-items:center; }
+</style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
-  <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
-  <symbol id="i-diamond" viewBox="0 0 24 24"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></symbol>
-  <symbol id="i-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/></symbol>
-  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
-  <symbol id="i-file" viewBox="0 0 24 24"><path d="M13 3H7a1.5 1.5 0 0 0-1.5 1.5v15A1.5 1.5 0 0 0 7 21h10a1.5 1.5 0 0 0 1.5-1.5V8.5z"/><path d="M13 3v5.5h5.5"/></symbol>
-</defs></svg>
 
-<div class="stage">
-  <h1>② 工作区窗格 <span class="dim">— Agent 面板 · Shell 面板</span></h1>
-  <p class="lead">面板 = g1 磨砂玻璃 + specular 柔光 + 浮起投影(焦点暖描边)。Agent 面板挂头部 + 用量环;Shell 面板挂 cwd 头 + 终端正文 + block 卡。gpui:<code>terminal_view/</code>(<code>header.rs</code> / <code>block_view.rs</code>)。</p>
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 02 / 07</div>
+  <h1>工作区窗格 <em>WORKSPACE PANES — Explorer · Agent 板面 · Shell 板面 · 活动栏</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/terminal_view/ · explorer.rs · agent_host.rs · block_view.rs</b> · 契约:板面 L1 纯色,焦点=角标,运行=磷光</div>
+</div>
+<div class="sheet-rule"></div>
 
-  <div class="demo">
-    <div class="label">Agent 面板(可靠头部 + 用量环 + 终端正文 CLI 原样 + 右侧活动栏/改动卡) <span class="id">.pane.active / .agenthead / .abody / .arail</span><span class="impl">render_agent_header + 终端 + activity_rail(git/JSONL,不解析终端)</span></div>
-    <div class="canvas tall">
-      <div class="pane active col">
-        <div class="agenthead">
-          <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
-          <div class="who"><div class="nm">Claude Code</div><div class="model">Sonnet 4.6</div></div>
-          <span class="sp"></span>
-          <div class="usage">
-            <div class="meta"><span class="tok">84K / 200K</span><span class="cost">$0.31</span></div>
-            <div class="ring" title="上下文 42%">
-              <svg width="32" height="32">
-                <circle cx="16" cy="16" r="13" stroke="rgba(255,255,255,0.10)" stroke-width="2.6" fill="none"/>
-                <circle cx="16" cy="16" r="13" stroke="var(--claude)" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-dasharray="81.7" stroke-dashoffset="47.4"/>
-              </svg>
-              <div class="lbl">42%</div>
+<!-- ══════════ A · 三栏总装 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">三栏总装 · Agent 会话进行中</span><span class="d">Explorer 240 + Agent(焦点)+ Shell — 接缝 2px,全部 L1 平铺零投影</span></div>
+  <div class="board-body">
+    <div class="win">
+      <div class="titlebar">
+        <div class="brand"><span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev">▾</span></div>
+        <div class="tabs">
+          <div class="tab on" style="--tabc:var(--claude)"><span class="gl">✳</span> Claude <span class="path">~/proj/tn</span></div>
+          <div class="tab"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/</span></div>
+          <div class="tab-new">+</div>
+        </div>
+        <div class="wctls"><div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div></div>
+      </div>
+
+      <div class="canvas" style="height:560px">
+        <!-- Explorer -->
+        <div class="plate" style="width:240px; flex:none">
+          <div class="plate-head"><span class="tag">EXPLORER</span><span style="flex:1"></span><span class="chip">HOST</span></div>
+          <div class="plate-body">
+            <div class="tree">
+              <div class="ti dir"><span class="ic">▾</span>crates</div>
+              <div class="ti dir d1"><span class="ic">▾</span>tn-ui</div>
+              <div class="ti dir d2"><span class="ic">▾</span>src</div>
+              <div class="ti on d3"><span class="ic">▪</span>element.rs<span class="git m">M</span></div>
+              <div class="ti d3"><span class="ic">·</span>terminal_view.rs</div>
+              <div class="ti d3"><span class="ic">·</span>lib.rs</div>
+              <div class="ti dir d1"><span class="ic">▸</span>tn-core</div>
+              <div class="ti dir"><span class="ic">▾</span>docs</div>
+              <div class="ti d1"><span class="ic">·</span>arch.md<span class="git u">U</span></div>
+              <div class="ti d1"><span class="ic">·</span>api.md</div>
             </div>
           </div>
         </div>
-        <div class="abody">
-          <div class="body">
-            <div class="row"><span class="grn">●</span> Read <span class="cya">crates/tn-ui/src/terminal_view.rs</span> <span class="mut">(218 lines)</span></div>
-            <div class="row"><span class="grn">●</span> Grep <span class="cya">"paint_text"</span> <span class="mut">→ 2 matches</span></div>
-            <div class="row"><span class="blu">●</span> Update <span class="cya">crates/tn-ui/src/element.rs</span></div>
-            <div class="row">&nbsp;</div>
-            <div class="row">我会把逐行 <span class="blu">paint_text</span> 改成 <span class="blu">paint_quads</span> 批处理(见右侧改动),</div>
-            <div class="row">这样每格颜色与连字都能正确渲染。继续吗?</div>
-            <div class="row">&nbsp;</div>
-            <div class="row"><span class="blu">›</span> <span class="cursor"></span></div>
-            <div class="row"><span class="mut">  esc 中断 · ⏎ 发送</span></div>
+
+        <!-- Agent 板面(焦点) -->
+        <div class="plate focus" style="flex:1.45">
+          <span class="bk tl"></span><span class="bk tr"></span><span class="bk bl"></span><span class="bk br"></span>
+          <div class="plate-head" style="height:38px">
+            <span class="amark claude">✳</span>
+            <span style="font:600 12px var(--sans); color:var(--t0)">Claude Code</span>
+            <span style="font-size:10px; color:var(--t2)">Sonnet 4.6</span>
+            <span style="flex:1"></span>
+            <span style="color:var(--t2)">84K / 200K</span>
+            <span class="ring" style="--rc:var(--claude); --pct:42%"></span>
+            <span class="chip" style="color:var(--claude); border-color:rgba(201,168,255,.3)">$0.31</span>
           </div>
-          <div class="arail">
-            <div class="astat"><span class="dot"></span> 运行中 · Update <span class="t">1m12s</span></div>
-            <div class="alabel">本次改动</div>
-            <div class="achip cur">
-              <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">element.rs</span><span class="pm"><span class="ad">+3</span><span class="dl">−1</span></span></div>
-              <div class="adiff">
-                <div class="d">- win.paint_text(cell.ch)</div>
-                <div class="a">+ let g = atlas.glyph(ch)</div>
-                <div class="a">+ quads.push(Quad::…)</div>
+          <div class="plate-body" style="display:flex">
+            <div style="flex:1; min-width:0; display:flex; flex-direction:column">
+              <div class="feed" style="flex:1">
+                <div class="frow"><span class="st done"></span><span class="verb">Read</span><span class="obj">crates/tn-ui/src/element.rs</span><span class="meta">218 lines</span></div>
+                <div class="frow"><span class="st done"></span><span class="verb">Grep</span><span class="obj">"paint_text"</span><span class="meta">2 matches</span></div>
+                <div class="frow"><span class="st busy"></span><span class="verb">Update</span><span class="obj">crates/tn-ui/src/element.rs</span><span class="meta chip ph" style="padding:0 6px">RUN</span></div>
+                <div class="say">我会把逐行 <code>paint_text</code> 改成 <code>paint_quads</code> 批处理(见右侧改动),这样每格颜色与连字都能正确渲染。继续吗?</div>
+                <div style="font:13px var(--mono); margin-top:4px"><span style="color:var(--claude)">❯</span> <span class="cur">&nbsp;</span></div>
+              </div>
+              <div class="float-foot" style="border-top:1px solid var(--h0)">
+                <span><span class="kbd">Esc</span> 中断</span><span><span class="kbd">↵</span> 发送</span>
+                <span style="flex:1"></span><span class="tag ph">RUNNING · UPDATE</span><span>1m12s</span>
               </div>
             </div>
-            <div class="achip">
-              <div class="afile"><svg class="i"><use href="#i-file"/></svg><span class="nm">lib.rs</span><span class="pm"><span class="ad">+1</span></span></div>
+            <!-- 活动栏 -->
+            <div class="rail">
+              <div class="rail-head"><span class="sb-dot"></span><span>本次改动</span><span style="flex:1"></span><span>git diff</span></div>
+              <div class="dcard"><span class="fn">element.rs</span><span class="dn">+3</span><span class="dd">-1</span></div>
+              <div class="dcard" style="background:transparent"><span class="fn">lib.rs</span><span class="dn">+1</span></div>
+              <div style="flex:1"></div>
+              <div class="note" style="margin:0 10px 10px; font-size:10px">点击卡片 → QuickLook · Diff</div>
             </div>
-            <div class="ahint">点卡片 = Space 速览全 diff</div>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
 
-  <div class="demo">
-    <div class="label">Agent 头(Codex 变体:青绿强调) <span class="id">.agenthead.codex</span></div>
-    <div class="canvas short" style="height:auto;padding:18px;">
-      <div class="pane" style="height:auto">
-        <div class="agenthead codex">
-          <div class="av"><svg class="i"><use href="#i-spark"/></svg></div>
-          <div class="who"><div class="nm">Codex</div><div class="model">gpt-5-codex</div></div>
-          <span class="sp"></span>
-          <div class="usage">
-            <div class="meta"><span class="tok">49K / 272K</span></div>
-            <div class="ring"><svg width="32" height="32">
-              <circle cx="16" cy="16" r="13" stroke="rgba(255,255,255,0.10)" stroke-width="2.6" fill="none"/>
-              <circle cx="16" cy="16" r="13" stroke="var(--codex)" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-dasharray="81.7" stroke-dashoffset="67"/>
-            </svg><div class="lbl">18%</div></div>
+        <!-- Shell 板面 -->
+        <div class="plate" style="flex:1">
+          <div class="plate-head">
+            <span style="color:var(--ph)">❯</span><span style="color:var(--t1)">~/coder/tn</span>
+            <span style="flex:1"></span><span class="chip">pwsh 7.4</span>
+          </div>
+          <div class="plate-body" style="display:flex; flex-direction:column">
+            <div class="term" style="flex:1">
+              <div class="block ok" style="margin:4px 0 8px"><span class="bc">cargo test -p tn-core</span><span class="bt">0.8s</span><span class="bx">✓ 0</span></div>
+              <div class="out">test result: <span class="okc">ok.</span> 3 passed; 0 failed</div>
+              <div class="block run" style="margin:10px 0 8px"><span class="bc">cargo build --workspace</span><span class="bt">12.4s</span><span class="bx">RUN</span></div>
+              <div class="dim">   Compiling tn-ui v0.1.0</div>
+              <div style="margin-top:12px"><span class="ps1">~/coder/tn <span class="cwd">main</span> ❯</span> <span class="cur">&nbsp;</span></div>
+            </div>
+            <div class="sbar"><i></i></div>
+            <div class="blockbar">
+              <span style="color:var(--t0)">cargo build --workspace</span>
+              <span style="flex:1"></span>
+              <span class="chip ph">RUN 12.4s</span>
+            </div>
           </div>
         </div>
       </div>
-    </div>
-  </div>
 
-  <div class="demo">
-    <div class="label">Shell 面板(cwd 头 + 终端正文 + block 卡 + 提示符段) <span class="id">.pane / .phead / .body / .block</span><span class="impl">terminal_view::header render_shell_header + block_view</span></div>
-    <div class="canvas tall">
-      <div class="pane col">
-        <div class="phead"><svg class="i" style="color:var(--accent)"><use href="#i-term"/></svg><span class="cwd">~/proj/<b>tn</b></span><span class="sp"></span><span class="chip">pwsh 7.4</span></div>
-        <div class="body">
-          <div class="block">
-            <div class="bh"><span>❯ <span class="blu">cargo</span> test -p tn-core</span><span class="sp"></span><span class="dur">0.8s</span><span class="exit"><svg class="i"><use href="#i-check"/></svg></span></div>
-          </div>
-          <div class="row"><span class="grn">   test result: ok.</span> <span class="mut">3 passed; 0 failed</span></div>
-          <div class="row" style="margin-top:5px"><span class="seg p1">~/proj/tn</span> <span class="seg p2">main</span> ❯ <span class="cursor"></span></div>
-        </div>
+      <div class="statusbar">
+        <div class="sb-seg"><span class="sb-dot"></span><span>main</span></div>
+        <div class="sb-seg">3 SESSIONS</div>
+        <div class="sb-seg"><span class="live">CLAUDE CTX 42%</span></div>
+        <div class="sb-spring"></div>
+        <div class="sb-seg">UTF-8 · LF</div>
+        <div class="sb-seg">TN DARK</div>
       </div>
     </div>
+    <div class="note">运行语义只有一种颜色:<b>磷光</b> —— Update 状态点、RUN 块脊、块条左脊、prompt 光标、状态栏 CTX 同源。Agent 身份(紫/蓝)只出现在头像、tab 棒、用量环,不污染正文。</div>
   </div>
 </div>
+
+<!-- ══════════ B · Agent 头解剖 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">Agent 头 · 身份与用量</span><span class="d">用量 pill 点击循环 cost / ctx% / tokens(现有交互);环为 GPUI path 弧线</span></div>
+  <div class="board-body">
+    <div class="anat">
+      <div class="cell"><div class="cap">CLAUDE · ctx 模式</div>
+        <div class="strip"><span class="amark claude">✳</span><b style="font:600 12px var(--sans)">Claude Code</b><span style="font:10px var(--mono);color:var(--t2)">Sonnet 4.6</span><span class="ring" style="--rc:var(--claude);--pct:42%"></span><span class="chip" style="color:var(--claude);border-color:rgba(201,168,255,.3)">CTX 42%</span></div></div>
+      <div class="cell"><div class="cap">CODEX · cost 模式</div>
+        <div class="strip"><span class="amark codex">◆</span><b style="font:600 12px var(--sans)">Codex</b><span style="font:10px var(--mono);color:var(--t2)">gpt-5.3-codex</span><span class="ring" style="--rc:var(--codex);--pct:18%"></span><span class="chip" style="color:var(--codex);border-color:rgba(111,179,232,.3)">$0.08</span></div></div>
+      <div class="cell"><div class="cap">自定义 AGENT · tokens 模式</div>
+        <div class="strip"><span class="amark gen">⟡</span><b style="font:600 12px var(--sans)">aider</b><span style="font:10px var(--mono);color:var(--t2)">shell-detected</span><span class="chip ph">12.4K TOK</span></div></div>
+      <div class="cell"><div class="cap">权限请求(sidecar)</div>
+        <div class="strip" style="border-color:rgba(229,192,123,.3)"><span class="amark claude">✳</span><span style="font:11px var(--mono);color:var(--warn)">⚠ 允许运行 cargo build ?</span><span class="btn primary" style="padding:2px 10px;font-size:11px">允许</span><span class="btn" style="padding:2px 10px;font-size:11px">拒绝</span></div></div>
+    </div>
+    <table class="spec">
+      <caption>SPEC · 工作区</caption>
+      <tr><th>元素</th><th>尺寸</th><th>填充 / 边</th><th>备注</th></tr>
+      <tr><td class="k">plate</td><td>r6 · 接缝 2</td><td>L1 <span class="hex">#10141F</span> · 1px h0</td><td>平铺零投影(契约 4)</td></tr>
+      <tr><td class="k">plate-head</td><td>高 34(agent 38)</td><td>L2 · 底 1px h0</td><td>mono 11</td></tr>
+      <tr><td class="k">焦点</td><td>角标臂 11×2</td><td>边→ph ·32% · 角标 ph</td><td>无 glow(契约 8)</td></tr>
+      <tr><td class="k">活动栏</td><td>宽 248</td><td>L1 · 左 1px h0 · 卡 L2 r4</td><td>+N ok / -N err</td></tr>
+      <tr><td class="k">用量环</td><td>Ø18 · 孔 3</td><td>身份色弧 + L4 余量</td><td>GPUI path 弧线绘制</td></tr>
+      <tr><td class="k">块条</td><td>高 30 · 左脊 2</td><td>L2 · 顶 1px h0</td><td>脊色=最近命令状态</td></tr>
+      <tr><td class="k">滚动条</td><td>可见 3 · 命中 10</td><td>thumb h2 r2</td><td>拖动 pressed 兜底(坑位)</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>03 QuickLook 编辑器</b> — 速览 / 编辑 / Diff / CJK 固定单元格规范。</div>
 </body>
 </html>

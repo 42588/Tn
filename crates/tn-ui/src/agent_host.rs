@@ -63,7 +63,7 @@ mod guard {
     /// Guard: the UI must never reintroduce the closed agent enum (`Agent`+`Kind`).
     /// All agent identity flows through `AgentId` + the registry descriptor, so a
     /// third agent needs no UI change. The needle is assembled at runtime so this
-    /// guard file doesn't match itself. Mirrors `style::no_hardcoded_theme_colors`.
+    /// guard file doesn't match itself.
     #[test]
     fn ui_has_no_closed_agent_enum() {
         let needle = format!("Agent{}", "Kind");

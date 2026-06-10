@@ -86,6 +86,7 @@ fn human_size(bytes: u64) -> String {
 
 /// Code font size (px) — mockup `.code` font-size (also the mouse char-width probe).
 const CODE_FS: f32 = 12.5;
+const CODE_BG: u32 = 0x111424;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -884,8 +885,6 @@ pub enum QuickLookEvent {
     CloseConfirmed,
     /// User confirmed app quit while a dirty Quick Look document was open.
     QuitConfirmed,
-    /// Promote the current text document session into a long-lived editor pane.
-    OpenAsEditor(EditorHandoff),
     /// `Ctrl+S` wrote this file to disk — the workspace refreshes any agent pane's
     /// activity rail (本次改动) **synchronously**, instead of waiting on the file
     /// watcher (which can miss the edit: file outside the watched cwd, debounce, etc.).
@@ -920,34 +919,6 @@ struct PreviewPayload {
     data: QuickLookData,
     format: Option<TextFormat>,
     guard: Option<FileGuard>,
-}
-
-#[derive(Clone, Debug)]
-pub struct EditorHandoff {
-    pub session: DocumentSession,
-    pub path: Option<PathBuf>,
-    pub title: String,
-}
-
-fn editor_handoff_from_session(
-    session: DocumentSession,
-    path: Option<PathBuf>,
-    _format: Option<TextFormat>,
-    _opened_guard: Option<FileGuard>,
-    _remote_source: Option<RemoteSource>,
-    _is_remote_source: bool,
-) -> Option<EditorHandoff> {
-    let title = path
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .unwrap_or("Untitled")
-        .to_string();
-    Some(EditorHandoff {
-        session,
-        path,
-        title,
-    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1355,8 +1326,7 @@ pub struct QuickLook {
     /// open / navigation. `true` = the cached `diff` is stale and must be recomputed
     /// the next time the Diff tab is viewed. (See 踩坑记录 + docs/架构/编辑器与快速预览.md.)
     diff_dirty: bool,
-    /// Edit state (our own small modeless editor — see docs/界面样式/组件规格与自动生成数值.md
-    /// and docs/架构/编辑器与快速预览.md).
+    /// Edit state for our own small modeless editor.
     editing: bool,
     /// Document-backed editable state. The old renderer still reads an `Rc<Vec<_>>`
     /// snapshot from this shell until `EditorElement` lands.
@@ -2543,38 +2513,6 @@ impl QuickLook {
         }
     }
 
-    fn editor_handoff(&mut self) -> Option<EditorHandoff> {
-        if !self.is_editable() {
-            return None;
-        }
-        let session = if self.editing || self.dirty || self.edit.line_count() > 0 {
-            self.edit.clone()
-        } else {
-            let QuickLookData::Text { lines, .. } = &self.file_data else {
-                return None;
-            };
-            let session = QuickLookEditState::from_lines(lines.as_ref().clone());
-            session.mark_clean();
-            self.edit = session.clone();
-            session
-        };
-        editor_handoff_from_session(
-            session,
-            self.path.clone(),
-            self.text_format,
-            self.opened_guard.clone(),
-            self.remote_source.clone(),
-            self.is_remote_source,
-        )
-    }
-
-    fn open_as_editor(&mut self, cx: &mut Context<Self>) {
-        if let Some(handoff) = self.editor_handoff() {
-            self.sync_edit_mirror();
-            cx.emit(QuickLookEvent::OpenAsEditor(handoff));
-        }
-    }
-
     /// TnE-11: caret-follow for the self-paint editor. Only when the cursor *changes*
     /// (de-bounced via `last_follow_cursor`) — otherwise it would fight the user's
     /// manual wheel/thumb scroll every frame (踩过的坑). Mutates `el_scroll_y`
@@ -2692,7 +2630,7 @@ impl QuickLook {
             .min_h(px(0.))
             .relative()
             .overflow_hidden()
-            .bg(rgba(0x1e1e1e))
+            .bg(rgba(CODE_BG))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
                 let (vw, vh) = {
                     let b = this.code_bounds.borrow();
@@ -3029,7 +2967,7 @@ impl QuickLook {
             .min_h(px(0.))
             .relative()
             .overflow_hidden()
-            .bg(rgba(0x1e1e1e))
+            .bg(rgba(CODE_BG))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
                 let (vw, vh) = {
                     let b = this.code_bounds.borrow();
@@ -4195,10 +4133,6 @@ impl QuickLook {
                         self.replace_all(); // Ctrl+Enter in replace = replace all
                         true
                     }
-                    "enter" if !m.alt && self.is_editable() => {
-                        self.open_as_editor(cx);
-                        true
-                    }
                     "s" if !m.alt => {
                         self.save(cx);
                         true
@@ -4305,11 +4239,6 @@ impl QuickLook {
                 // 预览态只读:放行 Ctrl+C(复制选中) / Ctrl+A(全选),其余控制键忽略。
                 if m.control && !m.alt && !m.platform {
                     match key {
-                        "enter" if self.is_editable() => {
-                            self.open_as_editor(cx);
-                            cx.stop_propagation();
-                            cx.notify();
-                        }
                         "c" => {
                             self.copy(cx);
                             cx.stop_propagation();
@@ -4908,7 +4837,7 @@ fn paint_file_preview(
     let accent: Hsla = col(ui.accent).into();
     let jump_bg: Hsla = cola(ui.accent_alt, 0.16).into();
     let jump_bar: Hsla = cola(ui.accent_alt, 0.90).into();
-    let view_bg: Hsla = rgba(0x1e1e1e).into();
+    let view_bg: Hsla = rgba(CODE_BG).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
     let gutter = m.gutter;
@@ -5786,7 +5715,7 @@ impl Render for QuickLook {
             let pages = pages.clone();
             let page_count = *page_count;
             body = body.child(
-                div().flex_1().overflow_hidden().bg(rgba(0x1e1e1e)).child(
+                div().flex_1().overflow_hidden().bg(rgba(CODE_BG)).child(
                     uniform_list(
                         "pdf_scroll_container",
                         page_count,
@@ -5803,7 +5732,7 @@ impl Render for QuickLook {
                                             return div()
                                                 .w_full()
                                                 .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
-                                                .bg(rgba(0x1e1e1e))
+                                                .bg(rgba(CODE_BG))
                                                 .flex()
                                                 .justify_center()
                                                 .items_center()
@@ -5817,7 +5746,7 @@ impl Render for QuickLook {
                                                 );
                                         }
                                     }
-                                    div().w_full().h(px(1400.)).bg(rgba(0x1e1e1e))
+                                    div().w_full().h(px(1400.)).bg(rgba(CODE_BG))
                                 })
                                 .collect::<Vec<_>>()
                         },
@@ -5836,7 +5765,7 @@ impl Render for QuickLook {
                     .flex()
                     .justify_center()
                     .items_center()
-                    .bg(rgba(0x1e1e1e)) // 暗色背景
+                    .bg(rgba(CODE_BG)) // 暗色背景
                     // Contain + 适度内边距:图片按比例**铺满**预览区(只在一轴留暗边),不再
                     // 自然小尺寸居中留大片空白(修「四周留白很多」)。
                     .p(px(10.))
@@ -6288,25 +6217,6 @@ impl Render for QuickLook {
             .text_color(col(ui.muted))
             .border_t_1()
             .border_color(rgba(0xffffff0d)); // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
-        let open_editor_action = {
-            let entity = cx.entity().clone();
-            move |_e: &MouseDownEvent, _w: &mut Window, app: &mut gpui::App| {
-                let _ = entity.update(app, |this, cx| this.open_as_editor(cx));
-                app.stop_propagation();
-            }
-        };
-        let open_editor_btn = || {
-            div()
-                .px(px(8.))
-                .py(px(2.))
-                .rounded(px(5.))
-                .bg(cola(ui.accent, 0.14))
-                .text_color(cola(ui.foreground, 0.92))
-                .border_1()
-                .border_color(cola(ui.accent, 0.35))
-                .child("打开为编辑器")
-                .on_mouse_down(MouseButton::Left, open_editor_action.clone())
-        };
         let footer = if self.editing {
             // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销
             footer_base
@@ -6323,9 +6233,6 @@ impl Render for QuickLook {
                 .child("复制粘贴 ·")
                 .child(kcap("Ctrl+Z"))
                 .child("撤销")
-                .child(div().flex_1())
-                .child(kcap("Ctrl+Enter"))
-                .child(open_editor_btn())
         } else if self.tab == Tab::Diff {
             footer_base
                 .child(kcap("↑↓"))
@@ -6349,9 +6256,7 @@ impl Render for QuickLook {
                 .child(kcap("Enter"))
                 .child("编辑")
                 .child(div().flex_1())
-                .child(kcap("Ctrl+Enter"))
-                .child(open_editor_btn())
-                .child(" · Diff 只读审阅 ·")
+                .child("Diff 只读审阅 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
         } else {
@@ -6981,34 +6886,6 @@ mod tests {
 
         assert!(Rc::ptr_eq(&mirror, &edit.lines()));
         assert_eq!(edit.row_text(2000).as_deref(), Some("lineX 2000"));
-    }
-
-    #[test]
-    fn editor_handoff_shares_quicklook_session_state() {
-        let session = QuickLookEditState::from_lines(buf(&["abc"]));
-        session.place_cursor(0, 1, false);
-        session.type_char("X");
-
-        let handoff = editor_handoff_from_session(
-            session.clone(),
-            Some(PathBuf::from("note.md")),
-            Some(TextFormat::default()),
-            None,
-            None,
-            false,
-        )
-        .expect("editable text handoff");
-        let session = handoff.session.clone();
-
-        assert_eq!(session.lines().borrow().as_slice(), &buf(&["aXbc"]));
-        assert_eq!(session.cursor(), (0, 2));
-        assert!(session.is_dirty());
-
-        session.undo();
-
-        assert_eq!(handoff.session.lines().borrow().as_slice(), &buf(&["abc"]));
-        assert_eq!(handoff.session.cursor(), (0, 1));
-        assert!(handoff.session.is_dirty());
     }
 
     #[test]

@@ -2,34 +2,115 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 界面原型 · 总览</title>
-<link rel="stylesheet" href="../calm-glass.css" />
+<title>Tn 磷光 PHOSPHOR · 设计语言总览</title>
+<link rel="stylesheet" href="../phosphor.css" />
 <style>
-  .grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:14px; }
-  a.card{ display:block; text-decoration:none; color:var(--fg); padding:18px 20px; border-radius:var(--r-pane);
-    background:var(--g1); border:1px solid var(--rim); position:relative; overflow:hidden;
-    box-shadow:0 24px 58px -36px rgba(0,0,0,0.88); }
-  a.card::before{ content:""; position:absolute; left:0; right:0; top:0; height:36%;
-    border-radius:var(--r-pane) var(--r-pane) 0 0; background:linear-gradient(180deg, rgba(255,255,255,0.04), transparent); }
-  a.card .ct{ font-size:15px; font-weight:680; }
-  a.card .cd{ font-size:12px; color:var(--fg-dim); margin-top:4px; }
-  a.card .cf{ font-size:11px; color:var(--faint); font-family:var(--mono); margin-top:8px; }
-  a.card.full{ grid-column:1 / -1; }
+  .hero{ max-width:1480px; margin:0 auto 46px; display:flex; align-items:center; gap:22px; }
+  .hero .hm{ width:56px; height:56px; border-radius:12px; border:1px solid var(--ph-dim); position:relative; flex:none; }
+  .hero .hm::after{ content:""; position:absolute; inset:14px; background:var(--ph); border-radius:3px; }
+  .hero h1{ font:600 30px var(--mono); }
+  .hero h1 s{ text-decoration:none; color:var(--ph); }
+  .hero .sub{ font:13px/1.9 var(--sans); color:var(--t1); margin-top:6px; max-width:780px; }
+  .hero .sub b{ color:var(--ph); font-weight:600; }
+  /* 原则卡 */
+  .laws{ max-width:1480px; margin:0 auto 52px; display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .law{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-plate); padding:18px 18px 16px; position:relative; overflow:hidden; }
+  .law::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--ph); opacity:.7; }
+  .law .ln{ font:600 10px var(--mono); color:var(--ph); }
+  .law .lt{ font:600 15px var(--sans); color:var(--t0); margin:8px 0 6px; }
+  .law .ld{ font:11px/1.9 var(--sans); color:var(--t2); }
+  /* 阶梯 */
+  .ladder{ display:flex; gap:0; border:1px solid var(--h1); border-radius:var(--r-plate); overflow:hidden; }
+  .lstep{ flex:1; height:96px; display:flex; flex-direction:column; justify-content:flex-end; padding:10px 12px; font:10px var(--mono); }
+  .lstep b{ color:var(--t0); font-weight:600; } .lstep span{ color:var(--t2); }
+  .chips-row{ display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+  /* 导航卡 */
+  .navgrid{ max-width:1480px; margin:0 auto; display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  a.nav{ display:block; text-decoration:none; background:var(--l1); border:1px solid var(--h0);
+         border-radius:var(--r-plate); padding:16px 16px 14px; position:relative; }
+  a.nav:hover{ background:var(--l2); border-color:var(--ph-dim); }
+  a.nav .ni{ font:600 10px var(--mono); color:var(--ph); }
+  a.nav .nt{ font:600 14px var(--sans); color:var(--t0); margin:7px 0 4px; }
+  a.nav .nd{ font:11px/1.7 var(--sans); color:var(--t2); }
+  a.nav .nf{ font:9px var(--mono); color:var(--t3); margin-top:10px; }
+  a.nav.sig .ni::after{ content:" · 特色"; color:var(--warn); }
+  .two{ max-width:1480px; margin:0 auto 52px; display:grid; grid-template-columns:1.2fr 1fr; gap:28px; align-items:start; }
 </style>
 </head>
 <body>
-<div class="stage">
-  <h1>Tn 界面原型 <span class="dim">— Calm Glass · 分类总览</span></h1>
-  <p class="lead">每页是该类面板的高保真 HTML 原型(共享 <code>../calm-glass.css</code>);面板 ↔ 实现映射见 <code>../../docs/产品体验/窗口框架与面板映射.md</code>,还原数值见 <code>../../docs/界面样式/组件规格与自动生成数值.md</code>。设计真源 = <code>../mockup.html</code>(全窗合成 + token_drift 守卫)。</p>
-  <div class="grid">
-    <a class="card full" href="../mockup.html"><div class="ct">◆ 全窗合成(设计真源)</div><div class="cd">完整窗口:标题栏 + 三栏(资源管理器 | Agent+Shell | 查看器)+ 状态栏</div><div class="cf">design/mockup.html · 守卫真源</div></a>
-    <a class="card" href="01-window-chrome.html"><div class="ct">① 窗口外壳</div><div class="cd">标题栏 · Tab · 窗口控制 · 状态栏</div><div class="cf">workspace.rs</div></a>
-    <a class="card" href="02-workspace-panes.html"><div class="ct">② 工作区窗格</div><div class="cd">Agent 面板(头+用量环+工具流)· Shell 面板</div><div class="cf">terminal_view/</div></a>
-    <a class="card" href="03-side-panels.html"><div class="ct">③ 侧栏</div><div class="cd">资源管理器(文件树)· 文件/Diff 查看器</div><div class="cf">explorer.rs · viewer.rs</div></a>
-    <a class="card" href="04-overlays.html"><div class="ct">④ 浮层 / 启动器</div><div class="cd">命令面板 · Quick Terminal 启动器</div><div class="cf">workspace::render_palette · quick_terminal</div></a>
-    <a class="card" href="05-states.html"><div class="ct">⑤ 状态屏</div><div class="cd">欢迎/空状态 · Block 卡(运行/成功/失败)</div><div class="cf">block_view.rs · 欢迎屏(后置)</div></a>
-    <a class="card full" href="06-ssh.html"><div class="ct">⑥ SSH 连接 <span style="color:var(--green);font-size:11px;font-weight:600">· 已落地:连接器(A1+A2+A4·三段去重)· 进度卡(B1)· 指纹(B2)· 密码框(B3)· 重连/连接态(B4)· 错误卡(C1)· 拨号校验(C2)· 首连引导/成功反馈(C3) — A/B/C 全轴收官</span></div><div class="cd">连接器(已保存/最近/⭐收藏/存为连接 + ssh-config 别名 + 实时解析 + 拨号前校验)· 连接进度 · 主机指纹确认(首连/不匹配)· 密码框(显隐/记住/重试)· 重连横幅 + 连接态(带认证方式)· 可操作错误 · 首连三步引导</div><div class="cf">workspace::render_ssh_* · ssh_conn_rows · validate_ssh_target · tn_pty::list_ssh_config_hosts</div></a>
+
+<div class="hero">
+  <div class="hm"></div>
+  <div>
+    <h1>TN · PHOSPHOR <s>磷光_</s></h1>
+    <div class="sub">为 GPUI <b>精准还原</b>而生的仪表舱设计语言 —— <b>结构给秩序,磷光给生命</b>。
+    不模仿玻璃、不依赖模糊与噪点:深度来自不透明海拔与接缝,生命来自唯一的磷光色。
+    上一代 Calm Glass 死于「HTML 能渲染、GPUI 渲染不出」;磷光从渲染契约出发,原型即实现规格。</div>
   </div>
+</div>
+
+<div class="laws">
+  <div class="law"><div class="ln">LAW 01</div><div class="lt">不透明海拔</div><div class="ld">大面积只用纯色阶梯 L0→L4。大面渐变在 8-bit 下必然色带(已真机证伪),海拔差就是材质感。</div></div>
+  <div class="law"><div class="ln">LAW 02</div><div class="lt">接缝即深度</div><div class="ld">平铺板面零投影:2px 接缝露出底盘 + 1px 发丝边 = 机加工拼接。投影只属于真浮层。</div></div>
+  <div class="law"><div class="ln">LAW 03</div><div class="lt">磷光纪律</div><div class="ld">唯一生命色,只给活物:光标、运行态、焦点角标、活动数据。永不做装饰发光,没有光污染。</div></div>
+  <div class="law"><div class="ln">LAW 04</div><div class="lt">像素公民</div><div class="ld">宠物与幽灵是一等公民:8px 像素网格与终端网格同源,逐 quad 直绘,趣味不破坏专业。</div></div>
+</div>
+
+<div class="two">
+  <div>
+    <div class="board-cap"><span class="idx">◈</span><span class="t">海拔阶梯 · 唯一的「材质」</span></div>
+    <div class="ladder">
+      <div class="lstep" style="background:#0B0E16"><b>L0</b><span>#0B0E16</span><span>底盘 · 窗体/接缝</span></div>
+      <div class="lstep" style="background:#10141F"><b>L1</b><span>#10141F</span><span>板面 · pane</span></div>
+      <div class="lstep" style="background:#151B29"><b>L2</b><span>#151B29</span><span>抬升 · header/卡</span></div>
+      <div class="lstep" style="background:#1B2334"><b>L3</b><span>#1B2334</span><span>浮板 · 浮层</span></div>
+      <div class="lstep" style="background:#232C42"><b>L4</b><span>#232C42</span><span>顶面 · 选中</span></div>
+    </div>
+    <div class="chips-row">
+      <span class="sw"><i style="background:#5BE7C4"></i>磷光 #5BE7C4</span>
+      <span class="sw"><i style="background:#8CD7A2"></i>ok</span>
+      <span class="sw"><i style="background:#E5C07B"></i>warn</span>
+      <span class="sw"><i style="background:#E8707E"></i>err</span>
+      <span class="sw"><i style="background:#82B4F0"></i>info</span>
+      <span class="sw"><i style="background:#C9A8FF"></i>claude</span>
+      <span class="sw"><i style="background:#6FB3E8"></i>codex</span>
+      <span class="sw"><i style="background:#EAF0FB"></i>t0</span>
+      <span class="sw"><i style="background:#A9B4CA"></i>t1</span>
+      <span class="sw"><i style="background:#69748E"></i>t2</span>
+      <span class="sw"><i style="background:#3E4860"></i>t3</span>
+    </div>
+    <div class="note">圆角:窗 10 · 板 6 · 卡 4 · chip 3 — 小而准,机加工而非吹塑。字体:Segoe UI(chrome)+ Cascadia Mono(数据/代码/微标签,全大写代替字距)。</div>
+  </div>
+  <div>
+    <table class="spec" style="margin-top:0">
+      <caption>渲染契约 · CSS ↔ GPUI 一一对应</caption>
+      <tr><th>原型用法</th><th>GPUI 落点</th></tr>
+      <tr><td class="k">纯色填充 / alpha 叠色</td><td>Div::bg(Rgba) · cola()</td></tr>
+      <tr><td class="k">1px solid 边</td><td>border_1().border_color()</td></tr>
+      <tr><td class="k">圆角 ≤10px</td><td>rounded(px(..))</td></tr>
+      <tr><td class="k">≤4px 条带小渐变</td><td>linear_gradient(小元素)</td></tr>
+      <tr><td class="k">浮层外投影</td><td>BoxShadow(仅浮层,父不裁)</td></tr>
+      <tr><td class="k">纯色 scrim</td><td>absolute 全幅 Div</td></tr>
+      <tr><td class="k">用量环(conic 示意)</td><td>canvas path 弧线</td></tr>
+      <tr><td class="k">像素狗 / 幽灵标</td><td>逐像素 quad 直绘</td></tr>
+      <tr><td class="k" style="color:var(--err)">禁:backdrop-filter / filter / inset-shadow / text-shadow / 大面渐变 / 噪点 / letter-spacing</td><td>—(GPUI 无对应或已证伪)</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="navgrid">
+  <a class="nav" href="01-window-chrome.html"><div class="ni">SHEET 01</div><div class="nt">窗体外壳</div><div class="nd">标题栏 · Tab 身份棒 · 窗控 · App Menu · 状态栏</div><div class="nf">workspace.rs · style.rs</div></a>
+  <a class="nav" href="02-workspace-panes.html"><div class="ni">SHEET 02</div><div class="nt">工作区窗格</div><div class="nd">Explorer · Agent 板面 · Shell 板面 · 活动栏 · 块条</div><div class="nf">terminal_view/ · explorer.rs</div></a>
+  <a class="nav sig" href="03-quicklook-editor.html"><div class="ni">SHEET 03</div><div class="nt">QuickLook 编辑器</div><div class="nd">速览 · 就地编辑 · Diff/hunk · CJK 固定单元格规范</div><div class="nf">quick_look.rs · tn-editor</div></a>
+  <a class="nav sig" href="04-ghost-terminal.html"><div class="ni">SHEET 04</div><div class="nt">幽灵终端</div><div class="nd">召唤线 · 顶垂浮窗 · 残影签名 · 会话常驻</div><div class="nf">quick_terminal.rs</div></a>
+  <a class="nav sig" href="05-pet-system.html"><div class="ni">SHEET 05</div><div class="nt">宠物系统</div><div class="nd">栖位岗台 · 七犬品种架 · 上下文状态机 · 互动</div><div class="nf">docs/宠物/ · overlay</div></a>
+  <a class="nav" href="06-overlays.html"><div class="ni">SHEET 06</div><div class="nt">浮层与启动器</div><div class="nd">命令面板 · 分屏启动器 · SSH 信任 · 确认件 · Toast</div><div class="nf">workspace.rs</div></a>
+  <a class="nav" href="07-states.html"><div class="ni">SHEET 07</div><div class="nt">状态页</div><div class="nd">欢迎页 Launchpad · 空板面 · 命令块三态 · SSH 过程态</div><div class="nf">welcome.rs · block_view.rs</div></a>
+  <a class="nav" href="../README.md"><div class="ni">DOC</div><div class="nt">README · 验收口径</div><div class="nd">页面 ↔ 实现入口映射 · SPEC 表抄写规则 · 真机回归方式</div><div class="nf">design/README.md</div></a>
+</div>
+
+<div class="note" style="max-width:1480px; margin:28px auto 0">
+验收口径:实现照各页 <b>SPEC 表</b>逐项落 token(style.rs 单源);真机 <b>target/ui-shots</b> 截图与本页对照,只比海拔/接缝/磷光纪律三件事,不上守卫测试。原型在浏览器中打开即是设计原件。
 </div>
 </body>
 </html>

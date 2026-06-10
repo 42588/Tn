@@ -31,7 +31,9 @@ use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::platform;
 use crate::ssh_recents::{AuthBadge, SshRecents};
-use crate::style::{col, cola, icon, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
+use crate::style::{
+    col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
+};
 use crate::terminal_view::{
     FileNamespace, LaunchSpec, ProcessExited, SshCloseRequested, SshConnected, SshRememberPassword,
     SshRetryRequested, TerminalView, UsageUpdated,
@@ -43,10 +45,9 @@ use crate::welcome::{
 /// Launcher → session cross-fade duration (待优化:手感真机调).
 const TRANSITION_MS: u64 = 190;
 
-/// Launcher card width in **logical** px: 4 tiles (128) + 3 gaps (11) + 2×22
-/// padding + 2×1 border = 591, rounded up for a hair of slack. Scaled to physical
+/// Launcher card width in **logical** px: matches the 760px mockup card. Scaled to physical
 /// by the monitor DPI when sizing the window (see [`QuickTerminal::shown_for`]).
-const CARD_W: f32 = 600.0;
+const CARD_W: f32 = 760.0;
 
 pub struct QuickTerminal {
     config: Arc<Loaded>,
@@ -942,11 +943,11 @@ impl QuickTerminal {
             .on_key_down(
                 cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_picker_key(ev, w, cx)),
             )
-            // mockup .quick bg:#151622 → #0F1019(略带通透,无 token)
+            // mockup .quick bg:#151622@.78 → #0F1019@.85(略带通透,无 token)
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(rgba(0x151622e6), 0.),
-                linear_color_stop(rgba(0x0f1019f2), 1.),
+                linear_color_stop(rgba(0x151622c7), 0.),
+                linear_color_stop(rgba(0x0f1019d9), 1.),
             ))
             .child(crate::style::specular_wash(true, ui.accent))
             .child(
@@ -1489,7 +1490,7 @@ impl QuickTerminal {
         let t = &self.config.theme;
         let ui = &t.ui;
         div()
-            .w(px(128.)) // 4 列定宽塞进 600 宽卡(4×128 + 3×11 gap ≤ 卡内宽),>4 自动换行
+            .w(px(170.)) // 4 列定宽塞进 760 宽卡(4×170 + 3×11 + 2×22 ≈ 757),>4 自动换行
             .flex()
             .flex_col()
             .gap(px(9.)) // .tile gap 9
@@ -1676,19 +1677,20 @@ impl Render for QuickTerminal {
         }
 
         let theme = &self.config.theme;
+        let ui = &theme.ui;
         let mut root = div().size_full().overflow_hidden();
-        // Launcher state leaves the window transparent so only the centered glass card
-        // shows (floating on the desktop, no big opaque rectangle). A running session
-        // needs an opaque dark fill behind the terminal (the TerminalView's own bg is
-        // transparent — in the main window the pane's glass provides it; here we do).
-        if self.term.is_some() {
-            root = root.bg(cola(theme.terminal.background, 1.0));
-        }
 
         // The live session fills the window (its own header shows the agent +
         // usage ring). The launcher overlays everything when open.
         if let Some(term) = &self.term {
-            root = root.child(term.clone());
+            let mut session = div()
+                .size_full()
+                .relative()
+                .rounded(px(R_PANEL - 1.))
+                .overflow_hidden()
+                .bg(quicklook_fill(ui.chrome_bg))
+                .child(crate::style::specular_wash(true, ui.accent))
+                .child(term.clone());
             // Launcher → session cross-fade: a dark wash over the fresh terminal that
             // eases out, so the session develops in instead of snapping.
             if let Some(at) = self.transition_at {
@@ -1696,7 +1698,7 @@ impl Render for QuickTerminal {
                     (at.elapsed().as_secs_f32() / (TRANSITION_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                 let a = (1.0 - ease_out_cubic(p)) * 0.96;
                 if a > 0.004 {
-                    root = root.child(
+                    session = session.child(
                         div()
                             .absolute()
                             .size_full()
@@ -1704,6 +1706,7 @@ impl Render for QuickTerminal {
                     );
                 }
             }
+            root = root.child(quicklook_frame(session, ui.accent));
         }
         if let Some(picker) = self.render_picker(cx) {
             root = root.child(picker);

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 磷光 · 06 浮层与启动器</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  .desk{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-win);
+         position:relative; overflow:hidden; display:grid; place-items:center; }
+  .desk .ghostwork{ position:absolute; inset:2px; display:flex; gap:2px; }
+  .desk .ghostwork .plate{ flex:1; }
+  /* 命令面板 */
+  .palette{ width:640px; display:flex; flex-direction:column; }
+  .pin{ display:flex; align-items:center; gap:10px; height:44px; padding:0 16px;
+        border-bottom:1px solid var(--h1); font:14px var(--mono); }
+  .pin .q{ color:var(--t0); }
+  .prow{ display:flex; align-items:center; gap:10px; height:36px; padding:0 14px;
+         font:12px var(--sans); color:var(--t1); position:relative; }
+  .prow:hover{ background:var(--l4); }
+  .prow.on{ background:var(--l4); color:var(--t0); }
+  .prow.on::before{ content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px; background:var(--ph); }
+  .prow .gi{ width:16px; text-align:center; font:600 12px var(--mono); flex:none; }
+  .prow .src{ margin-left:auto; font:10px var(--mono); color:var(--t3); }
+  /* 方向选择 */
+  .dirs{ display:flex; gap:8px; }
+  .dir{ width:46px; height:46px; border:1px solid var(--h1); border-radius:var(--r-card);
+        display:grid; place-items:center; font:15px var(--mono); color:var(--t2); background:var(--l2); }
+  .dir.on{ border-color:var(--ph-dim); background:var(--ph-soft); color:var(--ph); }
+  /* 指纹块 */
+  .fp{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-card);
+       padding:10px 14px; font:12px/1.8 var(--mono); color:var(--ph); }
+  .kv{ display:flex; gap:12px; font:11px var(--mono); padding:3px 0; }
+  .kv b{ color:var(--t2); font-weight:500; width:88px; flex:none; }
+  .kv span{ color:var(--t1); }
+  .row2{ display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap; }
+  .toast{ display:inline-flex; align-items:center; gap:8px; padding:7px 14px;
+          background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-card);
+          box-shadow:var(--shadow-float); font:11px var(--mono); color:var(--t1); }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 06 / 07</div>
+  <h1>浮层与启动器 <em>OVERLAYS — 命令面板 · 分屏启动器 · SSH 信任 · 确认件</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/workspace.rs(render_palette / render_ssh_*)</b> · 浮层全家族:L3 面 + h2 边 + float 投影 + 纯色 scrim;焦点不被 workspace 抢走(坑位)</div>
+</div>
+<div class="sheet-rule"></div>
+
+<!-- ══════════ A · 命令面板 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">命令面板</span><span class="d">Ctrl+Shift+P — 启动 profile / WSL / SSH / Agent;宠物设置也必须键盘可达</span></div>
+  <div class="board-body">
+    <div class="desk" style="height:430px">
+      <div class="ghostwork"><div class="plate" style="width:240px;flex:none"></div><div class="plate"></div><div class="plate"></div></div>
+      <div class="scrim"></div>
+      <div class="float palette">
+        <div class="pin"><span style="color:var(--ph)">❯</span><span class="q">ssh</span><span class="cur">&nbsp;</span><span style="flex:1"></span><span class="tag">PROFILES</span></div>
+        <div style="padding:6px 0">
+          <div class="prow on"><span class="gi" style="color:var(--warn)">⇄</span>prod-01<span style="font:10px var(--mono); color:var(--t2)">dev@10.0.0.7</span><span class="src">SSH · 最近 · ⭐</span></div>
+          <div class="prow"><span class="gi" style="color:var(--warn)">⇄</span>staging<span style="font:10px var(--mono); color:var(--t2)">dev@10.2.1.4</span><span class="src">SSH</span></div>
+          <div class="prow"><span class="gi" style="color:var(--warn)">⇄</span>新建 SSH 连接…<span class="src">user@host</span></div>
+          <div class="prow"><span class="gi" style="color:var(--info)">⌬</span>Ubuntu<span class="src">WSL</span></div>
+          <div class="prow"><span class="gi" style="color:var(--claude)">✳</span>Claude<span class="src">AGENT</span></div>
+          <div class="prow"><span class="gi" style="color:var(--t3)">⌂</span>宠物设置<span class="src">SETTINGS</span></div>
+        </div>
+        <div class="float-foot">
+          <span><span class="kbd">↑↓</span> 选择</span><span><span class="kbd">↵</span> 新标签启动</span><span><span class="kbd">Esc</span> 关闭</span>
+          <span style="flex:1"></span><span class="tag">6 项</span>
+        </div>
+      </div>
+    </div>
+    <div class="note">选中行 = <b>L4 + 左 2px 磷光脊</b>(与树/磁贴同一语法);身份字形色 = 会话所有者(磷光/蓝/橙/紫),右侧来源 tag mono ·t3。SSH 行进入内置 prompt 流程,不直接裸启动。</div>
+  </div>
+</div>
+
+<!-- ══════════ B · 分屏启动器 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">分屏启动器</span><span class="d">Ctrl+Shift+N — 先方向后 profile,落进当前 tab 的 pane tree(与命令面板分工不同)</span></div>
+  <div class="board-body">
+    <div class="row2">
+      <div class="float" style="width:520px">
+        <div class="float-head"><span style="color:var(--ph)">◫</span>新会话 · 分屏<span style="flex:1"></span><span class="tag">当前 PANE</span></div>
+        <div style="display:flex; gap:24px; padding:16px; align-items:center">
+          <div class="dirs">
+            <div class="dir">←</div><div class="dir on">→</div><div class="dir">↑</div><div class="dir">↓</div>
+          </div>
+          <div style="font:10px/1.8 var(--mono); color:var(--t2)">方向:右侧分屏<br/>预览线先行,松手一次性提交(防 ConPTY 抖动)</div>
+        </div>
+        <div style="padding:0 10px 10px">
+          <div class="prow on"><span class="gi" style="color:var(--ph)">❯</span>pwsh<span class="src">默认</span></div>
+          <div class="prow"><span class="gi" style="color:var(--info)">⌬</span>Ubuntu<span class="src">WSL</span></div>
+          <div class="prow"><span class="gi" style="color:var(--claude)">✳</span>Claude<span class="src">AGENT</span></div>
+        </div>
+        <div class="float-foot"><span><span class="kbd">⇥</span> 方向</span><span><span class="kbd">↵</span> 启动</span><span style="flex:1"></span><span class="tag ph">→ 右分屏</span></div>
+      </div>
+      <table class="spec" style="flex:1; min-width:420px; margin-top:0">
+        <caption>SPEC · 浮层家族公共件</caption>
+        <tr><th>元素</th><th>规格</th><th>备注</th></tr>
+        <tr><td class="k">浮层面</td><td>L3 <span class="hex">#1B2334</span> · 1px h2 · r6</td><td>投影 = 全系统唯一</td></tr>
+        <tr><td class="k">scrim</td><td>rgba(5,7,12,.62) 纯色</td><td>无 backdrop blur(契约 5)</td></tr>
+        <tr><td class="k">输入行</td><td>高 44 · mono 14 · 块光标</td><td>IME 焦点归浮层(坑位)</td></tr>
+        <tr><td class="k">结果行</td><td>高 36 · 选中 L4+ph 脊</td><td>hover 不夺选中</td></tr>
+        <tr><td class="k">方向格</td><td>46×46 · on = ph-soft+ph 边</td><td>—</td></tr>
+        <tr><td class="k">页脚</td><td>高 30 · kbd 提示 mono 10</td><td>右端状态 tag</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ C · SSH 信任与确认件 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">SSH 首次指纹 · 未保存确认 · Toast</span><span class="d">TOFU 信任卡;关闭保护;轻通知 — 全部沿用浮层家族语法</span></div>
+  <div class="board-body">
+    <div class="row2">
+      <div class="float" style="width:560px">
+        <div class="float-head"><span style="color:var(--warn)">⇄</span>首次连接 · prod-01<span style="flex:1"></span><span class="chip warnc">TOFU</span></div>
+        <div style="padding:14px 16px; display:flex; flex-direction:column; gap:8px">
+          <div class="kv"><b>HOST</b><span>dev@10.0.0.7 : 22</span></div>
+          <div class="kv"><b>KEY TYPE</b><span>ssh-ed25519</span></div>
+          <div class="kv" style="align-items:flex-start"><b>FINGERPRINT</b></div>
+          <div class="fp">SHA256:hQ4mNkX9rT2pLwYv7cZbE5aGd8fJ3sKuVnRq6oWiB1M</div>
+          <div style="font:10px var(--mono); color:var(--t2)">⚠ 无法验证主机真实性;指纹不符时将变为 <span style="color:var(--err)">HOST KEY MISMATCH</span> 红边错误卡</div>
+        </div>
+        <div class="float-foot" style="gap:8px; height:46px">
+          <span style="flex:1"></span>
+          <span class="btn">仅本次信任</span>
+          <span class="btn primary">写入 known_hosts</span>
+          <span class="btn">取消</span>
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:24px">
+        <div class="float" style="width:460px">
+          <div class="float-head"><span style="color:var(--warn)">⚠</span>未保存的改动<span style="flex:1"></span><span class="chip">element.rs</span></div>
+          <div style="padding:14px 16px; font:12px/1.8 var(--sans); color:var(--t1)">QuickLook 中有未保存的编辑。关闭前要怎么处理?</div>
+          <div class="float-foot" style="gap:8px; height:46px">
+            <span style="flex:1"></span>
+            <span class="btn primary">保存并关闭</span>
+            <span class="btn danger">丢弃</span>
+            <span class="btn">取消</span>
+          </div>
+        </div>
+        <div>
+          <div class="tag" style="margin-bottom:8px">TOAST · 右下轻通知(3s 自散)</div>
+          <span class="toast"><span style="color:var(--ok)">✓</span>配置已重载 · palette 已应用到现有 pane</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>07 状态页</b> — 欢迎页 · 空板面 · 命令块三态 · SSH 过程态。</div>
+</body>
+</html>

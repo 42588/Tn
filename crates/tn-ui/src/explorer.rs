@@ -480,6 +480,18 @@ fn tree_row(
         })
         .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))));
 
+    if row.depth > 0 {
+        r = r.child(
+            div()
+                .absolute()
+                .left(px((indent - 8.0).max(2.0)))
+                .top(px(-2.))
+                .bottom(px(-2.))
+                .w(px(1.))
+                .bg(rgba(0xffffff0d)),
+        );
+    }
+
     // chevron (directories) or spacer (files)
     if row.is_dir {
         let chev = if row.expanded { "chev-d" } else { "chev-r" };

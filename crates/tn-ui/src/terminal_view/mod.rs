@@ -329,6 +329,32 @@ fn scroll_wheel_drives_terminal_app(agent_active: bool, alt_screen: bool) -> boo
     terminal_app_owns_viewport(agent_active, alt_screen)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ScrollbarThumbStyle {
+    width: f32,
+    margin_right: f32,
+    idle_bg: u32,
+    active_bg: u32,
+}
+
+fn scrollbar_thumb_style(rail_layout: ActivityRailLayout) -> ScrollbarThumbStyle {
+    if rail_layout == ActivityRailLayout::Flex {
+        ScrollbarThumbStyle {
+            width: 3.,
+            margin_right: 3.,
+            idle_bg: 0xffffff08,
+            active_bg: 0xffffff3a,
+        }
+    } else {
+        ScrollbarThumbStyle {
+            width: 5.,
+            margin_right: 2.,
+            idle_bg: HOVER,
+            active_bg: 0xffffff66,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SelectionDragMove {
     Idle,
@@ -2500,6 +2526,11 @@ impl Render for TerminalView {
         // handle to THIS pane to cycle usage_mode at event time, so pass a weak
         // ref (cheap; the pane outlives its own render).
         let header = self.render_pane_header(cx.entity().downgrade());
+        let rail_layout = activity_rail_layout(
+            self.agent.is_some(),
+            self.agent_from_shell,
+            self.agent_caps.git_diff,
+        );
 
         // Cursor (positioned over the grid, which starts at the term-area origin).
         // Hidden when the app hides it (vim) or the viewport is scrolled off the row.
@@ -2708,7 +2739,13 @@ impl Render for TerminalView {
             let top = ((scroll_history.saturating_sub(scroll_offset)) as f32 / total)
                 .clamp(0.0, 1.0 - thumb_h);
             let scrolled = scroll_offset > 0 || self.scrollbar_drag.is_some();
-            // 命中区比可见条宽得多(14px),透明、贴右缘、承接拖拽;里头一条细 5px 可见 bar
+            let thumb = scrollbar_thumb_style(rail_layout);
+            let thumb_bg = if scrolled {
+                thumb.active_bg
+            } else {
+                thumb.idle_bg
+            };
+            // 命中区比可见条宽得多(14px),透明、贴右缘、承接拖拽;里头一条细可见 bar
             // 靠右显示 → 视觉仍纤细、但好抓(修「滚动条可交互区域太小」)。
             div()
                 .absolute()
@@ -2727,11 +2764,11 @@ impl Render for TerminalView {
                 )
                 .child(
                     div()
-                        .w(px(5.))
+                        .w(px(thumb.width))
                         .h_full()
-                        .mr(px(2.))
+                        .mr(px(thumb.margin_right))
                         .rounded(px(2.))
-                        .bg(rgba(if scrolled { 0xffffff66 } else { HOVER })),
+                        .bg(rgba(thumb_bg)),
                 )
         });
 
@@ -2837,11 +2874,6 @@ impl Render for TerminalView {
         // the agent's startup screen.
         // The activity rail is a capability slot (`git_diff`): an agent that
         // declares it gets「本次改动」; one that doesn't hosts full-width.
-        let rail_layout = activity_rail_layout(
-            self.agent.is_some(),
-            self.agent_from_shell,
-            self.agent_caps.git_diff,
-        );
         if self.agent_surface_probe_frames > 0 {
             let nonblank_rows = rows
                 .iter()

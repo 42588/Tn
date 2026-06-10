@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 磷光 · 03 QuickLook 编辑器</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  /* 舞台:工作区剪影 + scrim + 浮层 */
+  .stage{ position:relative; height:600px; background:var(--l0); border:1px solid var(--h0);
+          border-radius:var(--r-win); overflow:hidden; }
+  .stage .ghostwork{ position:absolute; inset:2px; display:flex; gap:2px; }
+  .stage .ghostwork .plate{ flex:1; }
+  .ql{ position:absolute; inset:0; display:grid; place-items:center; z-index:6; }
+  .ql .float{ width:1080px; height:520px; display:flex; flex-direction:column; }
+  /* 路径屑 */
+  .crumb{ display:flex; align-items:center; gap:6px; font:11px var(--mono); color:var(--t2); min-width:0; }
+  .crumb b{ color:var(--t0); font-weight:600; }
+  .crumb i{ font-style:normal; color:var(--t3); }
+  /* 代码区 */
+  .code{ flex:1; min-height:0; overflow:hidden; font:13px/1.75 var(--mono); padding:10px 0; background:var(--l3); }
+  .cl{ display:flex; min-width:0; padding-right:18px; }
+  .cl:hover{ background:var(--l4); }
+  .cl.cur-line{ background:var(--l4); }
+  .ln{ width:52px; flex:none; text-align:right; padding-right:16px; color:var(--t3); user-select:none; }
+  .cur-line .ln{ color:var(--ph); }
+  .cc{ white-space:pre; color:var(--t1); }
+  .kw{ color:var(--info); } .str{ color:var(--ok); } .cm{ color:var(--t3); }
+  .fn{ color:var(--t0); } .num{ color:var(--warn); } .ty{ color:var(--claude); }
+  /* Diff */
+  .dl{ display:flex; font:12.5px/1.7 var(--mono); }
+  .dl .no{ width:42px; flex:none; text-align:right; padding-right:10px; color:var(--t3); }
+  .dl .sg{ width:22px; flex:none; text-align:center; color:var(--t3); }
+  .dl .tx{ white-space:pre; flex:1; color:var(--t1); }
+  .dl.add{ background:var(--ok-soft); } .dl.add .sg,.dl.add .tx{ color:var(--ok); }
+  .dl.del{ background:var(--err-soft); } .dl.del .sg,.dl.del .tx{ color:var(--err); }
+  .hunk{ display:flex; align-items:center; gap:10px; background:var(--l4); border-top:1px solid var(--h0);
+         border-bottom:1px solid var(--h0); padding:4px 14px; font:11px var(--mono); color:var(--info); }
+  .hunk .hb{ margin-left:auto; display:flex; gap:6px; }
+  /* CJK 单元格图 */
+  .cells{ display:flex; }
+  .c{ width:24px; height:34px; border:1px solid var(--h1); border-left:none; display:grid; place-items:center;
+      font:15px var(--mono); color:var(--t0); background:var(--l1); position:relative; }
+  .c:first-child{ border-left:1px solid var(--h1); }
+  .c.w{ width:48px; }
+  .c.w::after{ content:""; position:absolute; left:50%; bottom:0; width:1px; height:5px; background:var(--h1); }
+  .c.curc{ background:var(--ph); color:var(--ph-ink); border-color:var(--ph); }
+  .c.selc{ background:var(--ph-soft); }
+  .colidx{ display:flex; font:9px var(--mono); color:var(--t3); }
+  .colidx span{ width:24px; text-align:center; }
+  .caret-mark{ position:relative; height:14px; }
+  .caret-mark i{ position:absolute; top:0; width:2px; height:10px; background:var(--ph); }
+  .caret-mark em{ position:absolute; top:-2px; font:9px var(--mono); font-style:normal; color:var(--ph); }
+  .panel-strip{ display:flex; gap:28px; flex-wrap:wrap; }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 03 / 07 · 特色 ①</div>
+  <h1>QuickLook 编辑器 <em>QUICK LOOK — 速览 · 就地编辑 · Diff · CJK 固定单元格</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/quick_look.rs · tn-editor</b> · 既有能力全保留:预览/编辑/保存冲突/远端/Diff·hunk 操作 · 浮层=唯一投影层</div>
+</div>
+<div class="sheet-rule"></div>
+
+<!-- ══════════ A · File 预览态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">File 预览态</span><span class="d">浮层 1080×520 居中 · scrim 纯色压暗(无模糊,契约 5)· 工作区剪影仍可辨</span></div>
+  <div class="board-body">
+    <div class="stage">
+      <div class="ghostwork">
+        <div class="plate" style="width:240px;flex:none"></div><div class="plate"></div><div class="plate"></div>
+      </div>
+      <div class="scrim"></div>
+      <div class="ql"><div class="float">
+        <div class="float-head">
+          <span style="color:var(--ph)">▪</span>
+          <div class="crumb"><i>crates</i><i>›</i><i>tn-ui</i><i>›</i><i>src</i><i>›</i><b>element.rs</b></div>
+          <span style="flex:1"></span>
+          <span class="chip">RS</span><span class="chip">UTF-8 · LF</span><span class="chip">218 L</span>
+          <div class="segs"><span class="seg on">File</span><span class="seg">Diff</span></div>
+          <span style="color:var(--t3); padding-left:4px">✕</span>
+        </div>
+        <div class="code">
+          <div class="cl"><span class="ln">1</span><span class="cc"><span class="cm">//! Quad-batch text painter.</span></span></div>
+          <div class="cl"><span class="ln">2</span><span class="cc"><span class="kw">use</span> gpui::{<span class="ty">Quad</span>, <span class="ty">Window</span>};</span></div>
+          <div class="cl"><span class="ln">3</span><span class="cc"></span></div>
+          <div class="cl"><span class="ln">4</span><span class="cc"><span class="kw">pub fn</span> <span class="fn">paint_quads</span>(win: &amp;<span class="kw">mut</span> <span class="ty">Window</span>, cells: &amp;[<span class="ty">Cell</span>]) {</span></div>
+          <div class="cl"><span class="ln">5</span><span class="cc">    <span class="kw">let mut</span> quads = <span class="ty">Vec</span>::with_capacity(cells.len());</span></div>
+          <div class="cl"><span class="ln">6</span><span class="cc">    <span class="kw">for</span> cell <span class="kw">in</span> cells {</span></div>
+          <div class="cl"><span class="ln">7</span><span class="cc">        <span class="kw">let</span> glyph = atlas.glyph(cell.ch);  <span class="cm">// 宽字符按列跨度取格</span></span></div>
+          <div class="cl"><span class="ln">8</span><span class="cc">        quads.push(<span class="ty">Quad</span>::new(cell.origin, glyph));</span></div>
+          <div class="cl"><span class="ln">9</span><span class="cc">    }</span></div>
+          <div class="cl"><span class="ln">10</span><span class="cc">    win.draw(quads); <span class="cm">// one submit</span></span></div>
+          <div class="cl"><span class="ln">11</span><span class="cc">}</span></div>
+        </div>
+        <div class="float-foot">
+          <span><span class="kbd">↑↓</span> 改动文件</span><span><span class="kbd">E</span> 编辑</span>
+          <span><span class="kbd">⇥</span> Diff</span><span><span class="kbd">Esc</span> 关闭</span>
+          <span style="flex:1"></span><span class="tag">RAIL · 2/3</span>
+        </div>
+      </div></div>
+    </div>
+    <div class="note">scrim = <b>rgba(5,7,12,.62) 纯色</b>,不依赖 backdrop blur;浮层面 <b>L3</b> 比板面 L1 高两级,以「海拔」而非「模糊」区分浮起。RAIL 模式:从活动栏进入时 ↑↓ 在本次改动文件间导航。</div>
+  </div>
+</div>
+
+<!-- ══════════ B · 编辑态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">编辑态 · 选区 / 光标 / 冲突</span><span class="d">块光标=磷光填充+反相墨字;选区=磷光 12% 逐单元格平铺(坑位规范)</span></div>
+  <div class="board-body">
+    <div class="float" style="width:1080px; margin:0 auto">
+      <div class="float-head">
+        <span style="color:var(--ph)">▪</span>
+        <div class="crumb"><i>crates</i><i>›</i><i>tn-ui</i><i>›</i><i>src</i><i>›</i><b>element.rs</b></div>
+        <span class="chip ph">EDIT</span>
+        <span style="flex:1"></span>
+        <span class="chip warnc">● 未保存</span>
+        <div class="segs"><span class="seg on">File</span><span class="seg">Diff</span></div>
+      </div>
+      <div class="code" style="flex:none">
+        <div class="cl"><span class="ln">6</span><span class="cc">    <span class="kw">for</span> cell <span class="kw">in</span> cells {</span></div>
+        <div class="cl cur-line"><span class="ln">7</span><span class="cc">        <span class="kw">let</span> glyph = <span class="sel">atlas.glyph(cell.ch)</span><span class="cur">;</span>  <span class="cm">// 宽字符按列跨度取格</span></span></div>
+        <div class="cl"><span class="ln">8</span><span class="cc">        quads.push(<span class="ty">Quad</span>::new(cell.origin, glyph));</span></div>
+      </div>
+      <div style="display:flex; align-items:center; gap:10px; padding:6px 14px; background:var(--warn-soft); border-top:1px solid rgba(229,192,123,.3); font:11px var(--mono); color:var(--warn)">
+        ⚠ 文件已被外部修改 — 保存将覆盖磁盘内容
+        <span style="flex:1"></span>
+        <span class="btn" style="padding:2px 10px; font-size:11px">重载</span>
+        <span class="btn danger" style="padding:2px 10px; font-size:11px">强制保存</span>
+      </div>
+      <div class="float-foot">
+        <span><span class="kbd">Ctrl+S</span> 保存</span><span><span class="kbd">Ctrl+F</span> 查找替换</span><span><span class="kbd">Esc</span> 退出编辑</span>
+        <span style="flex:1"></span><span class="tag ph">LN 7 · COL 21</span>
+      </div>
+    </div>
+    <div class="note">退出前有 pending-leave 保护(切文件/切 tab/关闭都先问未保存);保存前 FileGuard 校验 mtime+size+hash —— 全部为既有功能,样式只换壳。</div>
+  </div>
+</div>
+
+<!-- ══════════ C · Diff 态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">Diff 态 · hunk 操作</span><span class="d">行底色用 soft 语义色(小面积 alpha 平铺,无渐变);远端 hunk 可接受/拒绝</span></div>
+  <div class="board-body">
+    <div class="float" style="width:1080px; margin:0 auto">
+      <div class="float-head">
+        <span style="color:var(--ph)">▪</span>
+        <div class="crumb"><b>element.rs</b><i>· ssh://dev@prod/srv/tn</i></div>
+        <span style="flex:1"></span>
+        <span class="chip okc">+12</span><span class="chip errc">-4</span>
+        <div class="segs"><span class="seg">File</span><span class="seg on">Diff</span></div>
+      </div>
+      <div style="padding:8px 0; background:var(--l3)">
+        <div class="hunk">@@ -42,7 +42,9 @@ fn paint(&amp;mut self)
+          <span class="hb"><span class="btn" style="padding:1px 9px;font-size:10px;color:var(--ok);border-color:rgba(140,215,162,.35)">✓ 接受</span><span class="btn" style="padding:1px 9px;font-size:10px;color:var(--err);border-color:rgba(232,112,126,.35)">✕ 拒绝</span></span>
+        </div>
+        <div class="dl"><span class="no">42</span><span class="sg"></span><span class="tx">    let bounds = self.bounds();</span></div>
+        <div class="dl del"><span class="no">43</span><span class="sg">−</span><span class="tx">    win.paint_text(cell.ch);</span></div>
+        <div class="dl add"><span class="no">43</span><span class="sg">+</span><span class="tx">    let g = atlas.glyph(ch);</span></div>
+        <div class="dl add"><span class="no">44</span><span class="sg">+</span><span class="tx">    quads.push(Quad::new(origin, g));</span></div>
+        <div class="dl"><span class="no">45</span><span class="sg"></span><span class="tx">    self.flush(win);</span></div>
+      </div>
+      <div class="float-foot">
+        <span><span class="kbd">J/K</span> hunk 跳转</span><span><span class="kbd">↵</span> 跳回 File 行</span>
+        <span style="flex:1"></span><span class="tag">git apply --cached(远端)</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ D · CJK 固定单元格规范 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">D</span><span class="t">CJK 固定单元格规范</span><span class="d">列宽 = 格宽 × 跨度;光标/选区/hit-test 只落在列界 — 中文漂移的根治方案(坑位固化)</span></div>
+  <div class="board-body">
+    <div class="panel-strip">
+      <div>
+        <div class="tag" style="margin-bottom:10px">网格:ASCII ×1 格 · CJK ×2 格(含 spacer)</div>
+        <div class="cells">
+          <div class="c">l</div><div class="c">e</div><div class="c">t</div><div class="c">&nbsp;</div>
+          <div class="c w">标</div><div class="c w">题</div>
+          <div class="c">&nbsp;</div><div class="c">=</div><div class="c">&nbsp;</div>
+          <div class="c">"</div><div class="c w">宽</div><div class="c">"</div><div class="c">;</div>
+        </div>
+        <div class="colidx">
+          <span>0</span><span>1</span><span>2</span><span>3</span><span style="width:48px">4·5</span><span style="width:48px">6·7</span><span>8</span><span>9</span><span>10</span><span>11</span><span style="width:48px">12·13</span><span>14</span><span>15</span>
+        </div>
+        <div class="caret-mark" style="width:380px">
+          <i style="left:96px"></i><em style="left:102px">光标只落列界 col 4</em>
+          <i style="left:192px"></i><em style="left:198px">col 8</em>
+        </div>
+      </div>
+      <div>
+        <div class="tag" style="margin-bottom:10px">块光标盖宽字 = 双格磷光 + 反相重绘</div>
+        <div class="cells">
+          <div class="c">"</div><div class="c w curc">宽</div><div class="c">"</div>
+        </div>
+        <div class="note" style="font-size:10px">不用半透明叠层糊字形;<br/>光标处字符以 ph-ink 在块上重绘。</div>
+      </div>
+      <div>
+        <div class="tag" style="margin-bottom:10px">选区跨宽字 = 整格点亮,不裂半格</div>
+        <div class="cells">
+          <div class="c">l</div><div class="c selc">e</div><div class="c selc">t</div><div class="c selc">&nbsp;</div><div class="c w selc">标</div><div class="c w selc">题</div><div class="c">&nbsp;</div>
+        </div>
+        <div class="note" style="font-size:10px">误差不随中文字数累积;<br/>横滚为自绘 scrollbar + 内容偏移。</div>
+      </div>
+    </div>
+    <table class="spec">
+      <caption>SPEC · QUICKLOOK</caption>
+      <tr><th>元素</th><th>尺寸</th><th>填充 / 边</th><th>备注</th></tr>
+      <tr><td class="k">浮层</td><td>1080×520 居中 · r6</td><td>L3 <span class="hex">#1B2334</span> · 1px h2 · 投影 float</td><td>scrim ·62 纯色</td></tr>
+      <tr><td class="k">头部</td><td>高 38</td><td>L4 · 底 1px h1</td><td>crumb mono 11</td></tr>
+      <tr><td class="k">行号槽</td><td>宽 52 右齐</td><td>字 t3,当前行 ph</td><td>当前行底 L4</td></tr>
+      <tr><td class="k">块光标</td><td>1×格 / 2×格(CJK)</td><td>ph 填充 + ph-ink 字</td><td>编辑态;预览态细竖线 2px</td></tr>
+      <tr><td class="k">选区</td><td>逐单元格</td><td>ph-soft ·12%</td><td>无圆角逐格平铺</td></tr>
+      <tr><td class="k">diff 行</td><td>行高 1.7</td><td>add ok-soft / del err-soft</td><td>hunk 行 L4 + info 字</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>04 幽灵终端</b> — 召唤 · 启动器 · 运行态 · 残影。</div>
+</body>
+</html>

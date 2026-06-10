@@ -1,0 +1,308 @@
+/* ============================================================================
+   Tn · 磷光 PHOSPHOR — 设计系统底座
+   ----------------------------------------------------------------------------
+   一句话:精密仪器舱体(结构即深度) + 磷光生命色(只给活物)。
+
+   ◆ 渲染契约(本文件与所有原型页强制遵守,保证 GPUI/Rust 可精准还原):
+     1. 大面积只用不透明纯色 —— 海拔阶梯 L0..L4,杜绝大面渐变色带。
+     2. linear-gradient 只允许出现在 ≤4px 条带 / ≤24px 小元素上。
+     3. 边一律 1px solid;圆角 ≤10px;无 outline 视觉。
+     4. box-shadow 只允许「真浮层」外投影(黑色系),平铺面板零阴影。
+     5. 禁用:backdrop-filter / filter / inset shadow / text-shadow /
+        radial·conic-gradient(用量环除外,GPUI 用 path 弧线绘制,见标注)/
+        letter-spacing(gpui TextStyle 无字距)/ 噪点贴图。
+     6. 字体只用 Segoe UI(chrome 文本)与 Cascadia/CaskaydiaCove Mono
+        (数据、代码、微标签);微标签靠 等宽+大写 形成节奏,不靠字距。
+     7. 深度叙事:平铺层 = 接缝(2px 底盘缝隙 + 1px 发丝线);
+        浮层 = 投影 + 纯色压暗 scrim(无模糊)。
+     8. 焦点 = 四角磷光角标 + 1px 磷光描边,永不用 glow。
+   ========================================================================== */
+
+:root{
+  /* —— 海拔阶梯(全部不透明,从舱底到顶面) —— */
+  --l0:#0B0E16;   /* 底盘 chassis:窗体背景、面板接缝露出色 */
+  --l1:#10141F;   /* 板面 plate:常驻 pane 基面 */
+  --l2:#151B29;   /* 抬升 raised:header、卡片、hover 行 */
+  --l3:#1B2334;   /* 浮板 sheet:浮层表面(QuickLook/面板/菜单) */
+  --l4:#232C42;   /* 顶面 crest:浮层内选中、按下 */
+
+  /* —— 发丝线(白,alpha 三档) —— */
+  --h0:rgba(255,255,255,.05);
+  --h1:rgba(255,255,255,.09);
+  --h2:rgba(255,255,255,.16);
+
+  /* —— 文字阶梯 —— */
+  --t0:#EAF0FB;   /* 主文 */
+  --t1:#A9B4CA;   /* 次文 */
+  --t2:#69748E;   /* 弱文 */
+  --t3:#3E4860;   /* 结构字符(刻度、占位) */
+
+  /* —— 磷光:唯一生命色(光标/运行/焦点/活动数据) —— */
+  --ph:#5BE7C4;
+  --ph-dim:rgba(91,231,196,.32);
+  --ph-soft:rgba(91,231,196,.12);
+  --ph-ink:#06281F;            /* 磷光块上的反相墨色 */
+
+  /* —— 语义状态 —— */
+  --ok:#8CD7A2;  --ok-soft:rgba(140,215,162,.12);
+  --warn:#E5C07B;--warn-soft:rgba(229,192,123,.12);
+  --err:#E8707E; --err-soft:rgba(232,112,126,.14);
+  --info:#82B4F0;--info-soft:rgba(130,180,240,.12);
+
+  /* —— Agent 身份色 —— */
+  --claude:#C9A8FF; --claude-soft:rgba(201,168,255,.13);
+  --codex:#6FB3E8;  --codex-soft:rgba(111,179,232,.13);
+
+  /* —— 圆角(机加工:小而准) —— */
+  --r-win:10px; --r-plate:6px; --r-card:4px; --r-chip:3px;
+
+  /* —— 字体 —— */
+  --sans:"Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono","CaskaydiaCove Nerd Font Mono",Consolas,monospace;
+
+  /* —— 浮层投影(契约第 4 条:仅 .float 可用) —— */
+  --shadow-float:0 2px 8px -2px rgba(0,0,0,.55), 0 28px 72px -28px rgba(0,0,0,.92);
+  --scrim:rgba(5,7,12,.62);
+}
+
+/* ============================== 图纸底(页面本身) ===================== */
+*{ margin:0; padding:0; box-sizing:border-box; }
+html{ color-scheme:dark; }
+body{
+  background:#07090F; color:var(--t0);
+  font:14px/1.55 var(--sans);
+  padding:48px 56px 88px;
+  -webkit-font-smoothing:antialiased;
+}
+::selection{ background:var(--ph-dim); color:var(--t0); }
+
+/* 图纸页眉:编号 + 标题 + 引用 */
+.sheet-head{ max-width:1480px; margin:0 auto 34px; }
+.sheet-head .no{ font:600 11px var(--mono); color:var(--ph); }
+.sheet-head h1{ font-size:24px; font-weight:650; margin:6px 0 4px; }
+.sheet-head h1 em{ font-style:normal; color:var(--t2); font-weight:500; font-size:16px; }
+.sheet-head .refs{ font:11px var(--mono); color:var(--t2); margin-top:6px; }
+.sheet-head .refs b{ color:var(--t1); font-weight:500; }
+.sheet-rule{ max-width:1480px; margin:0 auto 40px; height:1px; background:var(--h1); position:relative; }
+.sheet-rule::after{ content:""; position:absolute; left:0; top:0; width:120px; height:1px; background:var(--ph); }
+
+/* 展板:一块图纸上的一个画面 */
+.board{ max-width:1480px; margin:0 auto 56px; }
+.board-cap{ display:flex; align-items:baseline; gap:12px; margin-bottom:14px; }
+.board-cap .idx{ font:600 11px var(--mono); color:var(--ph); }
+.board-cap .t{ font-size:14px; font-weight:600; color:var(--t0); }
+.board-cap .d{ font-size:12px; color:var(--t2); }
+.board-body{ position:relative; }
+
+/* 标注与规格表(图纸语言,非 UI 部件) */
+.note{ font:11px/1.7 var(--mono); color:var(--t2); margin-top:12px; }
+.note b{ color:var(--ph); font-weight:500; }
+.spec{ border-collapse:collapse; font:11px/1.5 var(--mono); margin-top:14px; width:100%; }
+.spec caption{ text-align:left; font:600 11px var(--mono); color:var(--t1); padding-bottom:8px; }
+.spec th{ text-align:left; color:var(--t2); font-weight:500; padding:5px 14px 5px 0; border-bottom:1px solid var(--h1); }
+.spec td{ color:var(--t1); padding:5px 14px 5px 0; border-bottom:1px solid var(--h0); vertical-align:top; }
+.spec td.k{ color:var(--t0); }
+.spec td .hex{ color:var(--ph); }
+
+/* 色票 */
+.sw{ display:inline-flex; align-items:center; gap:8px; font:11px var(--mono); color:var(--t1); }
+.sw i{ width:14px; height:14px; border-radius:3px; border:1px solid var(--h1); display:inline-block; }
+
+/* ============================== 窗体外壳 =============================== */
+/* 整窗框:不透明 L0 底盘 + 1px 发丝外圈。窗体是「设备」,内部面板是「仪表板」。 */
+.win{
+  width:1380px; margin:0 auto; background:var(--l0);
+  border:1px solid var(--h1); border-radius:var(--r-win);
+  overflow:hidden; position:relative;
+}
+.win.float{ box-shadow:var(--shadow-float); }   /* 独立窗(幽灵终端等)允许投影 */
+
+/* —— 标题栏:brand + tabs + 窗控,整体坐在 L0 上 —— */
+.titlebar{ display:flex; align-items:stretch; height:42px; border-bottom:1px solid var(--h0); }
+.brand{
+  display:flex; align-items:center; gap:9px; padding:0 16px 0 14px;
+  border-right:1px solid var(--h0); cursor:default; user-select:none;
+}
+.brand:hover{ background:var(--l1); }
+.brand .mark{
+  width:18px; height:18px; border-radius:4px; border:1px solid var(--ph-dim);
+  position:relative; flex:none;
+}
+.brand .mark::after{          /* 磷光内核:小方块 = 最小的「活物」 */
+  content:""; position:absolute; inset:4px; background:var(--ph); border-radius:1px;
+}
+.brand .name{ font:600 12px var(--mono); color:var(--t0); }
+.brand .name s{ text-decoration:none; color:var(--ph); }
+.brand .chev{ font-size:9px; color:var(--t3); }
+
+/* Tab:会话即仪表,顶部 2px 身份色棒(小面积渐变,契约允许) */
+.tabs{ display:flex; align-items:stretch; flex:1; min-width:0; padding:0 6px; gap:2px; }
+.tab{
+  display:flex; align-items:center; gap:8px; padding:0 14px; margin:6px 0;
+  border-radius:var(--r-card); font-size:12px; color:var(--t2);
+  position:relative; cursor:default; max-width:240px;
+}
+.tab:hover{ background:var(--l1); color:var(--t1); }
+.tab.on{ background:var(--l2); color:var(--t0); border:1px solid var(--h1); }
+.tab.on::before{
+  content:""; position:absolute; top:-1px; left:8px; right:8px; height:2px;
+  border-radius:0 0 2px 2px;
+  background:linear-gradient(90deg, transparent, var(--tabc,var(--ph)), transparent);
+}
+.tab .gl{ font:600 11px var(--mono); color:var(--tabc,var(--ph)); }
+.tab .path{ font:10px var(--mono); color:var(--t3); }
+.tab.on .path{ color:var(--t2); }
+.tab-new{ align-self:center; width:26px; height:26px; border-radius:var(--r-card);
+  display:grid; place-items:center; color:var(--t2); font-size:14px; }
+.tab-new:hover{ background:var(--l1); color:var(--t0); }
+
+/* 窗控:无色面,hover 才表态 */
+.wctls{ display:flex; align-items:stretch; }
+.wbtn{ width:44px; display:grid; place-items:center; color:var(--t2); font-size:12px; }
+.wbtn:hover{ background:var(--l1); color:var(--t0); }
+.wbtn.x:hover{ background:var(--err-soft); color:var(--err); }
+
+/* —— 状态栏:仪表读数,全等宽 —— */
+.statusbar{
+  display:flex; align-items:center; height:26px; padding:0 10px;
+  border-top:1px solid var(--h0); font:10px var(--mono); color:var(--t2);
+  user-select:none;
+}
+.sb-seg{ display:flex; align-items:center; gap:6px; padding:0 10px; height:100%; }
+.sb-seg + .sb-seg{ border-left:1px solid var(--h0); }
+.sb-seg:hover{ background:var(--l1); color:var(--t1); }
+.sb-seg .live{ color:var(--ph); }
+.sb-spring{ flex:1; }
+.sb-dot{ width:5px; height:5px; border-radius:50%; background:var(--ph); }
+.sb-dot.idle{ background:var(--t3); }
+
+/* ============================== 工作区与板面 =========================== */
+/* 画布:L0 露出 2px 接缝,板面平铺其上(契约第 7 条:无平铺阴影) */
+.canvas{ display:flex; gap:2px; padding:2px; background:var(--l0); }
+.plate{
+  background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-plate);
+  position:relative; min-width:0; overflow:hidden; display:flex; flex-direction:column;
+}
+.plate-head{
+  display:flex; align-items:center; gap:8px; height:34px; padding:0 12px; flex:none;
+  background:var(--l2); border-bottom:1px solid var(--h0);
+  font:11px var(--mono); color:var(--t1);
+}
+.plate-body{ flex:1; min-height:0; position:relative; }
+
+/* 焦点 = 1px 磷光描边 + 四角角标(取景器),零 glow */
+.plate.focus{ border-color:var(--ph-dim); }
+.bk{ position:absolute; width:11px; height:11px; pointer-events:none; z-index:3; }
+.bk::before,.bk::after{ content:""; position:absolute; background:var(--ph); }
+.bk::before{ width:11px; height:2px; }
+.bk::after{ width:2px; height:11px; }
+.bk.tl{ top:-1px; left:-1px; }                       .bk.tl::before{ top:0; left:0; } .bk.tl::after{ top:0; left:0; }
+.bk.tr{ top:-1px; right:-1px; }                      .bk.tr::before{ top:0; right:0; } .bk.tr::after{ top:0; right:0; }
+.bk.bl{ bottom:-1px; left:-1px; }                    .bk.bl::before{ bottom:0; left:0; } .bk.bl::after{ bottom:0; left:0; }
+.bk.br{ bottom:-1px; right:-1px; }                   .bk.br::before{ bottom:0; right:0; } .bk.br::after{ bottom:0; right:0; }
+
+/* ============================== 终端正文 =============================== */
+.term{ font:13px/1.62 var(--mono); padding:12px 16px; color:var(--t1); }
+.term .ps1{ color:var(--ph); }
+.term .ps1 .cwd{ color:var(--info); }
+.term .cmd{ color:var(--t0); }
+.term .out{ color:var(--t1); }
+.term .dim{ color:var(--t2); }
+.term .okc{ color:var(--ok); } .term .errc{ color:var(--err); } .term .warnc{ color:var(--warn); }
+/* 块光标:磷光填充 + 反相墨字(坑位:块上重绘字符,不糊半透明) */
+.cur{ background:var(--ph); color:var(--ph-ink); border-radius:1px; }
+.cur.hollow{ background:transparent; color:var(--t0); box-shadow:none; border:1px solid var(--ph-dim); }
+/* 选区:磷光低透平铺(小面积,逐单元格) */
+.sel{ background:var(--ph-soft); }
+
+/* ============================== 命令块 ================================ */
+/* 块条:左 2px 状态脊 + 等宽读数。运行中曳光在脊上,不进正文。 */
+.block{
+  display:flex; align-items:center; gap:10px; margin:8px 16px; padding:7px 12px 7px 10px;
+  background:var(--l2); border:1px solid var(--h0); border-radius:var(--r-card);
+  font:12px var(--mono); position:relative; overflow:hidden;
+}
+.block::before{ content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--bs,var(--t3)); }
+.block.ok{ --bs:var(--ok); }  .block.run{ --bs:var(--ph); }  .block.fail{ --bs:var(--err); }
+.block .bc{ color:var(--t0); flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.block .bt{ color:var(--t2); font-size:11px; }
+.block .bx{ font-size:11px; padding:1px 7px; border-radius:var(--r-chip); }
+.block.ok  .bx{ color:var(--ok);  background:var(--ok-soft); }
+.block.run .bx{ color:var(--ph);  background:var(--ph-soft); }
+.block.fail .bx{ color:var(--err); background:var(--err-soft); }
+
+/* ============================== 通用部件 =============================== */
+.chip{
+  display:inline-flex; align-items:center; gap:5px; padding:2px 8px;
+  border:1px solid var(--h1); border-radius:var(--r-chip);
+  font:10px var(--mono); color:var(--t1); background:transparent;
+}
+.chip.ph{ color:var(--ph); border-color:var(--ph-dim); background:var(--ph-soft); }
+.chip.okc{ color:var(--ok); border-color:rgba(140,215,162,.3); background:var(--ok-soft); }
+.chip.errc{ color:var(--err); border-color:rgba(232,112,126,.3); background:var(--err-soft); }
+.chip.warnc{ color:var(--warn); border-color:rgba(229,192,123,.3); background:var(--warn-soft); }
+.kbd{
+  font:10px var(--mono); color:var(--t1); padding:1px 6px 2px;
+  background:var(--l2); border:1px solid var(--h1); border-bottom-width:2px;
+  border-radius:var(--r-chip);
+}
+.btn{
+  display:inline-flex; align-items:center; gap:6px; padding:5px 14px;
+  border:1px solid var(--h1); border-radius:var(--r-card);
+  font:12px var(--sans); color:var(--t1); background:var(--l2); cursor:default;
+}
+.btn:hover{ background:var(--l4); color:var(--t0); }
+.btn.primary{ background:var(--ph); border-color:var(--ph); color:var(--ph-ink); font-weight:600; }
+.btn.danger{ color:var(--err); border-color:rgba(232,112,126,.35); background:var(--err-soft); }
+
+/* 微标签:等宽大写(契约:不用字距) */
+.tag{ font:600 10px var(--mono); color:var(--t2); text-transform:uppercase; }
+.tag.ph{ color:var(--ph); }
+
+/* 分段开关(File/Diff) */
+.segs{ display:inline-flex; background:var(--l1); border:1px solid var(--h1); border-radius:var(--r-card); padding:2px; gap:2px; }
+.segs .seg{ padding:3px 14px; border-radius:3px; font:11px var(--mono); color:var(--t2); }
+.segs .seg.on{ background:var(--l4); color:var(--ph); border:1px solid var(--ph-dim); padding:2px 13px; }
+
+/* ============================== 浮层 ================================== */
+.scrim{ position:absolute; inset:0; background:var(--scrim); z-index:5; }
+.float{
+  background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-plate);
+  box-shadow:var(--shadow-float); position:relative; z-index:6; overflow:hidden;
+}
+.float-head{
+  display:flex; align-items:center; gap:10px; height:38px; padding:0 14px;
+  background:var(--l4); border-bottom:1px solid var(--h1);
+  font:12px var(--mono); color:var(--t1);
+}
+.float-foot{
+  display:flex; align-items:center; gap:14px; height:30px; padding:0 14px;
+  border-top:1px solid var(--h1); font:10px var(--mono); color:var(--t2);
+}
+
+/* ============================== 文件树 ================================ */
+.tree{ font:12px var(--mono); padding:8px 6px; }
+.ti{ display:flex; align-items:center; gap:7px; height:24px; padding:0 8px; border-radius:var(--r-chip); color:var(--t1); }
+.ti:hover{ background:var(--l2); }
+.ti.on{ background:var(--l2); color:var(--t0); border:1px solid var(--h1); position:relative; }
+.ti.on::before{ content:""; position:absolute; left:-6px; top:4px; bottom:4px; width:2px; background:var(--ph); border-radius:1px; }
+.ti .ic{ color:var(--t3); width:13px; text-align:center; }
+.ti.dir .ic{ color:var(--info); }
+.ti .git{ margin-left:auto; font-size:10px; }
+.git.m{ color:var(--warn); } .git.u{ color:var(--ok); } .git.d{ color:var(--err); }
+.ti.d1{ padding-left:24px; } .ti.d2{ padding-left:40px; } .ti.d3{ padding-left:56px; }
+
+/* ============================== 用量环 ================================ */
+/* HTML 以 conic 示意;GPUI 用 path 弧线绘制(契约第 5 条豁免,Ø18 小元素) */
+.ring{ width:18px; height:18px; border-radius:50%; position:relative; flex:none;
+  background:conic-gradient(var(--rc,var(--ph)) var(--pct,42%), var(--l4) 0); }
+.ring::after{ content:""; position:absolute; inset:3px; border-radius:50%; background:var(--l2); }
+
+/* ============================== 像素宠物 =============================== */
+.px{ image-rendering:pixelated; display:block; }
+.shelf{ height:1px; background:var(--h1); position:relative; }
+.shelf::before{ content:""; position:absolute; left:0; top:0; width:28px; height:1px; background:var(--ph-dim); }
+.bubble{
+  font:11px var(--mono); color:var(--t0); background:var(--l4);
+  border:1px solid var(--h2); border-radius:var(--r-card); padding:2px 8px;
+}

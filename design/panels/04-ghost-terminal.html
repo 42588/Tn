@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 磷光 · 04 幽灵终端</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  /* 桌面舞台 */
+  .desk{ background:#05070C; border:1px solid var(--h0); border-radius:var(--r-win);
+         position:relative; overflow:hidden; }
+  /* 召唤线:屏顶 2px 磷光,中央渐隐两端(小面积渐变,契约允许) */
+  .summon{ position:absolute; top:0; left:0; right:0; height:2px;
+           background:linear-gradient(90deg, transparent 20%, var(--ph) 50%, transparent 80%); }
+  /* 幽灵窗:从屏顶垂下 → 上直角下圆角;独立 PopUp 窗,允许投影 */
+  .gwin{ width:760px; margin:0 auto; background:var(--l1); border:1px solid var(--h2); border-top:none;
+         border-radius:0 0 var(--r-win) var(--r-win); box-shadow:var(--shadow-float);
+         position:relative; z-index:2; overflow:hidden; }
+  .gwin::before{ content:""; position:absolute; top:0; left:0; right:0; height:2px;
+                 background:linear-gradient(90deg, transparent, var(--ph) 50%, transparent); }
+  /* 残影:幽灵的视觉签名 — 身后 1px 轮廓残像,无填充无模糊 */
+  .echo-wrap{ position:relative; width:760px; margin:0 auto; }
+  .echo{ position:absolute; left:10px; right:10px; top:8px; bottom:-8px; z-index:1;
+         border:1px solid var(--ph-dim); border-top:none;
+         border-radius:0 0 var(--r-win) var(--r-win); opacity:.45; }
+  .echo.e2{ left:20px; right:20px; bottom:-15px; opacity:.18; }
+  /* 像素幽灵标(与宠物像素语言同源) */
+  .gmark{ width:16px; height:15px; background:var(--ph); border-radius:7px 7px 2px 2px;
+          position:relative; flex:none; }
+  .gmark::before,.gmark::after{ content:""; position:absolute; top:5px; width:3px; height:3px; background:var(--ph-ink); }
+  .gmark::before{ left:3px; } .gmark::after{ right:3px; }
+  .gmark.dim{ background:var(--t3); }
+  /* 启动磁贴 */
+  .tiles{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; padding:12px; }
+  .tile{ background:var(--l2); border:1px solid var(--h0); border-radius:var(--r-card);
+         padding:12px 12px 10px; display:flex; flex-direction:column; gap:6px; position:relative; }
+  .tile:hover{ background:var(--l4); border-color:var(--h1); }
+  .tile.on{ background:var(--l4); border-color:var(--ph-dim); }
+  .tile.on::before{ content:""; position:absolute; left:-1px; top:8px; bottom:8px; width:2px; background:var(--ph); border-radius:1px; }
+  .tile .tg{ font:600 14px var(--mono); }
+  .tile .tn{ font:600 12px var(--sans); color:var(--t0); }
+  .tile .ts{ font:10px var(--mono); color:var(--t2); }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 04 / 07 · 特色 ②</div>
+  <h1>幽灵终端 <em>GHOST TERMINAL — 全局热键 · 顶垂浮窗 · 残影 · 会话常驻</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/quick_terminal.rs · platform.rs</b> · 独立 WindowKind::PopUp;Win32 操作异步延迟(坑位);上直角下圆角=「从屏幕里垂下来」</div>
+</div>
+<div class="sheet-rule"></div>
+
+<!-- ══════════ A · 召唤 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">召唤 · 任意应用之上</span><span class="d">屏顶 2px 磷光召唤线 — 幽灵未现身时的唯一存在感</span></div>
+  <div class="board-body">
+    <div class="desk" style="height:150px">
+      <div class="summon"></div>
+      <div style="position:absolute; inset:0; display:grid; place-items:center">
+        <div style="display:flex; align-items:center; gap:10px; font:12px var(--mono); color:var(--t2)">
+          <span class="gmark dim"></span><span class="kbd">Alt + `</span> 召唤幽灵终端 — 在任何应用之上
+        </div>
+      </div>
+    </div>
+    <div class="note">热键由配置 <b>[quick_terminal]</b> 决定;注册成功才启用 tray listener 与隐藏弹窗(现有逻辑)。召唤线只在滑入/滑出动画瞬间出现,平时不驻留。</div>
+  </div>
+</div>
+
+<!-- ══════════ B · 启动器态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">启动器态 · 第一次现身</span><span class="d">无运行会话时垂下启动器:Agent / Shell / WSL / SSH 同一张牌桌</span></div>
+  <div class="board-body">
+    <div class="desk" style="padding-bottom:56px">
+      <div class="summon"></div>
+      <div class="echo-wrap">
+        <div class="echo"></div>
+        <div class="gwin">
+          <div class="float-head" style="background:var(--l2)">
+            <span class="gmark"></span>
+            <span style="font:600 12px var(--mono); color:var(--t0)">GHOST<span style="color:var(--ph)">_</span></span>
+            <span style="font-size:10px; color:var(--t2)">幽灵终端</span>
+            <span style="flex:1"></span>
+            <span class="chip">AUTOHIDE · ON</span>
+            <span style="color:var(--t3)">⌖</span>
+          </div>
+          <div class="tiles">
+            <div class="tile on"><span class="tg" style="color:var(--ph)">❯</span><span class="tn">pwsh</span><span class="ts">默认 PROFILE</span></div>
+            <div class="tile"><span class="tg" style="color:var(--info)">⌬</span><span class="tn">Ubuntu</span><span class="ts">WSL DISTRO</span></div>
+            <div class="tile"><span class="tg" style="color:var(--warn)">⇄</span><span class="tn">prod-01</span><span class="ts">SSH · dev@10.0.0.7</span></div>
+            <div class="tile"><span class="tg" style="color:var(--claude)">✳</span><span class="tn">Claude</span><span class="ts">AGENT</span></div>
+            <div class="tile"><span class="tg" style="color:var(--codex)">◆</span><span class="tn">Codex</span><span class="ts">AGENT</span></div>
+          </div>
+          <div class="float-foot">
+            <span><span class="kbd">⇥</span> 选择</span><span><span class="kbd">↵</span> 启动</span><span><span class="kbd">Esc</span> 隐匿</span>
+            <span style="flex:1"></span><span class="tag">会话常驻 · 隐而不灭</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ C · 运行态 + 残影 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">运行态 · 残影签名</span><span class="d">身后两道 1px 轮廓残像(·45 / ·18,无填充无模糊)— 幽灵的专属视觉,全系统唯它可用</span></div>
+  <div class="board-body">
+    <div class="desk" style="padding-bottom:64px">
+      <div class="summon"></div>
+      <div class="echo-wrap">
+        <div class="echo"></div><div class="echo e2"></div>
+        <div class="gwin">
+          <div class="float-head" style="background:var(--l2)">
+            <span class="gmark"></span>
+            <span style="font:600 12px var(--mono); color:var(--t0)">GHOST<span style="color:var(--ph)">_</span></span>
+            <span class="chip ph">pwsh · ~/coder/tn</span>
+            <span style="flex:1"></span>
+            <span style="font:10px var(--mono); color:var(--t2)">失焦 250ms → 上滑隐匿</span>
+            <span class="sb-dot"></span>
+          </div>
+          <div class="term" style="height:190px">
+            <div><span class="ps1">~/coder/tn <span class="cwd">main</span> ❯</span> <span class="cmd">git status -sb</span></div>
+            <div class="out">## main...origin/main</div>
+            <div class="out"><span class="warnc"> M</span> crates/tn-ui/src/style.rs</div>
+            <div class="out"><span class="okc">??</span> design/phosphor.css</div>
+            <div style="margin-top:8px"><span class="ps1">~/coder/tn <span class="cwd">main</span> ❯</span> <span class="cur">&nbsp;</span></div>
+          </div>
+          <div class="float-foot">
+            <span><span class="kbd">Esc</span> 隐匿(会话保留)</span><span><span class="kbd">Alt+`</span> 再召唤</span>
+            <span style="flex:1"></span><span class="tag ph">SESSION ALIVE</span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <table class="spec">
+      <caption>SPEC · 幽灵终端</caption>
+      <tr><th>元素</th><th>规格</th><th>渲染</th><th>备注</th></tr>
+      <tr><td class="k">幽灵窗</td><td>宽 760 · 顶贴屏 · r 0/0/10/10</td><td>L1 · 1px h2 · 投影 float</td><td>独立 PopUp 窗口</td></tr>
+      <tr><td class="k">顶缘磷光</td><td>2px 中央渐隐</td><td>横向小渐变(契约允许)</td><td>= 召唤线落位</td></tr>
+      <tr><td class="k">残影</td><td>内收 10/20 · 下沉 8/15</td><td>1px ph-dim 轮廓 ·45/·18</td><td>无填充,无模糊;两道封顶</td></tr>
+      <tr><td class="k">滑入滑出</td><td>180ms 上滑</td><td>位移动画,无透明渐变</td><td>reduced motion → 直切</td></tr>
+      <tr><td class="k">像素幽灵标</td><td>16×15 圆顶方底</td><td>ph 填充 + 墨眼 2 点</td><td>与宠物像素语言同源</td></tr>
+      <tr><td class="k">autohide</td><td>失焦 250ms</td><td>—</td><td>Win32 异步处理,避免重入(坑位)</td></tr>
+      <tr><td class="k">会话</td><td>隐藏保留 / 启动器可替换</td><td>—</td><td>嵌普通 TerminalView,agent 能力全复用</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>05 宠物系统</b> — 栖位 · 品种架 · 状态机 · 互动。</div>
+</body>
+</html>

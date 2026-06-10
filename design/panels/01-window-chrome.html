@@ -2,139 +2,167 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 面板原型 · ① 窗口外壳(标题栏 / Tab / 窗控 / 状态栏)</title>
-<link rel="stylesheet" href="../calm-glass.css" />
+<title>Tn 磷光 · 01 窗体外壳</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  .demo-canvas{ height:340px; }
+  .demo-canvas .plate-body{ display:grid; place-items:center; }
+  .hint{ font:11px var(--mono); color:var(--t3); text-align:center; line-height:2; }
+  .hint b{ color:var(--t2); font-weight:500; }
+  /* App Menu(浮层,允许投影) */
+  .menu{ position:absolute; top:46px; left:10px; width:248px; padding:5px; z-index:6; }
+  .mi{ display:flex; align-items:center; gap:10px; height:30px; padding:0 10px; border-radius:var(--r-card);
+       font:12px var(--sans); color:var(--t1); }
+  .mi:hover,.mi.on{ background:var(--l4); color:var(--t0); }
+  .mi .ic{ font:11px var(--mono); color:var(--t3); width:14px; text-align:center; }
+  .mi.on .ic{ color:var(--ph); }
+  .mi .k{ margin-left:auto; }
+  .msep{ height:1px; background:var(--h1); margin:5px 8px; }
+  /* 解剖排 */
+  .anat{ display:flex; gap:28px; flex-wrap:wrap; align-items:flex-start; }
+  .anat .cell{ display:flex; flex-direction:column; gap:10px; }
+  .anat .cell .cap{ font:10px var(--mono); color:var(--t2); }
+  .strip{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-plate); padding:10px 12px; display:flex; gap:2px; align-items:center; }
+</style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
-  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.4c.42 3.9 1.9 5.38 5.8 5.8-3.9.42-5.38 1.9-5.8 5.8-.42-3.9-1.9-5.38-5.8-5.8 3.9-.42 5.38-1.9 5.8-5.8z"/><path d="M18.5 15.5c.2 1.5.8 2.1 2.3 2.3-1.5.2-2.1.8-2.3 2.3-.2-1.5-.8-2.1-2.3-2.3 1.5-.2 2.1-.8 2.3-2.3z"/></symbol>
-  <symbol id="i-term" viewBox="0 0 24 24"><path d="M5 7.5l4.5 4.5L5 16.5"/><path d="M12.5 16.5h6.5"/></symbol>
-  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="7" cy="6.5" r="2.3"/><circle cx="7" cy="17.5" r="2.3"/><circle cx="17" cy="8.5" r="2.3"/><path d="M7 8.8v6.4"/><path d="M17 10.8c0 4.2-4.2 3.2-7 4.6"/></symbol>
-  <symbol id="i-min" viewBox="0 0 24 24"><path d="M6 12h12"/></symbol>
-  <symbol id="i-max" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
-  <symbol id="i-close" viewBox="0 0 24 24"><path d="M7 7l10 10M17 7L7 17"/></symbol>
-  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 6v12M6 12h12"/></symbol>
-  <symbol id="i-chev-d" viewBox="0 0 24 24"><path d="M7 9.5l5 5 5-5"/></symbol>
-  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></symbol>
-  <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="4" y="5.5" width="16" height="13" rx="2"/><path d="M9.5 5.5v13"/></symbol>
-  <symbol id="i-external" viewBox="0 0 24 24"><path d="M13 5h6v6"/><path d="M19 5l-8 8"/><path d="M17 13.5V18a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8a1.5 1.5 0 0 1 1.5-1.5H11"/></symbol>
-  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 8h10"/><path d="M4 16h7"/><circle cx="17.5" cy="8" r="2.3"/><circle cx="14.5" cy="16" r="2.3"/></symbol>
-  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M17 13.5A6.5 6.5 0 1 1 10.5 7 5 5 0 0 0 17 13.5z"/></symbol>
-  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19.5 4.5V9H15"/></symbol>
-  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 11.5v4.5"/><path d="M12 8.2h.01"/></symbol>
-  <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 4.5v6.5"/><path d="M7.8 7.8a6.5 6.5 0 1 0 8.4 0"/></symbol>
-</defs></svg>
 
-<div class="stage">
-  <h1>① 窗口外壳 <span class="dim">— 标题栏 · Tab · 窗口控制 · 状态栏</span></h1>
-  <p class="lead">自绘集成标题栏(品牌 mark + n 个标签 + 窗控)与多段状态栏。gpui 实现 <code>workspace.rs</code>;还原数值见 <a href="../../docs/界面样式/组件规格与自动生成数值.md">组件规格与自动生成数值</a>。</p>
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 01 / 07</div>
+  <h1>窗体外壳 <em>WINDOW CHROME — 标题栏 · Tab · 窗控 · App Menu · 状态栏</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/workspace.rs · style.rs</b> · 契约:整窗 L0 不透明底盘,无窗内大渐变,浮层以外零投影</div>
+</div>
+<div class="sheet-rule"></div>
 
-  <div class="demo">
-    <div class="label">标题栏(品牌 + Tab 行 + 窗控) <span class="id">.titlebar</span><span class="impl">workspace::render → titlebar</span></div>
-    <div class="canvas short" style="height:auto;padding:0;">
-      <div class="win" style="height:auto;width:100%;">
-        <div class="titlebar">
-          <div class="brand">
-            <div class="mark"><svg class="i sm" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
-            <div class="name">Tn</div>
-            <svg class="i caret"><use href="#i-chev-d"/></svg>
+<!-- ══════════ A · 整窗默认态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">整窗 · 默认态</span><span class="d">1380 × — 仪表舱总装:标题栏 42 / 接缝 2 / 状态栏 26</span></div>
+  <div class="board-body">
+    <div class="win">
+      <div class="titlebar">
+        <div class="brand">
+          <span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev">▾</span>
+        </div>
+        <div class="tabs">
+          <div class="tab on" style="--tabc:var(--claude)">
+            <span class="gl">✳</span> Claude <span class="path">~/proj/tn</span>
           </div>
-          <div class="tabs">
-            <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
-            <div class="tab pwsh"><svg class="i"><use href="#i-term"/></svg> pwsh</div>
-            <div class="tab codex"><svg class="i"><use href="#i-spark"/></svg> Codex</div>
-            <div class="newtab"><svg class="i"><use href="#i-plus"/></svg></div>
-          </div>
-          <div class="wctl">
-            <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
-            <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
-            <div class="b close"><svg class="i sm"><use href="#i-close"/></svg></div>
-          </div>
+          <div class="tab"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/</span></div>
+          <div class="tab-new">+</div>
+        </div>
+        <div class="wctls">
+          <div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div class="demo">
-    <div class="label">app 菜单(点 Tn logo:会话 / 文件·工作区 / 设置) <span class="id">.brand.open / .appmenu / .mi</span><span class="impl">workspace::render → app_menu(popup)</span></div>
-    <div class="canvas" style="height:440px;padding:0;">
-      <div class="win" style="height:100%;width:100%;">
-        <div class="titlebar">
-          <div class="brand open">
-            <div class="mark"><svg class="i sm" style="stroke:#0b0d16"><use href="#i-term"/></svg></div>
-            <div class="name">Tn</div>
-            <svg class="i caret"><use href="#i-chev-d"/></svg>
-          </div>
-          <div class="tabs">
-            <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
-            <div class="tab pwsh"><svg class="i"><use href="#i-term"/></svg> pwsh</div>
-            <div class="newtab"><svg class="i"><use href="#i-plus"/></svg></div>
-          </div>
-          <div class="wctl">
-            <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
-            <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
-            <div class="b close"><svg class="i sm"><use href="#i-close"/></svg></div>
-          </div>
+      <div class="canvas demo-canvas">
+        <div class="plate focus" style="flex:1.2">
+          <span class="bk tl"></span><span class="bk tr"></span><span class="bk bl"></span><span class="bk br"></span>
+          <div class="plate-head"><span class="tag ph">PLATE · FOCUS</span><span style="flex:1"></span><span class="tag">L1 + 角标</span></div>
+          <div class="plate-body"><div class="hint"><b>焦点板面</b><br/>1px 磷光描边 ·32% + 四角角标<br/>不发光,只表态</div></div>
         </div>
-        <div class="appmenu" style="left:12px;top:44px;">
-          <div class="mi"><svg class="i"><use href="#i-spark"/></svg> 新会话… <span class="k">⌃⇧P</span></div>
-          <div class="mi"><svg class="i"><use href="#i-plus"/></svg> 新标签 <span class="k">⌃⇧T</span></div>
-          <div class="sep"></div>
-          <div class="mi"><svg class="i"><use href="#i-folder"/></svg> 打开文件夹…</div>
-          <div class="mi"><svg class="i"><use href="#i-external"/></svg> 在资源管理器中显示</div>
-          <div class="mi"><svg class="i"><use href="#i-sidebar"/></svg> 文件浏览器 <span class="k">⌃⇧B</span></div>
-          <div class="sep"></div>
-          <div class="mi"><svg class="i"><use href="#i-sliders"/></svg> 设置</div>
-          <div class="mi"><svg class="i"><use href="#i-moon"/></svg> 主题…</div>
-          <div class="mi"><svg class="i"><use href="#i-refresh"/></svg> 重载配置 <span class="k">⌃⇧R</span></div>
-          <div class="sep"></div>
-          <div class="mi"><svg class="i"><use href="#i-info"/></svg> 关于 Tn</div>
-          <div class="mi danger"><svg class="i"><use href="#i-power"/></svg> 退出 <span class="k">⌃⇧Q</span></div>
+        <div class="plate" style="flex:1">
+          <div class="plate-head"><span class="tag">PLATE</span><span style="flex:1"></span><span class="tag">L1</span></div>
+          <div class="plate-body"><div class="hint"><b>常驻板面</b><br/>平铺零投影<br/>深度=2px 接缝露出 L0</div></div>
         </div>
       </div>
-    </div>
-  </div>
-
-  <div class="demo">
-    <div class="label">Tab 状态(活动 = 白微渐变 + agent 强调顶条;非活动 = 扁平 hover) <span class="id">.tab / .tab.active</span></div>
-    <div class="canvas short" style="height:auto;padding:14px 18px;">
-      <div class="tabs" style="padding-top:0;height:34px;">
-        <div class="tab claude active"><svg class="i"><use href="#i-spark"/></svg> Claude <span class="badge">~/proj/tn</span></div>
-        <div class="tab codex active"><svg class="i"><use href="#i-spark"/></svg> Codex <span class="badge">~/work</span></div>
-        <div class="tab pwsh active"><svg class="i"><use href="#i-term"/></svg> pwsh <span class="badge">~/</span></div>
-        <div class="tab"><svg class="i"><use href="#i-term"/></svg> shell ⌗3</div>
+      <div class="statusbar">
+        <div class="sb-seg"><span class="sb-dot"></span><span>main</span></div>
+        <div class="sb-seg">3 SESSIONS</div>
+        <div class="sb-seg"><span class="live">CTX 42%</span></div>
+        <div class="sb-seg">CTX 18%</div>
+        <div class="sb-spring"></div>
+        <div class="sb-seg">element.rs</div>
+        <div class="sb-seg">UTF-8 · LF</div>
+        <div class="sb-seg">TN DARK</div>
+        <div class="sb-seg"><span class="sb-dot idle"></span><span>WESTIE</span></div>
       </div>
     </div>
-  </div>
-
-  <div class="demo">
-    <div class="label">窗口控制(min / max / close;close hover = 红 .22) <span class="id">.wctl .b</span></div>
-    <div class="canvas short" style="height:auto;padding:14px 18px;">
-      <div class="wctl">
-        <div class="b"><svg class="i sm"><use href="#i-min"/></svg></div>
-        <div class="b"><svg class="i sm"><use href="#i-max"/></svg></div>
-        <div class="b close" style="background:rgba(247,118,142,0.22);color:#ffd9e0"><svg class="i sm"><use href="#i-close"/></svg></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="demo">
-    <div class="label">状态栏(分支 · 会话数 · 各 agent 上下文 · 文件/编码/主题) <span class="id">.status</span><span class="impl">workspace::render_status_bar</span></div>
-    <div class="canvas short" style="height:auto;padding:0;">
-      <div class="win" style="height:auto;width:100%;">
-        <div class="status">
-          <span class="seg2"><svg class="i acc"><use href="#i-branch"/></svg> main</span>
-          <span class="seg2"><span class="num">3</span> sessions</span>
-          <span class="seg2"><svg class="i c"><use href="#i-spark"/></svg> ctx <span class="num">42%</span></span>
-          <span class="seg2"><svg class="i x"><use href="#i-spark"/></svg> ctx <span class="num">18%</span></span>
-          <span class="sp"></span>
-          <span class="seg2">element.rs · Rust</span>
-          <span class="seg2">UTF-8</span>
-          <span class="seg2 acc">Tn Dark</span>
-        </div>
-      </div>
-    </div>
+    <div class="note">接缝哲学:平铺板面之间不投影 —— 2px 缝隙露出 L0 底盘 + 各自 1px 发丝边,即「机加工拼接」。规避 GPUI 平铺投影渗入邻板的已知坑。</div>
   </div>
 </div>
+
+<!-- ══════════ B · App Menu ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">App Menu · 品牌菜单展开</span><span class="d">浮层(L3 + 投影)— 浮层是全系统唯一允许投影的层</span></div>
+  <div class="board-body">
+    <div class="win" style="height:380px">
+      <div class="titlebar">
+        <div class="brand" style="background:var(--l1)">
+          <span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev" style="color:var(--ph)">▴</span>
+        </div>
+        <div class="tabs">
+          <div class="tab on"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/coder/tn</span></div>
+          <div class="tab-new">+</div>
+        </div>
+        <div class="wctls"><div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div></div>
+      </div>
+      <div class="canvas" style="height:312px"><div class="plate" style="flex:1"></div></div>
+      <div class="float menu">
+        <div class="mi on"><span class="ic">▸</span>新会话<span class="k kbd">Ctrl+Shift+N</span></div>
+        <div class="mi"><span class="ic">+</span>新标签<span class="k kbd">Ctrl+Shift+T</span></div>
+        <div class="mi"><span class="ic">◫</span>打开文件夹…</div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">▤</span>布局<span class="k" style="font:10px var(--mono);color:var(--t3)">7 槽位</span></div>
+        <div class="mi"><span class="ic">⌕</span>文件浏览器</div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">⚙</span>设置<span class="k" style="font:10px var(--mono);color:var(--t3)">config.toml</span></div>
+        <div class="mi"><span class="ic">◑</span>主题 · TN DARK</div>
+        <div class="mi"><span class="ic">↻</span>重载配置<span class="k kbd">Ctrl+Shift+R</span></div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">i</span>关于 Tn</div>
+        <div class="mi"><span class="ic" style="color:var(--err)">⏻</span>退出</div>
+      </div>
+    </div>
+    <div class="note">菜单面 <b>L3 #1B2334</b> · 边 <b>h2 ·16%</b> · 行高 30 · hover 行 <b>L4</b> · 「设置」走 QuickLook 编辑 config.toml(现有功能,不另造设置页)。</div>
+  </div>
+</div>
+
+<!-- ══════════ C · 标题栏解剖 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">Tab 状态解剖</span><span class="d">顶部 2px 身份色棒 = 会话所有者(磷光=shell · 紫=Claude · 蓝=Codex)</span></div>
+  <div class="board-body">
+    <div class="anat">
+      <div class="cell">
+        <div class="cap">REST / HOVER</div>
+        <div class="strip" style="height:54px">
+          <div class="tab"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/</span></div>
+          <div class="tab" style="background:var(--l1);color:var(--t1)"><span class="gl" style="color:var(--t3)">❯</span> wsl·ubuntu</div>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="cap">ACTIVE · SHELL(磷光棒)</div>
+        <div class="strip" style="height:54px">
+          <div class="tab on"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/coder/tn</span></div>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="cap">ACTIVE · AGENT(身份色棒)</div>
+        <div class="strip" style="height:54px">
+          <div class="tab on" style="--tabc:var(--claude)"><span class="gl">✳</span> Claude <span class="path">~/proj/tn</span></div>
+          <div class="tab on" style="--tabc:var(--codex)"><span class="gl">◆</span> Codex <span class="path">~/svc/api</span></div>
+        </div>
+      </div>
+      <div class="cell">
+        <div class="cap">窗控 · HOVER / CLOSE</div>
+        <div class="strip" style="height:54px; gap:0">
+          <div class="wbtn" style="height:34px">─</div>
+          <div class="wbtn" style="height:34px; background:var(--l1); color:var(--t0)">▢</div>
+          <div class="wbtn x" style="height:34px; background:var(--err-soft); color:var(--err)">✕</div>
+        </div>
+      </div>
+    </div>
+    <table class="spec">
+      <caption>SPEC · 标题栏</caption>
+      <tr><th>元素</th><th>填充</th><th>边 / 细节</th><th>字体</th></tr>
+      <tr><td class="k">标题栏</td><td>L0 <span class="hex">#0B0E16</span></td><td>底 1px h0 ·5%</td><td>—(高 42)</td></tr>
+      <tr><td class="k">brand mark</td><td>透明 + 磷光内核 8×8</td><td>1px ph-dim ·32% · r4</td><td>名称 mono 600 12</td></tr>
+      <tr><td class="k">tab.on</td><td>L2 <span class="hex">#151B29</span></td><td>1px h1 ·9% · r4 · 顶 2px 身份棒(横向小渐变,契约允许)</td><td>sans 12 / 路径 mono 10</td></tr>
+      <tr><td class="k">窗控</td><td>透明,hover L1</td><td>关闭 hover err-soft</td><td>宽 44</td></tr>
+      <tr><td class="k">状态栏</td><td>L0,段 hover L1</td><td>段间 1px h0 · 高 26</td><td>mono 10 全大写</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>02 工作区窗格</b> — Agent 板面 + Shell 板面 + 活动栏。</div>
 </body>
 </html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 磷光 · 05 宠物系统</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  .perch{ position:absolute; right:30px; bottom:36px; display:flex; flex-direction:column; align-items:center; gap:0; z-index:3; }
+  .perch .shelf{ width:100px; margin-top:-2px; }
+  .perch .bubble{ position:absolute; top:-26px; right:-6px; }
+  /* 品种架 */
+  .kennel{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
+  .kcell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card);
+          padding:14px 10px 10px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+  .kcell:hover{ background:var(--l2); border-color:var(--h1); }
+  .kcell.on{ border-color:var(--ph-dim); background:var(--l2); }
+  .kcell .kid{ font:600 9px var(--mono); color:var(--t3); }
+  .kcell.on .kid{ color:var(--ph); }
+  .kcell .kn{ font:600 12px var(--sans); color:var(--t0); }
+  .kcell .kp{ font:9px var(--mono); color:var(--t2); }
+  /* 状态机 */
+  .fsm{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  .scell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:12px; }
+  .scell .sp{ display:grid; place-items:center; height:88px; background:var(--l0);
+              border:1px solid var(--h0); border-radius:var(--r-chip); margin:10px 0; position:relative; }
+  .scell .fnote{ font:10px/1.8 var(--mono); color:var(--t2); }
+  .scell .fnote b{ color:var(--t1); font-weight:500; }
+  .updot{ position:absolute; width:5px; height:5px; background:var(--ok); border-radius:1px; }
+  /* 互动 */
+  .play{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .pcell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:12px; }
+  .pcell .sp{ display:flex; align-items:center; justify-content:center; gap:14px; height:96px;
+              background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-chip); margin:10px 0; position:relative; }
+  .cursor-glyph{ font:14px var(--mono); color:var(--t1); }
+  .petmenu{ width:190px; padding:5px; }
+  .petmenu .mi{ display:flex; align-items:center; gap:9px; height:28px; padding:0 10px; border-radius:var(--r-chip);
+                font:11px var(--sans); color:var(--t1); }
+  .petmenu .mi:hover,.petmenu .mi.on{ background:var(--l4); color:var(--t0); }
+  .petmenu .msep{ height:1px; background:var(--h1); margin:4px 6px; }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 05 / 07 · 特色 ③</div>
+  <h1>宠物系统 <em>PIXEL COMPANION — 栖位 · 品种 · 上下文状态机 · 互动</em></h1>
+  <div class="refs">规则来源 <b>docs/宠物/宠物系统规则.md</b> · 资产 <b>docs/宠物/原型/*.svg(14×12 像素网格)</b> · 渲染:逐像素 quad,与磷光网格同源;不入 terminal grid、不抢焦点、可关闭</div>
+</div>
+<div class="sheet-rule"></div>
+
+<!-- ══════════ A · 栖位 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">栖位 · 右下角驻守</span><span class="d">状态栏上方 overlay,踩一条 1px 发丝「岗台」;拖拽可移位,落点存用户配置</span></div>
+  <div class="board-body">
+    <div class="win">
+      <div class="titlebar">
+        <div class="brand"><span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev">▾</span></div>
+        <div class="tabs"><div class="tab on"><span class="gl" style="color:var(--t3)">❯</span> pwsh <span class="path">~/coder/tn</span></div><div class="tab-new">+</div></div>
+        <div class="wctls"><div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div></div>
+      </div>
+      <div class="canvas" style="height:300px; position:relative">
+        <div class="plate" style="flex:1">
+          <div class="plate-head"><span style="color:var(--ph)">❯</span><span>~/coder/tn</span><span style="flex:1"></span><span class="chip">pwsh 7.4</span></div>
+          <div class="term">
+            <div><span class="ps1">~/coder/tn <span class="cwd">main</span> ❯</span> <span class="cmd">cargo test -p tn-ui --lib</span></div>
+            <div class="out">test result: <span class="okc">ok.</span> 167 passed; 0 failed</div>
+            <div style="margin-top:8px"><span class="ps1">~/coder/tn <span class="cwd">main</span> ❯</span> <span class="cur">&nbsp;</span></div>
+          </div>
+        </div>
+        <div class="perch">
+          <span class="bubble">Woof!</span>
+          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="84" height="72" alt="westie" />
+          <div class="shelf"></div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <div class="sb-seg"><span class="sb-dot"></span><span>main</span></div>
+        <div class="sb-seg">1 SESSION</div>
+        <div class="sb-spring"></div>
+        <div class="sb-seg">TN DARK</div>
+        <div class="sb-seg" style="color:var(--t1)"><span class="sb-dot idle"></span><span>WESTIE · IDLE</span></div>
+      </div>
+    </div>
+    <div class="note">铁律:不进 terminal grid、不写 buffer、不遮 prompt/光标/选区/浮层;状态栏段 <b>WESTIE · IDLE</b> 是宠物在「仪表系统」中的法定席位,点击=开关,右键=菜单。气泡 2s 自动消散。</div>
+  </div>
+</div>
+
+<!-- ══════════ B · 品种架 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">品种架 · 七只小狗</span><span class="d">初始化随机抽取,固定品种优先;手动刷新仍走随机(不固定轮换)— 现行规则</span></div>
+  <div class="board-body">
+    <div class="kennel">
+      <div class="kcell on"><span class="kid">D01 · 当前</span><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/><span class="kn">西高地</span><span class="kp">精神 · 好奇</span></div>
+      <div class="kcell"><span class="kid">D02</span><img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="70" height="60" alt=""/><span class="kn">金毛</span><span class="kp">温和 · 可靠</span></div>
+      <div class="kcell"><span class="kid">D03</span><img class="px" src="../../docs/宠物/原型/03-german-shepherd.svg" width="70" height="60" alt=""/><span class="kn">德牧</span><span class="kp">专注 · 守护</span></div>
+      <div class="kcell"><span class="kid">D04</span><img class="px" src="../../docs/宠物/原型/04-bichon-frise.svg" width="70" height="60" alt=""/><span class="kn">比熊</span><span class="kp">开心 · 蓬松</span></div>
+      <div class="kcell"><span class="kid">D05</span><img class="px" src="../../docs/宠物/原型/05-maltese.svg" width="70" height="60" alt=""/><span class="kn">马尔济斯</span><span class="kp">乖巧 · 精致</span></div>
+      <div class="kcell"><span class="kid">D06</span><img class="px" src="../../docs/宠物/原型/06-shih-tzu.svg" width="70" height="60" alt=""/><span class="kn">西施</span><span class="kp">慵懒 · 陪伴</span></div>
+      <div class="kcell"><span class="kid">D07</span><img class="px" src="../../docs/宠物/原型/07-toy-poodle.svg" width="70" height="60" alt=""/><span class="kn">泰迪</span><span class="kp">俏皮 · 黏人</span></div>
+    </div>
+    <div class="note">像素网格与磷光网格同源:狗 = 14×12 逐像素 quad(≤168 quad/帧),GPUI 直绘,无 SVG tint 限制问题;选中卡 = ph-dim 边 + L2,无放大动画。</div>
+  </div>
+</div>
+
+<!-- ══════════ C · 上下文状态机 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">上下文状态机</span><span class="d">事件驱动(shell integration / process lifecycle),不扫描输出文本;优先级 Drag &gt; Error/Success &gt; Running &gt; Typing &gt; Hover &gt; Idle</span></div>
+  <div class="board-body">
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip">IDLE</span>
+        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
+        <div class="fnote"><b>眨眼</b> 4–8s 随机间隔<br/><b>尾巴</b> 1px 摆动<br/><b>呼吸</b> 1px 沉浮</div>
+      </div>
+      <div class="scell">
+        <span class="chip" style="color:var(--info); border-color:rgba(130,180,240,.3)">TYPING</span>
+        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
+        <div class="fnote"><b>KeyPress 触发</b><br/>耳朵立起 +1px<br/>身体朝向活动 pane</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">RUNNING</span>
+        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
+        <div class="fnote"><b>进程 &gt;1s 触发</b><br/>小跑:脚掌 2 帧交替<br/>= 天然 loading 指示</div>
+      </div>
+      <div class="scell">
+        <span class="chip okc">SUCCESS</span>
+        <div class="sp">
+          <span class="updot" style="top:14px; right:34%"></span>
+          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:-8px"/>
+        </div>
+        <div class="fnote"><b>Exit 0 触发</b><br/>上跳 2px 回落 · 冒小心<br/>结束即回真实上下文</div>
+      </div>
+      <div class="scell">
+        <span class="chip errc">ERROR</span>
+        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:6px"/></div>
+        <div class="fnote"><b>Exit ≠0 触发</b><br/>耳垂 · 眼变「- -」<br/>持续 3s 复原</div>
+      </div>
+    </div>
+    <div class="note">姿态只换帧,永不重抽品种;品种生命周期 = 终端进程生命周期。所有帧同占位(动效只移少量像素),容器恒定不抖布局。</div>
+  </div>
+</div>
+
+<!-- ══════════ D · 互动与设置 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">D</span><span class="t">鼠标互动 · 右键菜单</span><span class="d">轻互动,不拟人化过度;命令面板亦可达宠物设置(键盘可达性)</span></div>
+  <div class="board-body">
+    <div class="play">
+      <div class="pcell">
+        <span class="chip">HOVER · 摸摸</span>
+        <div class="sp"><span class="cursor-glyph">➤</span><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
+        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">看向鼠标或闭眼享受;无长说明,不遮输出</div>
+      </div>
+      <div class="pcell">
+        <span class="chip">CLICK · 歪头杀</span>
+        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="transform:rotate(-8deg)"/><span class="bubble">汪!</span></div>
+        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">头部像素错位重绘;气泡 2s 消散(reduced motion 可关)</div>
+      </div>
+      <div class="pcell">
+        <span class="chip">DRAG · 拎起换窝</span>
+        <div class="sp">
+          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:-14px"/>
+          <div class="shelf" style="position:absolute; bottom:18px; left:24px; right:24px"></div>
+        </div>
+        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">悬空姿态;松手落点写入用户配置,不写项目配置</div>
+      </div>
+    </div>
+    <div style="display:flex; gap:28px; margin-top:18px; align-items:flex-start">
+      <div class="float petmenu">
+        <div class="mi on"><span style="color:var(--ph)">↻</span>随机刷新</div>
+        <div class="mi"><span style="color:var(--t3)">⌂</span>更换品种…</div>
+        <div class="msep"></div>
+        <div class="mi"><span style="color:var(--t3)">◌</span>仅欢迎页显示</div>
+        <div class="mi"><span style="color:var(--t3)">−</span>隐藏</div>
+        <div class="mi"><span style="color:var(--err)">⏻</span>关闭宠物系统</div>
+      </div>
+      <table class="spec" style="flex:1; margin-top:0">
+        <caption>SPEC · 宠物</caption>
+        <tr><th>项</th><th>规格</th><th>备注</th></tr>
+        <tr><td class="k">容器</td><td>固定 100×84(狗 84×72 + 岗台)</td><td>恒定占位,杜绝布局抖动</td></tr>
+        <tr><td class="k">岗台</td><td>1px h1,左 28px ph-dim 点睛</td><td>宠物世界与 UI 的唯一接缝</td></tr>
+        <tr><td class="k">默认位</td><td>右下,状态栏上 8px / 右 30px</td><td>多 pane 全局一只;全屏隐藏</td></tr>
+        <tr><td class="k">气泡</td><td>L4 · 1px h2 · r4 · mono 11</td><td>只允许短句:「汪!」「Woof!」</td></tr>
+        <tr><td class="k">欢迎页形态</td><td>2× 尺寸(168×144)</td><td>见 SHEET 07 欢迎页</td></tr>
+        <tr><td class="k">可访问性</td><td>可关 · reduced motion 全静帧</td><td>读屏只报「宠物:品种,显示/隐藏」</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>06 浮层与启动器</b> — 命令面板 · 分屏启动器 · SSH 卡片 · 确认件。</div>
+</body>
+</html>

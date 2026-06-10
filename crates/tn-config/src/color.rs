@@ -44,9 +44,8 @@ impl Color {
 
 /// Curated accent swatches for the in-app agent editor's color picker
 /// (`(中文名, 颜色)`). These are deliberate *user choices*, not theme tokens, so
-/// they live here as config-domain data — keeping the GPUI layer free of color
-/// literals (the `no_hardcoded_theme_colors` guard only scans `tn-ui`). The UI
-/// also offers a "默认" option (no explicit accent → the theme/descriptor accent).
+/// they live here as config-domain data. The UI also offers a "默认" option
+/// (no explicit accent → the theme/descriptor accent).
 pub const ACCENT_SWATCHES: &[(&str, Color)] = &[
     ("蓝", Color::new(0x7A, 0xA2, 0xF7)),
     ("紫", Color::new(0xBB, 0x9A, 0xF7)),

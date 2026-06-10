@@ -4,7 +4,7 @@
 //! use for `layout`/`prepaint`/`paint`, replacing the inline geometry the Quick
 //! Look `uniform_list` renderer computes today. This is **not yet wired into any
 //! render path** — it exists so the geometry can be unit-tested in isolation and
-//! later shared by Quick Look, the Editor Pane and Diff Review against one model.
+//! later shared by Quick Look and Diff Review against one model.
 //!
 //! See [`geometry`] for the pure functions. Nothing here depends on a live GPUI
 //! window; everything is plain `f32` / `usize` so `cargo test -p tn-ui --lib`
@@ -17,7 +17,6 @@
 pub mod diff;
 pub mod geometry;
 pub mod motion;
-pub mod pane;
 pub mod prepaint;
 pub mod session;
 

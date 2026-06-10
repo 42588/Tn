@@ -13,7 +13,7 @@ use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, glass_card, icon, HOVER, INSET, R_CARD, UI_SANS};
+use crate::style::{col, cola, icon, HOVER, INSET, R_CARD, UI_SANS};
 
 fn short_chip(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
@@ -148,11 +148,11 @@ impl TerminalView {
             .flex_none()
             .rounded_t(px(13.)) // top corners follow the pane card
             .font_family(UI_SANS) // chrome = sans, terminal = mono
-            // mockup .agenthead bg:rgba(claude,0.07) → transparent 72%(折射,无 glow)
+            // mockup .agenthead bg:rgba(agent,0.04) → transparent 66%(折射,无 glow)
             .bg(linear_gradient(
                 180.,
-                linear_color_stop(cola(accent, 0.07), 0.),
-                linear_color_stop(cola(accent, 0.0), 0.72),
+                linear_color_stop(cola(accent, 0.04), 0.),
+                linear_color_stop(cola(accent, 0.0), 0.66),
             ))
             .child(avatar)
             .child(who)
@@ -445,13 +445,12 @@ impl TerminalView {
                 .flex_col()
                 .gap(px(11.))
                 .pt(px(12.))
-                // .px(12) 已移除 → 改为各子元素自行加 px/mx，为 glass_card 光晕
-                // 阴影腾出 12px 的「发光隔离带」，避免被 overflow_hidden 截断
+                .px(px(12.))
                 .pb(px(14.))
                 .min_h(px(0.))
                 .overflow_hidden()
                 .border_l(px(1.))
-                .border_color(rgba(0xffffff0d))
+                .border_color(rgba(0xffffff08))
                 .font_family(UI_SANS)
                 .child(status)
                 .child(body)
@@ -568,27 +567,12 @@ impl TerminalView {
 
                 scrollable = scrollable.child(
                     div()
-                        .px(px(12.))
                         .text_size(px(10.))
                         .font_weight(FontWeight(680.))
                         .text_color(col(self.ui_muted))
                         .pt(px(2.))
                         .child(SharedString::from("本次改动")),
                 );
-
-                let mut list_inner = div()
-                    .w_full()
-                    .rounded(px(R_CARD - 1.))
-                    .overflow_hidden()
-                    .bg(gpui::rgb(0x121626)); // ★ 死色垫底
-
-                let mut rows_container = div()
-                    .w_full()
-                    .flex()
-                    .flex_col()
-                    .p(px(4.)) // 增加内边距，让内部 hover 形成舒适的胶囊感
-                    .gap(px(2.)) // 行与行之间留极小间隙
-                    .bg(rgba(INSET));
 
                 for f in files.iter() {
                     let plus = format!("+{}", f.add);
@@ -597,10 +581,11 @@ impl TerminalView {
                     let target = source.target_for(&f.path);
                     let row = div()
                         .w_full()
-                        .rounded(px(6.)) // 内部胶囊圆角
-                        .py(px(6.))
-                        .px(px(8.))
-                        .hover(|s| s.bg(rgba(HOVER))) // 极简胶囊 hover
+                        .rounded(px(R_CARD))
+                        .py(px(8.))
+                        .px(px(10.))
+                        .bg(rgba(INSET))
+                        .hover(|s| s.bg(cola(self.agent_accent(), 0.06)))
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -610,23 +595,13 @@ impl TerminalView {
                         )
                         .child(self.arail_file(f.name(), &plus, minus.as_deref()));
 
-                    rows_container = rows_container.child(row);
+                    scrollable = scrollable.child(row);
                 }
-
-                list_inner = list_inner.child(rows_container);
-                let single_card = glass_card(list_inner, true, self.agent_accent());
-
-                // ★ 外层 div 物理隔离：px(12) 左右安全区 + py(6) 上下舒展空间。
-                // flex_none() 禁止 scrollable 的 flex 容器挤压卡片高度，
-                // 否则上下光晕被压扁、发散空间不足。
-                scrollable =
-                    scrollable.child(div().flex_none().px(px(12.)).py(px(6.)).child(single_card));
 
                 scrollable = scrollable.child(
                     div()
                         .text_size(px(10.))
                         .text_color(gpui::rgb(0x474E72))
-                        .px(px(12.))
                         .child(SharedString::from("点卡片 = 速览全 diff")),
                 );
 

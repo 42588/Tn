@@ -574,6 +574,8 @@ impl Render for WelcomeView {
         let hints = div()
             .flex()
             .flex_row()
+            .flex_wrap()
+            .justify_center()
             .gap(px(18.)) // §16 .whints gap 18
             .child(self.hint("Ctrl+Shift+P", "命令面板"))
             .child(self.hint("Ctrl+Alt+Space", "速唤终端"))
@@ -587,6 +589,8 @@ impl Render for WelcomeView {
             .items_center()
             .justify_center()
             .gap(px(18.)) // §16 .welcome gap 18
+            .px(px(40.))
+            .py(px(32.))
             .font_family(UI_SANS)
             .child(
                 // .wmark:56×56 圆角16 accent→violet 渐变 + 终端图标

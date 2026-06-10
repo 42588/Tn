@@ -3,7 +3,7 @@
 //! These are **pure functions** — no GPUI, no window, no `&self`. They mirror the
 //! geometry the current Quick Look `uniform_list` renderer computes inline
 //! (`quick_look.rs`) so a future `EditorElement` (TnE-09+) can layout/prepaint
-//! against one tested model shared by Quick Look, the Editor Pane and Diff Review.
+//! against one tested model shared by Quick Look and Diff Review.
 //!
 //! Conventions (matching the existing renderer):
 //! - **Columns are char-based**; display width counts CJK / non-ASCII as 2 cols

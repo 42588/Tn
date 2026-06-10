@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<title>Tn 磷光 · 07 状态页</title>
+<link rel="stylesheet" href="../phosphor.css" />
+<style>
+  /* 欢迎页 */
+  .hero-mark{ width:44px; height:44px; border-radius:10px; border:1px solid var(--ph-dim); position:relative; }
+  .hero-mark::after{ content:""; position:absolute; inset:11px; background:var(--ph); border-radius:2px; }
+  .launch{ display:flex; gap:10px; }
+  .ltile{ width:150px; background:var(--l2); border:1px solid var(--h0); border-radius:var(--r-card);
+          padding:14px 14px 12px; display:flex; flex-direction:column; gap:6px; position:relative; }
+  .ltile:hover{ background:var(--l4); border-color:var(--h1); }
+  .ltile.on{ border-color:var(--ph-dim); background:var(--l4); }
+  .ltile.on::before{ content:""; position:absolute; left:-1px; top:8px; bottom:8px; width:2px; background:var(--ph); border-radius:1px; }
+  .ltile .g{ font:600 15px var(--mono); }
+  .ltile .n{ font:600 12px var(--sans); color:var(--t0); }
+  .ltile .s{ font:9px var(--mono); color:var(--t2); }
+  .ltile.add{ border-style:solid; border-color:var(--h0); background:transparent; align-items:center; justify-content:center; gap:4px; }
+  .ltile.add .g{ color:var(--t3); } .ltile.add .n{ color:var(--t2); font-weight:500; }
+  .wperch{ position:absolute; right:46px; bottom:48px; display:flex; flex-direction:column; align-items:center; z-index:3; }
+  .row2{ display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap; }
+  /* SSH 过程 */
+  .steps{ display:flex; align-items:center; gap:0; padding:4px 0 10px; }
+  .stp{ display:flex; align-items:center; gap:8px; font:11px var(--mono); color:var(--t2); }
+  .stp .dotn{ width:18px; height:18px; border-radius:50%; display:grid; place-items:center;
+              border:1px solid var(--h1); font-size:10px; color:var(--t3); background:var(--l2); }
+  .stp.done .dotn{ color:var(--ok); border-color:rgba(140,215,162,.4); }
+  .stp.busy .dotn{ color:var(--ph-ink); background:var(--ph); border-color:var(--ph); }
+  .stp.busy{ color:var(--t0); }
+  .stlink{ width:54px; height:1px; background:var(--h1); margin:0 10px; }
+  .stlink.lit{ background:var(--ok); opacity:.5; }
+</style>
+</head>
+<body>
+
+<div class="sheet-head">
+  <div class="no">TN · PHOSPHOR — SHEET 07 / 07</div>
+  <h1>状态页 <em>STATES — 欢迎页 · 空板面 · 命令块三态 · SSH 过程态</em></h1>
+  <div class="refs">实现入口 <b>crates/tn-ui/src/welcome.rs · block_view.rs · workspace.rs(ssh)</b> · 空状态克制:无 hero 营销面,无大渐变</div>
+</div>
+<div class="sheet-rule"></div>
+
+<!-- ══════════ A · 欢迎页 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A</span><span class="t">欢迎页 · Launchpad</span><span class="d">居中不放大 · 磁贴来自 [[profiles]] + WSL 发现 + SSH 入口;宠物 2× 形态在此安家</span></div>
+  <div class="board-body">
+    <div class="win">
+      <div class="titlebar">
+        <div class="brand"><span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev">▾</span></div>
+        <div class="tabs"><div class="tab on"><span class="gl" style="color:var(--t3)">▣</span> 新标签</div><div class="tab-new">+</div></div>
+        <div class="wctls"><div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div></div>
+      </div>
+      <div class="canvas" style="height:470px">
+        <div class="plate" style="flex:1; position:relative">
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px">
+            <div class="hero-mark"></div>
+            <div style="text-align:center">
+              <div style="font:600 26px var(--mono); color:var(--t0)">TN<span style="color:var(--ph)">_</span></div>
+              <div style="font:11px var(--mono); color:var(--t2); margin-top:6px">TERMINAL INSTRUMENT — 人与智能体共用的终端</div>
+            </div>
+            <div class="launch">
+              <div class="ltile on"><span class="g" style="color:var(--ph)">❯</span><span class="n">pwsh</span><span class="s">默认 PROFILE</span></div>
+              <div class="ltile"><span class="g" style="color:var(--info)">⌬</span><span class="n">Ubuntu</span><span class="s">WSL DISTRO</span></div>
+              <div class="ltile"><span class="g" style="color:var(--warn)">⇄</span><span class="n">SSH 连接</span><span class="s">最近 2 · ⭐ 1</span></div>
+              <div class="ltile"><span class="g" style="color:var(--claude)">✳</span><span class="n">Claude</span><span class="s">AGENT · SONNET 4.6</span></div>
+              <div class="ltile"><span class="g" style="color:var(--codex)">◆</span><span class="n">Codex</span><span class="s">AGENT</span></div>
+              <div class="ltile add"><span class="g">+</span><span class="n">添加 Agent</span></div>
+            </div>
+            <div style="display:flex; gap:18px; font:10px var(--mono); color:var(--t2); margin-top:6px">
+              <span><span class="kbd">Ctrl+Shift+P</span> 命令面板</span>
+              <span><span class="kbd">Ctrl+Shift+N</span> 分屏会话</span>
+              <span><span class="kbd">Alt+`</span> 幽灵终端</span>
+            </div>
+          </div>
+          <div class="wperch">
+            <img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="168" height="144" alt="golden"/>
+            <div class="shelf" style="width:180px"></div>
+            <div style="font:9px var(--mono); color:var(--t3); margin-top:6px">GOLDEN · IDLE(欢迎页 2× 形态)</div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <div class="sb-seg"><span class="sb-dot idle"></span><span>NO SESSION</span></div>
+        <div class="sb-spring"></div>
+        <div class="sb-seg">TN DARK</div>
+        <div class="sb-seg" style="color:var(--t1)"><span class="sb-dot idle"></span><span>GOLDEN</span></div>
+      </div>
+    </div>
+    <div class="note">磁贴 = 与幽灵终端启动器同一构件(tile 语法全局唯一);「添加 Agent」入口保留现有表单流(名称/命令/sidecar/网络/颜色)。最近目录不造假数据,真实来源接入后再上屏。</div>
+  </div>
+</div>
+
+<!-- ══════════ B · 空板面 + 命令块三态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B</span><span class="t">空板面 · 命令块三态</span><span class="d">左脊 2px 是块的唯一状态语言;时间右置 mono;失败补 exit code</span></div>
+  <div class="board-body">
+    <div class="row2">
+      <div class="plate" style="width:430px; height:240px">
+        <div class="plate-head"><span class="tag">PLATE · EMPTY</span></div>
+        <div class="plate-body" style="display:grid; place-items:center">
+          <div style="text-align:center; font:11px/2 var(--mono); color:var(--t3)">
+            <div style="font-size:20px; color:var(--t3)">▢</div>
+            此窗格暂无会话<br/>
+            <span class="kbd">Ctrl+Shift+N</span> 分屏启动 · <span class="kbd">Ctrl+W</span> 收起
+          </div>
+        </div>
+      </div>
+      <div style="flex:1; min-width:480px; display:flex; flex-direction:column; gap:2px; background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-plate); padding:14px">
+        <div class="block ok" style="margin:0 0 8px"><span class="bc">cargo test -p tn-core</span><span class="bt">0.8s</span><span class="bx">✓ 0</span></div>
+        <div class="block run" style="margin:0 0 8px"><span class="bc">cargo build --workspace</span><span class="bt">12.4s</span><span class="bx">RUN</span></div>
+        <div class="block fail" style="margin:0 0 10px"><span class="bc">cargo clippy --all-targets</span><span class="bt">3.1s</span><span class="bx">✕ 101</span></div>
+        <div class="note" style="margin:0">脊色:<b>ok</b> 绿 · <b>run</b> 磷光 · <b>fail</b> 红;正文永不被块卡染色,alt screen / agent 视图自动隐藏块条(现有逻辑)。运行中耗时实时累加,即最朴素的进度仪。</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════ C · SSH 过程态 ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">SSH 过程态</span><span class="d">进度三步 · 认证失败 · 断线重连 — 错误永远给出下一步动作</span></div>
+  <div class="board-body">
+    <div class="row2">
+      <div class="float" style="width:460px">
+        <div class="float-head"><span style="color:var(--warn)">⇄</span>prod-01<span style="flex:1"></span><span class="chip">dev@10.0.0.7</span></div>
+        <div style="padding:16px">
+          <div class="steps">
+            <div class="stp done"><span class="dotn">✓</span>连接</div>
+            <div class="stlink lit"></div>
+            <div class="stp busy"><span class="dotn">●</span>认证 · publickey</div>
+            <div class="stlink"></div>
+            <div class="stp"><span class="dotn">○</span>打开 shell</div>
+          </div>
+          <div style="font:10px var(--mono); color:var(--t2)">id_ed25519 → agent → password 顺序尝试;密码框支持显隐/记住本会话/重试</div>
+        </div>
+      </div>
+      <div class="float" style="width:460px; border-color:rgba(232,112,126,.35)">
+        <div class="float-head"><span style="color:var(--err)">✕</span>认证失败 · prod-01<span style="flex:1"></span><span class="chip errc">AUTH</span></div>
+        <div style="padding:14px 16px; font:11px/1.9 var(--mono); color:var(--t1)">
+          publickey 与 password 均被拒绝。<br/><span style="color:var(--t2)">→ 检查用户名 / 密钥是否在 authorized_keys</span>
+        </div>
+        <div class="float-foot" style="gap:8px; height:44px">
+          <span style="flex:1"></span><span class="btn primary">重试</span><span class="btn">改用密码</span><span class="btn">取消</span>
+        </div>
+      </div>
+      <div style="width:460px; display:flex; flex-direction:column; gap:10px">
+        <div class="tag">断线横幅(pane 顶部嵌入,非浮层)</div>
+        <div style="display:flex; align-items:center; gap:10px; padding:7px 12px; background:var(--warn-soft); border:1px solid rgba(229,192,123,.3); border-radius:var(--r-card); font:11px var(--mono); color:var(--warn)">
+          ⚠ 连接已断开 · 14:32:07
+          <span style="flex:1"></span>
+          <span class="btn" style="padding:2px 10px; font-size:11px">重连</span>
+        </div>
+        <div class="tag" style="margin-top:8px">连接成功徽记(最近连接列表)</div>
+        <div style="display:flex; gap:8px">
+          <span class="chip okc">● prod-01 · KEY</span>
+          <span class="chip">staging · PASSWORD</span>
+          <span class="chip">build-07 · INTERACTIVE</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 返回:<b>index 总览</b> — 设计语言宣言 · 海拔阶梯 · 渲染契约。</div>
+</body>
+</html>
