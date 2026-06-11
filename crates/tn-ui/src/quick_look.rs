@@ -1372,6 +1372,9 @@ pub struct QuickLook {
     /// Grab focus in the next render (focusing in an event/open callback doesn't
     /// land — the overlay isn't rendered yet; see 踩过的坑).
     needs_focus: bool,
+    /// RAIL 读数:从活动栏打开时的 `(当前序号, 总数)`(0-based idx);`None` = 从
+    /// 文件树打开,footer 不显示 `RAIL · n/N`。workspace 每帧同步(SHEET 03 footer)。
+    rail_pos: Option<(usize, usize)>,
     focus_handle: FocusHandle,
     // ── Async-loading control (render-pure: zero I/O in render()) ──
     loading_state: LoadingState,
@@ -1465,6 +1468,7 @@ impl QuickLook {
             file_jump_highlight: None,
             scroll: UniformListScrollHandle::default(),
             needs_focus: false,
+            rail_pos: None,
             focus_handle: cx.focus_handle(),
             loading_state: LoadingState::Ready,
             generation: 0,
@@ -1502,6 +1506,15 @@ impl QuickLook {
     /// when there is one — an empty overlay would float over nothing).
     pub fn has_file(&self) -> bool {
         self.path.is_some()
+    }
+
+    /// workspace 同步 RAIL 读数(从活动栏打开 = `Some((idx, total))`,文件树 = `None`)。
+    /// 只在变化时 notify,避免每帧重渲。
+    pub(crate) fn set_rail_pos(&mut self, pos: Option<(usize, usize)>, cx: &mut Context<Self>) {
+        if self.rail_pos != pos {
+            self.rail_pos = pos;
+            cx.notify();
+        }
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -5646,7 +5659,28 @@ impl Render for QuickLook {
                     )
                 },
             )
-            .child(tabset);
+            .child(tabset)
+            // 显式关闭入口(SHEET 03):header 右端 ✕,不让关闭只依赖 footer Esc。
+            .child(
+                div()
+                    .ml(px(2.))
+                    .w(px(22.))
+                    .h(px(22.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(crate::style::R_CHIP))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .hover(|s| s.bg(rgba(crate::style::ERR_SOFT)).text_color(col(ansi.red)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_this, _e, _w, cx| {
+                            cx.stop_propagation();
+                            cx.emit(QuickLookEvent::Close);
+                        }),
+                    )
+                    .child(icon("close", 13., ui.muted)),
+            );
 
         // ── .code body:**虚拟化**列表(uniform_list 只渲染可见行 → 大文件不卡)。
         //    编辑态从 buf 渲染(高亮 + 选区 + 光标);预览态从 file_lines / diff 渲染。──
@@ -6227,6 +6261,16 @@ impl Render for QuickLook {
             .text_color(gpui::rgb(crate::style::T2))
             .border_t_1()
             .border_color(rgba(crate::style::H1));
+        // RAIL 读数(`.tag` mono 10 600 t2):从活动栏打开时 footer 右侧显示
+        // 「RAIL · n/N」,标明 ↑↓ 在本次改动文件间导航(SHEET 03 footer)。
+        let rail_tag = self.rail_pos.map(|(i, n)| {
+            div()
+                .font_family(SharedString::from(self.config.font().family.clone()))
+                .text_size(px(10.))
+                .font_weight(gpui::FontWeight(600.))
+                .text_color(gpui::rgb(crate::style::T2))
+                .child(SharedString::from(format!("RAIL · {}/{}", i + 1, n)))
+        });
         let footer = if self.editing {
             // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销
             footer_base
@@ -6246,7 +6290,7 @@ impl Render for QuickLook {
         } else if self.tab == Tab::Diff {
             footer_base
                 .child(kcap("↑↓"))
-                .child("换文件 ·")
+                .child("改动文件 ·")
                 .child(kcap("PgUp/Dn"))
                 .child("跳 hunk ·")
                 .child(kcap("Enter"))
@@ -6256,30 +6300,33 @@ impl Render for QuickLook {
                 .child("复制/全选 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
+                .when_some(rail_tag, |d, t| d.child(div().w(px(10.))).child(t))
         } else if self.is_editable() {
-            // 预览态(可编辑文本文件):↑↓ 换文件 · ⇥ 切 File · Enter 编辑 · Esc 关闭
+            // 预览态(可编辑文本文件,SHEET 03 footer):↑↓ 改动文件 · ⇥ Diff · Enter 编辑 ·
+            // Esc 关闭 · [flex] · RAIL · n/N
             footer_base
                 .child(kcap("↑↓"))
-                .child("换文件 ·")
+                .child("改动文件 ·")
                 .child(kcap("⇥"))
-                .child("切 File ·")
+                .child("Diff ·")
                 .child(kcap("Enter"))
-                .child("编辑")
-                .child(div().flex_1())
-                .child("Diff 只读审阅 ·")
+                .child("编辑 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
+                .child(div().flex_1())
+                .when_some(rail_tag, |d, t| d.child(t))
         } else {
-            // 预览态(PDF / 图片 / Office / 二进制 — 只读):↑↓ 换文件 · ⇥ 切 File · Esc 关闭
+            // 预览态(PDF / 图片 / Office / 二进制 — 只读):↑↓ 改动文件 · ⇥ 切 File · Esc 关闭
             footer_base
                 .child(kcap("↑↓"))
-                .child("换文件 ·")
+                .child("改动文件 ·")
                 .child(kcap("⇥"))
                 .child("切 File ·")
                 .child(div().flex_1())
                 .child("只读预览 ·")
                 .child(kcap("Esc"))
                 .child("关闭")
+                .when_some(rail_tag, |d, t| d.child(div().w(px(10.))).child(t))
         };
 
         // ── 查找/替换条(编辑态 Ctrl+F / Ctrl+H 唤出;输入由 on_key 的 find_key 捕获)──

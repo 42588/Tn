@@ -2434,14 +2434,26 @@ impl Workspace {
                     self.branch.clone().unwrap_or_else(|| "—".into()),
                 )),
         );
-        // sessions (tab count)
-        bar = bar.child(seg(vec![div()
-            .child(SharedString::from(format!(
+        // sessions:只数**非欢迎** tab(欢迎页是 Launchpad,不是会话)。纯新标签欢迎页
+        // → 「NO SESSION」+ idle 灰点;有实会话 → 「N SESSIONS」+ 磷光实点(区分新标签
+        // 欢迎页与已有工作区欢迎 tab,SHEET 07 板 A / A2)。
+        let session_tabs = self.tabs.iter().filter(|t| !t.welcome).count();
+        let session_label = if session_tabs == 0 {
+            "NO SESSION".to_string()
+        } else {
+            format!(
                 "{} SESSION{}",
-                self.tabs.len(),
-                if self.tabs.len() == 1 { "" } else { "S" }
-            )))
-            .into_any_element()]));
+                session_tabs,
+                if session_tabs == 1 { "" } else { "S" }
+            )
+        };
+        bar = bar.child(seg(vec![
+            dot(session_tabs > 0).into_any_element(),
+            div()
+                .when(session_tabs > 0, |d| d.text_color(rgb(PH)))
+                .child(SharedString::from(session_label))
+                .into_any_element(),
+        ]));
         // per-agent context readouts(活值 = 磷光,SHEET 02)
         for (id, p) in &agent_pcts {
             bar = bar.child(seg(vec![div()
@@ -6172,6 +6184,17 @@ impl Render for Workspace {
         self.pet.update(cx, |p, _| p.set_on_welcome(on_welcome));
         self.welcome.update(cx, |w, _| w.set_pet_breed(pet_breed));
 
+        // QuickLook RAIL 读数同步:从活动栏卡片打开时(`ql_rail_pane`)喂入
+        //「(当前序号, 该 pane 本次改动文件总数)」,footer 显示 RAIL · n/N;从文件树
+        // 打开则为 None(SHEET 03 footer)。
+        let ql_rail_pos = self.ql_rail_pane.and_then(|pid| {
+            self.panes
+                .get(&pid)
+                .map(|v| (self.ql_rail_idx, v.read(cx).rail_len()))
+        });
+        self.quick_look
+            .update(cx, |v, cx| v.set_rail_pos(ql_rail_pos, cx));
+
         if self.tabs[active].welcome {
             self.reset_explorer_for_welcome_tab(cx);
         } else {
@@ -6489,10 +6512,10 @@ impl Render for Workspace {
                 .gap(px(SEAM))
                 // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
                 // Width is adjustable by dragging the right edge (same look-and-feel
-                // as split-pane dividers). 欢迎页(Launchpad)不常驻 Explorer —— SHEET 07
-                // 板 A 是无 Explorer 的整窗 Launchpad,中心磁贴独占主舞台(原型与真机差异
-                // 总结 P0:欢迎页隐藏 Explorer)。
-                .when(self.explorer_open && !self.tabs[active].welcome, |d| {
+                // as split-pane dividers). 欢迎页(Launchpad)也常驻 Explorer —— 与工作区
+                // 一致的左侧文件树,Launchpad 居中铺在右侧主列(产品决策:欢迎页保留
+                // Explorer,已回写 SHEET 07 板 A/A2)。
+                .when(self.explorer_open, |d| {
                     let accent = self.config.theme.ui.accent;
                     let ew = self.explorer_width;
                     d.child(

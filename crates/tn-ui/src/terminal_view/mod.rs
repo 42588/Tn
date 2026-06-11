@@ -1620,6 +1620,16 @@ impl TerminalView {
         }
     }
 
+    /// Number of changed files in this pane's activity rail (0 when not Ready) —
+    /// drives QuickLook's `RAIL · n/N` footer read when opened from the rail.
+    pub(crate) fn rail_len(&self) -> usize {
+        if let RailState::Ready { files, .. } = &self.rail_state {
+            files.len()
+        } else {
+            0
+        }
+    }
+
     pub fn usage(&self) -> Option<&AiUsage> {
         self.usage.as_ref()
     }
