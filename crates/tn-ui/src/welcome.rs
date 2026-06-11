@@ -20,7 +20,8 @@ use tn_agent::{AgentId, AgentRegistry};
 use tn_config::{Loaded, Profile, ProfileKind};
 
 use crate::style::{
-    col, cola, icon, plate, H0, H1, PH, PH_DIM, R_CARD, R_CHIP, R_PANEL, T0, T2, T3, UI_SANS,
+    col, cola, icon, plate, H0, H1, L2, L4, PH, PH_DIM, R_CARD, R_CHIP, R_PANEL, T0, T2, T3,
+    UI_SANS,
 };
 
 // ── Shared launch-tile helpers (mockup `.tile` / `.dot`) ────────────────────────
@@ -252,6 +253,89 @@ pub(crate) fn row_card(
     }
 }
 
+/// The identity glyph char for a [`CardId::glyph`] key — the mono "会话所有者" 记号
+/// shared by every launch surface (welcome / ghost / split), so a profile reads the
+/// same on all three.
+pub(crate) fn launch_glyph_ch(glyph: &str) -> &'static str {
+    match glyph {
+        "spark" => "✻",
+        "term" => "❯",
+        "external" => "⇄",
+        "plus" => "+",
+        "chev-l" => "‹",
+        _ => "▣",
+    }
+}
+
+/// The single shared launch-tile **shape** (SHEET 07 `.ltile` / SHEET 04 `.tile`):
+/// 身份字形 mono 600 14 + 名 sans 600 12 t0 + 副标 mono 10 t2 大写。统一选中态 =
+/// L4 顶面 + ph-dim 边 + 左 2px 磷光脊;未选中 = L2 + h0,hover 抬到 L4 + h1。`width`
+/// 随面板规格(欢迎页 150 / 幽灵 140),其余一律相同 —— 三个启动面共用此函数,磁贴
+/// 尺寸/图标/选中态不再各自漂移(原型与真机差异总结 P1:统一 launch tile 语法)。
+/// 调用方自挂 `on_mouse_down` 与额外装饰。
+pub(crate) fn launch_tile_shape(
+    mono: SharedString,
+    card: &CardId,
+    width: f32,
+    selected: bool,
+) -> Div {
+    let glyph_ch = launch_glyph_ch(card.glyph);
+    let mut tile = div()
+        .w(px(width))
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .pt(px(12.))
+        .px(px(12.))
+        .pb(px(10.))
+        .rounded(px(R_CARD))
+        .relative()
+        .border_1();
+    if selected {
+        // 选中:L4 顶面 + ph-dim 边 + 左 2px 磷光脊(tile/row 的唯一磷光语义)。
+        tile = tile.bg(rgb(L4)).border_color(rgba(PH_DIM)).child(
+            div()
+                .absolute()
+                .left(px(-1.))
+                .top(px(8.))
+                .bottom(px(8.))
+                .w(px(2.))
+                .rounded(px(1.))
+                .bg(rgb(PH)),
+        );
+    } else {
+        tile = tile
+            .bg(rgb(L2))
+            .border_color(rgba(H0))
+            .hover(|s| s.bg(rgb(L4)).border_color(rgba(H1)));
+    }
+    tile.child(
+        // 身份字形:mono 600 14,身份色
+        div()
+            .font_family(mono.clone())
+            .text_size(px(14.))
+            .font_weight(FontWeight(600.))
+            .text_color(col(card.accent))
+            .child(SharedString::from(glyph_ch)),
+    )
+    .child(
+        // 名:sans 600 12 t0
+        div()
+            .text_size(px(12.))
+            .font_weight(FontWeight(600.))
+            .text_color(rgb(T0))
+            .child(SharedString::from(card.name.clone())),
+    )
+    .child(
+        // 副标:mono 10 t2 全大写(微标签节奏,契约 6)
+        div()
+            .font_family(mono)
+            .text_size(px(10.))
+            .text_color(rgb(T2))
+            .child(SharedString::from(card.sub.to_uppercase())),
+    )
+}
+
 /// Emitted when a launch tile is clicked; carries the index into the profile list
 /// the view was constructed with (the workspace's discovered profiles).
 pub struct LaunchRequested(pub usize);
@@ -301,66 +385,18 @@ impl WelcomeView {
     // Quick Terminal launcher (and the command palette's identity dot) so all three
     // render the identical mockup `.tile`/.dot identity.
 
-    /// 启动磁贴(SHEET 07 `.ltile`):150 宽 · L2 + 1px h0 + r4 · 身份字形 mono 600 15
-    /// · 名 sans 600 12 t0 · 副标 mono 9 t2 大写;hover = L4 + h1。
-    /// shared shape for profile / WSL / SSH / back tiles.
+    /// 启动磁贴 — 共用 [`launch_tile_shape`](crate::welcome::launch_tile_shape)(150 宽,
+    /// 欢迎页为点击启动、无键盘游标 → 不取选中态),仅挂自己的点击处理。profile / WSL /
+    /// SSH / back tile 共享此壳,与幽灵启动器同一 tile 家族。
     fn card_tile(
         &self,
         card: CardId,
         on_down: impl Fn(&mut Self, &MouseDownEvent, &mut gpui::Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> Div {
-        let ui = &self.config.theme.ui;
-        let crest = col(ui.palette_selected); // L4
         let mono = SharedString::from(self.config.font().family.clone());
-        // 身份字形:磁贴语法的「会话所有者」记号(svg 图标 → mono 字形,SHEET 07)。
-        let glyph_ch = match card.glyph {
-            "spark" => "✻",
-            "term" => "❯",
-            "external" => "⇄",
-            "plus" => "+",
-            "chev-l" => "‹",
-            _ => "▣",
-        };
-        div()
-            .w(px(150.))
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .pt(px(14.))
-            .px(px(14.))
-            .pb(px(12.))
-            .rounded(px(R_CARD))
-            .bg(col(ui.surface_2)) // L2
-            .border_1()
-            .border_color(rgba(H0))
-            .hover(move |s| s.bg(crest).border_color(rgba(H1)))
+        launch_tile_shape(mono, &card, 150., false)
             .on_mouse_down(MouseButton::Left, cx.listener(on_down))
-            .child(
-                // `.g`:身份字形 mono 600 15
-                div()
-                    .font_family(mono.clone())
-                    .text_size(px(15.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(col(card.accent))
-                    .child(SharedString::from(glyph_ch)),
-            )
-            .child(
-                // `.n`:sans 600 12 t0
-                div()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(rgb(T0))
-                    .child(SharedString::from(card.name)),
-            )
-            .child(
-                // `.s`:mono 9 t2 全大写
-                div()
-                    .font_family(mono)
-                    .text_size(px(9.))
-                    .text_color(rgb(T2))
-                    .child(SharedString::from(card.sub.to_uppercase())),
-            )
     }
 
     /// A profile launch tile → emits [`LaunchRequested`] for its index. A
@@ -688,20 +724,15 @@ impl Render for WelcomeView {
                 .child(crate::pet::sprite_block(breed, 2.0))
                 .child(
                     // 岗台:1px h1 + 左 28px 磷光点睛
-                    div()
-                        .w(px(180.))
-                        .h(px(1.))
-                        .bg(rgba(H1))
-                        .relative()
-                        .child(
-                            div()
-                                .absolute()
-                                .left(px(0.))
-                                .top(px(0.))
-                                .w(px(28.))
-                                .h(px(1.))
-                                .bg(rgba(PH_DIM)),
-                        ),
+                    div().w(px(180.)).h(px(1.)).bg(rgba(H1)).relative().child(
+                        div()
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(0.))
+                            .w(px(28.))
+                            .h(px(1.))
+                            .bg(rgba(PH_DIM)),
+                    ),
                 )
                 .child(
                     div()

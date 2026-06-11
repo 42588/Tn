@@ -133,7 +133,10 @@ pub(crate) fn shadowed(d: Div, shadows: Vec<BoxShadow>) -> Div {
 /// `0 2px 8px -2px rgba(0,0,0,.55), 0 28px 72px -28px rgba(0,0,0,.92)`。
 /// 全系统唯一允许的投影 —— App Menu、命令面板、QuickLook、幽灵终端共用。
 pub(crate) fn shadow_float() -> Vec<BoxShadow> {
-    vec![soft_shadow(2.0, 8.0, -2.0, 0.55), soft_shadow(28.0, 72.0, -28.0, 0.92)]
+    vec![
+        soft_shadow(2.0, 8.0, -2.0, 0.55),
+        soft_shadow(28.0, 72.0, -28.0, 0.92),
+    ]
 }
 
 /// 四角磷光角标(取景器):焦点的全部表达,零 glow(契约 5)。

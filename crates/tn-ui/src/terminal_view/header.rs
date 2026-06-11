@@ -179,10 +179,9 @@ impl TerminalView {
             let reading = match billing {
                 BillingMode::Api => format!("${:.2}", u.cost_usd),
                 BillingMode::Subscription => format!("CTX {pct}%"),
-                BillingMode::Tokens => format!(
-                    "{} TOK",
-                    crate::workspace::human_tokens(u.total_tokens())
-                ),
+                BillingMode::Tokens => {
+                    format!("{} TOK", crate::workspace::human_tokens(u.total_tokens()))
+                }
                 BillingMode::Auto => format!("CTX {pct}%"),
             };
             head = head.child(
@@ -412,7 +411,14 @@ impl TerminalView {
                 .font_family(mono.clone())
                 .text_size(px(10.))
                 .text_color(gpui::rgb(T2))
-                .child(div().w(px(5.)).h(px(5.)).rounded_full().flex_none().bg(gpui::rgb(PH)))
+                .child(
+                    div()
+                        .w(px(5.))
+                        .h(px(5.))
+                        .rounded_full()
+                        .flex_none()
+                        .bg(gpui::rgb(PH)),
+                )
                 .child(
                     div()
                         .flex_1()
@@ -526,9 +532,7 @@ impl TerminalView {
                         .bg(gpui::rgb(crate::style::L2))
                         .border_1()
                         .border_color(rgba(H0))
-                        .hover(|s| {
-                            s.bg(gpui::rgb(crate::style::L4)).border_color(rgba(H1))
-                        })
+                        .hover(|s| s.bg(gpui::rgb(crate::style::L4)).border_color(rgba(H1)))
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,

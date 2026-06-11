@@ -20,11 +20,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgba, size,
-    uniform_list, AsyncApp, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler,
-    EntityInputHandler, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollStrategy, ScrollWheelEvent,
-    SharedString, TextRun, UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
+    canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, AsyncApp, Bounds,
+    ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
+    Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, TextRun, UTF16Selection,
+    UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 use tn_pty::remote_cmd::SshCommandService;
@@ -5726,46 +5726,51 @@ impl Render for QuickLook {
             let pages = pages.clone();
             let page_count = *page_count;
             body = body.child(
-                div().flex_1().overflow_hidden().bg(gpui::rgb(CODE_BG)).child(
-                    uniform_list(
-                        "pdf_scroll_container",
-                        page_count,
-                        move |range, _window, _cx| {
-                            let pages_lock = pages.lock().ok();
-                            range
-                                .map(|i| {
-                                    // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
-                                    // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
-                                    // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
-                                    if let Some(lock) = &pages_lock {
-                                        if let Some(img) = &lock[i] {
-                                            let img_source = gpui::ImageSource::Image(img.clone());
-                                            return div()
-                                                .w_full()
-                                                .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
-                                                .bg(gpui::rgb(CODE_BG))
-                                                .flex()
-                                                .justify_center()
-                                                .items_center()
-                                                .child(
-                                                    gpui::img(img_source)
-                                                        .max_w_full()
-                                                        .max_h_full()
-                                                        .w_auto()
-                                                        .h_auto()
-                                                        .object_fit(gpui::ObjectFit::ScaleDown),
-                                                );
+                div()
+                    .flex_1()
+                    .overflow_hidden()
+                    .bg(gpui::rgb(CODE_BG))
+                    .child(
+                        uniform_list(
+                            "pdf_scroll_container",
+                            page_count,
+                            move |range, _window, _cx| {
+                                let pages_lock = pages.lock().ok();
+                                range
+                                    .map(|i| {
+                                        // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
+                                        // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
+                                        // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
+                                        if let Some(lock) = &pages_lock {
+                                            if let Some(img) = &lock[i] {
+                                                let img_source =
+                                                    gpui::ImageSource::Image(img.clone());
+                                                return div()
+                                                    .w_full()
+                                                    .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
+                                                    .bg(gpui::rgb(CODE_BG))
+                                                    .flex()
+                                                    .justify_center()
+                                                    .items_center()
+                                                    .child(
+                                                        gpui::img(img_source)
+                                                            .max_w_full()
+                                                            .max_h_full()
+                                                            .w_auto()
+                                                            .h_auto()
+                                                            .object_fit(gpui::ObjectFit::ScaleDown),
+                                                    );
+                                            }
                                         }
-                                    }
-                                    div().w_full().h(px(1400.)).bg(gpui::rgb(CODE_BG))
-                                })
-                                .collect::<Vec<_>>()
-                        },
-                    )
-                    .track_scroll(self.scroll.clone())
-                    .w_full()
-                    .h_full(),
-                ),
+                                        div().w_full().h(px(1400.)).bg(gpui::rgb(CODE_BG))
+                                    })
+                                    .collect::<Vec<_>>()
+                            },
+                        )
+                        .track_scroll(self.scroll.clone())
+                        .w_full()
+                        .h_full(),
+                    ),
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
             let img_source = gpui::ImageSource::Image(img.clone());
@@ -6206,10 +6211,7 @@ impl Render for QuickLook {
         // ── .qlfoot footer:键帽 + 操作提示(预览态)──
         let kcap = |label: &'static str| {
             // `.kbd`:mono 10 t1 · L2 + 1px h1(底 2px)· r3
-            crate::style::kbd(
-                label,
-                SharedString::from(self.config.font().family.clone()),
-            )
+            crate::style::kbd(label, SharedString::from(self.config.font().family.clone()))
         };
         // float-foot:高 30 · 顶 1px h1 · mono 10 t2(SHEET 03/06)
         let footer_base = div()

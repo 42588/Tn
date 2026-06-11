@@ -45,8 +45,8 @@ pub(crate) type PaneId = u64;
 // 磷光 Phosphor tokens + helpers(col/cola/plate/float_panel/focus_brackets/icon)
 // live in `crate::style` — single source of truth(规范 docs/设计/磷光设计语言.md)。
 use crate::style::{
-    col, cola, icon, plate, shadow_float, shadowed, ERR_SOFT, H0, H1, H2, INFO, PH, PH_DIM,
-    R_CARD, R_CHIP, R_PANEL, SCRIM, SEAM, STATUSBAR_H, T0, T1, T2, T3, TITLEBAR_H, UI_SANS,
+    col, cola, icon, plate, shadow_float, shadowed, ERR_SOFT, H0, H1, H2, INFO, PH, PH_DIM, R_CARD,
+    R_CHIP, R_PANEL, SCRIM, SEAM, STATUSBAR_H, T0, T1, T2, T3, TITLEBAR_H, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -1766,11 +1766,7 @@ impl Workspace {
                 let snap = self.explorer.read(cx).snapshot();
                 self.explorer_states.insert(prev, snap);
             }
-            let live_ids: std::collections::HashSet<PaneId> = self
-                .panes
-                .keys()
-                .copied()
-                .collect();
+            let live_ids: std::collections::HashSet<PaneId> = self.panes.keys().copied().collect();
             self.explorer_states.retain(|id, _| live_ids.contains(id));
         }
 
@@ -2516,7 +2512,11 @@ impl Workspace {
                   danger: bool,
                   act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
             let crest = col(ui.palette_selected); // L4
-            let fg = if danger { rgb(crate::style::ERR) } else { rgb(T1) };
+            let fg = if danger {
+                rgb(crate::style::ERR)
+            } else {
+                rgb(T1)
+            };
             div()
                 .flex()
                 .flex_row()
@@ -4380,10 +4380,7 @@ impl Workspace {
                         .bg(col(ui.surface_2))
                         .border_1()
                         .border_color(rgba(H1))
-                        .hover(|s| {
-                            s.bg(rgba(crate::style::PH_SOFT))
-                                .border_color(rgba(PH_DIM))
-                        })
+                        .hover(|s| s.bg(rgba(crate::style::PH_SOFT)).border_color(rgba(PH_DIM)))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _e, _w, cx| {
@@ -4392,12 +4389,7 @@ impl Workspace {
                                 cx.notify();
                             }),
                         )
-                        .child(
-                            div()
-                                .text_size(px(16.))
-                                .text_color(rgb(T2))
-                                .child(arrow),
-                        )
+                        .child(div().text_size(px(16.)).text_color(rgb(T2)).child(arrow))
                         .child(div().text_size(px(10.)).text_color(rgb(T2)).child(label))
                 };
                 let center = div()
@@ -6191,11 +6183,8 @@ impl Render for Workspace {
                         self.explorer_states.insert(prev, snap);
                     }
                     // Drop snapshots for panes that have since been closed.
-                    let live_ids: std::collections::HashSet<PaneId> = self
-                        .panes
-                        .keys()
-                        .copied()
-                        .collect();
+                    let live_ids: std::collections::HashSet<PaneId> =
+                        self.panes.keys().copied().collect();
                     self.explorer_states.retain(|id, _| live_ids.contains(id));
                 }
                 if let Some(new_root) = self.panes.get(&focused).and_then(|v| {
@@ -6500,8 +6489,10 @@ impl Render for Workspace {
                 .gap(px(SEAM))
                 // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
                 // Width is adjustable by dragging the right edge (same look-and-feel
-                // as split-pane dividers).
-                .when(self.explorer_open, |d| {
+                // as split-pane dividers). 欢迎页(Launchpad)不常驻 Explorer —— SHEET 07
+                // 板 A 是无 Explorer 的整窗 Launchpad,中心磁贴独占主舞台(原型与真机差异
+                // 总结 P0:欢迎页隐藏 Explorer)。
+                .when(self.explorer_open && !self.tabs[active].welcome, |d| {
                     let accent = self.config.theme.ui.accent;
                     let ew = self.explorer_width;
                     d.child(

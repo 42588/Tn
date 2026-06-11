@@ -1461,147 +1461,145 @@ impl QuickTerminal {
         let rename_ime_active = self.ssh_rename.is_some();
 
         let inner = div()
-                .size_full()
-                .relative()
-                .flex()
-                .flex_col()
-                .font_family(UI_SANS)
-                .track_focus(&self.ssh_prompt_focus)
-                .on_key_down(
-                    cx.listener(|this, ev: &KeyDownEvent, _w, cx| this.on_ssh_prompt_key(ev, cx)),
-                )
-                .child(
-                    // GHOST_ 头变体:‹ 返回 + SSH 快速连接
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.))
-                        .h(px(38.))
-                        .px(px(14.))
-                        .flex_none()
-                        .bg(gpui::rgb(crate::style::L2))
-                        .border_b(px(1.))
-                        .border_color(rgba(crate::style::H1))
-                        .font_family(mono.clone())
-                        .child(self.ghost_mark())
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .font_weight(FontWeight(600.))
-                                .text_color(gpui::rgb(crate::style::T0))
-                                .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e, _w, cx| {
-                                        this.close_ssh_prompt_to_picker(cx)
-                                    }),
-                                )
-                                .child(SharedString::from("‹ SSH 快速连接")),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            div()
-                                .px(px(8.))
-                                .py(px(2.))
-                                .rounded(px(crate::style::R_CHIP))
-                                .border_1()
-                                .border_color(cola(t.ansi.yellow, 0.3))
-                                .text_size(px(10.))
-                                .text_color(col(t.ansi.yellow))
-                                .child("SSH"),
-                        ),
-                )
-                .child(
-                    // 输入井:L0 凹井 + h1 边(error = 红边)
-                    div()
-                        .mx(px(14.))
-                        .mt(px(12.))
-                        .mb(px(10.))
-                        .px(px(12.))
-                        .py(px(10.))
-                        .rounded(px(R_CARD))
-                        .border_1()
-                        .border_color(if has_error {
-                            cola(t.ansi.red, 0.50)
-                        } else {
-                            rgba(crate::style::H1)
-                        })
-                        .bg(gpui::rgb(crate::style::L0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(icon("external", 15., ui.accent))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .min_w(px(0.))
-                                .font_family(mono.clone())
-                                .text_size(px(13.))
-                                .when(!self.ssh_prompt_input.is_empty(), |d| {
-                                    d.child(
-                                        div().text_color(col(ui.foreground)).child(
-                                            SharedString::from(self.ssh_prompt_input.clone()),
-                                        ),
-                                    )
-                                })
-                                .child(
-                                    div()
-                                        .text_color(col(ui.muted))
-                                        .child(SharedString::from("▏")),
-                                )
-                                .when(self.ssh_prompt_input.is_empty(), |d| {
-                                    d.child(
-                                        div()
-                                            .ml(px(2.))
-                                            .text_color(col(ui.muted))
-                                            .child(SharedString::from(placeholder)),
-                                    )
-                                }),
-                        )
-                        .child(div().flex_1())
-                        .when_some(err_chip, |d, chip| d.child(chip))
-                        .when(!has_error, |d| {
-                            d.when_some(chips_row, |d, chips| d.child(chips))
-                        }),
-                )
-                .child(list)
-                .child(div().flex_1())
-                .child(
-                    // float-foot:mono 10 t2
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .h(px(30.))
-                        .px(px(14.))
-                        .flex_none()
-                        .border_t(px(1.))
-                        .border_color(rgba(crate::style::H1))
-                        .font_family(mono.clone())
-                        .text_size(px(10.))
-                        .text_color(gpui::rgb(crate::style::T2))
-                        .child(SharedString::from(footer)),
-                )
-                .when(rename_ime_active, |d| {
-                    d.child(
-                        canvas(
-                            |_bounds, _window, _cx| {},
-                            move |bounds, _state, window, cx| {
-                                window.handle_input(
-                                    &ime_focus,
-                                    ElementInputHandler::new(bounds, ime_entity.clone()),
-                                    cx,
-                                );
-                            },
-                        )
-                        .absolute()
-                        .size_full(),
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .font_family(UI_SANS)
+            .track_focus(&self.ssh_prompt_focus)
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, _w, cx| this.on_ssh_prompt_key(ev, cx)),
+            )
+            .child(
+                // GHOST_ 头变体:‹ 返回 + SSH 快速连接
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(38.))
+                    .px(px(14.))
+                    .flex_none()
+                    .bg(gpui::rgb(crate::style::L2))
+                    .border_b(px(1.))
+                    .border_color(rgba(crate::style::H1))
+                    .font_family(mono.clone())
+                    .child(self.ghost_mark())
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(600.))
+                            .text_color(gpui::rgb(crate::style::T0))
+                            .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _e, _w, cx| this.close_ssh_prompt_to_picker(cx)),
+                            )
+                            .child(SharedString::from("‹ SSH 快速连接")),
                     )
-                });
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded(px(crate::style::R_CHIP))
+                            .border_1()
+                            .border_color(cola(t.ansi.yellow, 0.3))
+                            .text_size(px(10.))
+                            .text_color(col(t.ansi.yellow))
+                            .child("SSH"),
+                    ),
+            )
+            .child(
+                // 输入井:L0 凹井 + h1 边(error = 红边)
+                div()
+                    .mx(px(14.))
+                    .mt(px(12.))
+                    .mb(px(10.))
+                    .px(px(12.))
+                    .py(px(10.))
+                    .rounded(px(R_CARD))
+                    .border_1()
+                    .border_color(if has_error {
+                        cola(t.ansi.red, 0.50)
+                    } else {
+                        rgba(crate::style::H1)
+                    })
+                    .bg(gpui::rgb(crate::style::L0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon("external", 15., ui.accent))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .min_w(px(0.))
+                            .font_family(mono.clone())
+                            .text_size(px(13.))
+                            .when(!self.ssh_prompt_input.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .text_color(col(ui.foreground))
+                                        .child(SharedString::from(self.ssh_prompt_input.clone())),
+                                )
+                            })
+                            .child(
+                                div()
+                                    .text_color(col(ui.muted))
+                                    .child(SharedString::from("▏")),
+                            )
+                            .when(self.ssh_prompt_input.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .ml(px(2.))
+                                        .text_color(col(ui.muted))
+                                        .child(SharedString::from(placeholder)),
+                                )
+                            }),
+                    )
+                    .child(div().flex_1())
+                    .when_some(err_chip, |d, chip| d.child(chip))
+                    .when(!has_error, |d| {
+                        d.when_some(chips_row, |d, chips| d.child(chips))
+                    }),
+            )
+            .child(list)
+            .child(div().flex_1())
+            .child(
+                // float-foot:mono 10 t2
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .h(px(30.))
+                    .px(px(14.))
+                    .flex_none()
+                    .border_t(px(1.))
+                    .border_color(rgba(crate::style::H1))
+                    .font_family(mono.clone())
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .child(SharedString::from(footer)),
+            )
+            .when(rename_ime_active, |d| {
+                d.child(
+                    canvas(
+                        |_bounds, _window, _cx| {},
+                        move |bounds, _state, window, cx| {
+                            window.handle_input(
+                                &ime_focus,
+                                ElementInputHandler::new(bounds, ime_entity.clone()),
+                                cx,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_full(),
+                )
+            });
         Some(self.ghost_frame(inner))
     }
 
@@ -1643,8 +1641,9 @@ impl QuickTerminal {
             )
     }
 
-    /// One launcher tile(SHEET 04 `.tile`):L2 + 1px h0 + r4 — 身份字形 mono 600 14
-    /// + 名 12 t0 + 副标 mono 10 t2;选中 = L4 + ph-dim 边 + 左 2px 磷光脊。
+    /// One launcher tile — 共用 [`launch_tile_shape`](crate::welcome::launch_tile_shape)
+    /// (140 宽:5 列定宽塞进 760 宽卡,5×140 + 4×8 + 2×12 ≈ 756,>5 换行),与欢迎页
+    /// 同一 tile 家族;选中态(键盘游标)交给共享壳画 L4 + ph-dim 边 + 左 2px 磷光脊。
     #[allow(clippy::too_many_arguments)]
     fn launcher_tile(
         &self,
@@ -1657,78 +1656,19 @@ impl QuickTerminal {
         cx: &mut Context<Self>,
     ) -> Div {
         let mono = SharedString::from(self.config.font().family.clone());
-        let glyph_ch = match glyph {
-            "spark" => "✻",
-            "term" => "❯",
-            "external" => "⇄",
-            "plus" => "+",
-            "chev-l" => "‹",
-            _ => "▣",
+        let card = crate::welcome::CardId {
+            name,
+            sub,
+            glyph,
+            accent,
         };
-        div()
-            .w(px(140.)) // 5 列定宽塞进 760 宽卡(5×140 + 4×8 + 2×12 ≈ 756),>5 换行
-            .flex()
-            .flex_col()
-            .gap(px(6.))
-            .pt(px(12.))
-            .px(px(12.))
-            .pb(px(10.))
-            .rounded(px(R_CARD))
-            .relative()
-            .bg(gpui::rgb(crate::style::L2))
-            .border_1()
-            .when(is_sel, |d| {
-                d.bg(gpui::rgb(crate::style::L4))
-                    .border_color(rgba(crate::style::PH_DIM))
-                    .child(
-                        div()
-                            .absolute()
-                            .left(px(-1.))
-                            .top(px(8.))
-                            .bottom(px(8.))
-                            .w(px(2.))
-                            .rounded(px(1.))
-                            .bg(gpui::rgb(crate::style::PH)),
-                    )
-            })
-            .when(!is_sel, |d| {
-                d.border_color(rgba(crate::style::H0)).hover(|s| {
-                    s.bg(gpui::rgb(crate::style::L4))
-                        .border_color(rgba(crate::style::H1))
-                })
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _e, _w, cx| {
-                    this.picker_sel = i;
-                    this.activate_sel(cx);
-                }),
-            )
-            .child(
-                // `.tg`:身份字形 mono 600 14
-                div()
-                    .font_family(mono.clone())
-                    .text_size(px(14.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(col(accent))
-                    .child(SharedString::from(glyph_ch)),
-            )
-            .child(
-                // `.tn`:sans 600 12 t0
-                div()
-                    .text_size(px(12.))
-                    .font_weight(FontWeight(600.))
-                    .text_color(gpui::rgb(crate::style::T0))
-                    .child(SharedString::from(name)),
-            )
-            .child(
-                // `.ts`:mono 10 t2 全大写(微标签节奏,契约 6)
-                div()
-                    .font_family(mono)
-                    .text_size(px(10.))
-                    .text_color(gpui::rgb(crate::style::T2))
-                    .child(SharedString::from(sub.to_uppercase())),
-            )
+        crate::welcome::launch_tile_shape(mono, &card, 140., is_sel).on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _e, _w, cx| {
+                this.picker_sel = i;
+                this.activate_sel(cx);
+            }),
+        )
     }
 }
 

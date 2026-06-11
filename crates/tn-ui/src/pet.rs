@@ -60,7 +60,9 @@ pub(crate) fn signal_command_start() {
 /// OSC 133 `D`(CommandFinished):命令结束 + 退出码。
 pub(crate) fn signal_command_end(exit: Option<i32>) {
     // 下限 0:错过 start 的孤儿 end 不把计数拖成负。
-    let _ = RUN_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| Some((n - 1).max(0)));
+    let _ = RUN_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        Some((n - 1).max(0))
+    });
     LAST_EXIT_MS.store(now_ms(), Ordering::Relaxed);
     LAST_EXIT_KIND.store(
         match exit {
@@ -472,13 +474,11 @@ impl PetView {
         };
         // 动画/上下文 tick:240ms。变化才 notify(空闲时零重绘)。
         let exec = cx.background_executor().clone();
-        cx.spawn(async move |this, cx| {
-            loop {
-                exec.timer(Duration::from_millis(240)).await;
-                let alive = this.update(cx, |pet, cx| pet.tick(cx)).is_ok();
-                if !alive {
-                    break;
-                }
+        cx.spawn(async move |this, cx| loop {
+            exec.timer(Duration::from_millis(240)).await;
+            let alive = this.update(cx, |pet, cx| pet.tick(cx)).is_ok();
+            if !alive {
+                break;
             }
         })
         .detach();
@@ -690,7 +690,11 @@ impl PetView {
                 }
                 // 尾摆:idle 慢摆 1px,running 快摆 2px(规则)。
                 if is_tail && motion {
-                    let amp = if self.ctx == PetContext::Running { 2.0 } else { 1.0 };
+                    let amp = if self.ctx == PetContext::Running {
+                        2.0
+                    } else {
+                        1.0
+                    };
                     dy += if self.phase { -amp } else { amp };
                 }
                 // 小跑步态:脚掌前后交替(规则)。drag 时腿下垂。
@@ -741,28 +745,25 @@ pub(crate) fn sprite_block(breed: Breed, scale: f32) -> impl IntoElement {
         })
         .collect();
     let cell = CELL * scale;
-    div()
-        .w(px(14.0 * cell))
-        .h(px(9.0 * cell))
-        .child(
-            canvas(
-                |_b, _w, _cx| {},
-                move |bounds, _state, window, _cx| {
-                    let ox = f32::from(bounds.origin.x);
-                    let oy = f32::from(bounds.origin.y);
-                    for (x, y, color) in &cells {
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(ox + *x as f32 * cell), px(oy + *y as f32 * cell)),
-                                size: size(px(cell), px(cell)),
-                            },
-                            rgb(*color),
-                        ));
-                    }
-                },
-            )
-            .size_full(),
+    div().w(px(14.0 * cell)).h(px(9.0 * cell)).child(
+        canvas(
+            |_b, _w, _cx| {},
+            move |bounds, _state, window, _cx| {
+                let ox = f32::from(bounds.origin.x);
+                let oy = f32::from(bounds.origin.y);
+                for (x, y, color) in &cells {
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(ox + *x as f32 * cell), px(oy + *y as f32 * cell)),
+                            size: size(px(cell), px(cell)),
+                        },
+                        rgb(*color),
+                    ));
+                }
+            },
         )
+        .size_full(),
+    )
 }
 
 impl Render for PetView {
@@ -791,7 +792,10 @@ impl Render for PetView {
         let vh = f32::from(window.viewport_size().height);
         // 栖位钳制在窗内(拖拽换窝后窗口缩小也不丢狗)。
         let right = self.state.right.clamp(2.0, (vw - BOX_W - 2.0).max(2.0));
-        let bottom = self.state.bottom.clamp(STATUSBAR_H + 2.0, (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0));
+        let bottom = self.state.bottom.clamp(
+            STATUSBAR_H + 2.0,
+            (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0),
+        );
 
         let cells = self.frame_cells();
         let dragging = self.drag.is_some();
@@ -1051,9 +1055,12 @@ impl Render for PetView {
                                 drag.moved = true;
                             }
                             // 鼠标右移 → right 减小;下移 → bottom 减小。
-                            pet.state.right = (drag.start_pos.0 - dx).clamp(2.0, (vw - BOX_W - 2.0).max(2.0));
-                            pet.state.bottom = (drag.start_pos.1 - dy)
-                                .clamp(STATUSBAR_H + 2.0, (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0));
+                            pet.state.right =
+                                (drag.start_pos.0 - dx).clamp(2.0, (vw - BOX_W - 2.0).max(2.0));
+                            pet.state.bottom = (drag.start_pos.1 - dy).clamp(
+                                STATUSBAR_H + 2.0,
+                                (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0),
+                            );
                             cx.notify();
                         }
                     }))

@@ -2940,7 +2940,7 @@ impl Render for TerminalView {
                 inner
                     .flex()
                     .flex_col()
-                    .w(px(420.))
+                    .w(px(460.)) // SHEET 06/07 SSH 卡:浮层家族 460 宽
                     .rounded(px(crate::style::R_PANEL))
                     .overflow_hidden()
                     .border_1()
@@ -2958,45 +2958,43 @@ impl Render for TerminalView {
                 .bg(rgba(crate::style::SCRIM))
                 .child(panel)
         };
-        let card_header = |icon_name: &'static str, accent: Rgb, title: &str, subtitle: &str| {
+        // SHEET 06/07 `.float-head`:38 高 · L4 顶面 · 底 1px h1 · mono — 彩色字形记号
+        // + 标题 + 右侧身份 chip(原副标信息)。SSH 过程/失败/TOFU/密码/联网卡共用同一
+        // 浮层头语法(原型与真机差异总结:SSH 卡片沿用浮层家族,不再用图标徽章头)。
+        let card_header = |icon_name: &'static str, accent: Rgb, title: &str, chip: &str| {
             div()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(11.))
-                .p(px(14.))
+                .gap(px(10.))
+                .h(px(38.))
+                .px(px(14.))
+                .flex_none()
+                .bg(gpui::rgb(crate::style::L4))
+                .border_b(px(1.))
+                .border_color(rgba(crate::style::H1))
+                .font_family(self.font_family.clone())
+                .child(crate::style::icon(icon_name, 14., accent))
                 .child(
                     div()
-                        .w(px(34.))
-                        .h(px(34.))
-                        .flex_none()
-                        .rounded(px(9.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .bg(cola(accent, 0.16))
-                        .child(crate::style::icon(icon_name, 17., accent)),
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight(600.))
+                        .text_color(col(self.ui_fg))
+                        .child(SharedString::from(title.to_string())),
                 )
+                .child(div().flex_1())
                 .child(
+                    // 右侧身份 chip(`.chip`):accent 边 + soft 底 + accent 字,mono 10
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .min_w(px(0.))
-                        .child(
-                            div()
-                                .text_size(px(13.5))
-                                .font_weight(FontWeight(600.))
-                                .text_color(col(self.ui_fg))
-                                .child(SharedString::from(title.to_string())),
-                        )
-                        .child(
-                            div()
-                                .font_family(self.font_family.clone())
-                                .text_size(px(11.))
-                                .text_color(col(self.ui_muted))
-                                .child(SharedString::from(subtitle.to_string())),
-                        ),
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(crate::style::R_CHIP))
+                        .border_1()
+                        .border_color(cola(accent, 0.3))
+                        .bg(cola(accent, 0.10))
+                        .text_size(px(10.))
+                        .text_color(col(accent))
+                        .child(SharedString::from(chip.to_string())),
                 )
         };
 
@@ -3108,7 +3106,6 @@ impl Render for TerminalView {
                         "正在连接",
                         &self.ssh_target,
                     ))
-                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(steps_col)
                     .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
@@ -3180,7 +3177,6 @@ impl Render for TerminalView {
                 card_chrome(
                     div()
                         .child(card_header("alert", self.ui_red, title, &self.ssh_target))
-                        .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                         .child(
                             div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
                                 .child(SharedString::from(body_text)),
@@ -3347,7 +3343,6 @@ impl Render for TerminalView {
             card_chrome(
                 div()
                     .child(card_header("lock", self.ui_accent, "输入密码", &p.prompt))
-                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .when_some(p.error.clone(), |d, err| {
                         d.child(
                             div()
@@ -3428,7 +3423,6 @@ impl Render for TerminalView {
             card_chrome(
                 div()
                     .child(card_header("shield", self.ui_accent, "首次连接此主机", &hk.host))
-                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div().px(px(14.)).pt(px(11.)).text_size(px(12.)).text_color(col(self.ui_muted))
                             .child("你是第一次连接此主机。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
@@ -3556,7 +3550,6 @@ impl Render for TerminalView {
                         "Agent 要联网",
                         &agent_label,
                     ))
-                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div()
                             .px(px(14.))
