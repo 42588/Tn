@@ -552,9 +552,11 @@ impl WelcomeView {
 
     /// Back tile shown in the WSL sub-grid → return to the root launchpad.
     fn back_tile(&self, cx: &mut Context<Self>) -> Div {
+        // SHEET 07 A2:返回 tile —— 字形 ‹(中性,不占身份色)· 标题「返回」· 副标
+        // 「回到启动器 · Esc」;keyboard order 永远第一位(Esc 等效)。
         let card = CardId {
-            name: "‹ 返回".into(),
-            sub: "回到启动器".into(),
+            name: "返回".into(),
+            sub: "回到启动器 · Esc".into(),
             glyph: "chev-l",
             accent: self.config.theme.ui.muted,
         };

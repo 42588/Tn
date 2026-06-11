@@ -19,6 +19,7 @@
   .ltile .s{ font:9px var(--mono); color:var(--t2); }
   .ltile.add{ border-style:solid; border-color:var(--h0); background:transparent; align-items:center; justify-content:center; gap:4px; }
   .ltile.add .g{ color:var(--t3); } .ltile.add .n{ color:var(--t2); font-weight:500; }
+  .ltile.back .g{ color:var(--t2); } .ltile.back .n{ color:var(--t1); }   /* 返回 tile:中性灰,不抢身份色 */
   .wperch{ position:absolute; right:46px; bottom:48px; display:flex; flex-direction:column; align-items:center; z-index:3; }
   .row2{ display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap; }
   /* SSH 过程 */
@@ -37,7 +38,7 @@
 
 <div class="sheet-head">
   <div class="no">TN · PHOSPHOR — SHEET 07 / 07</div>
-  <h1>状态页 <em>STATES — 欢迎页 · 空板面 · 命令块三态 · SSH 过程态</em></h1>
+  <h1>状态页 <em>STATES — 欢迎页 · WSL 二级启动器 · 空板面 · 命令块三态 · SSH 过程态</em></h1>
   <div class="refs">实现入口 <b>crates/tn-ui/src/welcome.rs · block_view.rs · workspace.rs(ssh)</b> · 空状态克制:无 hero 营销面,无大渐变</div>
 </div>
 <div class="sheet-rule"></div>
@@ -89,6 +90,58 @@
       </div>
     </div>
     <div class="note">磁贴 = 与幽灵终端启动器同一构件(tile 语法全局唯一);「添加 Agent」入口保留现有表单流(名称/命令/sidecar/网络/颜色)。最近目录不造假数据,真实来源接入后再上屏。</div>
+  </div>
+</div>
+
+<!-- ══════════ A2 · WSL 二级启动器(Launchpad 下钻态) ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">A2</span><span class="t">WSL 二级启动器</span><span class="d">WSL tile 下钻 → 同一 Launchpad 换装:返回 tile + 发行版 tile;沿用 .ltile 语法,无独立子页</span></div>
+  <div class="board-body">
+    <div class="win">
+      <div class="titlebar">
+        <div class="brand"><span class="mark"></span><span class="name">TN<s>_</s></span><span class="chev">▾</span></div>
+        <div class="tabs"><div class="tab on"><span class="gl" style="color:var(--t3)">▣</span> 欢迎</div><div class="tab-new">+</div></div>
+        <div class="wctls"><div class="wbtn">─</div><div class="wbtn">▢</div><div class="wbtn x">✕</div></div>
+      </div>
+      <div class="canvas" style="height:470px">
+        <div class="plate" style="flex:1; position:relative">
+          <div style="position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px">
+            <div class="hero-mark"></div>
+            <div style="text-align:center">
+              <div style="font:600 26px var(--mono); color:var(--t0)">TN<span style="color:var(--ph)">_</span></div>
+              <div style="font:11px var(--mono); color:var(--t2); margin-top:6px">选择一个 WSL 发行版 — <span style="color:var(--t1)">‹ 返回</span> 回到启动器</div>
+            </div>
+            <div class="launch">
+              <div class="ltile back"><span class="g">‹</span><span class="n">返回</span><span class="s">回到启动器 · ESC</span></div>
+              <div class="ltile on"><span class="g" style="color:var(--info)">❯</span><span class="n">Ubuntu</span><span class="s">UBUNTU</span></div>
+              <div class="ltile"><span class="g" style="color:var(--info)">❯</span><span class="n">AlmaLinux-9</span><span class="s">ALMALINUX-9</span></div>
+            </div>
+            <div style="display:flex; gap:18px; font:10px var(--mono); color:var(--t2); margin-top:6px">
+              <span><span class="kbd">Ctrl+Shift+P</span> 命令面板</span>
+              <span><span class="kbd">Ctrl+Shift+N</span> 分屏会话</span>
+              <span><span class="kbd">Alt+`</span> 幽灵终端</span>
+            </div>
+          </div>
+          <div class="wperch">
+            <img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="168" height="144" alt="golden"/>
+            <div class="shelf" style="width:180px"></div>
+            <div style="font:9px var(--mono); color:var(--t3); margin-top:6px">GOLDEN · IDLE(欢迎页 2× 形态)</div>
+          </div>
+        </div>
+      </div>
+      <div class="statusbar">
+        <div class="sb-seg"><span class="sb-dot"></span><span class="live">3 SESSIONS</span></div>
+        <div class="sb-spring"></div>
+        <div class="sb-seg">TN DARK</div>
+        <div class="sb-seg" style="color:var(--t1)"><span class="sb-dot idle"></span><span>GOLDEN</span></div>
+      </div>
+    </div>
+    <div class="note">
+      下钻不是新页面:WSL tile 点击后,同一 Launchpad 把磁贴行换成「<b>返回</b> + 各发行版」,hero/副标/kbd 提示保持原位 —— 与幽灵终端的 WSL 下钻(SHEET 04 头部 <b>‹</b> 返回)同源。<br/>
+      <b>返回 tile</b>:字形 ‹(t2 中性,不占身份色)· 标题「返回」· 副标「回到启动器 · ESC」· keyboard order 永远第一位(方向键/Tab 起点,Esc 等效)。<br/>
+      <b>发行版 tile</b>:沿用 <b>.ltile</b>(150 宽 · ❯ 字形 · WSL 紫身份色 accent-alt · 副标 = 发行版名大写);选中 = L4 + 2px 左脊。<br/>
+      <b>状态栏</b>:从已有工作区进入 → <b>N SESSIONS</b>(磷光实点,区别于新标签欢迎页的 <b>NO SESSION</b> 灰点);单发行版时跳过本页直接启动。
+    </div>
   </div>
 </div>
 
