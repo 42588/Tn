@@ -120,10 +120,17 @@ pub(crate) struct CardId {
 /// Card identity for a launchable shell/agent profile (Agent / pwsh / …).
 pub(crate) fn profile_card(t: &tn_config::Theme, p: &Profile, reg: &AgentRegistry) -> CardId {
     let agent = launch_agent_of(p, reg);
+    // 字形按身份给:Claude ✳ / Codex ◆ / 通用 agent ⟡ / shell ❯(差异总结 4-4)。
+    let glyph = match agent.as_ref().map(|a| a.as_str()) {
+        Some("claude") => "spark-claude",
+        Some("codex") => "spark-codex",
+        Some(_) => "spark",
+        None => "term",
+    };
     CardId {
         name: p.name.clone(),
         sub: launch_tile_sub(p, agent.as_ref(), reg),
-        glyph: if agent.is_some() { "spark" } else { "term" },
+        glyph,
         accent: launch_tile_accent(t, p, agent.as_ref(), reg),
     }
 }
@@ -133,7 +140,9 @@ pub(crate) fn wsl_card(t: &tn_config::Theme, n: usize) -> CardId {
     CardId {
         name: "WSL".into(),
         sub: format!("{n} 个发行版"),
-        glyph: "term",
+        // SHEET 04/07-A 的 WSL 字形 ⌬ + info 蓝(accent_alt);07-A2 注记「紫」
+        // 与其 HTML(info)相悖,按 HTML 多数定 info(差异总结 §9 已定夺)。
+        glyph: "wsl",
         accent: t.ui.accent_alt,
     }
 }
@@ -144,7 +153,9 @@ pub(crate) fn ssh_card(t: &tn_config::Theme) -> CardId {
         name: "SSH".into(),
         sub: "快速连接".into(),
         glyph: "external",
-        accent: t.ui.accent,
+        // SSH 身份 = warn 琥珀(SHEET 04 `.tile ⇄`/06 `.gi`),取主题 ansi.yellow
+        // (磷光主题里即 warn #E5C07B),不再挪用磷光 accent(差异总结 4-4)。
+        accent: t.ansi.yellow,
     }
 }
 
@@ -209,6 +220,8 @@ pub(crate) enum LaunchRow {
     Profile(usize),
     DrillWsl,
     SshPrompt,
+    /// 宠物设置入口(仅命令面板追加;键盘可达性规则 + SHEET 06-A「宠物设置」行)。
+    PetSettings,
 }
 
 /// The rows to show at the current level, filtered by `query` (case-insensitive
@@ -250,6 +263,13 @@ pub(crate) fn row_card(
         LaunchRow::Profile(i) => profile_card(t, &profiles[*i], reg),
         LaunchRow::DrillWsl => wsl_card(t, wsl_distros(profiles).len()),
         LaunchRow::SshPrompt => ssh_card(t),
+        // SHEET 06-A:⌂ t3 中性字形 + SETTINGS 来源 tag。
+        LaunchRow::PetSettings => CardId {
+            name: "宠物设置".into(),
+            sub: "SETTINGS".into(),
+            glyph: "pet",
+            accent: t.ui.muted,
+        },
     }
 }
 
@@ -273,13 +293,29 @@ pub(crate) fn title_case_hotkey(s: &str) -> String {
 /// The identity glyph char for a [`CardId::glyph`] key — the mono "会话所有者" 记号
 /// shared by every launch surface (welcome / ghost / split), so a profile reads the
 /// same on all three.
+/// Agent 身份字形(SHEET 01/02/04/06/07 一表):Claude ✳ · Codex ◆ · 其余 ⟡。
+/// tab 字形、agent 头像与磁贴/面板行共用,身份字形不再各处漂移(差异总结 1-3/2-5)。
+pub(crate) fn agent_glyph_ch(id: &str) -> &'static str {
+    match id {
+        "claude" => "✳",
+        "codex" => "◆",
+        _ => "⟡",
+    }
+}
+
 pub(crate) fn launch_glyph_ch(glyph: &str) -> &'static str {
+    // 字形身份表(二轮差异总结 4-4/P1):pwsh ❯ · WSL ⌬ · SSH ⇄ · Claude ✳ ·
+    // Codex ◆ · 通用 agent ⟡(SHEET 02-B amark.gen)。
     match glyph {
-        "spark" => "✻",
+        "spark" => "⟡",
+        "spark-claude" => "✳",
+        "spark-codex" => "◆",
         "term" => "❯",
+        "wsl" => "⌬",
         "external" => "⇄",
         "plus" => "+",
         "chev-l" => "‹",
+        "pet" => "⌂",
         _ => "▣",
     }
 }
@@ -376,8 +412,6 @@ pub struct WelcomeView {
     profiles: Vec<Profile>,
     /// Drilled into the WSL group's distro sub-grid (vs the root launchpad).
     wsl_open: bool,
-    /// 当前宠物品种(欢迎页 2× 形态;`None` = 宠物隐藏/关闭)。由 workspace 喂入。
-    pet_breed: Option<crate::pet::Breed>,
     focus_handle: FocusHandle,
 }
 
@@ -387,14 +421,8 @@ impl WelcomeView {
             config,
             profiles,
             wsl_open: false,
-            pet_breed: None,
             focus_handle: cx.focus_handle(),
         }
-    }
-
-    /// workspace 每帧同步:宠物品种(SHEET 07 欢迎页 2× 形态)。
-    pub(crate) fn set_pet_breed(&mut self, breed: Option<crate::pet::Breed>) {
-        self.pet_breed = breed;
     }
 
     // `tile_accent` / `tile_sub` / agent detection now live as module-level free fns
@@ -733,40 +761,9 @@ impl Render for WelcomeView {
             .child(tiles)
             .child(hints);
 
-        // 宠物 2× 形态(右下栖位 + 岗台 + 标签,SHEET 07 `.wperch`)。
-        let perch = self.pet_breed.map(|breed| {
-            div()
-                .absolute()
-                .right(px(46.))
-                .bottom(px(52.))
-                .flex()
-                .flex_col()
-                .items_center()
-                .child(crate::pet::sprite_block(breed, 2.0))
-                .child(
-                    // 岗台:1px h1 + 左 28px 磷光点睛
-                    div().w(px(180.)).h(px(1.)).bg(rgba(H1)).relative().child(
-                        div()
-                            .absolute()
-                            .left(px(0.))
-                            .top(px(0.))
-                            .w(px(28.))
-                            .h(px(1.))
-                            .bg(rgba(PH_DIM)),
-                    ),
-                )
-                .child(
-                    div()
-                        .mt(px(6.))
-                        .font_family(mono.clone())
-                        .text_size(px(9.))
-                        .text_color(rgb(T3))
-                        .child(SharedString::from(format!(
-                            "{} · IDLE(欢迎页 2× 形态)",
-                            breed.tag()
-                        ))),
-                )
-        });
+        // 宠物 2× 形态由 workspace 级 PetView 以 on_welcome 形态渲染(活状态机 +
+        // 完整交互);此处不再画静态贴图(二轮差异总结 §8:欢迎页死贴图、标签
+        // 硬编码 IDLE 与状态栏撞车的修复)。
 
         // 磷光板面:不透明 L1 基面 + 1px 发丝边(plate 范式,零投影)。
         let inner = div()
@@ -776,8 +773,7 @@ impl Render for WelcomeView {
             .overflow_hidden()
             .rounded(px(R_PANEL - 1.))
             .bg(col(ui.surface_1))
-            .child(welcome)
-            .when_some(perch, |d, p| d.child(p));
+            .child(welcome);
         plate(inner, false)
     }
 }

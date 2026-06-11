@@ -341,7 +341,10 @@ fn spawn_quick_terminal(cx: &mut App, config: Arc<tn_config::Loaded>) {
             is_minimizable: false,
             focus: false,
             show: false,
-            window_background: WindowBackgroundAppearance::Transparent,
+            // 不透明:gpui 0.2 Windows 的 Transparent 是 DWM accent 渐变(发白
+            // 「材质」),不是逐像素透明 —— 真机白底暴露的根因(差异总结 §6)。
+            // 窗形由 set_ghost_region 裁顶垂形,卡片填满窗体,零未绘制区。
+            window_background: WindowBackgroundAppearance::Opaque,
             ..Default::default()
         },
         move |_window, cx| cx.new(|cx| QuickTerminal::new(cx, win_cfg.clone())),

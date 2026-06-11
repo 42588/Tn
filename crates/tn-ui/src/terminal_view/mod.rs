@@ -508,6 +508,9 @@ pub struct TerminalView {
     // snapshot, polled off-thread from the agent's session log. `AgentId` is the
     // open identity resolved through the registry — no closed enum.
     agent: Option<AgentId>,
+    /// Hosted inside the ghost terminal (SHEET 04):幽灵窗自带 GHOST_ 头,
+    /// shell 板头由幽灵头取代(agent 头保留 — 用量环不可丢)。
+    ghost_chrome: bool,
     usage: Option<AiUsage>,
     /// Realtime event state from external/sidecar adapters. Built-in log-only
     /// adapters leave these empty; the header renders them only when present.
@@ -997,6 +1000,7 @@ impl TerminalView {
             cursor_gliding: false,
             scrollbar_drag: None,
             agent,
+            ghost_chrome: false,
             usage: None,
             agent_status: None,
             agent_model: None,
@@ -1689,6 +1693,18 @@ impl TerminalView {
             Some(s) => s.to_string(),
             None => shell_name_of(&self.program),
         }
+    }
+
+    /// This pane hosts an agent session (vs a plain shell).
+    pub fn is_agent(&self) -> bool {
+        self.agent.is_some()
+    }
+
+    /// Mark this pane as ghost-terminal hosted: the ghost window draws its own
+    /// GHOST_ head, so the plain-shell pane header is suppressed (agent header
+    /// stays — it carries the usage ring). 差异总结 4-3。
+    pub fn set_ghost_chrome(&mut self, on: bool) {
+        self.ghost_chrome = on;
     }
 
     /// The latest OSC window title for this session, if the program set one.

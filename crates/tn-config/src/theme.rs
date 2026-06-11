@@ -166,9 +166,11 @@ pub struct AgentColors {
 
 impl Default for AgentColors {
     fn default() -> Self {
+        // 磷光身份色(与 tn-dark.toml [agents] 同值)。曾是 Tokyo 调
+        // #F0916D/#73DACA,主题缺 [agents] 段时把旧色漏到真机(差异总结 §1)。
         Self {
-            claude: Color::new(0xF0, 0x91, 0x6D),
-            codex: Color::new(0x73, 0xDA, 0xCA),
+            claude: Color::new(0xC9, 0xA8, 0xFF),
+            codex: Color::new(0x6F, 0xB3, 0xE8),
             by_id: std::collections::HashMap::new(),
         }
     }
@@ -256,18 +258,18 @@ mod tests {
         assert_eq!(a.by_id.len(), 1); // only the non-builtin key lands in by_id
                                       // An agent with no theme entry → None (caller uses the descriptor default).
         assert_eq!(a.accent_for("aider"), None);
-        // Defaults still hold when only builtins are present.
+        // Defaults still hold when only builtins are present(磷光身份色)。
         let d = AgentColors::default();
-        assert_eq!(d.accent_for("claude"), Some(Color::new(0xF0, 0x91, 0x6D)));
+        assert_eq!(d.accent_for("claude"), Some(Color::new(0xC9, 0xA8, 0xFF)));
         assert_eq!(d.accent_for("gemini"), None);
     }
 
     #[test]
     fn ansi_index_order() {
         let rgb = Theme::tn_dark().ansi.as_rgb();
-        assert_eq!(rgb[0], (0x15, 0x16, 0x1E)); // black
-        assert_eq!(rgb[1], (0xF7, 0x76, 0x8E)); // red
-        assert_eq!(rgb[15], (0xC0, 0xCA, 0xF5)); // bright white
+        assert_eq!(rgb[0], (0x1A, 0x20, 0x30)); // black(磷光)
+        assert_eq!(rgb[1], (0xE8, 0x70, 0x7E)); // red = err
+        assert_eq!(rgb[15], (0xEA, 0xF0, 0xFB)); // bright white = t0
     }
 
     #[test]

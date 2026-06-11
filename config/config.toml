@@ -49,7 +49,7 @@ id = "agent"
 label = "Agent"
 short = "Agent"
 aliases = ["agent"]
-accent = "#7AA2F7"
+accent = "#5BE7C4"   # 通用 agent 身份色 = 磷光(具名 agent 走主题 [agents])
 glyph = "spark"
 capabilities = []
 

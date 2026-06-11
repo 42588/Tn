@@ -84,8 +84,10 @@ fn human_size(bytes: u64) -> String {
 
 /// Code font size (px) — mockup `.code` font-size (also the mouse char-width probe).
 const CODE_FS: f32 = 12.5;
-/// 代码区底:L1 凹井(比 L3 浮板深两档,与输入井同语法 — 磷光契约 1 不透明)。
-const CODE_BG: u32 = crate::style::L1;
+/// 代码区底 = L3 浮板面(SHEET 03 `.code{background:var(--l3)}`):浮层正文与
+/// 浮层同海拔,File/Diff 两态同底。曾用 L1「凹井」,被二轮像素复审判为海拔断裂
+/// (差异总结 3-5/3-6:头 L4 + 正文 L1 差两级,且 Diff 态又是另一色)。
+const CODE_BG: u32 = crate::style::L3;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -4863,6 +4865,25 @@ fn paint_file_preview(
         strikethrough: None,
     };
 
+    // 当前行高亮(SHEET 03 板 B `.cl.cur-line`):编辑态光标行整行 L4 底,
+    // 行号转磷光(见下方 gutter 着色)。画在查找命中/选区/文字之下。
+    if editing {
+        let cur_line_bg: Hsla = gpui::rgb(crate::style::L4).into();
+        for visual_row in layout.visual_range_of_row(caret.0) {
+            if !pre.rows.contains(&visual_row) {
+                continue;
+            }
+            let y = px(top + row_top(visual_row, scroll_y, ROW_H));
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(bounds.origin.x, y),
+                    size: size(bounds.size.width, line_h),
+                },
+                cur_line_bg,
+            ));
+        }
+    }
+
     if let Some(row) = file_jump_highlight {
         for visual_row in layout.visual_range_of_row(row) {
             if !pre.rows.contains(&visual_row) {
@@ -5081,7 +5102,13 @@ fn paint_file_preview(
         } else {
             String::new()
         };
-        let run = mk_run(&label, gutter_color);
+        // 编辑态光标行行号 = 磷光(SHEET 03 `.cur-line .ln{color:var(--ph)}`)。
+        let ln_color = if editing && visual.logical_row == caret.0 {
+            accent
+        } else {
+            gutter_color
+        };
+        let run = mk_run(&label, ln_color);
         let shaped = window
             .text_system()
             .shape_line(label.into(), fs, &[run], None);
@@ -5536,7 +5563,6 @@ impl Render for QuickLook {
         }
         let ui = self.config.theme.ui;
         let ansi = self.config.theme.ansi;
-        let agent_claude = self.config.theme.agents.claude;
 
         // ── .vh header:file icon + path(dir muted / name accent) + 已改动 badge + Diff/File tabset ──
         let rel = self
@@ -5593,6 +5619,44 @@ impl Render for QuickLook {
             .child(pill("File", self.tab == Tab::File, Tab::File))
             .child(pill("Diff", self.tab == Tab::Diff, Tab::Diff));
 
+        // 头部小 chip(SHEET 03:RS / UTF-8 · LF / 218 L 同款):mono 10 t1 + h1 边。
+        let meta_chip = |text: String| {
+            div()
+                .px(px(8.))
+                .py(px(2.))
+                .rounded(px(crate::style::R_CHIP))
+                .border_1()
+                .border_color(rgba(crate::style::H1))
+                .font_family(SharedString::from(self.config.font().family.clone()))
+                .text_size(px(10.))
+                .text_color(gpui::rgb(crate::style::T1))
+                .child(SharedString::from(text))
+        };
+        // 文件元信息(预览态 chips):扩展名 / 编码·换行 / 行数(差异总结 3-13)。
+        let ext_label = name
+            .rsplit_once('.')
+            .map(|(_, e)| e.to_ascii_uppercase())
+            .filter(|e| !e.is_empty() && e.len() <= 8);
+        let format_label = self.text_format.map(|f| {
+            let enc = match f.encoding {
+                TextEncoding::Utf8 => "UTF-8",
+                TextEncoding::Utf8Bom => "UTF-8 BOM",
+                TextEncoding::Utf16Le => "UTF-16 LE",
+                TextEncoding::Utf16Be => "UTF-16 BE",
+                TextEncoding::Gbk => "GBK",
+            };
+            let eol = match f.newline {
+                NewlineStyle::Lf => "LF",
+                NewlineStyle::Crlf => "CRLF",
+            };
+            format!("{enc} · {eol}")
+        });
+        let line_count_label = match &self.file_data {
+            QuickLookData::Text { lines, .. } => Some(format!("{} L", lines.len())),
+            _ => None,
+        };
+        let show_meta = !self.editing && self.tab == Tab::File;
+
         // SHEET 03 float-head:高 38 · L4 顶面 · 底 1px h1 · mono 12。
         let header = div()
             .flex()
@@ -5607,22 +5671,77 @@ impl Render for QuickLook {
             .bg(col(ui.palette_selected)) // L4(不透明,契约 1)
             .border_b(px(1.))
             .border_color(rgba(crate::style::H1))
-            .child(icon("file", 14., ui.accent))
-            // `.path`:dir = t2,name = t0 bold;mono
+            // SHEET 03:头部左标 = 磷光 ▪(差异总结 3-11,不再用文件图标)
             .child(
                 div()
                     .font_family(SharedString::from(self.config.font().family.clone()))
-                    .text_color(gpui::rgb(crate::style::T2))
-                    .child(SharedString::from(dir)),
+                    .text_color(gpui::rgb(crate::style::PH))
+                    .child("▪"),
+            )
+            // `.crumb`:层级 t3 + ›,文件名 t0 bold(差异总结 3-12)
+            .child(
+                div()
+                    .font_family(SharedString::from(self.config.font().family.clone()))
+                    .text_color(gpui::rgb(crate::style::T3))
+                    .child(SharedString::from(dir.replace('/', " › "))),
             )
             .child(
                 div()
                     .font_family(SharedString::from(self.config.font().family.clone()))
                     .text_color(gpui::rgb(crate::style::T0))
                     .font_weight(gpui::FontWeight::BOLD)
-                    .child(SharedString::from(name)),
+                    .child(SharedString::from(name.clone())),
             )
+            // 编辑态:`EDIT` 磷光 chip 紧跟路径(SHEET 03 板 B;差异总结 3-14 —
+            // 不再用 claude 橙「编辑中」)。
+            .when(self.editing, |d| {
+                d.child(
+                    div()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(crate::style::R_CHIP))
+                        .border_1()
+                        .border_color(rgba(crate::style::PH_DIM))
+                        .bg(rgba(crate::style::PH_SOFT))
+                        .font_family(SharedString::from(self.config.font().family.clone()))
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(crate::style::PH))
+                        .child("EDIT"),
+                )
+            })
             .child(div().flex_1())
+            .when(show_meta, |mut d| {
+                if let Some(e) = ext_label.clone() {
+                    d = d.child(meta_chip(e));
+                }
+                if let Some(f) = format_label.clone() {
+                    d = d.child(meta_chip(f));
+                }
+                if let Some(l) = line_count_label.clone() {
+                    d = d.child(meta_chip(l));
+                }
+                d
+            })
+            // Diff 态:+N / −N 统计 chips(SHEET 03 板 C;差异总结 3-15)。
+            .when(self.tab == Tab::Diff && !self.diff.is_empty(), |d| {
+                let adds = self.diff.iter().filter(|r| r.kind == DiffKind::Add).count();
+                let dels = self.diff.iter().filter(|r| r.kind == DiffKind::Del).count();
+                let stat = |text: String, color: tn_config::Color| {
+                    div()
+                        .px(px(8.))
+                        .py(px(2.))
+                        .rounded(px(crate::style::R_CHIP))
+                        .border_1()
+                        .border_color(cola(color, 0.30))
+                        .bg(cola(color, 0.12))
+                        .font_family(SharedString::from(self.config.font().family.clone()))
+                        .text_size(px(10.))
+                        .text_color(col(color))
+                        .child(SharedString::from(text))
+                };
+                d.child(stat(format!("+{adds}"), ansi.green))
+                    .child(stat(format!("-{dels}"), ansi.red))
+            })
             // mockup .vh .by:编辑态 = 「编辑中(●)」,预览态有未提交改动 = 「已改动」(claude)
             .when(
                 self.editing
@@ -5631,32 +5750,34 @@ impl Render for QuickLook {
                     || self.save_conflict.is_some()
                     || self.save_error.is_some(),
                 |d| {
-                    let (label, color) = if self.save_in_flight {
-                        ("保存中", ansi.yellow)
+                    // 语义色按磷光表(差异总结 3-14):未保存/已改动 = warn 琥珀,
+                    // 冲突/失败 = err;编辑态本身由左侧 EDIT 磷光 chip 表达。
+                    let badge = if self.save_in_flight {
+                        Some(("保存中", ansi.yellow))
                     } else if self.save_conflict.is_some() {
-                        ("保存冲突", ansi.red)
+                        Some(("保存冲突", ansi.red))
                     } else if self.save_error.is_some() {
-                        ("保存失败", ansi.red)
+                        Some(("保存失败", ansi.red))
                     } else if self.editing {
-                        if self.dirty {
-                            ("编辑中 ●", agent_claude)
-                        } else {
-                            ("编辑中", agent_claude)
-                        }
+                        self.dirty.then_some(("● 未保存", ansi.yellow))
                     } else {
-                        ("已改动", agent_claude)
+                        Some(("已改动", ansi.yellow))
                     };
-                    d.child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(5.)) // §16 .vh .by gap 5
-                            .text_size(px(11.))
-                            .text_color(col(color))
-                            .child(icon("pen", 13., color))
-                            .child(label),
-                    )
+                    d.when_some(badge, |d, (label, color)| {
+                        d.child(
+                            div()
+                                .px(px(8.))
+                                .py(px(2.))
+                                .rounded(px(crate::style::R_CHIP))
+                                .border_1()
+                                .border_color(cola(color, 0.30))
+                                .bg(cola(color, 0.12))
+                                .font_family(SharedString::from(self.config.font().family.clone()))
+                                .text_size(px(10.))
+                                .text_color(col(color))
+                                .child(label),
+                        )
+                    })
                 },
             )
             .child(tabset)
@@ -6272,7 +6393,8 @@ impl Render for QuickLook {
                 .child(SharedString::from(format!("RAIL · {}/{}", i + 1, n)))
         });
         let footer = if self.editing {
-            // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销
+            // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销 ·
+            // 右端 LN·COL 磷光读数(SHEET 03 板 B `.tag ph`;差异总结 3-18)。
             footer_base
                 .child(kcap("Ctrl+S"))
                 .child("保存 ·")
@@ -6287,6 +6409,19 @@ impl Render for QuickLook {
                 .child("复制粘贴 ·")
                 .child(kcap("Ctrl+Z"))
                 .child("撤销")
+                .child(div().w(px(6.)))
+                .child(
+                    div()
+                        .font_family(SharedString::from(self.config.font().family.clone()))
+                        .text_size(px(10.))
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(gpui::rgb(crate::style::PH))
+                        .child(SharedString::from(format!(
+                            "LN {} · COL {}",
+                            self.cursor.0 + 1,
+                            self.cursor.1 + 1
+                        ))),
+                )
         } else if self.tab == Tab::Diff {
             footer_base
                 .child(kcap("↑↓"))

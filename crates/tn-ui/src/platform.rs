@@ -266,9 +266,26 @@ mod imp {
 
     /// Drop any window region → back to a plain rectangle (a running session fills the
     /// drop-down edge-to-edge; only the launcher card wants rounding).
+    #[allow(dead_code)] // 幽灵窗现走 set_ghost_region;保留给未来窗形需要
     pub fn clear_region(h: isize) {
         unsafe {
             let _ = SetWindowRgn(as_hwnd(h), None::<HRGN>, true);
+        }
+    }
+
+    /// 顶垂形 region:上直角、下圆角(SHEET 04 幽灵窗形)。把圆角矩形向上平移
+    /// 一个圆径,顶部两个圆角便落在窗外(region 以窗矩形裁剪),窗内只剩底部两
+    /// 个圆角。窗体不透明(Windows/gpui 无逐像素透明,差异总结 §6 P0-2),圆角
+    /// 外的像素被 region 裁掉 → 零白边。尺寸相关:resize 后需重设。
+    pub fn set_ghost_region(h: isize, w: f32, ht: f32, radius: f32) {
+        unsafe {
+            let d = (radius * 2.0).round() as i32;
+            // 右/下边界互斥 → +1 才盖住最后一行/列;顶边上移 d 拉直顶部。
+            let rgn = CreateRoundRectRgn(0, -d, w as i32 + 1, ht as i32 + 1, d, d);
+            if !rgn.is_invalid() {
+                // redraw = true. System owns `rgn` after this; we don't free it.
+                let _ = SetWindowRgn(as_hwnd(h), Some(rgn), true);
+            }
         }
     }
 
@@ -719,6 +736,7 @@ mod stub {
     pub fn make_topmost(_h: isize) {}
     pub fn set_bounds(_h: isize, _r: Rect) {}
     pub fn set_round_region(_h: isize, _w: f32, _ht: f32, _radius: f32) {}
+    pub fn set_ghost_region(_h: isize, _w: f32, _ht: f32, _radius: f32) {}
     pub fn clear_region(_h: isize) {}
     pub fn show(_h: isize, _visible: bool) {}
     pub fn scale_for(_h: isize) -> f32 {

@@ -53,6 +53,10 @@ impl TerminalView {
             // thread stack small.
             let mut buf = vec![0u8; 16384];
             let mut replies = Vec::new();
+            // 宠物 Running 守卫:记录本会话欠下的 OutputStart,reader 退出
+            // (EOF/中断/面板关闭)时还清 —— 否则全局 RUN_COUNT 泄漏,宠物在
+            // NO SESSION 下仍 RUNNING(二轮差异总结 §8 状态泄漏)。
+            let mut pet_run = crate::pet::SessionRunGuard::new();
             // Outer guard: a panic anywhere in the reader loop is
             // logged with context instead of the thread dying silently (which
             // would leave the pane frozen with no clue why).
@@ -134,10 +138,10 @@ impl TerminalView {
                                 // (Running/Success/Error 演出;只读,不反向影响)。
                                 match &ev {
                                     tn_shell::BlockEvent::OutputStart => {
-                                        crate::pet::signal_command_start();
+                                        pet_run.command_start();
                                     }
                                     tn_shell::BlockEvent::CommandFinished { exit } => {
-                                        crate::pet::signal_command_end(*exit);
+                                        pet_run.command_end(*exit);
                                     }
                                     _ => {}
                                 }

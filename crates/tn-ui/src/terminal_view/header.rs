@@ -53,7 +53,9 @@ impl TerminalView {
                     .path(crate::assets::ring_track_path())
                     .absolute()
                     .size_full()
-                    .text_color(rgba(0xffffff14)),
+                    // 余量轨 = L4 顶面(SHEET 02 SPEC「身份色弧 + L4 余量」;
+                    // 曾是白 8% 合成出 #272D3A,差异总结 2-6)。
+                    .text_color(gpui::rgb(crate::style::L4)),
             )
             .child(
                 gpui::svg()
@@ -117,7 +119,13 @@ impl TerminalView {
             .text_size(px(12.))
             .font_weight(FontWeight(600.))
             .text_color(col(accent))
-            .child(SharedString::from("✻"));
+            // 身份字形 ✳/◆/⟡ 与 tab/磁贴同表(差异总结 2-5)。
+            .child(SharedString::from(
+                self.agent
+                    .as_ref()
+                    .map(|id| crate::welcome::agent_glyph_ch(id.as_str()))
+                    .unwrap_or("⟡"),
+            ));
         let mut head = div()
             .flex()
             .flex_row()
@@ -567,9 +575,12 @@ impl TerminalView {
     /// `pane.downgrade()` and renders via `read` — never `update` during render
     /// (that re-leases the pane mid-render → panic).
     pub(super) fn render_pane_header(&self, weak: WeakEntity<Self>) -> Option<Div> {
-        Some(match self.agent {
-            Some(_) => self.render_agent_header(weak),
-            None => self.render_shell_header(),
-        })
+        match self.agent {
+            Some(_) => Some(self.render_agent_header(weak)),
+            // 幽灵窗 shell 会话:窗体自带 GHOST_ 头(SHEET 04 板 C),不再叠
+            // 普通板头(差异总结 4-3)。agent 头保留 — 用量环不可丢。
+            None if self.ghost_chrome => None,
+            None => Some(self.render_shell_header()),
+        }
     }
 }

@@ -24,7 +24,9 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
 
-use crate::style::{col, ERR, H1, H2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, STATUSBAR_H, T0, T1, T2};
+use crate::style::{
+    col, ERR, H1, H2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, STATUSBAR_H, T0, T1, T2, T3,
+};
 
 // ═══════════════════════════ 终端上下文信号(进程级) ═══════════════════════
 //
@@ -51,18 +53,15 @@ pub(crate) fn signal_typing() {
 }
 
 /// OSC 133 `C`(OutputStart):命令开始执行。
-pub(crate) fn signal_command_start() {
+fn signal_command_start() {
     if RUN_COUNT.fetch_add(1, Ordering::Relaxed) == 0 {
         RUN_START_MS.store(now_ms(), Ordering::Relaxed);
     }
 }
 
 /// OSC 133 `D`(CommandFinished):命令结束 + 退出码。
-pub(crate) fn signal_command_end(exit: Option<i32>) {
-    // 下限 0:错过 start 的孤儿 end 不把计数拖成负。
-    let _ = RUN_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-        Some((n - 1).max(0))
-    });
+fn signal_command_end(exit: Option<i32>) {
+    signal_run_released();
     LAST_EXIT_MS.store(now_ms(), Ordering::Relaxed);
     LAST_EXIT_KIND.store(
         match exit {
@@ -72,6 +71,45 @@ pub(crate) fn signal_command_end(exit: Option<i32>) {
         },
         Ordering::Relaxed,
     );
+}
+
+/// 只归还 Running 计数,不触发任何演出(会话中途关闭的欠账核销用)。
+fn signal_run_released() {
+    // 下限 0:错过 start 的孤儿 end 不把计数拖成负。
+    let _ = RUN_COUNT.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+        Some((n - 1).max(0))
+    });
+}
+
+/// 会话级 Running 守卫:每个 PTY reader 线程持有一个,记录本会话「开了还没
+/// 关」的命令数;会话中途关闭(reader 退出)时把欠账还清。否则全局
+/// [`RUN_COUNT`] 永久泄漏 —— 真机曾出现 NO SESSION 下宠物仍 RUNNING
+/// (二轮差异总结 §8 状态泄漏)。
+pub(crate) struct SessionRunGuard(u32);
+
+impl SessionRunGuard {
+    pub(crate) fn new() -> Self {
+        Self(0)
+    }
+
+    pub(crate) fn command_start(&mut self) {
+        self.0 += 1;
+        signal_command_start();
+    }
+
+    pub(crate) fn command_end(&mut self, exit: Option<i32>) {
+        self.0 = self.0.saturating_sub(1);
+        signal_command_end(exit);
+    }
+}
+
+impl Drop for SessionRunGuard {
+    fn drop(&mut self) {
+        // 只清计数:不碰 LAST_EXIT_*,免得吞掉别的会话刚发生的 Success/Error 演出。
+        for _ in 0..self.0 {
+            signal_run_released();
+        }
+    }
 }
 
 // ═══════════════════════════ 品种与像素资产 ═══════════════════════════════
@@ -588,6 +626,15 @@ impl PetView {
         })
     }
 
+    /// 命令面板「宠物设置」入口:确保宠物可见并打开设置菜单(键盘可达性规则;
+    /// 与右键菜单/双击同一菜单)。
+    pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        self.state.enabled = true;
+        self.state.visible = true;
+        self.menu_open = true;
+        cx.notify();
+    }
+
     /// 状态栏席位点击:显隐开关(关闭系统状态下点击 = 重新启用)。
     pub(crate) fn toggle_visible(&mut self, cx: &mut Context<Self>) {
         if !self.state.enabled {
@@ -599,11 +646,6 @@ impl PetView {
         self.menu_open = false;
         self.state.save();
         cx.notify();
-    }
-
-    /// 当前品种(欢迎页 2× 形态用)。
-    pub(crate) fn breed_for_welcome(&self) -> Option<Breed> {
-        (self.state.enabled && self.state.visible).then_some(self.breed)
     }
 
     // ── 互动 ────────────────────────────────────────────────────────────
@@ -731,40 +773,8 @@ const BOX_H: f32 = 84.0;
 const SPRITE_X: f32 = (BOX_W - 14.0 * CELL) / 2.0;
 const SPRITE_Y: f32 = BOX_H - 10.0 - 9.0 * CELL; // 9 行内容贴岗台
 
-/// 欢迎页 2× 形态(SHEET 07):静帧 idle,纯展示无交互。
-pub(crate) fn sprite_block(breed: Breed, scale: f32) -> impl IntoElement {
-    let sp = breed.sprite();
-    let cells: Vec<(i32, i32, u32)> = sp
-        .rows
-        .iter()
-        .enumerate()
-        .flat_map(|(y, row)| {
-            row.chars()
-                .enumerate()
-                .filter_map(move |(x, ch)| pixel_color(ch).map(|c| (x as i32, y as i32, c)))
-        })
-        .collect();
-    let cell = CELL * scale;
-    div().w(px(14.0 * cell)).h(px(9.0 * cell)).child(
-        canvas(
-            |_b, _w, _cx| {},
-            move |bounds, _state, window, _cx| {
-                let ox = f32::from(bounds.origin.x);
-                let oy = f32::from(bounds.origin.y);
-                for (x, y, color) in &cells {
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: point(px(ox + *x as f32 * cell), px(oy + *y as f32 * cell)),
-                            size: size(px(cell), px(cell)),
-                        },
-                        rgb(*color),
-                    ));
-                }
-            },
-        )
-        .size_full(),
-    )
-}
+// 欢迎页 2× 形态不再是静帧贴图:同一只 PetView 以 on_welcome ×2 渲染
+// (活状态机 + 完整交互),见 Render 实现(二轮差异总结 §8)。
 
 impl Render for PetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -782,39 +792,41 @@ impl Render for PetView {
             return root;
         }
 
-        // 欢迎页已有 2× 形态栖位(SHEET 07),overlay 本体让位 —— 全局始终只有一只
-        // (规则:多 pane 全局一只;欢迎页大形态就是那一只)。
-        if self.on_welcome {
-            return root;
-        }
+        // 欢迎页 = 同一只宠物的 **2× 形态**(SHEET 07 `.wperch`):全局只有这一只,
+        // hover/单击/拖拽/右键/气泡与 1× 完全同源 —— 此前欢迎页是 sprite_block
+        // 静态贴图、零交互、标签硬编码 IDLE(二轮差异总结 §8 的主缺口)。
+        let s = if self.on_welcome { 2.0 } else { 1.0 };
+        let box_w = BOX_W * s;
+        let box_h = BOX_H * s;
 
         let vw = f32::from(window.viewport_size().width);
         let vh = f32::from(window.viewport_size().height);
         // 栖位钳制在窗内(拖拽换窝后窗口缩小也不丢狗)。
-        let right = self.state.right.clamp(2.0, (vw - BOX_W - 2.0).max(2.0));
+        let right = self.state.right.clamp(2.0, (vw - box_w - 2.0).max(2.0));
         let bottom = self.state.bottom.clamp(
             STATUSBAR_H + 2.0,
-            (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0),
+            (vh - box_h - 44.0).max(STATUSBAR_H + 2.0),
         );
 
         let cells = self.frame_cells();
         let dragging = self.drag.is_some();
 
-        // ── 小狗本体(canvas 逐 quad 直绘) ──
+        // ── 小狗本体(canvas 逐 quad 直绘;格距/偏移随形态 ×s) ──
         let sprite = canvas(
             |_b, _w, _cx| {},
             move |bounds, _state, window, _cx| {
-                let ox = f32::from(bounds.origin.x) + SPRITE_X;
-                let oy = f32::from(bounds.origin.y) + SPRITE_Y;
+                let cell = CELL * s;
+                let ox = f32::from(bounds.origin.x) + SPRITE_X * s;
+                let oy = f32::from(bounds.origin.y) + SPRITE_Y * s;
                 for (x, y, color, dx, dy, hs) in &cells {
-                    let h = CELL * hs;
+                    let h = cell * hs;
                     window.paint_quad(fill(
                         Bounds {
                             origin: point(
-                                px(ox + *x as f32 * CELL + dx),
-                                px(oy + *y as f32 * CELL + dy + (CELL - h) * 0.5),
+                                px(ox + *x as f32 * cell + dx * s),
+                                px(oy + *y as f32 * cell + dy * s + (cell - h) * 0.5),
                             ),
-                            size: size(px(CELL), px(h)),
+                            size: size(px(cell), px(h)),
                         },
                         rgb(*color),
                     ));
@@ -830,9 +842,19 @@ impl Render for PetView {
         // ── 岗台:1px h1 发丝,左 28px 磷光点睛(SHEET 05 SPEC) ──
         let shelf = div()
             .absolute()
-            .left(px(0.))
-            .right(px(0.))
-            .bottom(px(8.))
+            // 欢迎页 2× 形态:岗台 180 宽居中(SHEET 07 `.wperch` shelf 180);
+            // 1× 沿用满箱宽。
+            .left(px(if self.on_welcome {
+                (box_w - 180.0).max(0.0) / 2.0
+            } else {
+                0.0
+            }))
+            .right(px(if self.on_welcome {
+                (box_w - 180.0).max(0.0) / 2.0
+            } else {
+                0.0
+            }))
+            .bottom(px(8. * s))
             .h(px(1.))
             .bg(rgba(H1))
             .when(!dragging, |d| {
@@ -846,6 +868,27 @@ impl Render for PetView {
                         .bg(rgba(PH_DIM)),
                 )
             });
+
+        // 欢迎页 2× 标签:活的「品种 · 上下文」读数(mono 9 t3),与状态栏席位
+        // 同源 —— 取代硬编码「IDLE(欢迎页 2× 形态)」(图纸注记曾被当文案上屏,
+        // 且与状态栏 RUNNING 撞车;差异总结 §8)。
+        let welcome_label = self.on_welcome.then(|| {
+            div()
+                .absolute()
+                .left(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .flex()
+                .justify_center()
+                .font_family(SharedString::from(self.cfg.font().family.clone()))
+                .text_size(px(9.))
+                .text_color(rgb(T3))
+                .child(SharedString::from(format!(
+                    "{} · {}",
+                    self.breed.tag(),
+                    self.ctx.tag()
+                )))
+        });
 
         // ── 气泡(L4 + h2 + r4 mono 11;2s 消散) ──
         let bubble = self.bubble.as_ref().map(|(text, _)| {
@@ -865,16 +908,17 @@ impl Render for PetView {
                 .child(text.clone())
         });
 
-        // ── 本体容器:固定 100×84,互动命中区 ──
+        // ── 本体容器:固定 100×84(欢迎页 ×2),互动命中区 ──
         let pet_box = div()
             .id("pet")
             .absolute()
             .right(px(right))
             .bottom(px(bottom))
-            .w(px(BOX_W))
-            .h(px(BOX_H))
+            .w(px(box_w))
+            .h(px(box_h))
             .child(sprite)
             .child(shelf)
+            .when_some(welcome_label, |d, l| d.child(l))
             .when_some(bubble, |d, b| d.child(b))
             .cursor_pointer()
             .on_hover(cx.listener(|pet, hovered: &bool, _w, cx| {
@@ -887,6 +931,14 @@ impl Render for PetView {
                 MouseButton::Left,
                 cx.listener(|pet, ev: &MouseDownEvent, _w, cx| {
                     cx.stop_propagation();
+                    // 双击 = 打开宠物设置菜单(规则「双击宠物:打开宠物选择或
+                    // 设置入口」;二轮差异总结 §8 缺口)。
+                    if ev.click_count >= 2 {
+                        pet.drag = None;
+                        pet.menu_open = true;
+                        cx.notify();
+                        return;
+                    }
                     pet.menu_open = false;
                     pet.drag = Some(PetDrag {
                         start_mouse: (f32::from(ev.position.x), f32::from(ev.position.y)),
@@ -936,7 +988,7 @@ impl Render for PetView {
             let sep = || div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(rgba(H1));
             let mut menu = div()
                 .absolute()
-                .right(px(right + BOX_W - 10.))
+                .right(px(right + box_w - 10.))
                 .bottom(px(bottom + 6.))
                 .w(px(190.))
                 .p(px(5.))
@@ -1055,11 +1107,13 @@ impl Render for PetView {
                                 drag.moved = true;
                             }
                             // 鼠标右移 → right 减小;下移 → bottom 减小。
+                            // 形态尺寸现算(欢迎页 2×),拖拽中切 tab 也不越界。
+                            let s = if pet.on_welcome { 2.0 } else { 1.0 };
                             pet.state.right =
-                                (drag.start_pos.0 - dx).clamp(2.0, (vw - BOX_W - 2.0).max(2.0));
+                                (drag.start_pos.0 - dx).clamp(2.0, (vw - BOX_W * s - 2.0).max(2.0));
                             pet.state.bottom = (drag.start_pos.1 - dy).clamp(
                                 STATUSBAR_H + 2.0,
-                                (vh - BOX_H - 44.0).max(STATUSBAR_H + 2.0),
+                                (vh - BOX_H * s - 44.0).max(STATUSBAR_H + 2.0),
                             );
                             cx.notify();
                         }

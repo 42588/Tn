@@ -225,6 +225,21 @@ impl QuickTerminal {
         self.picker_rows().into_iter().flatten().collect()
     }
 
+    /// 启动器默认选中位:第一枚 **shell** 磁贴(SHEET 04 板 B「pwsh · 默认
+    /// PROFILE」)。agents 行排在上方但不抢默认位(差异总结 4-5);没有 shell
+    /// 行时退回 0。
+    fn default_picker_sel(&self) -> usize {
+        self.picker_items()
+            .iter()
+            .position(|it| match it {
+                PickerItem::Launch(i) => {
+                    !crate::welcome::is_agent_profile(&self.launch_profiles[*i])
+                }
+                PickerItem::Pwsh | PickerItem::DrillWsl | PickerItem::SshPrompt => true,
+            })
+            .unwrap_or(0)
+    }
+
     /// The card identity (name / sub / glyph / accent) for a picker tile.
     fn item_card(&self, item: &PickerItem, cx: &gpui::App) -> CardId {
         let t = &self.config.theme;
@@ -251,7 +266,7 @@ impl QuickTerminal {
         if reveal && self.term.is_none() && !self.ssh_prompt_open {
             // Nothing running yet — summon straight into the launcher (root view).
             self.picker_open = true;
-            self.picker_sel = 0;
+            self.picker_sel = self.default_picker_sel(); // pwsh 默认 PROFILE(SHEET 04)
             self.wsl_drill = false;
         }
         self.pending_focus = true;
@@ -352,7 +367,11 @@ impl QuickTerminal {
         // exits the PTY and we fall back to the launcher (the ProcessExited sub below).
         let config = self.config.clone();
         let term_spec = spec.clone();
-        let term = cx.new(|cx| TerminalView::new(cx, config, spec));
+        let term = cx.new(|cx| {
+            let mut t = TerminalView::new(cx, config, spec);
+            t.set_ghost_chrome(true); // 幽灵窗自带 GHOST_ 头,抑制 shell 板头
+            t
+        });
         // Repaint when this session's agent usage changes (keeps the ring live).
         cx.subscribe(&term, |_qt, _t, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
@@ -412,7 +431,7 @@ impl QuickTerminal {
                 this.ssh_prompt_open = false;
                 this.ssh_rename = None;
                 this.ssh_rename_marked = None;
-                this.picker_sel = 0;
+                this.picker_sel = this.default_picker_sel();
                 this.wsl_drill = false;
                 this.pending_focus = true;
                 this.resnap(cx); // shrink the window back to the compact launcher card
@@ -700,10 +719,11 @@ impl QuickTerminal {
             .map(|r| r.len().max(1).div_ceil(5))
             .sum::<usize>()
             .max(1) as f32;
-        // 顶缘磷光 2 + GHOST 头 38 + 页脚 30 + tiles padding 24 + 残影下沉区 16
-        // (~116) + 每行磁贴 (~92) + 8px 行间隙。Deliberately generous so the footer
-        // never clips; any surplus is absorbed by the `flex_1` body spacer.
-        116.0 + rows * 92.0 + (rows - 1.0) * 8.0
+        // 顶缘磷光 2 + GHOST 头 38 + 页脚 30 + tiles padding 24(~100)
+        // + 每行磁贴 (~92) + 8px 行间隙。残影已收编为卡内刻线(P0-2),窗高
+        // 即卡高 —— 不再为窗外残影留透明下沉区。Deliberately generous so the
+        // footer never clips; any surplus is absorbed by the `flex_1` body spacer.
+        100.0 + rows * 92.0 + (rows - 1.0) * 8.0
     }
 
     /// On-screen window rect for the current state: a bare launcher is a **card-sized**
@@ -759,10 +779,15 @@ impl QuickTerminal {
                     return;
                 };
                 platform::set_bounds(h, rect);
-                // 幽灵窗不再走 Win32 圆角 region:窗体透明,卡片自绘上直角下圆角
-                // (SHEET 04 顶垂形),残影也需要溢出卡片的透明区。
+                // 顶垂形窗形:窗体不透明(P0-2,Windows 无真透明),用 Win32
+                // region 裁出「上直角下圆角」,圆角外不留任何可见 surface。
                 let _ = rounded;
-                platform::clear_region(h);
+                platform::set_ghost_region(
+                    h,
+                    rect.width,
+                    rect.height,
+                    crate::style::R_WINDOW * scale,
+                );
                 let _ = this.update(cx, |_, cx| cx.notify());
             },
         )
@@ -831,9 +856,15 @@ impl QuickTerminal {
                 };
                 if reveal {
                     platform::set_bounds(h, hidden);
-                    // 幽灵窗不走 Win32 圆角 region(卡片自绘顶垂形 + 残影透明区)。
+                    // 顶垂形 region(上直角下圆角);hidden/shown 同尺寸,滑动中
+                    // region 始终贴合(P0-2:不透明窗 + region,零白区)。
                     let _ = rounded;
-                    platform::clear_region(h);
+                    platform::set_ghost_region(
+                        h,
+                        hidden.width,
+                        hidden.height,
+                        crate::style::R_WINDOW * scale,
+                    );
                     platform::show(h, true);
                     let _ = this.update(cx, |_, cx| cx.notify()); // render -> consume focus
                 }
@@ -894,67 +925,82 @@ impl QuickTerminal {
     }
 
     /// 幽灵窗外壳(SHEET 04):上直角下圆角(顶垂)· L1 · 1px h2 边(无顶边)·
-    /// 顶缘 2px 磷光线(横向小渐变,契约允许)+ 身后两道残影(1px 磷光轮廓,
-    /// ·45/·18,无填充无模糊 — 幽灵的专属签名)。窗体透明,底部留 16px 给残影下沉。
+    /// 顶缘 2px 磷光线(中央峰、两端渐隐)。
+    ///
+    /// 残影签名(P0-2,差异总结 §6):gpui 0.2 在 Windows 上的 Transparent 是
+    /// SetWindowCompositionAttribute 的 accent 渐变,**不是逐像素透明** —— 窗外
+    /// 残影区曾渲染成纯白「材质」,隐藏滑出时整块暴露。兜底方案:窗高收回卡高
+    /// (零未绘制区),残影改为**卡内刻线** —— 底缘上方 1px ph-dim 圆角弧线
+    /// (启动器 1 道 / 运行态 2 道,·45/·18 与原型同档);真透明可达后再外移。
     fn ghost_frame(&self, inner: Div) -> Div {
-        const ECHO_PAD: f32 = 16.0;
-        let echo = |inset: f32, sink: f32, alpha: u32| {
+        // 卡内残影弧:贴底一条 R_WINDOW 高的圆角描边带(底线 + 两角弧 + 角旁
+        // 短侧线),只描不填,读作幽灵身后的轮廓残像。
+        let echo_arc = |lift: f32, inset: f32, alpha: u32| {
             div()
                 .absolute()
-                .top(px(0.))
                 .left(px(inset))
                 .right(px(inset))
-                .bottom(px(ECHO_PAD - sink))
+                .bottom(px(lift))
+                .h(px(crate::style::R_WINDOW))
                 .rounded_b(px(crate::style::R_WINDOW))
                 .border_b(px(1.))
                 .border_l(px(1.))
                 .border_r(px(1.))
                 .border_color(rgba((crate::style::PH << 8) | alpha))
         };
-        div()
-            .size_full()
+        // 顶缘磷光:两段镜像渐变在中点会合;绝对定位 + 中心 2px 负边距重叠,
+        // 堵掉 flex 像素取整在正中漏出的 1px 缺口(差异总结 4-2)。渐变停靠
+        // 0.4 起坡 = 原型「两端 20% 全透平台」按半段折算。
+        let top_edge = div()
+            .h(px(2.))
+            .flex_none()
             .relative()
-            // 残影在卡片之后(下层)
-            .child(echo(10., 8., 0x24)) // ph ·14%(= ph-dim × .45)
-            .child(echo(20., 15., 0x10)) // ph ·6%(= ph-dim × .18)
             .child(
                 div()
                     .absolute()
                     .top(px(0.))
+                    .bottom(px(0.))
                     .left(px(0.))
-                    .right(px(0.))
-                    .bottom(px(ECHO_PAD))
-                    .flex()
-                    .flex_col()
-                    .rounded_b(px(crate::style::R_WINDOW))
-                    .overflow_hidden()
-                    .border_b(px(1.))
-                    .border_l(px(1.))
-                    .border_r(px(1.))
-                    .border_color(rgba(crate::style::H2))
-                    .bg(gpui::rgb(crate::style::L1)) // 不透明 L1(契约 1)
-                    .child(
-                        // 顶缘磷光:2px 中央亮、两端渐隐 = 召唤线落位。gpui 的
-                        // linear_gradient 只吃两停靠点,故拆左右两段镜像渐变拼成中央峰,
-                        // 避免右半段一路满亮(原型与真机差异总结 P1:顶缘不等强铺满)。
-                        div()
-                            .h(px(2.))
-                            .flex_none()
-                            .flex()
-                            .flex_row()
-                            .child(div().flex_1().h_full().bg(linear_gradient(
-                                90.,
-                                linear_color_stop(rgba(0x5BE7C400), 0.),
-                                linear_color_stop(gpui::rgb(crate::style::PH), 1.),
-                            )))
-                            .child(div().flex_1().h_full().bg(linear_gradient(
-                                90.,
-                                linear_color_stop(gpui::rgb(crate::style::PH), 0.),
-                                linear_color_stop(rgba(0x5BE7C400), 1.),
-                            ))),
-                    )
-                    .child(inner),
+                    .right(gpui::relative(0.5))
+                    .mr(px(-2.))
+                    .bg(linear_gradient(
+                        90.,
+                        linear_color_stop(rgba(0x5BE7C400), 0.4),
+                        linear_color_stop(gpui::rgb(crate::style::PH), 1.),
+                    )),
             )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .bottom(px(0.))
+                    .left(gpui::relative(0.5))
+                    .right(px(0.))
+                    .ml(px(-2.))
+                    .bg(linear_gradient(
+                        90.,
+                        linear_color_stop(gpui::rgb(crate::style::PH), 0.),
+                        linear_color_stop(rgba(0x5BE7C400), 0.6),
+                    )),
+            );
+        let session_alive = self.term.is_some();
+        div()
+            .size_full()
+            .relative()
+            .flex()
+            .flex_col()
+            .rounded_b(px(crate::style::R_WINDOW))
+            .overflow_hidden()
+            .border_b(px(1.))
+            .border_l(px(1.))
+            .border_r(px(1.))
+            .border_color(rgba(crate::style::H2))
+            .bg(gpui::rgb(crate::style::L1)) // 不透明 L1(契约 1)
+            .child(top_edge)
+            .child(inner)
+            // 残影刻线压在页脚区上层(SHEET 04:启动器 1 道,运行态 2 道)
+            .child(echo_arc(3., 10., 0x24)) // ph ·14%(= ph-dim × .45)
+            .when(session_alive, |d| d.child(echo_arc(7., 20., 0x10))) // ph ·6%
     }
 
     /// The launcher card(SHEET 04 板 B):垂下启动器 — GHOST_ 头 + 磁贴 + 页脚。
@@ -1842,13 +1888,80 @@ impl Render for QuickTerminal {
                     );
                 }
             }
-            // SHEET 04 板 C:会话态 = 终端正文 + float-foot(Esc 隐匿 · 再召唤 ·
+            // SHEET 04 板 C:运行态幽灵头 —— gmark + GHOST_ + 磷光会话 chip +
+            // 失焦提示 + 磷光点。shell 会话由本头标识(TerminalView 的板头被
+            // ghost_chrome 抑制);agent 会话沿用自带 agent 头(用量环不可丢),
+            // 不再叠加幽灵头。差异总结 4-3:运行态身份消失的修复。
+            let ghost_head = (!term.read(cx).is_agent()).then(|| {
+                let label = term.read(cx).tab_label();
+                let title = term.read(cx).title();
+                let chip_text = match title {
+                    Some(t) if !t.is_empty() && t != label => format!("{label} · {t}"),
+                    _ => label,
+                };
+                let autohide = self.config.config.quick_terminal.autohide;
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .h(px(38.))
+                    .px(px(14.))
+                    .flex_none()
+                    .bg(gpui::rgb(crate::style::L2))
+                    .border_b(px(1.))
+                    .border_color(rgba(crate::style::H1))
+                    .font_family(mono.clone())
+                    .child(self.ghost_mark())
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .text_size(px(12.))
+                            .font_weight(FontWeight(600.))
+                            .child(div().text_color(gpui::rgb(crate::style::T0)).child("GHOST"))
+                            .child(div().text_color(gpui::rgb(crate::style::PH)).child("_")),
+                    )
+                    .child(
+                        // 会话 chip(磷光语法):`pwsh · ~/cwd`
+                        div()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .rounded(px(crate::style::R_CHIP))
+                            .border_1()
+                            .border_color(rgba(crate::style::PH_DIM))
+                            .bg(rgba(crate::style::PH_SOFT))
+                            .text_size(px(10.))
+                            .text_color(gpui::rgb(crate::style::PH))
+                            .max_w(px(420.))
+                            .overflow_hidden()
+                            .child(SharedString::from(chip_text)),
+                    )
+                    .child(div().flex_1())
+                    .when(autohide, |d| {
+                        d.child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(gpui::rgb(crate::style::T2))
+                                .child("失焦 → 上滑隐匿"),
+                        )
+                    })
+                    .child(
+                        div()
+                            .w(px(5.))
+                            .h(px(5.))
+                            .rounded_full()
+                            .bg(gpui::rgb(crate::style::PH)),
+                    )
+            });
+            // 会话态 = 幽灵头(shell)+ 终端正文 + float-foot(Esc 隐匿 · 再召唤 ·
             // SESSION ALIVE 磷光 tag)。
             let session = div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .bg(gpui::rgb(crate::style::L1)) // 不透明 L1 板面(契约 1)
+                .when_some(ghost_head, |d, h| d.child(h))
                 .child(session_body)
                 .child(
                     div()

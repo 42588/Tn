@@ -1,6 +1,9 @@
 # Tn Dark — Tn 的默认主题(磷光 Phosphor 调校)。
 # 这是 design/phosphor.css :root 调色板的权威定义;结构 token(发丝线/文字阶梯/
 # 磷光衍生色)在 crates/tn-ui/src/style.rs。规范见 docs/设计/磷光设计语言.md。
+#
+# ⚠ 本文件由 Tn 管辖:每次启动与内置版本同步,手改会被覆盖。
+#   自定义主题请复制成 themes/ 下的新文件名,并在 config.toml 用 theme = 指向它。
 name = "Tn Dark"
 appearance = "dark"          # dark | light(用于跟随系统切换)
 

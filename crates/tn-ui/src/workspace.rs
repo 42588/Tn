@@ -74,11 +74,12 @@ pub(crate) fn short_model(id: &str) -> String {
     } else {
         return id.to_string();
     };
+    // 保留小数点:`gpt-5.5 xhigh` → `GPT 5.5`(曾丢成「GPT 55」,差异总结 2-7)。
     let ver: String = id
         .chars()
-        .filter(|c| c.is_ascii_digit() || *c == '-')
+        .filter(|c| c.is_ascii_digit() || *c == '-' || *c == '.')
         .collect::<String>()
-        .trim_matches('-')
+        .trim_matches(|c| c == '-' || c == '.')
         .replace('-', ".");
     if ver.is_empty() {
         fam.to_string()
@@ -1865,7 +1866,19 @@ impl Workspace {
 
     /// The palette's current rows (aggregated + drill-resolved + query-filtered).
     fn palette_rows(&self) -> Vec<LaunchRow> {
-        launch_rows(&self.launch_profiles, self.palette_wsl, &self.palette_query)
+        let mut rows = launch_rows(&self.launch_profiles, self.palette_wsl, &self.palette_query);
+        // 宠物设置行(SHEET 06-A;规则「命令面板必须能打开宠物设置」):只在根
+        // 列表追加,WSL 下钻/分屏启动器不掺(那两处只做会话启动)。
+        if !self.palette_wsl {
+            let q = self.palette_query.to_ascii_lowercase();
+            if q.is_empty()
+                || "宠物设置".contains(q.as_str())
+                || "pet settings".contains(q.as_str())
+            {
+                rows.push(LaunchRow::PetSettings);
+            }
+        }
+        rows
     }
 
     fn palette_match_count(&self) -> usize {
@@ -1939,6 +1952,13 @@ impl Workspace {
                     self.palette_sel = 0;
                     cx.notify();
                 }
+            }
+            LaunchRow::PetSettings => {
+                // 关面板 → 打开宠物设置菜单(确保宠物可见;键盘可达性规则)。
+                self.palette_open = false;
+                self.refocus_active(window, cx);
+                self.pet.update(cx, |p, cx| p.open_settings(cx));
+                cx.notify();
             }
             LaunchRow::SshPrompt => {
                 self.palette_open = false;
@@ -4132,15 +4152,21 @@ impl Workspace {
                         this.activate_palette_sel(w, cx);
                     }),
                 )
-                // `.gi` 身份字形位:会话所有者身份色点
+                // `.gi` 身份字形位:mono 600 12 身份字形(SHEET 06 — ❯/⌬/⇄/✳/◆,
+                // 不再用无差别色块;差异总结 6-字形系统未实现)。
                 .child(
-                    div().w(px(16.)).flex().justify_center().flex_none().child(
-                        div()
-                            .w(px(7.))
-                            .h(px(7.))
-                            .rounded(px(1.))
-                            .bg(col(card.accent)),
-                    ),
+                    div()
+                        .w(px(16.))
+                        .flex()
+                        .justify_center()
+                        .flex_none()
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(col(card.accent))
+                        .child(SharedString::from(crate::welcome::launch_glyph_ch(
+                            card.glyph,
+                        ))),
                 )
                 .child(
                     div()
@@ -4359,6 +4385,8 @@ impl Workspace {
                 self.ssh_config_hosts = tn_pty::list_ssh_config_hosts();
                 cx.notify();
             }
+            // 分屏启动器只做会话启动;宠物设置行只存在于命令面板(palette_rows)。
+            LaunchRow::PetSettings => {}
         }
     }
 
@@ -4492,13 +4520,19 @@ impl Workspace {
                             }),
                         )
                         .child(
-                            div().w(px(16.)).flex().justify_center().flex_none().child(
-                                div()
-                                    .w(px(7.))
-                                    .h(px(7.))
-                                    .rounded(px(1.))
-                                    .bg(col(card.accent)),
-                            ),
+                            // `.gi` 身份字形(与命令面板同一映射,差异总结 4-4)
+                            div()
+                                .w(px(16.))
+                                .flex()
+                                .justify_center()
+                                .flex_none()
+                                .font_family(SharedString::from(self.config.font().family.clone()))
+                                .text_size(px(12.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(col(card.accent))
+                                .child(SharedString::from(crate::welcome::launch_glyph_ch(
+                                    card.glyph,
+                                ))),
                         )
                         .child(
                             div()
@@ -6179,10 +6213,9 @@ impl Render for Workspace {
         // actually changed (never every frame). Welcome tabs have no real pane,
         // so they reset the shared explorer to the default Host root.
         // 宠物上下文同步:welcome_only 模式 + 欢迎页 2× 形态(SHEET 05/07)。
+        // 2× 形态由 PetView 自己渲染(on_welcome),welcome 不再持品种快照。
         let on_welcome = self.tabs[active].welcome;
-        let pet_breed = self.pet.read(cx).breed_for_welcome();
         self.pet.update(cx, |p, _| p.set_on_welcome(on_welcome));
-        self.welcome.update(cx, |w, _| w.set_pet_breed(pet_breed));
 
         // QuickLook RAIL 读数同步:从活动栏卡片打开时(`ql_rail_pane`)喂入
         //「(当前序号, 该 pane 本次改动文件总数)」,footer 显示 RAIL · n/N;从文件树
@@ -6236,13 +6269,13 @@ impl Render for Workspace {
         // Precomputed so the click closures below own `cx` freely.
         // Carry the resolved identity-dot color (Some = an agent pane) so the
         // render closures below don't need `cx`/the registry — agent-agnostic.
-        let tab_info: Vec<(String, usize, Option<tn_config::Color>)> = self
+        let tab_info: Vec<(String, usize, Option<tn_config::Color>, &'static str)> = self
             .tabs
             .iter()
             .enumerate()
             .map(|(_i, tab)| {
                 if tab.welcome {
-                    return ("欢迎".to_string(), 1, None); // launchpad tab
+                    return ("欢迎".to_string(), 1, None, "▣"); // launchpad tab
                 }
                 let pane = self.panes.get(&tab.focused);
                 let label = pane
@@ -6250,7 +6283,12 @@ impl Render for Workspace {
                     .unwrap_or_else(|| "shell".into());
                 let agent = pane.and_then(|v| v.read(cx).agent());
                 let dot = agent.as_ref().map(|id| self.agent_color(Some(id), cx));
-                (label, tab.root.leaf_count(), dot)
+                // 身份字形随 agent id(✳/◆/⟡),shell = ❯(差异总结 1-3)。
+                let glyph = agent
+                    .as_ref()
+                    .map(|id| crate::welcome::agent_glyph_ch(id.as_str()))
+                    .unwrap_or("❯");
+                (label, tab.root.leaf_count(), dot, glyph)
             })
             .collect();
 
@@ -6264,100 +6302,98 @@ impl Render for Workspace {
             .items_center()
             .gap(px(2.))
             .px(px(6.))
-            .children(
-                tab_info
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (label, panes, agent_dot))| {
-                        let is_active = i == active;
-                        // 身份棒颜色:agent 身份色,shell = 磷光(SHEET 01 板 C)。
-                        let bar_c = agent_dot.unwrap_or(tn_config::Color::new(0x5B, 0xE7, 0xC4));
-                        let hover_bg = col(surface_1);
-                        div()
-                            .relative()
-                            .flex()
-                            .items_center()
-                            .gap(px(8.)) // `.tab` gap 8
-                            .h(px(30.)) // 42 − 2×6(`.tab` margin:6px 0)
-                            .px(px(14.)) // `.tab` padding 0 14
-                            .rounded(px(R_CARD)) // r4
-                            .text_size(px(12.)) // sans 12
-                            // 激活 = L2 抬升 + 1px h1 + 顶部 2px 身份棒(横向小渐变,契约 2)
-                            .when(is_active, |d| {
-                                d.bg(col(surface_2))
-                                    .border_1()
-                                    .border_color(rgba(H1))
-                                    .text_color(rgb(T0))
-                                    .child(
-                                        div()
-                                            .absolute()
-                                            .top(px(-1.))
-                                            .left(px(8.))
-                                            .right(px(8.))
-                                            .h(px(2.))
-                                            .rounded_b(px(2.))
-                                            .bg(linear_gradient(
-                                                90.,
-                                                linear_color_stop(cola(bar_c, 0.), 0.),
-                                                linear_color_stop(col(bar_c), 0.5),
-                                            )),
-                                    )
-                            })
-                            .when(!is_active, |d| {
-                                d.text_color(rgb(T2))
-                                    .hover(move |s| s.bg(hover_bg).text_color(rgb(T1)))
-                            })
-                            // `.gl` 身份字形:agent = ✳ 身份色;shell = ❯ t3(mono 600 11)
-                            .child(
+            .children(tab_info.into_iter().enumerate().map(
+                |(i, (label, panes, agent_dot, tab_glyph))| {
+                    let is_active = i == active;
+                    // 身份棒颜色:agent 身份色,shell = 磷光(SHEET 01 板 C)。
+                    let bar_c = agent_dot.unwrap_or(tn_config::Color::new(0x5B, 0xE7, 0xC4));
+                    let hover_bg = col(surface_1);
+                    div()
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.)) // `.tab` gap 8
+                        .h(px(30.)) // 42 − 2×6(`.tab` margin:6px 0)
+                        .px(px(14.)) // `.tab` padding 0 14
+                        .rounded(px(R_CARD)) // r4
+                        .text_size(px(12.)) // sans 12
+                        // 激活 = L2 抬升 + 1px h1 + 顶部 2px 身份棒(横向小渐变,契约 2)
+                        .when(is_active, |d| {
+                            d.bg(col(surface_2))
+                                .border_1()
+                                .border_color(rgba(H1))
+                                .text_color(rgb(T0))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top(px(-1.))
+                                        .left(px(8.))
+                                        .right(px(8.))
+                                        .h(px(2.))
+                                        .rounded_b(px(2.))
+                                        .bg(linear_gradient(
+                                            90.,
+                                            linear_color_stop(cola(bar_c, 0.), 0.),
+                                            linear_color_stop(col(bar_c), 0.5),
+                                        )),
+                                )
+                        })
+                        .when(!is_active, |d| {
+                            d.text_color(rgb(T2))
+                                .hover(move |s| s.bg(hover_bg).text_color(rgb(T1)))
+                        })
+                        // `.gl` 身份字形:agent = ✳/◆/⟡ 身份色;shell = ❯ t3
+                        // (mono 600 11;字形表与磁贴/面板同源,差异总结 1-3)
+                        .child(
+                            div()
+                                .font_family(mono_family.clone())
+                                .text_size(px(11.))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(if agent_dot.is_some() {
+                                    col(bar_c)
+                                } else {
+                                    rgb(T3)
+                                })
+                                .child(tab_glyph),
+                        )
+                        .child(label)
+                        .when(panes > 1, |d| {
+                            d.child(
                                 div()
                                     .font_family(mono_family.clone())
-                                    .text_size(px(11.))
-                                    .font_weight(gpui::FontWeight(600.))
-                                    .text_color(if agent_dot.is_some() {
-                                        col(bar_c)
-                                    } else {
-                                        rgb(T3)
-                                    })
-                                    .child(if agent_dot.is_some() { "✻" } else { "❯" }),
+                                    .text_size(px(10.0))
+                                    .text_color(rgb(T3))
+                                    .child(format!("⌗{panes}")),
                             )
-                            .child(label)
-                            .when(panes > 1, |d| {
-                                d.child(
-                                    div()
-                                        .font_family(mono_family.clone())
-                                        .text_size(px(10.0))
-                                        .text_color(rgb(T3))
-                                        .child(format!("⌗{panes}")),
-                                )
-                            })
-                            // Close button: kills the tab's process(es). stop_propagation
-                            // so it closes the tab instead of just activating it.
-                            .child(
-                                div()
-                                    .ml(px(2.))
-                                    .px(px(2.))
-                                    .rounded(px(R_CHIP))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .hover(move |s| s.bg(hover_bg))
-                                    .child(icon("close", 12., ui.muted))
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _ev, window, cx| {
-                                            cx.stop_propagation();
-                                            this.close_tab_index(i, window, cx);
-                                        }),
-                                    ),
-                            )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _ev, window, cx| {
-                                    this.activate_tab(i, window, cx);
-                                }),
-                            )
-                    }),
-            )
+                        })
+                        // Close button: kills the tab's process(es). stop_propagation
+                        // so it closes the tab instead of just activating it.
+                        .child(
+                            div()
+                                .ml(px(2.))
+                                .px(px(2.))
+                                .rounded(px(R_CHIP))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(move |s| s.bg(hover_bg))
+                                .child(icon("close", 12., ui.muted))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |this, _ev, window, cx| {
+                                        cx.stop_propagation();
+                                        this.close_tab_index(i, window, cx);
+                                    }),
+                                ),
+                        )
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _ev, window, cx| {
+                                this.activate_tab(i, window, cx);
+                            }),
+                        )
+                },
+            ))
             .child(
                 // `.tab-new`:26×26 · r4 · hover L1
                 div()
@@ -6569,24 +6605,19 @@ impl Render for Workspace {
         // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
-            // Click-away scrim over the **workspace body** (terminal area) — NOT the
-            // explorer / titlebar / status bar. A click on the bare terminal used to
-            // `focus_pane` and steal focus to the shell mid-edit (the「焦点漏到底层
-            // shell / 面板穿透」bug); now it closes the overlay cleanly (`ql_refocus`
-            // returns focus to the tree / active pane). Clicking the panel itself is
-            // swallowed by its own root (see `quick_look.rs` inner `on_mouse_down`),
-            // and the explorer stays clickable (scrim starts at its right edge) so
-            // 点树里另一个文件仍能换预览。
-            let scrim_left = if self.explorer_open {
-                self.explorer_width + 4.
-            } else {
-                0.
-            };
+            // Click-away scrim over the whole workspace body(titlebar/status bar
+            // 之外的全部,**含 Explorer** —— SHEET 03-A stage inset 0,scrim 压暗
+            // 三块板)。A click on the bare terminal used to `focus_pane` and steal
+            // focus to the shell mid-edit (the「焦点漏到底层 shell / 面板穿透」bug);
+            // now it closes the overlay cleanly (`ql_refocus` returns focus to the
+            // tree / active pane). Clicking the panel itself is swallowed by its own
+            // root (see `quick_look.rs` inner `on_mouse_down`). 改动文件间导航走
+            // ↑↓(RAIL),不再依赖「隔着浮层点树」。
             div()
                 .absolute()
                 .top(px(TITLEBAR_H)) // below the titlebar
                 .bottom(px(STATUSBAR_H)) // above the status bar
-                .left(px(scrim_left))
+                .left(px(0.))
                 .right(px(0.))
                 // SHEET 03:纯色压暗 scrim(无模糊,契约 7)—— 把底层终端压暗,QuickLook
                 // 才像「工作区之上的临时速览浮层」而非嵌在 pane 内的 child。Explorer 不在
@@ -6604,10 +6635,9 @@ impl Render for Workspace {
                     }),
                 )
                 .child(
-                    // SHEET 03:居中速览卡 — scrim 内水平/垂直居中。原型硬规格 1080×520
-                    // (≈2.08:1 横向速览),实现里宽 86%/上限 1080、高 80%/上限 600,
-                    // 让它在任何窗高下都保持「压扁的速览卡」比例,不被 pane 可用高度撑成
-                    // 近全屏编辑器(原型与真机差异总结 P0:尺寸/外边距)。
+                    // SHEET 03:居中速览卡 — scrim 内水平/垂直居中。原型硬规格
+                    // 1080×520;窗体不够宽/高时按 86%/80% 退让,够则锁在 1080×520
+                    // (二轮差异总结 3-3:尺寸不随 pane 漂)。
                     div()
                         .absolute()
                         .top(px(0.))
@@ -6622,7 +6652,7 @@ impl Render for Workspace {
                                 .w(relative(0.86))
                                 .max_w(px(1080.))
                                 .h(relative(0.80))
-                                .max_h(px(600.))
+                                .max_h(px(520.))
                                 .child(self.quick_look.clone()),
                         ),
                 )

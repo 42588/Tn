@@ -87,7 +87,11 @@ pub fn load_from(dir: &Path, write_defaults: bool) -> Loaded {
 
     if write_defaults {
         write_if_absent(&config_file, DEFAULT_CONFIG_TOML, dir);
-        write_if_absent(
+        // tn-dark.toml 是 app 管辖的内置主题拷贝:随版本**同步覆盖**。曾用
+        // write_if_absent,导致改版前的旧调色永久滞留用户目录(磷光主题从未
+        // 到达真机的根因,见 design/原型与真机截图差异总结.md §1)。自定义
+        // 主题请另存新文件名,那些文件永不被触碰。
+        sync_managed(
             &themes_path.join("tn-dark.toml"),
             TN_DARK_TOML,
             &themes_path,
@@ -296,6 +300,19 @@ fn write_if_absent(file: &Path, contents: &str, parent: &Path) {
     let _ = fs::write(file, contents);
 }
 
+/// Keep an app-managed file byte-identical to the bundled copy:missing **或**
+/// 内容不同都重写。内置主题用它,使主题改版能到达存量用户目录(对应
+/// write_if_absent 的「首启冻结」坑);用户自定义内容不属于受管文件。
+fn sync_managed(file: &Path, contents: &str, parent: &Path) {
+    if fs::read_to_string(file).is_ok_and(|cur| cur == contents) {
+        return;
+    }
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let _ = fs::write(file, contents);
+}
+
 /// Read + parse `config.toml`, falling back to defaults on any error.
 fn read_config(file: &Path) -> Config {
     match fs::read_to_string(file) {
@@ -370,6 +387,27 @@ mod tests {
         let loaded = load_from(&dir, true);
         assert_eq!(loaded.config.font.size, 20.0); // user value kept
         assert_eq!(loaded.config.font.family, "CaskaydiaCove Nerd Font"); // inherited default
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stale_builtin_theme_is_refreshed_on_load() {
+        // 真机坑位:首启写入的 tn-dark.toml 旧调色永不更新,磷光改版到不了
+        // 存量用户目录(差异总结 §1 根因)。受管主题文件必须随版本同步。
+        let dir = unique_temp();
+        let themes = dir.join("themes");
+        fs::create_dir_all(&themes).unwrap();
+        fs::write(
+            themes.join("tn-dark.toml"),
+            "name = \"Tn Dark\"\n[ui]\naccent = \"#7AA2F7\"\n",
+        )
+        .unwrap();
+
+        let loaded = load_from(&dir, true);
+        let on_disk = fs::read_to_string(themes.join("tn-dark.toml")).unwrap();
+        assert_eq!(on_disk, TN_DARK_TOML); // 旧拷贝被内置版覆盖
+        assert_eq!(loaded.theme.ui.accent, Color::new(0x5B, 0xE7, 0xC4)); // 磷光生效
 
         let _ = fs::remove_dir_all(&dir);
     }
