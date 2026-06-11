@@ -9,7 +9,8 @@
 //!  - 上下文来自结构化事件(OSC 133 OutputStart/CommandFinished + 键入信号),
 //!    不扫描输出文本;宠物只订阅,绝不反向影响 PTY/shell/agent。
 //!  - 固定 100×84 容器,杜绝布局抖动;品种生命周期 = 终端进程生命周期。
-//!  - 状态优先级 Drag > Error/Success > Running > Typing > Hover > Idle。
+//!  - 状态优先级 Drag > Play > Error/Success > Running > Typing > Hover >
+//!    Sleep > Idle(Play=双击逗弄;Sleep=长空闲打盹,任何活动唤醒)。
 //!  - 可关闭;reduced motion(`[editor] animations = "off"`)下全静帧。
 
 use std::path::PathBuf;
@@ -357,15 +358,19 @@ impl Breed {
 
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
-/// 终端上下文(优先级降序;见 docs/宠物/宠物系统规则.md)。
+/// 终端上下文(优先级降序;见 docs/宠物/宠物系统规则.md + 小狗家族设计.md
+/// 「上下文姿态扩展」)。Play = 双击逗弄;Sleep = 长空闲打盹(低于 Idle 之外
+/// 的一切,任何活动即唤醒)。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PetContext {
     Drag,
+    Play,
     Error,
     Success,
     Running,
     Typing,
     Hover,
+    Sleep,
     Idle,
 }
 
@@ -373,15 +378,24 @@ impl PetContext {
     fn tag(self) -> &'static str {
         match self {
             PetContext::Drag => "DRAG",
+            PetContext::Play => "PLAY",
             PetContext::Error => "ERROR",
             PetContext::Success => "SUCCESS",
             PetContext::Running => "RUNNING",
             PetContext::Typing => "TYPING",
             PetContext::Hover => "HOVER",
+            PetContext::Sleep => "SLEEP",
             PetContext::Idle => "IDLE",
         }
     }
 }
+
+/// 长空闲(无键入/无运行/无互动)超过此时长 → Sleep 打盹(设计.md `sleep`)。
+const SLEEP_AFTER_MS: u64 = 90_000;
+/// 双击逗弄的玩耍窗口(设计.md `play`:蹦跳 + 爱心)。
+const PLAY_MS: u64 = 1400;
+/// 探头入场窗口(现身/换品种/欢迎页切换时从岗台后冒出,规则「探头」)。
+const PEEK_MS: u64 = 450;
 
 // ═══════════════════════════ 持久化(用户状态,不入项目配置) ═══════════════
 
@@ -479,6 +493,12 @@ pub struct PetView {
     next_blink_ms: u64,
     /// 歪头(click)窗口终点。
     tilt_until_ms: u64,
+    /// 玩耍(双击逗弄)窗口终点(设计.md `play`)。
+    play_until_ms: u64,
+    /// 探头入场窗口终点(现身/换品种/欢迎切换;规则「探头」)。
+    peek_until_ms: u64,
+    /// 最近一次「有事发生」(键入/运行/互动)的时刻;超 [`SLEEP_AFTER_MS`] → Sleep。
+    idle_since_ms: u64,
     /// 气泡:文本 + 消散时刻(2s 规则)。
     bubble: Option<(SharedString, u64)>,
     hover: bool,
@@ -504,6 +524,9 @@ impl PetView {
             blink_until_ms: 0,
             next_blink_ms: now + 4000,
             tilt_until_ms: 0,
+            play_until_ms: 0,
+            peek_until_ms: now + PEEK_MS, // 初次现身也探头
+            idle_since_ms: now,
             bubble: None,
             hover: false,
             drag: None,
@@ -541,9 +564,11 @@ impl PetView {
             self.blink_until_ms > now,
             self.bubble.is_some(),
             self.tilt_until_ms > now,
+            self.peek_until_ms > now,
         );
 
-        // ── 上下文推导(优先级 Drag > Error/Success > Running > Typing > Hover > Idle)──
+        // ── 上下文推导(优先级 Drag > Play > Error/Success > Running > Typing >
+        //    Hover > Sleep > Idle;Sleep = 长空闲打盹,任何活动即唤醒)──
         let exit_kind = LAST_EXIT_KIND.load(Ordering::Relaxed);
         let exit_age = now.saturating_sub(LAST_EXIT_MS.load(Ordering::Relaxed));
         let running = RUN_COUNT.load(Ordering::Relaxed) > 0
@@ -551,6 +576,8 @@ impl PetView {
         let typing = now.saturating_sub(LAST_KEY_MS.load(Ordering::Relaxed)) < 1200;
         self.ctx = if self.drag.is_some() {
             PetContext::Drag
+        } else if self.play_until_ms > now {
+            PetContext::Play // 双击逗弄:蹦跳 + 爱心(设计.md `play`)
         } else if exit_kind == 2 && exit_age < 3000 {
             PetContext::Error // 委屈 3s 复原(规则)
         } else if exit_kind == 1 && exit_age < 900 {
@@ -561,18 +588,24 @@ impl PetView {
             PetContext::Typing
         } else if self.hover {
             PetContext::Hover
+        } else if now.saturating_sub(self.idle_since_ms) > SLEEP_AFTER_MS {
+            PetContext::Sleep // 趴下打盹 + zZ(设计.md `sleep`)
         } else {
             PetContext::Idle
         };
+        // 任何非纯空闲状态都刷新活动时刻(醒着就不计入打盹倒计时)。
+        if !matches!(self.ctx, PetContext::Idle | PetContext::Sleep) {
+            self.idle_since_ms = now;
+        }
 
         if self.motion_on() {
-            // 步态/尾摆相位:Running 每 tick 翻;Idle 慢摆(隔 3 tick)。
-            if self.ctx == PetContext::Running {
+            // 步态/尾摆相位:Running/Play 每 tick 翻;Idle 慢摆(隔 3 tick)。
+            if matches!(self.ctx, PetContext::Running | PetContext::Play) {
                 self.phase = !self.phase;
             } else if now % 1440 < 240 {
                 self.phase = !self.phase;
             }
-            // 呼吸:~2s 沉浮。
+            // 呼吸:~2s 沉浮(Sleep 复用为 zZ 喘息相位)。
             self.breath = (now / 1920) % 2 == 0;
             // 眨眼:4–8s 随机间隔,130ms 一帧(规则)。
             if self.ctx == PetContext::Idle && now >= self.next_blink_ms {
@@ -594,6 +627,7 @@ impl PetView {
             self.blink_until_ms > now,
             self.bubble.is_some(),
             self.tilt_until_ms > now,
+            self.peek_until_ms > now,
         );
         if new != old {
             cx.notify();
@@ -601,7 +635,11 @@ impl PetView {
     }
 
     /// workspace 每帧喂入:当前 tab 是否欢迎页(welcome_only 模式)。
+    /// 形态切换(1×↔2×)时探头入场。
     pub(crate) fn set_on_welcome(&mut self, on: bool) {
+        if self.on_welcome != on {
+            self.peek();
+        }
         self.on_welcome = on;
     }
 
@@ -622,13 +660,19 @@ impl PetView {
         }
         Some(PetSegment {
             label: format!("{} · {}", self.breed.tag(), self.ctx.tag()),
-            live: !matches!(self.ctx, PetContext::Idle | PetContext::Hover),
+            live: !matches!(
+                self.ctx,
+                PetContext::Idle | PetContext::Hover | PetContext::Sleep
+            ),
         })
     }
 
     /// 命令面板「宠物设置」入口:确保宠物可见并打开设置菜单(键盘可达性规则;
-    /// 与右键菜单/双击同一菜单)。
+    /// 与右键菜单同一菜单 — 双击已让位给玩耍互动)。
     pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
+        if !self.state.enabled || !self.state.visible {
+            self.peek(); // 从隐藏被唤出 = 探头入场
+        }
         self.state.enabled = true;
         self.state.visible = true;
         self.menu_open = true;
@@ -642,6 +686,9 @@ impl PetView {
             self.state.visible = true;
         } else {
             self.state.visible = !self.state.visible;
+        }
+        if self.state.visible {
+            self.peek(); // 现身 = 探头入场
         }
         self.menu_open = false;
         self.state.save();
@@ -659,10 +706,28 @@ impl PetView {
         cx.notify();
     }
 
+    /// 双击逗弄 = 玩耍(设计.md `play`):蹦跳 + 双爱心 + 快速摇尾,1.4s 回真实
+    /// 上下文。设置入口不再占双击(BUG发现 #6)— 右键菜单/命令面板/状态栏已可达。
+    fn play(&mut self, cx: &mut Context<Self>) {
+        let now = now_ms();
+        self.play_until_ms = now + PLAY_MS;
+        self.idle_since_ms = now;
+        self.bubble = Some(("汪汪!".into(), now + 1600));
+        cx.notify();
+    }
+
+    /// 探头入场(规则「探头」):现身/换品种/欢迎页切换时从岗台后冒出。
+    fn peek(&mut self) {
+        if self.motion_on() {
+            self.peek_until_ms = now_ms() + PEEK_MS;
+        }
+    }
+
     fn refresh_random(&mut self, cx: &mut Context<Self>) {
         // 手动刷新走随机策略,不固定轮换(规则);不写 fixed_breed。
         self.breed = self.breed.random_other();
         self.menu_open = false;
+        self.peek(); // 新狗探头入场
         self.bubble = Some((SharedString::from(self.breed.name_cn()), now_ms() + 2000));
         cx.notify();
     }
@@ -671,6 +736,7 @@ impl PetView {
         self.breed = b;
         self.state.fixed_breed = Some(b); // 显式选择 = 固定品种(入用户配置)
         self.state.save();
+        self.peek(); // 新狗探头入场
         self.menu_open = false;
         cx.notify();
     }
@@ -683,39 +749,59 @@ impl PetView {
         let sp = self.breed.sprite();
         let now = now_ms();
         let motion = self.motion_on();
-        let blink = motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover);
+        // 闭眼(眨眼/摸摸/打盹)统一为「快乐眯眼 ^^」:眼格压成下缘横缝,而不是
+        // 盖毛色让眼睛凭空消失(BUG发现 #6:无眼很诡异)。reduced motion 下
+        // 眨眼/摸摸不触发,但 Sleep 是姿态而非动画,仍闭眼。
+        let squint = (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover))
+            || self.ctx == PetContext::Sleep;
         let tilt = motion && self.tilt_until_ms > now;
         let mut out = Vec::with_capacity(96);
 
-        // 全身偏移(像素):呼吸 / 蹦跳 / 拎起 / 委屈下沉。
+        // 全身偏移(像素):呼吸 / 蹦跳 / 玩耍 / 拎起 / 委屈下沉 / 打盹趴下。
         let mut body_dy = match self.ctx {
             PetContext::Success => -4.0, // 上跳 2 设计像素(≈4 物理 px)
-            PetContext::Drag => -10.0,   // 拎起悬空
-            PetContext::Error => 2.0,    // 垂头丧气
+            // 玩耍:逐 tick 蹦跳(高低交替,比 success 单跳更欢)。
+            PetContext::Play => {
+                if motion && self.phase {
+                    -5.0
+                } else {
+                    -1.0
+                }
+            }
+            PetContext::Drag => -10.0, // 拎起悬空
+            PetContext::Error => 2.0,  // 垂头丧气
+            PetContext::Sleep => 3.0,  // 趴下贴地(设计.md `sleep`)
             _ => 0.0,
         };
         if motion && self.ctx == PetContext::Idle && self.breath {
             body_dy += 1.0; // 呼吸 1px 沉浮
+        }
+        // 探头入场:从岗台后冒出(450ms 上浮;规则「探头」)。
+        if motion && self.peek_until_ms > now {
+            let remain = (self.peek_until_ms - now) as f32 / PEEK_MS as f32;
+            body_dy += remain * 6.0;
         }
 
         for (y, row) in sp.rows.iter().enumerate() {
             let y = y as i32;
             for (x, ch) in row.chars().enumerate() {
                 let x = x as i32;
-                let Some(mut color) = pixel_color(ch) else {
+                let Some(color) = pixel_color(ch) else {
                     continue;
                 };
                 let mut dx = 0.0_f32;
                 let mut dy = body_dy;
-                let mut hs = 1.0_f32; // 高度比例(error 眯眼用)
+                let mut hs = 1.0_f32; // 高度比例(眯眼/委屈眼用)
                 let is_eye = sp.eyes.contains(&(x, y));
                 let is_ear = sp.ears.contains(&(x, y));
                 let is_tail = sp.tail.contains(&(x, y));
                 let is_leg = y == 8;
 
-                // 眨眼/摸摸:眼睛盖毛色。
-                if is_eye && blink && self.ctx != PetContext::Error {
-                    color = sp.fur;
+                // 快乐眯眼 ^^:眼格压成 35% 高、沉到格底的深色横缝(闭眼仍有
+                // 眼线,不再「眼睛没了」)。
+                if is_eye && squint && self.ctx != PetContext::Error {
+                    hs = 0.35;
+                    dy += 2.0;
                 }
                 // 委屈眼「- -」:眼格压成 40% 高的横条(规则)。
                 if is_eye && self.ctx == PetContext::Error {
@@ -726,16 +812,19 @@ impl PetView {
                 if is_ear && self.ctx == PetContext::Typing {
                     dy -= CELL;
                 }
-                // 耳朵下垂(error)。
+                // 耳朵下垂(error);打盹耳朵微塌。
                 if is_ear && self.ctx == PetContext::Error {
                     dy += CELL * 0.6;
                 }
-                // 尾摆:idle 慢摆 1px,running 快摆 2px(规则)。
-                if is_tail && motion {
-                    let amp = if self.ctx == PetContext::Running {
-                        2.0
-                    } else {
-                        1.0
+                if is_ear && self.ctx == PetContext::Sleep {
+                    dy += CELL * 0.4;
+                }
+                // 尾摆:idle 慢摆 1px,running 快摆 2px,玩耍 3px 最欢;打盹不摆。
+                if is_tail && motion && self.ctx != PetContext::Sleep {
+                    let amp = match self.ctx {
+                        PetContext::Play => 3.0,
+                        PetContext::Running => 2.0,
+                        _ => 1.0,
                     };
                     dy += if self.phase { -amp } else { amp };
                 }
@@ -759,6 +848,23 @@ impl PetView {
         // Success:头顶冒像素小心(ok 色 5×5,SHEET 05 `.updot`)。
         if self.ctx == PetContext::Success {
             out.push((9, -1, OK, 2.0, body_dy, 0.8));
+        }
+        // 玩耍:头顶双爱心(粉色,随相位交替闪)。
+        if self.ctx == PetContext::Play {
+            const HEART: u32 = 0xF08C98; // 像素爱心粉(宠物专属调色,非语义色)
+            if !motion || self.phase {
+                out.push((9, -1, HEART, 2.0, body_dy, 0.8));
+            }
+            if !motion || !self.phase {
+                out.push((11, -2, HEART, 1.0, body_dy, 0.6));
+            }
+        }
+        // 打盹:头顶 zZ(弱灰,随呼吸相位起伏)。
+        if self.ctx == PetContext::Sleep {
+            const ZZ: u32 = 0x69748E; // t2 弱文灰
+            let lift = if motion && self.breath { -1.0 } else { 0.0 };
+            out.push((11, 0, ZZ, 0.0, body_dy + lift, 0.5));
+            out.push((12, -1, ZZ, 1.0, body_dy + lift * 1.5, 0.7));
         }
         out
     }
@@ -931,12 +1037,11 @@ impl Render for PetView {
                 MouseButton::Left,
                 cx.listener(|pet, ev: &MouseDownEvent, _w, cx| {
                     cx.stop_propagation();
-                    // 双击 = 打开宠物设置菜单(规则「双击宠物:打开宠物选择或
-                    // 设置入口」;二轮差异总结 §8 缺口)。
+                    // 双击 = 逗弄玩耍(蹦跳+爱心,设计.md `play`;BUG发现 #6:
+                    // 设置不再占双击 — 右键/命令面板/状态栏席位可达)。
                     if ev.click_count >= 2 {
                         pet.drag = None;
-                        pet.menu_open = true;
-                        cx.notify();
+                        pet.play(cx);
                         return;
                     }
                     pet.menu_open = false;
