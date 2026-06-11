@@ -1495,12 +1495,31 @@ impl QuickTerminal {
             }
         }
 
-        let footer = if self.ssh_rename.is_some() {
-            "Enter 保存名称 · Esc 取消 · 支持中文输入"
+        // float-foot 键帽化(与 workspace SSH 连接器同语法,差异总结 §7)。
+        let khint = |k: &'static str, label: &'static str| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .child(crate::style::kbd(k, mono.clone()))
+                .child(div().child(label))
+        };
+        let footer_hints: Vec<Div> = if self.ssh_rename.is_some() {
+            vec![
+                khint("↵", "保存名称"),
+                khint("Esc", "取消"),
+                div().child("支持中文输入"),
+            ]
         } else if rows.is_empty() {
-            "Enter 连接 · Esc 返回启动器"
+            vec![khint("↵", "连接"), khint("Esc", "返回启动器")]
         } else {
-            "↑↓ 选择 · Enter 连接 · ★ 收藏/取消收藏 · Esc 返回启动器"
+            vec![
+                khint("↑↓", "选择"),
+                khint("↵", "连接"),
+                div().child("★ 收藏/取消收藏"),
+                khint("Esc", "返回启动器"),
+            ]
         };
         let ime_focus = self.ssh_prompt_focus.clone();
         let ime_entity = cx.entity();
@@ -1593,14 +1612,18 @@ impl QuickTerminal {
                                 )
                             })
                             .child(
+                                // 磷光块光标(`.cur`,浮层输入行统一块形;差异总结 §7)
                                 div()
-                                    .text_color(col(ui.muted))
-                                    .child(SharedString::from("▏")),
+                                    .w(px(7.))
+                                    .h(px(15.))
+                                    .flex_none()
+                                    .bg(gpui::rgb(crate::style::PH))
+                                    .rounded(px(1.)),
                             )
                             .when(self.ssh_prompt_input.is_empty(), |d| {
                                 d.child(
                                     div()
-                                        .ml(px(2.))
+                                        .ml(px(4.))
                                         .text_color(col(ui.muted))
                                         .child(SharedString::from(placeholder)),
                                 )
@@ -1615,11 +1638,12 @@ impl QuickTerminal {
             .child(list)
             .child(div().flex_1())
             .child(
-                // float-foot:mono 10 t2
+                // float-foot:mono 10 t2 · kbd 键帽
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
+                    .gap(px(12.))
                     .h(px(30.))
                     .px(px(14.))
                     .flex_none()
@@ -1628,7 +1652,7 @@ impl QuickTerminal {
                     .font_family(mono.clone())
                     .text_size(px(10.))
                     .text_color(gpui::rgb(crate::style::T2))
-                    .child(SharedString::from(footer)),
+                    .children(footer_hints),
             )
             .when(rename_ime_active, |d| {
                 d.child(

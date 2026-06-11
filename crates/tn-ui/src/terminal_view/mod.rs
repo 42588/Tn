@@ -18,7 +18,7 @@ use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use futures::channel::mpsc;
 use gpui::{
@@ -577,6 +577,10 @@ pub struct TerminalView {
     // `bell_flash_at`).
     bell_flash_at: Option<Instant>,
     bell_fading: bool,
+    /// 会话时钟原点(≈ reader 线程的块事件时钟):RUN 块实时耗时 = 现在 − started_at。
+    session_clock: Instant,
+    /// 运行中块的 200ms 重绘 ticker 是否在跑(防重复 spawn;静默长命令也走表)。
+    block_ticking: bool,
     // `[appearance]` bell prefs, resolved once at construction.
     visual_bell: bool,
     audio_bell: bool,
@@ -1022,6 +1026,8 @@ impl TerminalView {
             bell,
             bell_flash_at: None,
             bell_fading: false,
+            session_clock: Instant::now(),
+            block_ticking: false,
             visual_bell,
             audio_bell,
             config: config.clone(),
@@ -1823,12 +1829,52 @@ impl TerminalView {
 
     /// Build the Warp-style command-block bar shown at the bottom of the pane,
     /// or `None` when a full-screen app or detected agent owns the viewport.
+    /// 运行中块的走表 ticker:200ms 重绘一次,让 RUN 耗时在静默长命令(无输出
+    /// 不触发 reader wake)下也实时累加;块结束自行停表。
+    fn ensure_block_ticker(&mut self, cx: &mut Context<Self>) {
+        let running = self
+            .blocks
+            .lock()
+            .unwrap()
+            .current()
+            .is_some_and(|b| b.is_running());
+        if !running || self.block_ticking {
+            return;
+        }
+        self.block_ticking = true;
+        cx.spawn(async move |this, cx: &mut gpui::AsyncApp| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(200))
+                .await;
+            let keep = this
+                .update(cx, |v, cx| {
+                    let running = v
+                        .blocks
+                        .lock()
+                        .unwrap()
+                        .current()
+                        .is_some_and(|b| b.is_running());
+                    if !running {
+                        v.block_ticking = false;
+                    }
+                    cx.notify();
+                    running
+                })
+                .unwrap_or(false);
+            if !keep {
+                break;
+            }
+        })
+        .detach();
+    }
+
     fn render_block_bar(&self, cx: &mut Context<Self>) -> Option<Div> {
         let alt_screen = self.terminal.lock().unwrap().input_mode().alt_screen;
         if !should_render_block_bar(self.agent.is_some(), alt_screen) {
             return None; // Terminal apps own the viewport, so shell chrome stays out.
         }
-        let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap())?;
+        let now_ms = self.session_clock.elapsed().as_millis() as u64;
+        let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap(), now_ms)?;
         // Chrome tokens (mockup .block uses --fg/--muted/--accent), + ANSI green/red for status.
         let pal =
             block_view::BarPalette::new(self.ui_fg, self.ui_muted, self.ui_accent, &self.palette);
@@ -2551,6 +2597,7 @@ impl Render for TerminalView {
         // impl + `handle_input` below.
         let ime_focus = self.focus_handle.clone();
         let ime_entity = cx.entity();
+        self.ensure_block_ticker(cx); // RUN 实时耗时走表(SHEET 07-B)
         let block_bar = self.render_block_bar(cx);
         // Pane header (agent pill / shell chip). The pill's click handler needs a
         // handle to THIS pane to cycle usage_mode at event time, so pass a weak
@@ -3421,59 +3468,73 @@ impl Render for TerminalView {
         });
 
         // B2: host-key trust panel (TOFU) — shown on first contact with an
-        // unrecognized host, before auth.
+        // unrecognized host, before auth. SHEET 06-C:warn ⇄ 头 + 指纹凹井 +
+        // 三按钮「仅本次信任 / 写入 known_hosts(primary 磷光)/ 取消」
+        // (差异总结遗留:曾是 checkbox + 两按钮)。
         let ssh_hostkey_card = self.ssh_hostkey.as_ref().map(|hk| {
-            let remembered = self.ssh_hostkey_remember;
             // SHEET 06 板 C `.fp`:指纹块 = L0 凹井 + 1px h0 + r4 + mono 磷光指纹。
             let fp_box = div()
                 .mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(crate::style::R_CARD))
                 .bg(gpui::rgb(crate::style::L0)).border_1().border_color(rgba(crate::style::H0))
                 .child(div().text_size(px(10.)).text_color(col(self.ui_muted)).child("ED25519 / SHA256 指纹"))
                 .child(div().font_family(self.font_family.clone()).text_size(px(12.)).text_color(gpui::rgb(crate::style::PH)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
-            let remember_row = div()
-                .flex().flex_row().items_center().gap(px(8.)).px(px(14.)).py(px(10.))
-                .child(
-                    div().w(px(16.)).h(px(16.)).flex_none().rounded(px(5.)).flex().items_center().justify_center()
-                        .when(remembered, |d| d.bg(cola(self.ui_accent, 0.9)))
-                        .when(!remembered, |d| d.border_1().border_color(cola(self.ui_muted, 0.6)))
-                        .when(remembered, |d| d.child(crate::style::icon("check", 12., self.palette.bg))),
-                )
-                .child(div().text_size(px(11.5)).text_color(col(self.ui_muted)).child("记住此主机(写入 ~/.ssh/known_hosts)"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+            // `.btn` 家族(06-C):普通 = L2 + h1;primary = ph 底 + ph-ink 墨字。
+            let btn = |label: &'static str| {
+                div()
+                    .px(px(12.)).py(px(5.)).rounded(px(crate::style::R_CARD))
+                    .text_size(px(12.)).text_color(gpui::rgb(crate::style::T1))
+                    .bg(gpui::rgb(crate::style::L2)).border_1().border_color(rgba(crate::style::H1))
+                    .hover(|s| s.bg(gpui::rgb(crate::style::L4)).text_color(gpui::rgb(crate::style::T0)))
+                    .child(label)
+            };
+            let once = btn("仅本次信任").on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
                     cx.stop_propagation();
-                    this.ssh_hostkey_remember = !this.ssh_hostkey_remember;
-                    cx.notify();
-                }));
-            let trust = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
-                .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
-                .child(crate::style::icon("shield", 13., self.ui_accent))
-                .child(div().text_size(px(12.)).child("信任并连接"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
-                    cx.stop_propagation();
+                    this.ssh_hostkey_remember = false;
                     this.trust_host_key(cx);
-                }));
-            let cancel = div()
-                .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(gpui::rgb(crate::style::L2)).text_color(col(self.ui_fg))
-                .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
-                .child(div().text_size(px(12.)).child("取消"))
-                .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
+                }),
+            );
+            let save = btn("写入 known_hosts")
+                .bg(gpui::rgb(crate::style::PH))
+                .border_color(gpui::rgb(crate::style::PH))
+                .text_color(gpui::rgb(crate::style::PH_INK))
+                .font_weight(gpui::FontWeight(600.))
+                .hover(|s| s.bg(gpui::rgb(crate::style::PH)))
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.ssh_hostkey_remember = true;
+                        this.trust_host_key(cx);
+                    }),
+                );
+            let cancel = btn("取消").on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
                     cx.stop_propagation();
                     this.reject_host_key(cx);
-                }));
+                }),
+            );
             card_chrome(
                 div()
-                    .child(card_header("shield", self.ui_accent, "首次连接此主机", &hk.host))
+                    .child(card_header("exchange", self.ui_yellow, "首次连接", &hk.host))
                     .child(
                         div().px(px(14.)).pt(px(11.)).text_size(px(12.)).text_color(col(self.ui_muted))
-                            .child("你是第一次连接此主机。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
+                            .child("无法验证主机真实性。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
                     )
                     .child(fp_box)
-                    .child(remember_row)
+                    .child(
+                        div().px(px(14.)).pt(px(8.)).pb(px(11.)).text_size(px(10.))
+                            .font_family(self.font_family.clone())
+                            .text_color(col(self.ui_muted))
+                            .child("⚠ 指纹不符时将变为 HOST KEY MISMATCH 红边错误卡"),
+                    )
                     .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
-                    .child(div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.)).child(cancel).child(trust)),
+                    .child(
+                        div().flex().flex_row().items_center().gap(px(8.)).justify_end().h(px(46.)).px(px(11.))
+                            .child(once).child(save).child(cancel),
+                    ),
             )
         });
 

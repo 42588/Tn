@@ -125,6 +125,11 @@ const ICON_BODIES: &[(&str, &str)] = &[
         "shield",
         r#"<path d="M12 3.2 19 6v5c0 4.6-3 8.2-7 10-4-1.8-7-5.4-7-10V6z"/><path d="M9 12l2 2 4-4"/>"#,
     ),
+    // SSH 身份字形 ⇄(SHEET 06/07:warn 琥珀双向箭头)
+    (
+        "exchange",
+        r#"<path d="M4 8.2h13.5"/><path d="M14.2 4.8 17.6 8.2l-3.4 3.4"/><path d="M20 15.8H6.5"/><path d="M9.8 12.4 6.4 15.8l3.4 3.4"/>"#,
+    ),
 ];
 
 /// Wrap icon body markup in a 24×24 line-icon `<svg>` (opaque white stroke so

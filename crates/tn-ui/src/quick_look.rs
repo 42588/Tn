@@ -6685,60 +6685,150 @@ impl Render for QuickLook {
                 })
             });
 
+        // 未保存确认 = 06-C 独立确认浮层(差异总结 3-21:不再用内嵌横条):
+        // 迷你 scrim 压暗速览内容 + 居中 460 浮层(warn 头 + 文件 chip + 正文 +
+        // 46 高按钮脚:「保存并关闭」btn primary 磷光底墨字 / 「丢弃」danger / 取消)。
         let leave_notice = self.pending_leave.clone().map(|pending| {
-            let action = |label: &'static str, danger: bool| {
+            let mono = SharedString::from(self.config.font().family.clone());
+            let confirm_label = match &pending {
+                PendingLeave::Close => "保存并关闭",
+                PendingLeave::Quit => "保存并退出",
+                _ => "保存并继续",
+            };
+            // `.btn` 家族(SHEET 06-C):primary = ph 底 + ph-ink 墨字 600;
+            // danger = err 字 + err-soft 底 + err·35 边;普通 = L2 + h1。
+            let btn = |label: &'static str| {
                 div()
-                    .px(px(9.))
-                    .py(px(2.))
-                    .rounded(px(crate::style::R_CHIP))
-                    .text_size(px(10.5))
-                    .font_weight(gpui::FontWeight(620.))
-                    .text_color(col(if danger { ansi.red } else { ui.foreground }))
-                    .bg(if danger {
-                        cola(ansi.red, 0.10)
-                    } else {
-                        gpui::rgb(crate::style::L2)
-                    })
+                    .px(px(14.))
+                    .py(px(5.))
+                    .rounded(px(crate::style::R_CARD))
+                    .font_family(UI_SANS)
+                    .text_size(px(12.))
+                    .text_color(gpui::rgb(crate::style::T1))
+                    .bg(gpui::rgb(crate::style::L2))
                     .border_1()
-                    .border_color(if danger {
-                        cola(ansi.red, 0.32)
-                    } else {
-                        rgba(crate::style::H1)
+                    .border_color(rgba(crate::style::H1))
+                    .hover(|s| {
+                        s.bg(gpui::rgb(crate::style::L4))
+                            .text_color(gpui::rgb(crate::style::T0))
                     })
                     .child(label)
             };
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(8.))
-                .px(px(13.))
-                .py(px(7.))
-                .flex_none()
-                .font_family(UI_SANS)
-                .text_size(px(10.5))
-                .text_color(col(ui.muted))
-                .bg(cola(ansi.yellow, 0.07))
-                .border_t_1()
-                .border_color(rgba(crate::style::H0))
-                .child(icon("alert", 13., ansi.yellow))
+            let card = div()
+                .w(px(460.))
+                .rounded(px(R_PANEL))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(crate::style::H2))
+                .bg(gpui::rgb(crate::style::L3))
+                .shadow(crate::style::shadow_float())
+                .child(
+                    // float-head:38 高 · L4 · ⚠ warn + 标题 + 文件名 chip
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(38.))
+                        .px(px(14.))
+                        .flex_none()
+                        .bg(gpui::rgb(crate::style::L4))
+                        .border_b(px(1.))
+                        .border_color(rgba(crate::style::H1))
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .child(div().text_color(col(ansi.yellow)).child("⚠"))
+                        .child(
+                            div()
+                                .text_color(gpui::rgb(crate::style::T1))
+                                .child("未保存的改动"),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(2.))
+                                .rounded(px(crate::style::R_CHIP))
+                                .border_1()
+                                .border_color(rgba(crate::style::H1))
+                                .text_size(px(10.))
+                                .text_color(gpui::rgb(crate::style::T1))
+                                .max_w(px(180.))
+                                .overflow_hidden()
+                                .child(SharedString::from(name.clone())),
+                        ),
+                )
                 .child(
                     div()
-                        .text_color(col(ui.foreground))
+                        .px(px(16.))
+                        .py(px(14.))
+                        .font_family(UI_SANS)
+                        .text_size(px(12.))
+                        .text_color(gpui::rgb(crate::style::T1))
                         .child(SharedString::from(pending.prompt())),
                 )
-                .child(div().flex_1())
-                .child(action("保存", false).on_mouse_down(
+                .child(
+                    // float-foot:46 高 · gap 8 · 右对齐按钮组
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_end()
+                        .gap(px(8.))
+                        .h(px(46.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(crate::style::H1))
+                        .child(
+                            btn(confirm_label)
+                                .bg(gpui::rgb(crate::style::PH))
+                                .border_color(gpui::rgb(crate::style::PH))
+                                .text_color(gpui::rgb(crate::style::PH_INK))
+                                .font_weight(gpui::FontWeight(600.))
+                                .hover(|s| s.bg(gpui::rgb(crate::style::PH)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| this.save_pending_leave(cx)),
+                                ),
+                        )
+                        .child(
+                            btn("丢弃")
+                                .text_color(col(ansi.red))
+                                .bg(cola(ansi.red, 0.14))
+                                .border_color(cola(ansi.red, 0.35))
+                                .hover(|s| s.bg(cola(ansi.red, 0.22)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| this.discard_pending_leave(cx)),
+                                ),
+                        )
+                        .child(btn("取消").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| this.cancel_pending_leave(cx)),
+                        )),
+                );
+            // 覆盖整个速览面:纯色压暗(无模糊,契约 7)+ 居中卡;点压暗区 = 取消。
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(crate::style::SCRIM))
+                .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _e, _w, cx| this.save_pending_leave(cx)),
-                ))
-                .child(action("放弃", true).on_mouse_down(
+                    cx.listener(|this, _e, _w, cx| {
+                        cx.stop_propagation();
+                        this.cancel_pending_leave(cx);
+                    }),
+                )
+                .child(card.on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _e, _w, cx| this.discard_pending_leave(cx)),
-                ))
-                .child(action("取消", false).on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _e, _w, cx| this.cancel_pending_leave(cx)),
+                    cx.listener(|_this, _e, _w, cx| cx.stop_propagation()),
                 ))
         });
 
@@ -6849,9 +6939,10 @@ impl Render for QuickLook {
             .when_some(find_bar, |d, fb| d.child(fb))
             .child(body)
             .when_some(save_notice, |d, n| d.child(n))
-            .when_some(leave_notice, |d, n| d.child(n))
             .when_some(hunk_notice, |d, n| d.child(n))
-            .child(footer);
+            .child(footer)
+            // 确认浮层(06-C)绝对定位盖全面,挂在 footer 之后 = 画在最上层。
+            .when_some(leave_notice, |d, n| d.child(n));
 
         // 浮层家族:1px h2 边 + float 投影(全系统唯一投影,契约 4)
         float_panel(inner)

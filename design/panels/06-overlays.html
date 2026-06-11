@@ -29,6 +29,22 @@
   /* 指纹块 */
   .fp{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-card);
        padding:10px 14px; font:12px/1.8 var(--mono); color:var(--ph); }
+  /* SSH 连接器富列表(B2):双行行 + 星标 + 方式 chip + 编辑 + 相对时间 */
+  .srow{ display:flex; align-items:center; gap:10px; padding:8px 14px; position:relative; }
+  .srow:hover{ background:var(--l4); }
+  .srow.on{ background:var(--l4); }
+  .srow.on::before{ content:""; position:absolute; left:0; top:8px; bottom:8px; width:2px; background:var(--ph); }
+  .srow .star{ color:var(--warn); font-size:13px; width:16px; text-align:center; flex:none; }
+  .srow .star.off{ color:var(--t3); }
+  .srow .id{ min-width:0; flex:1; }
+  .srow .id b{ display:block; font:600 12px var(--sans); color:var(--t0); }
+  .srow .id i{ display:block; font-style:normal; font:10px var(--mono); color:var(--t2); margin-top:1px; }
+  .srow .meth{ display:inline-flex; align-items:center; gap:4px; padding:2px 8px;
+               border:1px solid var(--h1); border-radius:var(--r-chip); font:10px var(--mono); color:var(--ok); }
+  .srow .edit{ color:var(--t3); font-size:11px; }
+  .srow .ago{ font:10px var(--mono); color:var(--t3); width:48px; text-align:right; }
+  .swell{ margin:12px 14px 10px; padding:10px 12px; background:var(--l0); border:1px solid var(--h1);
+          border-radius:var(--r-card); display:flex; align-items:center; gap:8px; font:13px var(--mono); }
   .kv{ display:flex; gap:12px; font:11px var(--mono); padding:3px 0; }
   .kv b{ color:var(--t2); font-weight:500; width:88px; flex:none; }
   .kv span{ color:var(--t1); }
@@ -105,6 +121,50 @@
         <tr><td class="k">页脚</td><td>高 30 · kbd 提示 mono 10</td><td>右端状态 tag</td></tr>
       </table>
     </div>
+  </div>
+</div>
+
+<!-- ══════════ B2 · SSH 连接器(内置 prompt 流) ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">B2</span><span class="t">SSH 连接器 · 内置 prompt 流</span><span class="d">命令面板 SSH 行 / 欢迎页 SSH 磁贴 进入 — 输入井 + 收藏/最近富列表(回填自真机,二轮差异总结 §9)</span></div>
+  <div class="board-body">
+    <div class="float" style="width:560px">
+      <div class="swell">
+        <span style="color:var(--warn)">⇄</span>
+        <span style="color:var(--t0)">user@host:port</span>
+        <span class="cur">&nbsp;</span>
+        <span style="color:var(--t2); font-size:11px">(例: root@192.168.1.1:22)</span>
+      </div>
+      <div style="height:1px; background:var(--h1)"></div>
+      <div style="padding:6px 0">
+        <div class="srow on">
+          <span class="star">★</span>
+          <div class="id"><b>172.24.16.162</b><i>root@172.24.16.162:2222</i></div>
+          <span class="meth">⚿ 密钥</span>
+          <span class="edit">✎</span>
+          <span class="ago">5 时前</span>
+        </div>
+        <div class="srow">
+          <span class="star off">☆</span>
+          <div class="id"><b>xqq</b><i>xqq@172.24.16.162:2223</i></div>
+          <span class="meth" style="color:var(--warn)">⚷ 密码</span>
+          <span class="edit">✎</span>
+          <span class="ago">5 天前</span>
+        </div>
+        <div class="srow">
+          <span class="star off">☆</span>
+          <div class="id"><b>build-07</b><i>ci@10.2.0.31:22 · ssh-config</i></div>
+          <span class="meth" style="color:var(--info)">⌨ 交互</span>
+          <span class="edit">✎</span>
+          <span class="ago">—</span>
+        </div>
+      </div>
+      <div class="float-foot">
+        <span><span class="kbd">↑↓</span> 选择</span><span><span class="kbd">↵</span> 连接</span>
+        <span>★ 收藏/取消收藏</span><span><span class="kbd">Esc</span> 取消</span>
+      </div>
+    </div>
+    <div class="note">行 = 双行(昵称 t0 600 / user@host:port mono t2)+ 左 ★ 收藏(warn,点击切换)+ 认证方式 chip(密钥 ok / 密码 warn / 交互 info)+ ✎ 重命名 + 相对时间 t3;选中 = <b>L4 + 左 2px 磷光脊</b>。输入井 = L0 凹井 + 磷光块光标;连上自动进「最近」。指纹/密码/失败卡见板 C 与 SHEET 07-C(同浮层家族)。</div>
   </div>
 </div>
 

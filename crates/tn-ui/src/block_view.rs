@@ -58,12 +58,21 @@ impl BlockBar {
     /// Choose the block to display: a running / has-command current block,
     /// else the most recently finished one. `None` until the first command
     /// (so an idle bare prompt shows no bar).
-    pub fn from_model(m: &BlockModel) -> Option<Self> {
+    ///
+    /// `now_ms` = 会话时钟当前值(与块事件的 at_ms 同源):运行中的块以
+    /// `now − started_at` 给出**实时累加耗时**(SHEET 07-B「运行中耗时实时
+    /// 累加,即最朴素的进度仪」;差异总结 1-12)。
+    pub fn from_model(m: &BlockModel, now_ms: u64) -> Option<Self> {
         let chosen = match m.current() {
             Some(c) if c.state == BlockState::Running || c.command.is_some() => Some(c),
             _ => m.last_finished(),
         };
         let b: &Block = chosen?;
+        let duration_ms = b.duration_ms().or_else(|| {
+            (b.state == BlockState::Running)
+                .then(|| b.started_at.map(|s| now_ms.saturating_sub(s)))
+                .flatten()
+        });
         Some(Self {
             command: b
                 .command
@@ -73,7 +82,7 @@ impl BlockBar {
             cwd: b.cwd.as_ref().map(|s| s.to_string()),
             state: b.state,
             exit: b.exit,
-            duration_ms: b.duration_ms(),
+            duration_ms,
         })
     }
 }

@@ -473,6 +473,15 @@ impl SplitDir {
             SplitDir::Down => ("↓", "下"),
         }
     }
+    /// 「右侧分屏」式整句(SHEET 06-B 方向读数/页脚 tag 用)。
+    fn side_label(self) -> &'static str {
+        match self {
+            SplitDir::Left => "左侧分屏",
+            SplitDir::Right => "右侧分屏",
+            SplitDir::Up => "上方分屏",
+            SplitDir::Down => "下方分屏",
+        }
+    }
 }
 
 /// An in-progress divider drag (mouse). Identifies a split (by tree path in the
@@ -871,12 +880,11 @@ pub struct Workspace {
     /// Within the palette, drilled into the WSL group's distros.
     palette_wsl: bool,
     palette_focus: FocusHandle,
-    /// `新会话` split launcher (app menu): pick a split direction, then a profile,
-    /// then open the session in a new split. `split_dir = None` = phase 1 (picking
-    /// direction); `Some(dir)` = phase 2 (picking the profile). Distinct from the
-    /// command palette (which opens a session in a new *tab*).
+    /// `新会话` split launcher (app menu): **单浮层**(SHEET 06-B,用户定夺改回
+    /// 原型)— 方向 4 格(⇥ 循环)与 profile 行同屏,↵ 按当前方向分屏启动。
+    /// Distinct from the command palette (which opens a session in a new *tab*).
     split_launcher_open: bool,
-    split_dir: Option<SplitDir>,
+    split_dir: SplitDir,
     split_sel: usize,
     /// Within phase 2, drilled into the WSL group's distros.
     split_wsl: bool,
@@ -1246,7 +1254,7 @@ impl Workspace {
             palette_focus: cx.focus_handle(),
             split_launcher_open: false,
             split_target: None,
-            split_dir: None,
+            split_dir: SplitDir::Right,
             split_sel: 0,
             split_wsl: false,
             split_focus: cx.focus_handle(),
@@ -2538,9 +2546,12 @@ impl Workspace {
 
         // SHEET 01 板 B `.mi`:行高 30 · px 10 · gap 10 · r4 · sans 12 · t1;
         // hover = L4 + t0(不透明抬升,无 alpha hover)。danger(退出)= err。
+        // 右列二选一:kbd 键帽(全拼,差异 1-10)或 note 注记(mono 10 t3,
+        // 差异 1-9:布局「7 槽位」、设置「config.toml」)。
         let mi = |icon_name: &'static str,
                   label: &'static str,
                   key: Option<&'static str>,
+                  note: Option<&'static str>,
                   danger: bool,
                   act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
             let crest = col(ui.palette_selected); // L4
@@ -2570,8 +2581,18 @@ impl Workspace {
                     },
                 ))
                 .child(div().child(label))
+                .child(div().flex_1())
+                .when_some(note, |d, n| {
+                    d.child(
+                        div()
+                            .font_family(mono.clone())
+                            .text_size(px(10.))
+                            .text_color(rgb(crate::style::T3))
+                            .child(n),
+                    )
+                })
                 .when_some(key, |d, k| {
-                    d.child(div().flex_1()).child(
+                    d.child(
                         div()
                             .font_family(mono.clone())
                             .text_size(px(10.))
@@ -2613,39 +2634,46 @@ impl Workspace {
                     MouseButton::Left,
                     cx.listener(|_this, _e, _w, cx| cx.stop_propagation()),
                 )
+                // SHEET 01-B 分组:[新会话,新标签,打开文件夹…|布局,文件浏览器|
+                // 设置,主题,重载配置|关于,退出](差异 1-8)。
                 .child(mi(
                     "spark",
                     "新会话…",
-                    Some("⌃⇧N"),
+                    Some("Ctrl+Shift+N"),
+                    None,
                     false,
                     Box::new(|this, w, cx| this.new_session(&NewSession, w, cx)),
                 ))
                 .child(mi(
                     "plus",
                     "新标签",
-                    Some("⌃⇧T"),
+                    Some("Ctrl+Shift+T"),
+                    None,
                     false,
                     Box::new(|this, w, cx| this.new_tab(&NewTab, w, cx)),
                 ))
-                .child(sep())
                 .child(mi(
                     "folder",
                     "打开文件夹…",
                     None,
+                    None,
                     false,
                     Box::new(|this, _w, cx| this.menu_open_folder(cx)),
                 ))
+                .child(sep())
                 .child(mi(
                     "max",
-                    "布局…",
+                    "布局",
                     None,
+                    Some("7 槽位"),
                     false,
                     Box::new(|this, _w, cx| this.open_layout_manager(cx)),
                 ))
                 .child(mi(
                     "sidebar",
                     "文件浏览器",
-                    Some("⌃⇧B"),
+                    Some("Ctrl+Shift+B"),
+                    None,
                     false,
                     Box::new(|this, w, cx| this.toggle_explorer(&ToggleExplorer, w, cx)),
                 ))
@@ -2655,6 +2683,7 @@ impl Workspace {
                     "sliders",
                     "设置",
                     None,
+                    Some("config.toml"),
                     false,
                     Box::new(|this, _w, cx| {
                         if let Some(p) = tn_config::config_path() {
@@ -2671,23 +2700,26 @@ impl Workspace {
                     "moon",
                     "主题 · Tn Dark",
                     None,
+                    None,
                     false,
                     Box::new(|_t, _w, _cx| {}),
                 ))
-                // 重载配置 = panic button: reset config files to defaults + reload
-                // (destructive). No ⌃⇧R keycap — that shortcut is the non-destructive
-                // hot-reload (reads your edited config); this menu item RESETS.
+                // 重载配置 = 非破坏热重载(读你改过的 config),与 Ctrl+Shift+R 同一
+                // 动作(SHEET 01-B;差异 1-9 曾错挂「重置为默认」的危险语义,重置
+                // 不再有菜单一键入口)。
                 .child(mi(
                     "refresh",
                     "重载配置",
+                    Some("Ctrl+Shift+R"),
                     None,
                     false,
-                    Box::new(|this, w, cx| this.reset_config(w, cx)),
+                    Box::new(|this, w, cx| this.reload_config(&ReloadConfig, w, cx)),
                 ))
                 .child(sep())
                 .child(mi(
                     "info",
                     "关于 Tn",
+                    None,
                     None,
                     false,
                     Box::new(|_t, _w, cx| {
@@ -2702,7 +2734,8 @@ impl Workspace {
                 .child(mi(
                     "power",
                     "退出",
-                    Some("⌃⇧Q"),
+                    Some("Ctrl+Shift+Q"),
+                    None,
                     true,
                     Box::new(|this, _w, cx| this.request_quit(cx)),
                 )),
@@ -3192,9 +3225,12 @@ impl Workspace {
         )
     }
 
-    /// `重载配置`(app menu, panic button): overwrite the on-disk `config.toml` +
-    /// `themes/tn-dark.toml` with the built-in defaults, then reload — recovering
-    /// from a broken hand-edited config. **Destructive**: discards user edits.
+    /// Panic button: overwrite the on-disk `config.toml` + `themes/tn-dark.toml`
+    /// with the built-in defaults, then reload — recovering from a broken
+    /// hand-edited config. **Destructive**: discards user edits. 菜单的「重载配置」
+    /// 已按 SHEET 01-B 接回非破坏热重载,本钮暂无 UI 入口(危险操作不一键化);
+    /// 留作将来「重置配置」确认流程的后端。
+    #[allow(dead_code)]
     fn reset_config(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(p) = tn_config::config_path() {
             if let Err(e) = std::fs::write(&p, tn_config::DEFAULT_CONFIG_TOML) {
@@ -3541,14 +3577,14 @@ impl Workspace {
                         )
                     })
                     .child(
-                        div()
-                            .text_color(col(ui.muted))
-                            .child(SharedString::from("▏")),
-                    ) // caret
+                        // 磷光块光标(`.cur`):浮层输入行统一块形(与命令面板同
+                        // 语法;此前是灰竖线,差异总结 §7 输入行光标不一致)。
+                        div().w(px(7.)).h(px(16.)).bg(rgb(PH)).rounded(px(1.)),
+                    )
                     .when(self.ssh_prompt_input.is_empty(), |d| {
                         d.child(
                             div()
-                                .ml(px(2.))
+                                .ml(px(4.))
                                 .text_color(col(ui.muted))
                                 .child(SharedString::from(placeholder)),
                         )
@@ -3912,12 +3948,32 @@ impl Workspace {
                 .child(list)
         };
 
-        let footer_text = if self.ssh_rename.is_some() {
-            "↵ 保存名称 · Esc 取消 · 支持中文输入"
+        // float-foot 键帽化(浮层家族四件套之一,差异总结 §7:此前是纯文本)。
+        // ★ 收藏是点击行为(无键位),保持纯文本 token。
+        let khint = |k: &'static str, label: &'static str| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .child(crate::style::kbd(k, mono.clone()))
+                .child(div().child(label))
+        };
+        let footer_hints: Vec<gpui::Div> = if self.ssh_rename.is_some() {
+            vec![
+                khint("↵", "保存名称"),
+                khint("Esc", "取消"),
+                div().child("支持中文输入"),
+            ]
         } else if has_rows {
-            "↑↓ 选择 · ↵ 连接 · ★ 收藏/取消收藏 · Esc 取消"
+            vec![
+                khint("↑↓", "选择"),
+                khint("↵", "连接"),
+                div().child("★ 收藏/取消收藏"),
+                khint("Esc", "取消"),
+            ]
         } else {
-            "↵ 连接 · Esc 取消"
+            vec![khint("↵", "连接"), khint("Esc", "取消")]
         };
 
         let ime_focus = self.ssh_prompt_focus.clone();
@@ -3939,12 +3995,12 @@ impl Workspace {
                 .bg(col(ui.palette_bg)) // L3 不透明浮板(契约 1)
                 .child(panel_body)
                 .child(
-                    // float-foot:高 30 · 顶 1px h1 · mono 10 t2
+                    // float-foot:高 30 · 顶 1px h1 · mono 10 t2 · kbd 键帽
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(8.))
+                        .gap(px(12.))
                         .h(px(30.))
                         .px(px(14.))
                         .flex_none()
@@ -3953,7 +4009,7 @@ impl Workspace {
                         .font_family(mono.clone())
                         .text_size(px(10.))
                         .text_color(rgb(T2))
-                        .child(SharedString::from(footer_text)),
+                        .children(footer_hints),
                 )
                 .when(rename_ime_active, |d| {
                     d.child(
@@ -4264,14 +4320,15 @@ impl Workspace {
         )
     }
 
-    /// `新会话` (app menu / Ctrl+Shift+N): open the split launcher at phase 1.
+    /// `新会话` (app menu / Ctrl+Shift+N): open the split launcher (单浮层,
+    /// 方向默认「右」— SHEET 06-B 示例态)。
     fn new_session(&mut self, _: &NewSession, _window: &mut Window, cx: &mut Context<Self>) {
         // Snapshot the split target NOW, while the pane the user is on still holds
         // focus — the launcher overlay is about to steal focus, so reading
         // `focused` later (in `split_session`) is fragile.
         self.split_target = Some(self.tabs[self.active].focused);
         self.split_launcher_open = true;
-        self.split_dir = None;
+        self.split_dir = SplitDir::Right;
         self.split_sel = 0;
         self.split_wsl = false;
         self.split_needs_focus = true;
@@ -4285,53 +4342,51 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Split-launcher keyboard: phase 1 (arrow keys pick a split direction) → phase 2
-    /// (↑↓ pick a profile, Enter splits + launches it there). Esc backs out / closes.
+    /// Split-launcher keyboard(SHEET 06-B 单浮层):⇥ 循环方向(⇧⇥ 反向),
+    /// ↑↓ 选 profile,↵ 按当前方向分屏启动,Esc 退 WSL 下钻 / 关闭。
     fn on_split_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = ev.keystroke.key.as_str();
         cx.stop_propagation();
-        match self.split_dir {
-            None => {
-                let dir = match key {
-                    "left" => Some(SplitDir::Left),
-                    "right" => Some(SplitDir::Right),
-                    "up" => Some(SplitDir::Up),
-                    "down" => Some(SplitDir::Down),
-                    "escape" => return self.close_split_launcher(window, cx),
-                    _ => None,
+        let n = self.split_rows().len();
+        match key {
+            "tab" => {
+                // ← → ↑ ↓ 环(原型方向格顺序);⇧⇥ 反向。
+                const ORDER: [SplitDir; 4] = [
+                    SplitDir::Left,
+                    SplitDir::Right,
+                    SplitDir::Up,
+                    SplitDir::Down,
+                ];
+                let i = ORDER.iter().position(|d| *d == self.split_dir).unwrap_or(1);
+                let next = if ev.keystroke.modifiers.shift {
+                    (i + ORDER.len() - 1) % ORDER.len()
+                } else {
+                    (i + 1) % ORDER.len()
                 };
-                if let Some(d) = dir {
-                    self.split_dir = Some(d);
+                self.split_dir = ORDER[next];
+                cx.notify();
+            }
+            "up" => {
+                self.split_sel = self.split_sel.saturating_sub(1);
+                cx.notify();
+            }
+            "down" => {
+                if n > 0 {
+                    self.split_sel = (self.split_sel + 1).min(n - 1);
+                }
+                cx.notify();
+            }
+            "enter" => self.activate_split_sel(self.split_dir, window, cx),
+            "escape" => {
+                if self.split_wsl {
+                    self.split_wsl = false; // back to the root list
                     self.split_sel = 0;
                     cx.notify();
+                } else {
+                    self.close_split_launcher(window, cx);
                 }
             }
-            Some(dir) => {
-                let n = self.split_rows().len();
-                match key {
-                    "up" => {
-                        self.split_sel = self.split_sel.saturating_sub(1);
-                        cx.notify();
-                    }
-                    "down" => {
-                        if n > 0 {
-                            self.split_sel = (self.split_sel + 1).min(n - 1);
-                        }
-                        cx.notify();
-                    }
-                    "enter" => self.activate_split_sel(dir, window, cx),
-                    "escape" => {
-                        if self.split_wsl {
-                            self.split_wsl = false; // back to phase-2 root
-                            self.split_sel = 0;
-                        } else {
-                            self.split_dir = None; // back to direction picking
-                        }
-                        cx.notify();
-                    }
-                    _ => {}
-                }
-            }
+            _ => {}
         }
     }
 
@@ -4402,185 +4457,207 @@ impl Workspace {
         let ui = &t.ui;
 
         let crest = col(ui.palette_selected); // L4
-        let body = match self.split_dir {
-            // ── phase 1: pick the split direction (click a tile / press an arrow) ──
-            None => {
-                // SHEET 06 `.dir`:方向格 L2 + 1px h1 + r4;hover/on = ph-soft + ph 边
-                let dir_tile = |d: SplitDir| {
-                    let (arrow, label) = d.label();
-                    div()
-                        .w(px(74.))
-                        .h(px(54.))
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .justify_center()
-                        .gap(px(2.))
-                        .rounded(px(R_CARD))
-                        .bg(col(ui.surface_2))
-                        .border_1()
+        let mono = SharedString::from(self.config.font().family.clone());
+        let cur_dir = self.split_dir;
+
+        // ── SHEET 06-B 单浮层(用户定夺改回原型):方向 4 格 + profile 行同屏 ──
+        // `.dir`:46×46 · L2 + 1px h1 · r4 · mono 15 t2;on = ph-soft + ph-dim 边 + 磷光字。
+        let dir_tile = |d: SplitDir| {
+            let (arrow, _) = d.label();
+            let on = d == cur_dir;
+            div()
+                .w(px(46.))
+                .h(px(46.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(R_CARD))
+                .font_family(mono.clone())
+                .text_size(px(15.))
+                .border_1()
+                .when(on, |x| {
+                    x.bg(rgba(crate::style::PH_SOFT))
+                        .border_color(rgba(PH_DIM))
+                        .text_color(rgb(PH))
+                })
+                .when(!on, |x| {
+                    x.bg(col(ui.surface_2))
                         .border_color(rgba(H1))
+                        .text_color(rgb(T2))
                         .hover(|s| s.bg(rgba(crate::style::PH_SOFT)).border_color(rgba(PH_DIM)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _e, _w, cx| {
-                                this.split_dir = Some(d);
-                                this.split_sel = 0;
-                                cx.notify();
-                            }),
-                        )
-                        .child(div().text_size(px(16.)).text_color(rgb(T2)).child(arrow))
-                        .child(div().text_size(px(10.)).text_color(rgb(T2)).child(label))
-                };
-                let center = div()
-                    .w(px(74.))
-                    .h(px(54.))
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, _w, cx| {
+                        this.split_dir = d;
+                        cx.notify();
+                    }),
+                )
+                .child(arrow)
+        };
+        // 方向排 + 读数(mono 10 t2 两行,SHEET 06-B 板)。WSL 下钻时隐藏方向排
+        // (方向已定,只换行内容)。
+        let dirs =
+            (!self.split_wsl).then(|| {
+                div()
                     .flex()
+                    .flex_row()
                     .items_center()
-                    .justify_center()
-                    .rounded(px(R_CARD))
-                    .bg(rgba(crate::style::PH_SOFT))
-                    .border_1()
-                    .border_color(rgba(PH_DIM))
+                    .gap(px(24.))
+                    .px(px(16.))
+                    .pt(px(16.))
+                    .pb(px(6.))
                     .child(
                         div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .child(dir_tile(SplitDir::Left))
+                            .child(dir_tile(SplitDir::Right))
+                            .child(dir_tile(SplitDir::Up))
+                            .child(dir_tile(SplitDir::Down)),
+                    )
+                    .child(
+                        div()
+                            .font_family(mono.clone())
                             .text_size(px(10.))
-                            .text_color(rgb(PH))
-                            .child("当前 PANE"),
-                    );
-                let spacer = || div().w(px(74.));
+                            .text_color(rgb(T2))
+                            .child(div().child(SharedString::from(format!(
+                                "方向:{}",
+                                cur_dir.side_label()
+                            ))))
+                            .child(div().child("预览线先行,松手一次性提交(防 ConPTY 抖动)")),
+                    )
+            });
+        // profile 行(聚合:profiles + WSL 卡 + SSH;WSL 下钻换成发行版)。
+        let rows = self.split_rows();
+        let sel = self.split_sel.min(rows.len().saturating_sub(1));
+        let reg = crate::agent_host::agent_registry(cx);
+        let row_divs = rows.iter().enumerate().map(|(i, row)| {
+            let is_sel = i == sel;
+            let card = row_card(t, &self.launch_profiles, row, &reg);
+            // `.prow`:选中 = L4 + 左 2px 磷光脊(浮层家族统一语法)
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .h(px(36.))
+                .px(px(14.))
+                .relative()
+                .when(is_sel, |d| {
+                    d.bg(crest).child(
+                        div()
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(6.))
+                            .bottom(px(6.))
+                            .w(px(2.))
+                            .bg(rgb(PH)),
+                    )
+                })
+                .when(!is_sel, |d| d.hover(move |s| s.bg(crest)))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _e, w, cx| {
+                        this.split_sel = i;
+                        this.activate_split_sel(this.split_dir, w, cx);
+                    }),
+                )
+                .child(
+                    // `.gi` 身份字形(与命令面板同一映射,差异总结 4-4)
+                    div()
+                        .w(px(16.))
+                        .flex()
+                        .justify_center()
+                        .flex_none()
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(col(card.accent))
+                        .child(SharedString::from(crate::welcome::launch_glyph_ch(
+                            card.glyph,
+                        ))),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
+                        .child(SharedString::from(card.name)),
+                )
+        });
+        let body = div()
+            .flex()
+            .flex_col()
+            .when_some(dirs, |d, x| d.child(x))
+            .child(
                 div()
                     .flex()
                     .flex_col()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(6.))
-                            .child(spacer())
-                            .child(dir_tile(SplitDir::Up))
-                            .child(spacer()),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(6.))
-                            .child(dir_tile(SplitDir::Left))
-                            .child(center)
-                            .child(dir_tile(SplitDir::Right)),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap(px(6.))
-                            .child(spacer())
-                            .child(dir_tile(SplitDir::Down))
-                            .child(spacer()),
-                    )
-            }
-            // ── phase 2: pick the launcher (aggregated: profiles + WSL card + SSH;
-            // drilling into WSL swaps in the distros) ──
-            Some(dir) => {
-                let rows = self.split_rows();
-                let sel = self.split_sel.min(rows.len().saturating_sub(1));
-                let reg = crate::agent_host::agent_registry(cx);
-                let row_divs = rows.iter().enumerate().map(|(i, row)| {
-                    let is_sel = i == sel;
-                    let card = row_card(t, &self.launch_profiles, row, &reg);
-                    // `.prow`:选中 = L4 + 左 2px 磷光脊(浮层家族统一语法)
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.))
-                        .h(px(36.))
-                        .px(px(14.))
-                        .relative()
-                        .when(is_sel, |d| {
-                            d.bg(crest).child(
-                                div()
-                                    .absolute()
-                                    .left(px(0.))
-                                    .top(px(6.))
-                                    .bottom(px(6.))
-                                    .w(px(2.))
-                                    .bg(rgb(PH)),
-                            )
-                        })
-                        .when(!is_sel, |d| d.hover(move |s| s.bg(crest)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _e, w, cx| {
-                                this.split_sel = i;
-                                this.activate_split_sel(dir, w, cx);
-                            }),
-                        )
-                        .child(
-                            // `.gi` 身份字形(与命令面板同一映射,差异总结 4-4)
-                            div()
-                                .w(px(16.))
-                                .flex()
-                                .justify_center()
-                                .flex_none()
-                                .font_family(SharedString::from(self.config.font().family.clone()))
-                                .text_size(px(12.))
-                                .font_weight(gpui::FontWeight(600.))
-                                .text_color(col(card.accent))
-                                .child(SharedString::from(crate::welcome::launch_glyph_ch(
-                                    card.glyph,
-                                ))),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(12.))
-                                .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
-                                .child(SharedString::from(card.name)),
-                        )
-                });
-                div().flex().flex_col().py(px(6.)).children(row_divs)
-            }
-        };
+                    .pt(px(4.))
+                    .pb(px(10.))
+                    .children(row_divs),
+            );
 
-        let (title, hint) = if self.split_wsl {
-            (
-                "新会话 · 选择 WSL 发行版",
-                "↑↓ 选择 · Enter 启动 · Esc 返回",
-            )
+        let title = if self.split_wsl {
+            "新会话 · 选择 WSL 发行版"
         } else {
-            match self.split_dir {
-                None => ("新会话 · 选择分屏位置", "方向键 / 点击选择 · Esc 取消"),
-                Some(d) => match d {
-                    SplitDir::Left => (
-                        "新会话 · 左侧分屏 · 选择启动器",
-                        "↑↓ 选择 · Enter 启动 · Esc 返回",
-                    ),
-                    SplitDir::Right => (
-                        "新会话 · 右侧分屏 · 选择启动器",
-                        "↑↓ 选择 · Enter 启动 · Esc 返回",
-                    ),
-                    SplitDir::Up => (
-                        "新会话 · 上方分屏 · 选择启动器",
-                        "↑↓ 选择 · Enter 启动 · Esc 返回",
-                    ),
-                    SplitDir::Down => (
-                        "新会话 · 下方分屏 · 选择启动器",
-                        "↑↓ 选择 · Enter 启动 · Esc 返回",
-                    ),
-                },
-            }
+            "新会话 · 分屏"
         };
 
-        let mono = SharedString::from(self.config.font().family.clone());
-        // SHEET 06 板 B:浮层家族 — float-head(L4)+ body + float-foot(kbd 提示)
+        // float-foot(SHEET 06-B):键帽「⇥ 方向 · ↵ 启动」+ 右端磷光方向 tag
+        //「→ 右分屏」;WSL 下钻态换「↑↓ 选择 · ↵ 启动 · Esc 返回」。
+        let khint = |k: &'static str, label: &'static str, mono: SharedString| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(5.))
+                .child(crate::style::kbd(k, mono))
+                .child(div().child(label))
+        };
+        let footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .h(px(30.))
+            .px(px(14.))
+            .flex_none()
+            .border_t(px(1.))
+            .border_color(rgba(H1))
+            .font_family(mono.clone())
+            .text_size(px(10.))
+            .text_color(rgb(T2));
+        let footer = if self.split_wsl {
+            footer
+                .child(khint("↑↓", "选择", mono.clone()))
+                .child(khint("↵", "启动", mono.clone()))
+                .child(khint("Esc", "返回", mono.clone()))
+        } else {
+            footer
+                .child(khint("⇥", "方向", mono.clone()))
+                .child(khint("↵", "启动", mono.clone()))
+                .child(div().flex_1())
+                .child(
+                    // `.tag ph`:动态方向读数(mono 600 10 磷光)
+                    div()
+                        .font_weight(gpui::FontWeight(600.))
+                        .text_color(rgb(PH))
+                        .child(SharedString::from(format!(
+                            "{} {}",
+                            cur_dir.label().0,
+                            cur_dir.side_label()
+                        ))),
+                )
+        };
+
+        // SHEET 06 板 B:浮层家族 — float-head(L4)+ body + float-foot;宽 520。
         let panel = shadowed(
             div()
                 .flex()
                 .flex_col()
-                .w(px(420.))
+                .w(px(520.))
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
@@ -4610,23 +4687,8 @@ impl Workspace {
                                 .child("当前 PANE"),
                         ),
                 )
-                .child(div().p(px(10.)).child(body))
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(12.))
-                        .h(px(30.))
-                        .px(px(14.))
-                        .flex_none()
-                        .border_t(px(1.))
-                        .border_color(rgba(H1))
-                        .font_family(mono.clone())
-                        .text_size(px(10.))
-                        .text_color(rgb(T2))
-                        .child(SharedString::from(hint)),
-                ),
+                .child(body)
+                .child(footer),
             shadow_float(),
         );
 
