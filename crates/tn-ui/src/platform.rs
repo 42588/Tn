@@ -250,6 +250,7 @@ mod imp {
     /// `SetWindowRgn` makes the *window shape* rounded to match. The system takes
     /// ownership of the region handle (do NOT delete it). Size-relative, so it survives
     /// the slide (which only moves the window); re-set it whenever the size changes.
+    #[allow(dead_code)] // 幽灵窗改为卡片自绘顶垂形(SHEET 04);保留给未来窗形需要
     pub fn set_round_region(h: isize, w: f32, ht: f32, radius: f32) {
         unsafe {
             // CreateRoundRectRgn's right/bottom edges are exclusive → +1 to cover the

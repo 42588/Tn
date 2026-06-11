@@ -3,17 +3,22 @@
 //! render core lean; `impl super::TerminalView` so it can read the view's
 //! private agent/usage/palette state. Only [`render_pane_header`] is called from
 //! the parent (`render`); the rest are header-internal.
+//!
+//! 磷光(SHEET 02):agent 头高 38 / shell 头高 34,都坐 L2 抬升层 + 底 1px h0;
+//! 身份色只出现在头像方标、用量环与 chip,不污染正文。
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, AnyElement, App, Context, Div,
-    FontWeight, MouseButton, Overflow, SharedString, WeakEntity,
+    div, prelude::*, px, rgba, AnyElement, App, Context, Div, FontWeight, MouseButton, Overflow,
+    SharedString, WeakEntity,
 };
 use tn_agent::AgentStatus;
 use tn_config::BillingMode;
 use tn_core::Rgb;
 
 use super::TerminalView;
-use crate::style::{col, cola, icon, HOVER, INSET, R_CARD, UI_SANS};
+use crate::style::{
+    col, cola, AGENT_HEAD_H, H0, H1, PH, PLATE_HEAD_H, R_CARD, R_CHIP, T0, T1, T2, T3, UI_SANS,
+};
 
 fn short_chip(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
@@ -35,25 +40,20 @@ impl TerminalView {
         self.agent_accent
     }
 
-    /// Effective billing display mode for THIS pane's agent: a per-agent override
-    /// (`[general].claude_billing` / `codex_billing`) if set, else the global
-    /// `[general].billing_mode`. Lets one window mix a subscription Claude (`%`)
-    /// and an API Codex (`$`). Resolved from `self.agent` so it tracks a
-    /// shell-typed agent (sync_shell_agent), not just launch intent.
-    /// A two-tone context-usage ring (grey track + agent-colored arc) with a
-    /// centered percent label — the mockup's signature per-agent readout.
+    /// 用量环(SHEET 02 SPEC:Ø18 · 孔 3 · 身份色弧 + 余量轨)— GPUI path 弧线
+    /// (svg 资产即路径,渲染契约的 conic 豁免项)。无内嵌文字 — 读数在旁边的 chip。
     fn usage_ring(&self, pct: u32, accent: Rgb) -> Div {
         div()
             .relative()
-            .w(px(32.))
-            .h(px(32.))
+            .w(px(18.))
+            .h(px(18.))
             .flex_none()
             .child(
                 gpui::svg()
                     .path(crate::assets::ring_track_path())
                     .absolute()
                     .size_full()
-                    .text_color(rgba(0xffffff1f)),
+                    .text_color(rgba(0xffffff14)),
             )
             .child(
                 gpui::svg()
@@ -62,38 +62,27 @@ impl TerminalView {
                     .size_full()
                     .text_color(col(accent)),
             )
-            .child(
-                div()
-                    .absolute()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(9.))
-                    .font_weight(FontWeight(760.)) // §16 .lbl weight 760
-                    .text_color(col(self.ui_fg)) // §16 .lbl color = fg
-                    .child(SharedString::from(format!("{pct}%"))),
-            )
     }
 
+    /// 状态 chip(phosphor `.chip`):1px 同色 ·30% 边 + soft 底 + r3 + mono 10。
     fn agent_chip(&self, label: String, color: Rgb) -> Div {
         div()
             .flex_none()
-            .px(px(9.))
-            .py(px(4.))
-            .rounded_full()
+            .px(px(8.))
+            .py(px(2.))
+            .rounded(px(R_CHIP))
             .bg(cola(color, 0.12))
             .border_1()
-            .border_color(cola(color, 0.24))
-            .text_size(px(10.5))
-            .font_weight(FontWeight(680.))
+            .border_color(cola(color, 0.3))
+            .font_family(self.font_family.clone())
+            .text_size(px(10.))
             .text_color(col(color))
             .child(SharedString::from(label))
     }
 
-    /// Agent pane header: avatar + name/model + usage ring. No "Thinking…"
-    /// indicator — we can't observe the agent's think state from the PTY, so we
-    /// don't fake one (Calm Glass: honest chrome).
+    /// Agent pane header(SHEET 02 板 B):高 38 · L2 · 底 1px h0 — 方标 + 名/模型 +
+    /// 用量读数 + Ø18 环 + chip。No "Thinking…" indicator — we can't observe the
+    /// agent's think state from the PTY, so we don't fake one(诚实 chrome)。
     fn render_agent_header(&self, weak: WeakEntity<Self>) -> Div {
         let accent = self.agent_accent();
         // The agent's display name comes from its descriptor (resolved into
@@ -112,51 +101,53 @@ impl TerminalView {
                     .map(|u| crate::workspace::short_model(&u.model))
             })
             .filter(|m| !m.is_empty());
-        let mut who = div().flex().flex_col().child(
-            div()
-                .text_size(px(13.))
-                .font_weight(FontWeight(680.)) // §16 .nm weight 680
-                .text_color(col(self.ui_fg)) // §16 .nm color = fg
-                .child(name),
-        );
-        if let Some(m) = model {
-            who = who.child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(FontWeight(520.)) // §16 .model weight 520
-                    .text_color(col(self.ui_muted)) // §16 .model color = muted
-                    .child(SharedString::from(m)),
-            );
-        }
+        // `.amark`:22×22 · r5 · 1px 身份色 ·35% 边 + soft 底 + ✳ 字形。
         let avatar = div()
-            .w(px(28.))
-            .h(px(28.))
-            .rounded(px(9.))
+            .w(px(22.))
+            .h(px(22.))
+            .rounded(px(5.))
             .flex()
             .items_center()
             .justify_center()
             .flex_none()
-            .bg(cola(accent, 0.14))
-            .child(crate::assets::icon("spark", 16.).text_color(col(accent)));
+            .bg(cola(accent, 0.13))
+            .border_1()
+            .border_color(cola(accent, 0.35))
+            .font_family(self.font_family.clone())
+            .text_size(px(12.))
+            .font_weight(FontWeight(600.))
+            .text_color(col(accent))
+            .child(SharedString::from("✻"));
         let mut head = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(11.)) // §16 .agenthead gap 11
-            .py(px(10.)) // §16 .agenthead padding 10px 14px
-            .px(px(14.))
+            .gap(px(8.))
+            .h(px(AGENT_HEAD_H))
+            .px(px(12.))
             .flex_none()
-            .rounded_t(px(13.)) // top corners follow the pane card
+            .bg(gpui::rgb(crate::style::L2)) // L2 抬升(不透明,契约 1)
+            .border_b(px(1.))
+            .border_color(rgba(H0))
             .font_family(UI_SANS) // chrome = sans, terminal = mono
-            // mockup .agenthead bg:rgba(agent,0.04) → transparent 66%(折射,无 glow)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(cola(accent, 0.04), 0.),
-                linear_color_stop(cola(accent, 0.0), 0.66),
-            ))
             .child(avatar)
-            .child(who)
-            .child(div().flex_1());
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(gpui::rgb(T0))
+                    .child(name),
+            );
+        if let Some(m) = model {
+            head = head.child(
+                div()
+                    .font_family(self.font_family.clone())
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(T2))
+                    .child(SharedString::from(m)),
+            );
+        }
+        head = head.child(div().flex_1());
 
         if let Some(err) = &self.agent_error {
             head = head.child(self.agent_chip(short_chip(err, 30), self.palette.ansi[1]));
@@ -168,7 +159,7 @@ impl TerminalView {
             let (label, color) = match status {
                 AgentStatus::Starting => ("启动中".to_string(), self.ui_accent),
                 AgentStatus::Idle => ("空闲".to_string(), self.ui_muted),
-                AgentStatus::Running => ("运行中".to_string(), self.palette.ansi[2]),
+                AgentStatus::Running => ("RUN".to_string(), self.ui_accent), // 运行语义 = 磷光
                 AgentStatus::Exited => ("已退出".to_string(), self.ui_muted),
                 AgentStatus::Error => ("错误".to_string(), self.palette.ansi[1]),
             };
@@ -182,93 +173,55 @@ impl TerminalView {
         if let Some(u) = self.usage.as_ref().filter(|_| self.agent_caps.usage) {
             let pct = (u.context_frac() * 100.0).round() as u32;
             // This pane's chosen display mode (WYSIWYG): API always shows the
-            // dollar estimate ($0.00 for an unpriced/proxy model like `moonbridge`),
-            // subscription always the context %, tokens the throughput. No
-            // cross-fallback — clicking the pill cycles it, per pane (usage_mode).
+            // dollar estimate, subscription the context %, tokens the throughput.
+            // Clicking cycles it per pane (usage_mode).
             let billing = self.usage_mode;
-            let meta = div()
-                .flex()
-                .flex_col()
-                .items_end()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight(640.)) // §16 .tok weight 640
-                        .text_color(gpui::rgb(0xA6AFD4)) // §16 .tok color = fg-dim(无 token)
-                        .child(SharedString::from(format!(
-                            "{} / {}",
-                            crate::workspace::human_tokens(u.context_used as u64),
-                            crate::workspace::human_tokens(u.context_max as u64)
-                        ))),
-                )
-                .when(billing == BillingMode::Api, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight(640.)) // §16 .cost weight 640
-                            .text_color(col(self.palette.ansi[2])) // green
-                            .child(SharedString::from(format!("${:.2}", u.cost_usd))),
-                    )
-                })
-                .when(billing == BillingMode::Subscription, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight(640.))
-                            .text_color(col(self.ui_fg))
-                            .child(SharedString::from(format!("{}%", pct))),
-                    )
-                })
-                // Tokens: total session throughput (input+output+cache), the
-                // raw-consumption view for proxy models with no priced cost.
-                .when(billing == BillingMode::Tokens, |d| {
-                    d.child(
-                        div()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight(640.))
-                            .text_color(gpui::rgb(0xA6AFD4)) // fg-dim (无 token)
-                            .child(SharedString::from(format!(
-                                "{} tok",
-                                crate::workspace::human_tokens(u.total_tokens())
-                            ))),
-                    )
-                });
+            let reading = match billing {
+                BillingMode::Api => format!("${:.2}", u.cost_usd),
+                BillingMode::Subscription => format!("CTX {pct}%"),
+                BillingMode::Tokens => format!(
+                    "{} TOK",
+                    crate::workspace::human_tokens(u.total_tokens())
+                ),
+                BillingMode::Auto => format!("CTX {pct}%"),
+            };
             head = head.child(
-                // mockup .usage 药丸:gap 11 · padding 4 5 4 12 · radius 999 · bg g2(.04)
-                // Clickable: cycles THIS pane's display mode ($ → % → tokens) in
-                // memory (usage_mode). cursor + hover signal it's a control.
+                // SHEET 02:`84K / 200K` 读数(mono t2)+ Ø18 环 + 身份色 chip。
+                // Clickable: cycles THIS pane's display mode at CLICK time(不在
+                // render 期 update — 已踩过 re-lease panic 坑)。
                 div()
                     .id("usage-pill")
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(11.))
-                    .py(px(4.))
-                    .pl(px(12.))
-                    .pr(px(5.))
-                    .rounded_full()
-                    .bg(rgba(INSET))
+                    .gap(px(8.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgba(HOVER)))
                     .on_mouse_down(MouseButton::Left, move |_e, _w, app: &mut App| {
-                        // Per-pane: cycle just this pane's pill ($ → % → tokens) at
-                        // CLICK time. The pane isn't leased then; calling update during
-                        // workspace render (the old `pane.update`) re-leased an already
-                        // -leased pane → unwrap panic / window crash (see workspace).
                         let _ = weak.update(app, |v, c| {
                             v.usage_mode = crate::usage_display::cycle(v.usage_mode);
                             c.notify();
                         });
                     })
-                    .child(meta)
-                    .child(self.usage_ring(pct, accent)),
+                    .child(
+                        div()
+                            .font_family(self.font_family.clone())
+                            .text_size(px(10.))
+                            .text_color(gpui::rgb(T2))
+                            .child(SharedString::from(format!(
+                                "{} / {}",
+                                crate::workspace::human_tokens(u.context_used as u64),
+                                crate::workspace::human_tokens(u.context_max as u64)
+                            ))),
+                    )
+                    .child(self.usage_ring(pct, accent))
+                    .child(self.agent_chip(reading, accent)),
             );
         }
         head
     }
 
-    /// Plain-shell pane header (mockup `.phead`): term icon + cwd + shell-name chip.
-    /// 完整复刻 mockup —— 覆盖了早先"普通 shell 极简无头"的取舍(owner 选择严格对齐)。
+    /// Plain-shell pane header(SHEET 02 `.plate-head`):高 34 · L2 · 底 1px h0 ·
+    /// mono 11 — 磷光 ❯ + cwd + shell chip。
     fn render_shell_header(&self) -> Div {
         let shell = super::shell_name_of(&self.program);
         let cwd = self.cwd();
@@ -276,28 +229,32 @@ impl TerminalView {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(9.)) // §16 .phead gap 9
-            .h(px(36.)) // §16 .phead height 36
-            .px(px(13.)) // §16 .phead padding 0 13
+            .gap(px(8.))
+            .h(px(PLATE_HEAD_H))
+            .px(px(12.))
             .flex_none()
-            .rounded_t(px(13.))
-            .font_family(UI_SANS)
-            .text_size(px(11.5)) // §16 .phead 11.5
-            .font_weight(FontWeight(560.)) // §16 .phead weight 560
-            .text_color(col(self.ui_muted)) // §16 .phead color = muted
-            .child(crate::assets::icon("term", 14.).text_color(col(self.ui_accent)));
+            .bg(gpui::rgb(crate::style::L2)) // L2 抬升
+            .border_b(px(1.))
+            .border_color(rgba(H0))
+            .font_family(self.font_family.clone())
+            .text_size(px(11.))
+            .text_color(gpui::rgb(T1))
+            .child(
+                div()
+                    .font_weight(FontWeight(600.))
+                    .text_color(gpui::rgb(PH))
+                    .child(SharedString::from("❯")),
+            );
         let head = match cwd {
             Some(c) => head.child(
-                // mockup .phead .cwd = fg-dim(#A6AFD4 无主题 token → 字面量)
                 div()
-                    .text_color(gpui::rgb(0xA6AFD4))
+                    .text_color(gpui::rgb(T1))
                     .child(SharedString::from(crate::workspace::short_cwd(&c))),
             ),
             None => head,
         };
-        let mut head = head.child(div().flex_1()); // .sp
-                                                   // B4/C3: SSH connection state as one polished info pill:
-                                                   // `已连接 root@host:port 登录方案 密钥`.
+        let mut head = head.child(div().flex_1());
+        // B4/C3: SSH connection state as one chip:`已连接 root@host:port · 密钥`。
         if let Some(state) = self.ssh_conn {
             use super::SshConnState::*;
             let (color, status) = match state {
@@ -307,10 +264,10 @@ impl TerminalView {
                 Disconnected => (self.palette.ansi[1], "已断开"),
             };
             let method = match self.ssh_conn_method {
-                Some(tn_pty::AuthKind::PublicKey) => "密钥",
-                Some(tn_pty::AuthKind::Password) => "密码",
-                Some(tn_pty::AuthKind::KeyboardInteractive) => "交互",
-                None => "检测中",
+                Some(tn_pty::AuthKind::PublicKey) => "KEY",
+                Some(tn_pty::AuthKind::Password) => "PASSWORD",
+                Some(tn_pty::AuthKind::KeyboardInteractive) => "INTERACTIVE",
+                None => "…",
             };
             let target = if self.ssh_target.chars().count() > 34 {
                 let mut s: String = self.ssh_target.chars().take(33).collect();
@@ -324,105 +281,93 @@ impl TerminalView {
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(8.))
-                    .py(px(4.))
-                    .pl(px(9.))
-                    .pr(px(10.))
-                    .rounded_full()
-                    .bg(cola(color, 0.10))
+                    .gap(px(6.))
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(R_CHIP))
                     .border_1()
-                    .border_color(cola(color, 0.28))
-                    .child(div().w(px(7.)).h(px(7.)).rounded_full().bg(col(color)))
+                    .border_color(cola(color, 0.3))
+                    .bg(cola(color, 0.10))
+                    .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(col(color)))
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .font_weight(FontWeight(700.))
+                            .text_size(px(10.))
                             .text_color(col(color))
                             .child(SharedString::from(status)),
                     )
                     .child(
                         div()
-                            .font_family(UI_SANS)
-                            .text_size(px(11.))
-                            .font_weight(FontWeight(650.))
-                            .text_color(gpui::rgb(0xD7DDF6))
+                            .text_size(px(10.))
+                            .text_color(gpui::rgb(T1))
                             .child(SharedString::from(target)),
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
-                            .font_weight(FontWeight(620.))
-                            .text_color(col(self.ui_muted))
-                            .child(SharedString::from("登录方案")),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight(720.))
-                            .text_color(col(color))
+                            .text_size(px(9.))
+                            .text_color(gpui::rgb(T2))
                             .child(SharedString::from(method)),
                     ),
             );
             return head;
         }
         head.child(
-            // mockup .chip:10.5 · 560 · py2 px9 · radius999 · fg-dim · bg g3(.06)
+            // `.chip`:1px h1 · r3 · mono 10 · t1
             div()
-                .text_size(px(10.5))
-                .font_weight(FontWeight(560.))
+                .px(px(8.))
                 .py(px(2.))
-                .px(px(9.))
-                .rounded_full()
-                .text_color(gpui::rgb(0xA6AFD4))
-                .bg(rgba(HOVER))
+                .rounded(px(R_CHIP))
+                .border_1()
+                .border_color(rgba(H1))
+                .text_size(px(10.))
+                .text_color(gpui::rgb(T1))
                 .child(SharedString::from(shell)),
         )
     }
 
-    /// 活动栏里的一张「文件 + 增删」行(mockup `.afile`):图标 + 文件名 + 右侧 +N/−N。
+    /// 活动栏里的一张「文件 + 增删」行:文件名 mono + 右侧 +N/−N(ok/err)。
     fn arail_file(&self, name: &str, plus: &str, minus: Option<&str>) -> Div {
         let green = col(self.palette.ansi[2]);
         let red = col(self.palette.ansi[1]);
         let mut pm = div()
             .flex()
             .flex_row()
-            .gap(px(5.)) // §16 .pm gap 5
+            .gap(px(5.))
             .flex_none()
             .text_size(px(10.))
-            .font_weight(FontWeight(680.))
+            .font_weight(FontWeight(600.))
             .child(
                 div()
                     .text_color(green)
                     .child(SharedString::from(plus.to_string())),
-            ); // .ad green
+            );
         if let Some(m) = minus {
             pm = pm.child(
                 div()
                     .text_color(red)
                     .child(SharedString::from(m.to_string())),
-            ); // .dl red
+            );
         }
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(7.)) // §16 .afile gap 7
-            .font_family(self.font_family.clone()) // .afile = mono
-            .text_size(px(11.5))
-            .text_color(gpui::rgb(0xA6AFD4)) // §16 fg-dim(无 token)
-            .child(icon("file", 13., self.ui_muted)) // .afile .i 13 muted
+            .gap(px(8.))
+            .font_family(self.font_family.clone())
+            .text_size(px(11.))
+            .text_color(gpui::rgb(T0))
             .child(
-                // .nm:占满中间、可裁(文件名通常很短)
                 div()
                     .flex_1()
                     .min_w(px(0.))
                     .overflow_hidden()
+                    .text_ellipsis()
                     .child(SharedString::from(name.to_string())),
             )
-            .child(pm) // .pm 右靠(margin-left:auto)
+            .child(pm)
     }
 
-    /// agent 活动栏(mockup `.arail`):诚实状态行 + 「本次改动」真实 git diff 卡 + 提示。
+    /// agent 活动栏(SHEET 02 `.rail`):宽 248 · L1 · 左 1px h0;rail-head(高 30 ·
+    /// 磷光点 + 本次改动 + git diff)+ `.dcard` 改动卡(L2 + h0 + r4)。
     /// 数据 = `git diff HEAD`(pane cwd,后台有界 git 计算),**不解析终端正文**。
     /// **不伪造「运行中」实时态** → 状态行只显诚实的 git 摘要。
     /// 点卡片发 [`OpenInQuickLook`] 让 workspace 弹 Quick Look 看全 diff。
@@ -435,45 +380,39 @@ impl TerminalView {
     pub(super) fn render_activity_rail(&self, cx: &mut Context<Self>) -> Div {
         let green = col(self.palette.ansi[2]);
         let red = col(self.palette.ansi[1]);
+        let mono = self.font_family.clone();
 
-        // ── Build the chrome shell (status row + left border) once ──
+        // ── rail 外壳:宽 248 · 左 1px h0 接缝 · rail-head ──
         let rail_shell = |status: Div, body: AnyElement| -> Div {
             div()
                 .flex_none()
-                .w(px(212.))
+                .w(px(248.))
                 .flex()
                 .flex_col()
-                .gap(px(11.))
-                .pt(px(12.))
-                .px(px(12.))
-                .pb(px(14.))
                 .min_h(px(0.))
                 .overflow_hidden()
                 .border_l(px(1.))
-                .border_color(rgba(0xffffff08))
-                .font_family(UI_SANS)
+                .border_color(rgba(H0))
                 .child(status)
                 .child(body)
         };
 
-        // ── Status row (shared by all states) ──
+        // ── rail-head:高 30 · 底 1px h0 · mono 10 t2 · 磷光点 ──
         let build_status = |summary: &str, add: Option<u32>, del: Option<u32>| -> Div {
             let mut s = div()
-                .px(px(12.))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(7.))
-                .text_size(px(11.))
-                .text_color(gpui::rgb(0xA6AFD4))
-                .child(
-                    div()
-                        .w(px(7.))
-                        .h(px(7.))
-                        .rounded_full()
-                        .flex_none()
-                        .bg(col(self.agent_accent())),
-                )
+                .gap(px(8.))
+                .h(px(30.))
+                .px(px(12.))
+                .flex_none()
+                .border_b(px(1.))
+                .border_color(rgba(H0))
+                .font_family(mono.clone())
+                .text_size(px(10.))
+                .text_color(gpui::rgb(T2))
+                .child(div().w(px(5.)).h(px(5.)).rounded_full().flex_none().bg(gpui::rgb(PH)))
                 .child(
                     div()
                         .flex_1()
@@ -487,8 +426,7 @@ impl TerminalView {
                             .flex_row()
                             .gap(px(5.))
                             .flex_none()
-                            .text_size(px(10.5))
-                            .font_weight(FontWeight(680.))
+                            .font_weight(FontWeight(600.))
                             .child(
                                 div()
                                     .text_color(green)
@@ -500,7 +438,11 @@ impl TerminalView {
                                     .child(SharedString::from(format!("−{d}"))),
                             ),
                     );
+                } else {
+                    s = s.child(div().text_color(gpui::rgb(T3)).child("git diff"));
                 }
+            } else {
+                s = s.child(div().text_color(gpui::rgb(T3)).child("git diff"));
             }
             s
         };
@@ -509,19 +451,21 @@ impl TerminalView {
             // ── Loading: skeleton placeholders ──
             super::RailState::Loading => {
                 let status = build_status("正在分析改动…", None, None);
-                let skeleton =
-                    div()
-                        .px(px(12.))
-                        .flex()
-                        .flex_col()
-                        .gap(px(6.))
-                        .children((0..3).map(|_| {
-                            div()
-                                .w_full()
-                                .h(px(32.))
-                                .rounded(px(R_CARD))
-                                .bg(rgba(INSET))
-                        }));
+                let skeleton = div()
+                    .px(px(10.))
+                    .pt(px(8.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.))
+                    .children((0..3).map(|_| {
+                        div()
+                            .w_full()
+                            .h(px(32.))
+                            .rounded(px(R_CARD))
+                            .bg(gpui::rgb(crate::style::L2))
+                            .border_1()
+                            .border_color(rgba(H0))
+                    }));
                 rail_shell(status, skeleton.into_any_element())
             }
 
@@ -532,7 +476,7 @@ impl TerminalView {
                 let summary = if files.is_empty() {
                     "工作区干净".to_string()
                 } else {
-                    format!("{} 个文件改动", files.len())
+                    format!("本次改动 · {}", files.len())
                 };
                 let has_files = !files.is_empty();
                 let status = build_status(
@@ -545,9 +489,10 @@ impl TerminalView {
                     return rail_shell(
                         status,
                         div()
-                            .text_size(px(10.5))
-                            .text_color(col(self.ui_muted))
-                            .pt(px(2.))
+                            .font_family(mono.clone())
+                            .text_size(px(10.))
+                            .text_color(gpui::rgb(T3))
+                            .pt(px(10.))
                             .px(px(12.))
                             .child(SharedString::from("agent 改动会实时显示在这里"))
                             .into_any_element(),
@@ -560,32 +505,30 @@ impl TerminalView {
                     .min_h(px(0.))
                     .flex()
                     .flex_col()
-                    .gap(px(11.))
-                    .pb(px(14.))
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .pt(px(8.))
+                    .pb(px(10.))
                     .overflow_hidden();
                 scrollable.interactivity().base_style.overflow.y = Some(Overflow::Scroll);
-
-                scrollable = scrollable.child(
-                    div()
-                        .text_size(px(10.))
-                        .font_weight(FontWeight(680.))
-                        .text_color(col(self.ui_muted))
-                        .pt(px(2.))
-                        .child(SharedString::from("本次改动")),
-                );
 
                 for f in files.iter() {
                     let plus = format!("+{}", f.add);
                     let minus = (f.del > 0).then(|| format!("−{}", f.del));
 
                     let target = source.target_for(&f.path);
+                    // `.dcard`:L2 + 1px h0 + r4;hover = L4 + h1(SHEET 02)
                     let row = div()
                         .w_full()
                         .rounded(px(R_CARD))
-                        .py(px(8.))
+                        .py(px(7.))
                         .px(px(10.))
-                        .bg(rgba(INSET))
-                        .hover(|s| s.bg(cola(self.agent_accent(), 0.06)))
+                        .bg(gpui::rgb(crate::style::L2))
+                        .border_1()
+                        .border_color(rgba(H0))
+                        .hover(|s| {
+                            s.bg(gpui::rgb(crate::style::L4)).border_color(rgba(H1))
+                        })
                         .cursor_pointer()
                         .on_mouse_down(
                             MouseButton::Left,
@@ -600,9 +543,10 @@ impl TerminalView {
 
                 scrollable = scrollable.child(
                     div()
+                        .font_family(mono.clone())
                         .text_size(px(10.))
-                        .text_color(gpui::rgb(0x474E72))
-                        .child(SharedString::from("点卡片 = 速览全 diff")),
+                        .text_color(gpui::rgb(T3))
+                        .child(SharedString::from("点击卡片 → QuickLook · Diff")),
                 );
 
                 rail_shell(status, scrollable.into_any_element())
@@ -613,7 +557,7 @@ impl TerminalView {
         }
     }
 
-    /// Per-pane header — agent header for agents, else a shell `.phead`(cwd + chip).
+    /// Per-pane header — agent header for agents, else a shell `.plate-head`(cwd + chip).
     /// `weak` = a handle to THIS pane, captured by the usage-pill click closure so
     /// it can cycle the display mode at event time. The caller (workspace) passes
     /// `pane.downgrade()` and renders via `read` — never `update` during render

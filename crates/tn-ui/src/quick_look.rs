@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
-    canvas, div, fill, linear_color_stop, linear_gradient, point, prelude::*, px, rgba, size,
+    canvas, div, fill, point, prelude::*, px, rgba, size,
     uniform_list, AsyncApp, Bounds, ClipboardItem, ContentMask, Context, ElementInputHandler,
     EntityInputHandler, FocusHandle, Hsla, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, Pixels, Point, Rgba, ScrollStrategy, ScrollWheelEvent,
@@ -38,9 +38,7 @@ use crate::editor::motion::{
     CaretMotionInput, CaretMotionState, MotionSnapshot, MotionTrigger,
 };
 use crate::editor::session::DocumentSession;
-use crate::style::{
-    col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, R_PANEL, UI_SANS,
-};
+use crate::style::{col, cola, float_panel, icon, R_PANEL, UI_SANS};
 #[cfg(test)]
 use tn_editor::{
     char_to_byte, op_backspace, op_delete, op_delete_range, op_insert, op_insert_multiline,
@@ -86,7 +84,8 @@ fn human_size(bytes: u64) -> String {
 
 /// Code font size (px) — mockup `.code` font-size (also the mouse char-width probe).
 const CODE_FS: f32 = 12.5;
-const CODE_BG: u32 = 0x111424;
+/// 代码区底:L1 凹井(比 L3 浮板深两档,与输入井同语法 — 磷光契约 1 不透明)。
+const CODE_BG: u32 = crate::style::L1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Tab {
@@ -2630,7 +2629,7 @@ impl QuickLook {
             .min_h(px(0.))
             .relative()
             .overflow_hidden()
-            .bg(rgba(CODE_BG))
+            .bg(gpui::rgb(CODE_BG))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
                 let (vw, vh) = {
                     let b = this.code_bounds.borrow();
@@ -2967,7 +2966,7 @@ impl QuickLook {
             .min_h(px(0.))
             .relative()
             .overflow_hidden()
-            .bg(rgba(CODE_BG))
+            .bg(gpui::rgb(CODE_BG))
             .on_scroll_wheel(cx.listener(move |this, ev: &ScrollWheelEvent, _w, cx| {
                 let (vw, vh) = {
                     let b = this.code_bounds.borrow();
@@ -3172,7 +3171,7 @@ impl QuickLook {
                         .font_weight(gpui::FontWeight(640.))
                         .text_color(if hunk_busy { col(th.ui.muted) } else { col(c) })
                         .bg(if hunk_busy {
-                            rgba(INSET)
+                            gpui::rgb(crate::style::L2)
                         } else {
                             cola(c, 0.12)
                         })
@@ -4515,7 +4514,7 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
                 .mr(px(14.))
                 .text_right()
                 .text_size(px(11.))
-                .text_color(gpui::rgb(0x474E72)) // faint(无主题 token,字面量)
+                .text_color(gpui::rgb(crate::style::T3)) // faint(无主题 token,字面量)
                 .child(SharedString::from(no)),
         )
         // mockup .cl .mk:width 14 居中
@@ -4666,10 +4665,10 @@ fn edit_row_cached(
     // 严格等于 `disp_width×char_w` —— 光标 x / 鼠标 hit-test / 选区 / 横向内容宽全部精确对齐,
     // 不再因 CJK 实际字形步进 ≠ 2×char_w 而漂移(中文行光标乱飘/选区不跟手的根因)。
     //
-    // 反相块光标(终端式):光标处字符以光标色为底、面板底色为字 → 就地反色成实心块,
+    // 反相块光标(终端式):磷光填充 + 反相墨字(design `.cur`),就地反色成实心块,
     // 瞬时、精确(固定单元格下块 = 该字符格)、随字符列宽(中文 2 列宽、英文 1 列细)。
-    let caret_bg = col(config.theme.ui.foreground);
-    let caret_fg = col(config.theme.ui.chrome_bg);
+    let caret_bg = col(config.theme.ui.accent); // 磷光:唯一生命色
+    let caret_fg = gpui::rgb(crate::style::PH_INK);
     let cell = |text: String, cols: f32| {
         div()
             .flex_none()
@@ -4831,13 +4830,13 @@ fn paint_file_preview(
     // outline so it reads as "highlighted" even on busy syntax-colored lines.
     let match_bg: Hsla = cola(ui.accent_alt, 0.38).into();
     let match_border: Hsla = cola(ui.accent_alt, 0.85).into();
-    // Reverse-block caret (terminal-style) + IME preedit colors (editing only).
-    let caret_bg: Hsla = col(ui.foreground).into();
-    let caret_fg: Hsla = col(ui.chrome_bg).into();
+    // Reverse-block caret(磷光填充 + 反相墨字,design `.cur`)+ IME preedit colors.
+    let caret_bg: Hsla = col(ui.accent).into();
+    let caret_fg: Hsla = gpui::rgb(crate::style::PH_INK).into();
     let accent: Hsla = col(ui.accent).into();
     let jump_bg: Hsla = cola(ui.accent_alt, 0.16).into();
     let jump_bar: Hsla = cola(ui.accent_alt, 0.90).into();
-    let view_bg: Hsla = rgba(CODE_BG).into();
+    let view_bg: Hsla = gpui::rgb(CODE_BG).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
     let gutter = m.gutter;
@@ -5115,7 +5114,7 @@ fn paint_diff_preview(
     let line_h = px(ROW_H);
     let font = gpui::font(&config.font().family);
     let th = &config.theme;
-    let gutter_color: Hsla = gpui::rgb(0x474E72).into();
+    let gutter_color: Hsla = gpui::rgb(crate::style::T3).into();
     let sel_bg: Hsla = cola(th.ui.accent, 0.22).into();
     let left = f32::from(bounds.origin.x);
     let top = f32::from(bounds.origin.y);
@@ -5539,15 +5538,27 @@ impl Render for QuickLook {
         };
 
         // Diff/File pill (`.tg` / `.tg.on`), clickable to switch tabs.
+        // SHEET 03 `.segs .seg`:分段开关 — on = L4 + 磷光字 + ph-dim 边。
         let pill = |label: &'static str, on: bool, to: Tab| {
             div()
-                .px(px(10.))
+                .px(px(13.))
                 .py(px(2.))
-                .rounded(px(7.)) // §16 .vh .tg radius 7
-                .text_size(px(10.5))
-                .font_weight(gpui::FontWeight(640.)) // §16 .vh .tg weight 640
-                .text_color(col(if on { ui.foreground } else { ui.muted }))
-                .when(on, |d| d.bg(rgba(HOVER))) // .tg.on bg = g3
+                .rounded(px(3.))
+                .font_family(SharedString::from(self.config.font().family.clone()))
+                .text_size(px(11.))
+                .text_color(if on {
+                    gpui::rgb(crate::style::PH)
+                } else {
+                    gpui::rgb(crate::style::T2)
+                })
+                .when(on, |d| {
+                    // 1px 边吃掉 1px padding,保证开关切换不抖(`.seg.on` 同款补偿)
+                    d.bg(gpui::rgb(crate::style::L4))
+                        .border_1()
+                        .border_color(rgba(crate::style::PH_DIM))
+                        .px(px(12.))
+                        .py(px(1.))
+                })
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, _w, cx| {
@@ -5559,42 +5570,42 @@ impl Render for QuickLook {
         let tabset = div()
             .flex()
             .flex_row()
-            .gap(px(2.)) // §16 .vh .tabset gap 2
+            .gap(px(2.))
             .p(px(2.))
-            .rounded(px(9.)) // §16 .vh .tabset radius 9
-            .bg(rgba(INSET)) // .tabset bg = g2
-            .child(pill("Diff", self.tab == Tab::Diff, Tab::Diff))
-            .child(pill("File", self.tab == Tab::File, Tab::File));
+            .rounded(px(crate::style::R_CARD)) // `.segs`:L1 + 1px h1 + r4
+            .bg(gpui::rgb(crate::style::L1))
+            .border_1()
+            .border_color(rgba(crate::style::H1))
+            // SHEET 03:File 在左(默认预览态)· Diff 在右,与原型分段开关顺序一致。
+            .child(pill("File", self.tab == Tab::File, Tab::File))
+            .child(pill("Diff", self.tab == Tab::Diff, Tab::Diff));
 
+        // SHEET 03 float-head:高 38 · L4 顶面 · 底 1px h1 · mono 12。
         let header = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(9.)) // §16 .vh gap 9
-            .h(px(36.)) // §16 .vh height 36
-            .px(px(13.)) // §16 .vh padding 0 13
+            .gap(px(9.))
+            .h(px(38.))
+            .px(px(14.))
             .flex_none()
             .font_family(UI_SANS) // header chrome = sans (code stays mono)
             .text_size(px(11.5))
-            .font_weight(gpui::FontWeight(560.)) // §16 .vh weight 560
-            // mockup .vh bg:accent @ .06 → transparent 72%
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(cola(ui.accent, 0.06), 0.),
-                linear_color_stop(rgba(0x00000000), 0.72),
-            ))
+            .bg(col(ui.palette_selected)) // L4(不透明,契约 1)
+            .border_b(px(1.))
+            .border_color(rgba(crate::style::H1))
             .child(icon("file", 14., ui.accent))
-            // mockup .vh .path:dir = fg-dim(#A6AFD4 字面量),name = accent bold;mono
+            // `.path`:dir = t2,name = t0 bold;mono
             .child(
                 div()
                     .font_family(SharedString::from(self.config.font().family.clone()))
-                    .text_color(gpui::rgb(0xA6AFD4))
+                    .text_color(gpui::rgb(crate::style::T2))
                     .child(SharedString::from(dir)),
             )
             .child(
                 div()
                     .font_family(SharedString::from(self.config.font().family.clone()))
-                    .text_color(col(ui.accent))
+                    .text_color(gpui::rgb(crate::style::T0))
                     .font_weight(gpui::FontWeight::BOLD)
                     .child(SharedString::from(name)),
             )
@@ -5715,7 +5726,7 @@ impl Render for QuickLook {
             let pages = pages.clone();
             let page_count = *page_count;
             body = body.child(
-                div().flex_1().overflow_hidden().bg(rgba(CODE_BG)).child(
+                div().flex_1().overflow_hidden().bg(gpui::rgb(CODE_BG)).child(
                     uniform_list(
                         "pdf_scroll_container",
                         page_count,
@@ -5732,7 +5743,7 @@ impl Render for QuickLook {
                                             return div()
                                                 .w_full()
                                                 .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
-                                                .bg(rgba(CODE_BG))
+                                                .bg(gpui::rgb(CODE_BG))
                                                 .flex()
                                                 .justify_center()
                                                 .items_center()
@@ -5746,7 +5757,7 @@ impl Render for QuickLook {
                                                 );
                                         }
                                     }
-                                    div().w_full().h(px(1400.)).bg(rgba(CODE_BG))
+                                    div().w_full().h(px(1400.)).bg(gpui::rgb(CODE_BG))
                                 })
                                 .collect::<Vec<_>>()
                         },
@@ -5765,7 +5776,7 @@ impl Render for QuickLook {
                     .flex()
                     .justify_center()
                     .items_center()
-                    .bg(rgba(CODE_BG)) // 暗色背景
+                    .bg(gpui::rgb(CODE_BG)) // 暗色背景
                     // Contain + 适度内边距:图片按比例**铺满**预览区(只在一轴留暗边),不再
                     // 自然小尺寸居中留大片空白(修「四周留白很多」)。
                     .p(px(10.))
@@ -6009,7 +6020,7 @@ impl Render for QuickLook {
                                             col(c)
                                         })
                                         .bg(if hunk_busy {
-                                            rgba(INSET)
+                                            gpui::rgb(crate::style::L2)
                                         } else {
                                             cola(c, 0.12)
                                         })
@@ -6194,29 +6205,26 @@ impl Render for QuickLook {
 
         // ── .qlfoot footer:键帽 + 操作提示(预览态)──
         let kcap = |label: &'static str| {
-            div()
-                .px(px(6.))
-                .py(px(1.))
-                .rounded(px(5.)) // §16 .qlfoot .k radius 5
-                .font_family(SharedString::from(self.config.font().family.clone()))
-                .text_size(px(10.))
-                .text_color(gpui::rgb(0xA6AFD4)) // fg-dim
-                .bg(rgba(INSET)) // .k bg = g2
-                .child(label)
+            // `.kbd`:mono 10 t1 · L2 + 1px h1(底 2px)· r3
+            crate::style::kbd(
+                label,
+                SharedString::from(self.config.font().family.clone()),
+            )
         };
+        // float-foot:高 30 · 顶 1px h1 · mono 10 t2(SHEET 03/06)
         let footer_base = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(7.)) // §16 .qlfoot gap 7
-            .px(px(14.)) // mockup .qlfoot padding 7px 14px
-            .py(px(7.))
+            .gap(px(7.))
+            .h(px(30.))
+            .px(px(14.))
             .flex_none()
-            .font_family(UI_SANS)
-            .text_size(px(10.5))
-            .text_color(col(ui.muted))
+            .font_family(SharedString::from(self.config.font().family.clone()))
+            .text_size(px(10.))
+            .text_color(gpui::rgb(crate::style::T2))
             .border_t_1()
-            .border_color(rgba(0xffffff0d)); // mockup .qlfoot border-top 白 .05 = round(.05×255)=13=0x0d
+            .border_color(rgba(crate::style::H1));
         let footer = if self.editing {
             // 编辑态:Ctrl+S 保存 · Ctrl+F 查找 · Esc 退出编辑 [sp] 选择/复制/撤销
             footer_base
@@ -6297,13 +6305,13 @@ impl Render for QuickLook {
                             .min_w(px(140.))
                             .px(px(7.))
                             .py(px(2.))
-                            .rounded(px(6.))
-                            .bg(rgba(INSET))
+                            .rounded(px(crate::style::R_CHIP))
+                            .bg(gpui::rgb(crate::style::L0)) // 输入凹井
                             .border_1()
                             .border_color(if active {
-                                cola(ui.accent, 0.5)
+                                rgba(crate::style::PH_DIM)
                             } else {
-                                rgba(0x00000000)
+                                rgba(crate::style::H1)
                             })
                             .font_family(mono.clone())
                             .text_size(px(11.))
@@ -6355,7 +6363,7 @@ impl Render for QuickLook {
                 .font_family(UI_SANS)
                 .bg(cola(ui.accent, 0.05))
                 .border_b_1()
-                .border_color(rgba(0xffffff0d))
+                .border_color(rgba(crate::style::H0))
                 .child(field("查找", &find_disp, !self.find_field_replace))
                 .when(self.replacing, |d| {
                     d.child(field("替换", &repl_disp, self.find_field_replace))
@@ -6394,24 +6402,25 @@ impl Render for QuickLook {
         let save_notice = self
             .save_conflict
             .map(|conflict| {
+                // `.btn` 小号:L2 + h1;danger = err-soft + err 边(SHEET 06)。
                 let action = |label: &'static str, danger: bool| {
                     div()
                         .px(px(9.))
                         .py(px(2.))
-                        .rounded(px(7.))
+                        .rounded(px(crate::style::R_CHIP))
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight(620.))
                         .text_color(col(if danger { ansi.red } else { ui.foreground }))
                         .bg(if danger {
                             cola(ansi.red, 0.10)
                         } else {
-                            rgba(INSET)
+                            gpui::rgb(crate::style::L2)
                         })
                         .border_1()
                         .border_color(if danger {
                             cola(ansi.red, 0.32)
                         } else {
-                            rgba(0xffffff14)
+                            rgba(crate::style::H1)
                         })
                         .child(label)
                 };
@@ -6428,7 +6437,7 @@ impl Render for QuickLook {
                     .text_color(col(ui.muted))
                     .bg(cola(ansi.red, 0.06))
                     .border_t_1()
-                    .border_color(rgba(0xffffff0d))
+                    .border_color(rgba(crate::style::H0))
                     .child(icon("alert", 13., ansi.red))
                     .child(
                         div()
@@ -6464,7 +6473,7 @@ impl Render for QuickLook {
                         .text_color(col(ui.muted))
                         .bg(cola(ansi.red, 0.06))
                         .border_t_1()
-                        .border_color(rgba(0xffffff0d))
+                        .border_color(rgba(crate::style::H0))
                         .child(icon("alert", 13., ansi.red))
                         .child(
                             div()
@@ -6476,13 +6485,13 @@ impl Render for QuickLook {
                             div()
                                 .px(px(9.))
                                 .py(px(2.))
-                                .rounded(px(7.))
+                                .rounded(px(crate::style::R_CHIP))
                                 .text_size(px(10.5))
                                 .font_weight(gpui::FontWeight(620.))
                                 .text_color(col(ui.foreground))
-                                .bg(rgba(INSET))
+                                .bg(gpui::rgb(crate::style::L2))
                                 .border_1()
-                                .border_color(rgba(0xffffff14))
+                                .border_color(rgba(crate::style::H1))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(|this, _e, _w, cx| this.cancel_save_conflict(cx)),
@@ -6497,20 +6506,20 @@ impl Render for QuickLook {
                 div()
                     .px(px(9.))
                     .py(px(2.))
-                    .rounded(px(7.))
+                    .rounded(px(crate::style::R_CHIP))
                     .text_size(px(10.5))
                     .font_weight(gpui::FontWeight(620.))
                     .text_color(col(if danger { ansi.red } else { ui.foreground }))
                     .bg(if danger {
                         cola(ansi.red, 0.10)
                     } else {
-                        rgba(INSET)
+                        gpui::rgb(crate::style::L2)
                     })
                     .border_1()
                     .border_color(if danger {
                         cola(ansi.red, 0.32)
                     } else {
-                        rgba(0xffffff14)
+                        rgba(crate::style::H1)
                     })
                     .child(label)
             };
@@ -6527,7 +6536,7 @@ impl Render for QuickLook {
                 .text_color(col(ui.muted))
                 .bg(cola(ansi.yellow, 0.07))
                 .border_t_1()
-                .border_color(rgba(0xffffff0d))
+                .border_color(rgba(crate::style::H0))
                 .child(icon("alert", 13., ansi.yellow))
                 .child(
                     div()
@@ -6565,7 +6574,7 @@ impl Render for QuickLook {
                 .text_color(col(ui.muted))
                 .bg(cola(ansi.red, 0.06))
                 .border_t_1()
-                .border_color(rgba(0xffffff0d))
+                .border_color(rgba(crate::style::H0))
                 .child(icon("alert", 13., ansi.red))
                 .child(
                     div()
@@ -6577,13 +6586,13 @@ impl Render for QuickLook {
                     div()
                         .px(px(9.))
                         .py(px(2.))
-                        .rounded(px(7.))
+                        .rounded(px(crate::style::R_CHIP))
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight(620.))
                         .text_color(col(ui.foreground))
-                        .bg(rgba(INSET))
+                        .bg(gpui::rgb(crate::style::L2))
                         .border_1()
-                        .border_color(rgba(0xffffff14))
+                        .border_color(rgba(crate::style::H1))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _e, _w, cx| this.dismiss_hunk_error(cx)),
@@ -6592,16 +6601,10 @@ impl Render for QuickLook {
                 )
         });
 
-        // ── 左缘 accent 竖线(.seam):指向树中选中文件的「连接感」;末位子 = 画在最上层 ──
-        let seam = div()
-            .absolute()
-            .left(px(0.))
-            .top(px(16.)) // mockup .seam top 16 bottom 16
-            .bottom(px(16.))
-            .w(px(2.))
-            .rounded_r(px(2.))
-            .bg(cola(ui.accent, 0.55)); // mockup .seam accent @ .55
-
+        // ── 左缘磷光脊(`.seam`):指向树中选中文件的「连接感」— 与选中态同语法 ──
+        // SHEET 03:QuickLook 浮层左侧**不**画磷光竖脊 —— 海拔由 float 投影 + h2 边
+        // 表达,磷光只留 header 内的小点。左脊是 tile/row/命令块的「选中」语义,浮层
+        // 借用会让磷光从状态信号退化为装饰边框(原型与真机差异总结 P0)。
         let inner = div()
             .track_focus(&self.focus_handle)
             .on_key_down(
@@ -6648,27 +6651,26 @@ impl Render for QuickLook {
                 }),
             )
             .size_full()
-            .relative() // anchor specular / seam absolute layers
+            .relative() // anchor absolute children (hscroll thumb / notices)
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
-            .rounded(px(R_PANEL - 1.)) // 1px tighter so the gradient-edge ring shows (quicklook_frame)
-            // mockup .quicklook 底层暗玻璃,baked opaque(浮终端上须压住后字)
-            .bg(quicklook_fill(ui.chrome_bg))
+            .rounded(px(R_PANEL - 1.)) // 1px tighter so the float hairline shows
+            // 磷光浮板:不透明 L3(浮终端上须压住后字,契约 1)
+            .bg(col(ui.palette_bg))
             .font_family(SharedString::from(self.config.font().family.clone()))
-            .text_size(px(12.5)) // mockup .code font-size 12.5
+            .text_size(px(12.5))
             .child(header)
             .when_some(find_bar, |d, fb| d.child(fb))
             .child(body)
             .when_some(save_notice, |d, n| d.child(n))
             .when_some(leave_notice, |d, n| d.child(n))
             .when_some(hunk_notice, |d, n| d.child(n))
-            .child(footer)
-            .child(seam);
+            .child(footer);
 
-        // mockup .quicklook::before 冷能量描边 + 更深的浮起投影
-        quicklook_frame(inner, ui.accent)
+        // 浮层家族:1px h2 边 + float 投影(全系统唯一投影,契约 4)
+        float_panel(inner)
     }
 }
 

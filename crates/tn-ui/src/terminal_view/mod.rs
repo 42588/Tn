@@ -123,7 +123,7 @@ pub(crate) enum SshConnState {
 }
 
 use crate::perf::PerfStats;
-use crate::style::{col, cola, HOVER};
+use crate::style::{col, cola};
 
 mod header; // agent pane header UI (avatar / model / usage ring)
 mod io; // off-thread workers (reader / repaint / blink / exit-watcher / usage poller)
@@ -349,7 +349,7 @@ fn scrollbar_thumb_style(rail_layout: ActivityRailLayout) -> ScrollbarThumbStyle
         ScrollbarThumbStyle {
             width: 5.,
             margin_right: 2.,
-            idle_bg: HOVER,
+            idle_bg: crate::style::H2, // SHEET 02 SPEC:thumb = h2
             active_bg: 0xffffff66,
         }
     }
@@ -1816,10 +1816,12 @@ impl TerminalView {
                 div()
                     .px_2()
                     .py_1()
-                    .rounded_md()
-                    .bg(rgba(HOVER))
+                    .rounded(px(crate::style::R_CARD))
+                    .bg(gpui::rgb(crate::style::L2))
+                    .border_1()
+                    .border_color(rgba(crate::style::H1))
                     .text_color(pal.fg)
-                    .hover(|s| s.bg(rgba(0xffffff2b)))
+                    .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                     .child(label)
             };
             bar = bar
@@ -1973,6 +1975,8 @@ impl TerminalView {
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // 宠物 Typing 信号:KeyPress 进入专注态(只写原子量,零成本,不影响输入)。
+        crate::pet::signal_typing();
         // SSH host-key trust panel (B2): Enter = trust, Esc = reject. Highest
         // precedence — it gates the rest of the connection.
         if self.ssh_hostkey.is_some() {
@@ -2930,6 +2934,7 @@ impl Render for TerminalView {
 
         // ── SSH connection cards (B1 progress / C1 error / B3 password). Only one
         // is ever active at a time (password > error > progress, gated below). ──
+        // 浮层家族(SHEET 06):L3 不透明浮板 + 1px h2 + r6 + float 投影 + 纯色 scrim。
         let card_chrome = |inner: gpui::Div| -> gpui::Div {
             let panel = crate::style::shadowed(
                 inner
@@ -2939,14 +2944,10 @@ impl Render for TerminalView {
                     .rounded(px(crate::style::R_PANEL))
                     .overflow_hidden()
                     .border_1()
-                    .border_color(rgba(crate::style::RIM))
-                    .bg(gpui::linear_gradient(
-                        180.,
-                        gpui::linear_color_stop(cola(self.palette.bg, 0.92), 0.),
-                        gpui::linear_color_stop(rgba(0x161826eb), 1.),
-                    ))
+                    .border_color(rgba(crate::style::H2))
+                    .bg(gpui::rgb(crate::style::L3))
                     .on_mouse_down(gpui::MouseButton::Left, |_e, _w, cx| cx.stop_propagation()),
-                vec![crate::style::soft_shadow(40.0, 120.0, -30.0, 0.9)],
+                crate::style::shadow_float(),
             );
             div()
                 .absolute()
@@ -2954,7 +2955,7 @@ impl Render for TerminalView {
                 .flex()
                 .items_center()
                 .justify_center()
-                .bg(rgba(0x0a0b118c))
+                .bg(rgba(crate::style::SCRIM))
                 .child(panel)
         };
         let card_header = |icon_name: &'static str, accent: Rgb, title: &str, subtitle: &str| {
@@ -3087,9 +3088,9 @@ impl Render for TerminalView {
                 .px(px(12.))
                 .py(px(7.))
                 .rounded(px(8.))
-                .bg(rgba(crate::style::HOVER))
+                .bg(gpui::rgb(crate::style::L2))
                 .text_color(col(self.ui_fg))
-                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(crate::style::icon("close", 13., self.ui_muted))
                 .child(div().text_size(px(12.)).child(SharedString::from("取消")))
                 .on_mouse_down(
@@ -3107,9 +3108,9 @@ impl Render for TerminalView {
                         "正在连接",
                         &self.ssh_target,
                     ))
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(steps_col)
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div()
                             .flex()
@@ -3163,8 +3164,8 @@ impl Render for TerminalView {
                     }));
                 let close = div()
                     .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                    .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
-                    .hover(|s| s.bg(rgba(crate::style::INSET)))
+                    .bg(gpui::rgb(crate::style::L2)).text_color(col(self.ui_fg))
+                    .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                     .child(crate::style::icon("close", 13., self.ui_muted))
                     .child(div().text_size(px(12.)).child(SharedString::from("关闭")))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
@@ -3179,7 +3180,7 @@ impl Render for TerminalView {
                 card_chrome(
                     div()
                         .child(card_header("alert", self.ui_red, title, &self.ssh_target))
-                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                        .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                         .child(
                             div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
                                 .child(SharedString::from(body_text)),
@@ -3192,7 +3193,7 @@ impl Render for TerminalView {
                                     .child(SharedString::from(h)),
                             )
                         })
-                        .child(div().h(px(1.)).bg(rgba(0xffffff0f)).mt(px(12.)))
+                        .child(div().h(px(1.)).bg(rgba(crate::style::H1)).mt(px(12.)))
                         .child(btnrow),
                 )
             });
@@ -3244,7 +3245,7 @@ impl Render for TerminalView {
                         .flex_none()
                         .p(px(2.))
                         .rounded(px(6.))
-                        .hover(|s| s.bg(rgba(crate::style::HOVER)))
+                        .hover(|s| s.bg(gpui::rgb(crate::style::L2)))
                         .child(crate::style::icon(
                             "eye",
                             15.,
@@ -3332,9 +3333,9 @@ impl Render for TerminalView {
                 .px(px(12.))
                 .py(px(7.))
                 .rounded(px(8.))
-                .bg(rgba(crate::style::HOVER))
+                .bg(gpui::rgb(crate::style::L2))
                 .text_color(col(self.ui_fg))
-                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(div().text_size(px(12.)).child("取消"))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
@@ -3346,7 +3347,7 @@ impl Render for TerminalView {
             card_chrome(
                 div()
                     .child(card_header("lock", self.ui_accent, "输入密码", &p.prompt))
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .when_some(p.error.clone(), |d, err| {
                         d.child(
                             div()
@@ -3367,7 +3368,7 @@ impl Render for TerminalView {
                     })
                     .child(input_row)
                     .child(remember_row)
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div()
                             .flex()
@@ -3385,11 +3386,12 @@ impl Render for TerminalView {
         // unrecognized host, before auth.
         let ssh_hostkey_card = self.ssh_hostkey.as_ref().map(|hk| {
             let remembered = self.ssh_hostkey_remember;
+            // SHEET 06 板 C `.fp`:指纹块 = L0 凹井 + 1px h0 + r4 + mono 磷光指纹。
             let fp_box = div()
-                .mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(8.))
-                .bg(rgba(crate::style::INSET)).border_1().border_color(rgba(crate::style::RIM))
+                .mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(crate::style::R_CARD))
+                .bg(gpui::rgb(crate::style::L0)).border_1().border_color(rgba(crate::style::H0))
                 .child(div().text_size(px(10.)).text_color(col(self.ui_muted)).child("ED25519 / SHA256 指纹"))
-                .child(div().font_family(self.font_family.clone()).text_size(px(12.)).text_color(col(self.ui_fg)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
+                .child(div().font_family(self.font_family.clone()).text_size(px(12.)).text_color(gpui::rgb(crate::style::PH)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
             let remember_row = div()
                 .flex().flex_row().items_center().gap(px(8.)).px(px(14.)).py(px(10.))
                 .child(
@@ -3416,8 +3418,8 @@ impl Render for TerminalView {
                 }));
             let cancel = div()
                 .flex().flex_row().items_center().gap(px(6.)).px(px(12.)).py(px(7.)).rounded(px(8.))
-                .bg(rgba(crate::style::HOVER)).text_color(col(self.ui_fg))
-                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .bg(gpui::rgb(crate::style::L2)).text_color(col(self.ui_fg))
+                .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(div().text_size(px(12.)).child("取消"))
                 .on_mouse_down(gpui::MouseButton::Left, cx.listener(|this, _e, _w, cx| {
                     cx.stop_propagation();
@@ -3426,14 +3428,14 @@ impl Render for TerminalView {
             card_chrome(
                 div()
                     .child(card_header("shield", self.ui_accent, "首次连接此主机", &hk.host))
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div().px(px(14.)).pt(px(11.)).text_size(px(12.)).text_color(col(self.ui_muted))
                             .child("你是第一次连接此主机。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
                     )
                     .child(fp_box)
                     .child(remember_row)
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.)).child(cancel).child(trust)),
             )
         });
@@ -3474,8 +3476,8 @@ impl Render for TerminalView {
                         .rounded(px(7.))
                         .text_size(px(11.))
                         .text_color(col(self.ui_fg))
-                        .bg(rgba(crate::style::HOVER))
-                        .hover(|s| s.bg(rgba(crate::style::INSET)))
+                        .bg(gpui::rgb(crate::style::L2))
+                        .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                         .child("取消")
                         .on_mouse_down(
                             gpui::MouseButton::Left,
@@ -3534,9 +3536,9 @@ impl Render for TerminalView {
                 .px(px(12.))
                 .py(px(7.))
                 .rounded(px(8.))
-                .bg(rgba(crate::style::HOVER))
+                .bg(gpui::rgb(crate::style::L2))
                 .text_color(col(self.ui_fg))
-                .hover(|s| s.bg(rgba(crate::style::INSET)))
+                .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(crate::style::icon("close", 13., self.ui_muted))
                 .child(div().text_size(px(12.)).child(SharedString::from("拒绝")))
                 .on_mouse_down(
@@ -3554,7 +3556,7 @@ impl Render for TerminalView {
                         "Agent 要联网",
                         &agent_label,
                     ))
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)))
                     .child(
                         div()
                             .px(px(14.))
@@ -3570,16 +3572,16 @@ impl Render for TerminalView {
                             .mx(px(14.))
                             .mt(px(9.))
                             .p(px(9.))
-                            .rounded(px(8.))
-                            .bg(rgba(crate::style::INSET))
+                            .rounded(px(crate::style::R_CARD))
+                            .bg(gpui::rgb(crate::style::L0)) // 命令凹井(同 `.fp`)
                             .border_1()
-                            .border_color(rgba(crate::style::RIM))
+                            .border_color(rgba(crate::style::H0))
                             .font_family(self.font_family.clone())
                             .text_size(px(11.5))
                             .text_color(col(self.ui_muted))
                             .child(SharedString::from(cmd)),
                     )
-                    .child(div().h(px(1.)).bg(rgba(0xffffff0f)).mt(px(12.)))
+                    .child(div().h(px(1.)).bg(rgba(crate::style::H1)).mt(px(12.)))
                     .child(
                         div()
                             .flex()
@@ -3602,8 +3604,8 @@ impl Render for TerminalView {
             .flex()
             .flex_col()
             .overflow_hidden()
-            .rounded(px(13.)) // match the pane card's inner radius (R_PANEL - border)
-            .bg(rgba(0x00000000)) // 透明:终端默认底透出 render_node 的 g1 玻璃(mockup .body on glass)
+            .rounded(px(crate::style::R_PANEL - 1.)) // match the plate's inner radius
+            .bg(rgba(0x00000000)) // 透明:终端默认底透出 render_node 的 L1 板面(磷光)
             .text_color(col(fg))
             .font_family(self.font_family.clone())
             .text_size(px(self.font_size))

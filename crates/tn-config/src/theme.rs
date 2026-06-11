@@ -231,13 +231,15 @@ mod tests {
         let t = Theme::tn_dark();
         assert_eq!(t.name, "Tn Dark");
         assert_eq!(t.appearance, Mode::Dark);
-        assert_eq!(t.ansi.red, Color::new(0xF7, 0x76, 0x8E));
-        assert_eq!(t.terminal.background, Color::new(0x11, 0x14, 0x24)); // 深化自 #1a1b26(2026-06-01 抗色带)
-        assert_eq!(t.terminal.foreground, Color::new(0xC0, 0xCA, 0xF5));
-        assert_eq!(t.ui.accent, Color::new(0x7A, 0xA2, 0xF7));
-        assert_eq!(t.ui.window.backdrop, Backdrop::Mica);
-        assert!((t.ui.window.opacity - 0.96).abs() < 1e-6);
-        assert_eq!(t.agents.claude, Color::new(0xF0, 0x91, 0x6D));
+        assert_eq!(t.ansi.red, Color::new(0xE8, 0x70, 0x7E)); // 磷光语义 err
+        assert_eq!(t.terminal.background, Color::new(0x10, 0x14, 0x1F)); // L1 板面(磷光海拔)
+        assert_eq!(t.terminal.foreground, Color::new(0xC9, 0xD2, 0xE2));
+        assert_eq!(t.terminal.cursor, Color::new(0x5B, 0xE7, 0xC4)); // 磷光:唯一生命色
+        assert_eq!(t.ui.chrome_bg, Color::new(0x0B, 0x0E, 0x16)); // L0 底盘
+        assert_eq!(t.ui.accent, Color::new(0x5B, 0xE7, 0xC4));
+        assert_eq!(t.ui.window.backdrop, Backdrop::Solid); // 不透明仪器舱体(契约 1)
+        assert!((t.ui.window.opacity - 1.0).abs() < 1e-6);
+        assert_eq!(t.agents.claude, Color::new(0xC9, 0xA8, 0xFF)); // 磷光紫
     }
 
     #[test]

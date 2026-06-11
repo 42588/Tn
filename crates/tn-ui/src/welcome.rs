@@ -1,10 +1,9 @@
-//! Welcome launchpad (panels/05) — the default content of a **new tab**: a
-//! centered glass card inviting you to start a session, with launch tiles (the
-//! discovered profiles: configured Agent / pwsh / WSL …) + keyboard hints. Empty =
-//! an invitation to start a session, not a wall of widgets.
+//! Welcome launchpad(SHEET 07 板 A)— the default content of a **new tab**:
+//! 居中 Launchpad:hero-mark + TN_ + 磁贴(发现的 profiles / WSL / SSH)+ kbd
+//! 提示 + 宠物 2× 形态。空状态克制:无营销 hero、无大渐变(磷光契约 1)。
 //!
-//! It's a Calm Glass pane like the terminal panes / explorer (chrome, not a node
-//! in the split tree). Clicking a tile emits [`LaunchRequested`] with the profile
+//! It's a Phosphor plate like the terminal panes (chrome, not a node in the
+//! split tree). Clicking a tile emits [`LaunchRequested`] with the profile
 //! index; the workspace spawns that pane into the tab (welcome → panes).
 //!
 //! The "最近" (recent projects) row from the prototype is 待端口 — it needs a
@@ -14,13 +13,15 @@
 use std::sync::Arc;
 
 use gpui::{
-    div, prelude::*, px, rgba, Context, Div, FocusHandle, FontWeight, MouseButton, MouseDownEvent,
-    SharedString,
+    div, prelude::*, px, rgb, rgba, Context, Div, FocusHandle, FontWeight, MouseButton,
+    MouseDownEvent, SharedString,
 };
 use tn_agent::{AgentId, AgentRegistry};
 use tn_config::{Loaded, Profile, ProfileKind};
 
-use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, RIM, R_CARD, R_PANEL, UI_SANS};
+use crate::style::{
+    col, cola, icon, plate, H0, H1, PH, PH_DIM, R_CARD, R_CHIP, R_PANEL, T0, T2, T3, UI_SANS,
+};
 
 // ── Shared launch-tile helpers (mockup `.tile` / `.dot`) ────────────────────────
 // The welcome launchpad, the Quick Terminal launcher, and the command palette all
@@ -274,6 +275,8 @@ pub struct WelcomeView {
     profiles: Vec<Profile>,
     /// Drilled into the WSL group's distro sub-grid (vs the root launchpad).
     wsl_open: bool,
+    /// 当前宠物品种(欢迎页 2× 形态;`None` = 宠物隐藏/关闭)。由 workspace 喂入。
+    pet_breed: Option<crate::pet::Breed>,
     focus_handle: FocusHandle,
 }
 
@@ -283,8 +286,14 @@ impl WelcomeView {
             config,
             profiles,
             wsl_open: false,
+            pet_breed: None,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// workspace 每帧同步:宠物品种(SHEET 07 欢迎页 2× 形态)。
+    pub(crate) fn set_pet_breed(&mut self, breed: Option<crate::pet::Breed>) {
+        self.pet_breed = breed;
     }
 
     // `tile_accent` / `tile_sub` / agent detection now live as module-level free fns
@@ -292,7 +301,8 @@ impl WelcomeView {
     // Quick Terminal launcher (and the command palette's identity dot) so all three
     // render the identical mockup `.tile`/.dot identity.
 
-    /// A launch tile (mockup `.tile`) from a [`CardId`] + a mouse-down handler —
+    /// 启动磁贴(SHEET 07 `.ltile`):150 宽 · L2 + 1px h0 + r4 · 身份字形 mono 600 15
+    /// · 名 sans 600 12 t0 · 副标 mono 9 t2 大写;hover = L4 + h1。
     /// shared shape for profile / WSL / SSH / back tiles.
     fn card_tile(
         &self,
@@ -301,48 +311,55 @@ impl WelcomeView {
         cx: &mut Context<Self>,
     ) -> Div {
         let ui = &self.config.theme.ui;
+        let crest = col(ui.palette_selected); // L4
+        let mono = SharedString::from(self.config.font().family.clone());
+        // 身份字形:磁贴语法的「会话所有者」记号(svg 图标 → mono 字形,SHEET 07)。
+        let glyph_ch = match card.glyph {
+            "spark" => "✻",
+            "term" => "❯",
+            "external" => "⇄",
+            "plus" => "+",
+            "chev-l" => "‹",
+            _ => "▣",
+        };
         div()
-            .w(px(131.)) // (560 − 3×11)/4 ≈ 131:与 mockup grid repeat(4,1fr) 同宽,>4 自动换行
+            .w(px(150.))
             .flex()
             .flex_col()
-            .gap(px(9.)) // §16 .tile gap 9
-            .p(px(14.)) // §16 .tile padding 14
+            .gap(px(6.))
+            .pt(px(14.))
+            .px(px(14.))
+            .pb(px(12.))
             .rounded(px(R_CARD))
-            .bg(rgba(INSET)) // .tile bg = g2(.04)
+            .bg(col(ui.surface_2)) // L2
             .border_1()
-            .border_color(rgba(RIM)) // .tile border = rim
-            .hover(|s| {
-                // Enhance hover state with dynamic agent color glow
-                s.bg(cola(card.accent, 0.08))
-                    .border_color(cola(card.accent, 0.30))
-            })
+            .border_color(rgba(H0))
+            .hover(move |s| s.bg(crest).border_color(rgba(H1)))
             .on_mouse_down(MouseButton::Left, cx.listener(on_down))
             .child(
-                // .ic:30×30 圆角 9,accent@.14 底 + accent 图标
+                // `.g`:身份字形 mono 600 15
                 div()
-                    .w(px(30.))
-                    .h(px(30.))
-                    .rounded(px(9.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(cola(card.accent, 0.14))
-                    .child(icon(card.glyph, 18., card.accent)),
+                    .font_family(mono.clone())
+                    .text_size(px(15.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(col(card.accent))
+                    .child(SharedString::from(glyph_ch)),
             )
             .child(
-                // .tn:13px / 640 / fg
+                // `.n`:sans 600 12 t0
                 div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight(640.))
-                    .text_color(col(ui.foreground))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(rgb(T0))
                     .child(SharedString::from(card.name)),
             )
             .child(
-                // .td:11px / muted
+                // `.s`:mono 9 t2 全大写
                 div()
-                    .text_size(px(11.))
-                    .text_color(col(ui.muted))
-                    .child(SharedString::from(card.sub)),
+                    .font_family(mono)
+                    .text_size(px(9.))
+                    .text_color(rgb(T2))
+                    .child(SharedString::from(card.sub.to_uppercase())),
             )
     }
 
@@ -375,14 +392,44 @@ impl WelcomeView {
 
     /// The「+ 添加 Agent」tile (always present in the agents row) → opens the
     /// in-app agent editor so a new CLI can be added without editing config.toml.
+    /// SHEET 07 `.ltile.add`:透底 + h0 边 + 居中内容(与实体磁贴区分的「空位」)。
     fn add_agent_tile(&self, cx: &mut Context<Self>) -> Div {
-        let card = CardId {
-            name: "添加 Agent".into(),
-            sub: "自定义 CLI".into(),
-            glyph: "plus",
-            accent: self.config.theme.ui.accent,
-        };
-        self.card_tile(card, |_this, _e, _w, cx| cx.emit(AddAgentRequested), cx)
+        let ui = &self.config.theme.ui;
+        let crest = col(ui.palette_selected); // L4
+        let mono = SharedString::from(self.config.font().family.clone());
+        div()
+            .w(px(150.))
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(4.))
+            .pt(px(14.))
+            .px(px(14.))
+            .pb(px(12.))
+            .rounded(px(R_CARD))
+            .border_1()
+            .border_color(rgba(H0))
+            .hover(move |s| s.bg(crest).border_color(rgba(H1)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _e, _w, cx| cx.emit(AddAgentRequested)),
+            )
+            .child(
+                div()
+                    .font_family(mono)
+                    .text_size(px(15.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(rgb(T3))
+                    .child("+"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(500.))
+                    .text_color(rgb(T2))
+                    .child("添加 Agent"),
+            )
     }
 
     /// The inline ✎ (edit) / ✕ (delete) cluster at a custom agent tile's top-right.
@@ -390,6 +437,7 @@ impl WelcomeView {
     fn agent_tile_actions(&self, i: usize, cx: &mut Context<Self>) -> Div {
         let ui = &self.config.theme.ui;
         let red = self.config.theme.ansi.red;
+        let raised = col(ui.surface_2); // L2 小件
         div()
             .absolute()
             .top(px(8.))
@@ -401,14 +449,14 @@ impl WelcomeView {
                 div()
                     .w(px(20.))
                     .h(px(20.))
-                    .rounded(px(6.))
+                    .rounded(px(R_CHIP))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(rgba(INSET))
+                    .bg(raised)
                     .border_1()
-                    .border_color(rgba(RIM))
-                    .hover(|s| s.border_color(cola(ui.accent, 0.5)))
+                    .border_color(rgba(H1))
+                    .hover(|s| s.border_color(rgba(PH_DIM)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |_t, _e, _w, cx| {
@@ -422,13 +470,13 @@ impl WelcomeView {
                 div()
                     .w(px(20.))
                     .h(px(20.))
-                    .rounded(px(6.))
+                    .rounded(px(R_CHIP))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(rgba(INSET))
+                    .bg(raised)
                     .border_1()
-                    .border_color(rgba(RIM))
+                    .border_color(rgba(H1))
                     .hover(|s| s.border_color(cola(red, 0.5)))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -484,30 +532,20 @@ impl WelcomeView {
         )
     }
 
-    /// A keyboard hint chip (mockup `.hk`: key cap + label).
+    /// A keyboard hint chip(`.kbd` + 标签,mono 10 t2 — SHEET 07)。
     fn hint(&self, key: &str, label: &str) -> Div {
-        let ui = &self.config.theme.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.)) // §16 .hk gap 6
+            .gap(px(6.))
+            .child(crate::style::kbd(key.to_string(), mono.clone()))
             .child(
-                // .k:mono 10px / fg-dim / g2 底 / padding 1 6 / radius 5
                 div()
-                    .font_family(self.config.font().family.clone())
+                    .font_family(mono)
                     .text_size(px(10.))
-                    .text_color(gpui::rgb(0xA6AFD4)) // fg-dim(无 token)
-                    .bg(rgba(INSET))
-                    .py(px(1.))
-                    .px(px(6.))
-                    .rounded(px(5.))
-                    .child(SharedString::from(key.to_string())),
-            )
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .text_color(col(ui.muted))
+                    .text_color(rgb(T2))
                     .child(SharedString::from(label.to_string())),
             )
     }
@@ -522,6 +560,7 @@ impl gpui::EventEmitter<DeleteAgentRequested> for WelcomeView {}
 impl Render for WelcomeView {
     fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ui = &self.config.theme.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
 
         // Grouped for a clean two-row launchpad: configured agents on top, shells +
         // WSL + SSH below (用户要的排版). Drilling into WSL shows a Back tile + the
@@ -532,15 +571,15 @@ impl Render for WelcomeView {
                 .flex_row()
                 .flex_wrap()
                 .justify_center()
-                .gap(px(11.))
-        }; // §16 .tiles gap 11
+                .gap(px(10.)) // SHEET 07 `.launch` gap 10
+        };
         let tiles = if self.wsl_open {
             let mut v = vec![self.back_tile(cx)];
             for i in wsl_distros(&self.profiles) {
                 let p = self.profiles[i].clone();
                 v.push(self.tile(i, &p, cx));
             }
-            row().w(px(560.)).children(v)
+            row().w(px(640.)).children(v)
         } else {
             let mut agents = Vec::new();
             let mut others = Vec::new();
@@ -563,10 +602,10 @@ impl Render for WelcomeView {
             // launchpad is the entry point for adding a custom CLI (no config.toml).
             agents.push(self.add_agent_tile(cx));
             div()
-                .w(px(560.)) // §16 .welcome .tiles width 560
+                .w(px(640.))
                 .flex()
                 .flex_col()
-                .gap(px(11.))
+                .gap(px(10.))
                 .child(row().children(agents)) // always non-empty (≥ the 添加 tile)
                 .child(row().children(others))
         };
@@ -576,76 +615,118 @@ impl Render for WelcomeView {
             .flex_row()
             .flex_wrap()
             .justify_center()
-            .gap(px(18.)) // §16 .whints gap 18
+            .gap(px(18.))
+            .mt(px(6.))
             .child(self.hint("Ctrl+Shift+P", "命令面板"))
-            .child(self.hint("Ctrl+Alt+Space", "速唤终端"))
-            .child(self.hint("Ctrl+Shift+T", "新标签"));
+            .child(self.hint("Ctrl+Shift+N", "分屏会话"))
+            .child(self.hint("Ctrl+Alt+Space", "幽灵终端"));
 
-        // .welcome — centered column (mockup); recent list 待端口。
+        // SHEET 07 板 A:hero-mark(44×44 ph-dim 边 + 22×22 磷光内核)+ TN_ +
+        // 副标(mono 11 t2)— 居中不放大,克制。
         let welcome = div()
             .size_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .gap(px(18.)) // §16 .welcome gap 18
+            .gap(px(18.))
             .px(px(40.))
             .py(px(32.))
             .font_family(UI_SANS)
             .child(
-                // .wmark:56×56 圆角16 accent→violet 渐变 + 终端图标
                 div()
-                    .w(px(56.))
-                    .h(px(56.))
-                    .rounded(px(16.))
+                    .w(px(44.))
+                    .h(px(44.))
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(rgba(PH_DIM))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(gpui::linear_gradient(
-                        145.,
-                        gpui::linear_color_stop(col(ui.accent), 0.),
-                        gpui::linear_color_stop(col(ui.accent_alt), 1.),
-                    ))
-                    .child(icon("term", 30., ui.chrome_bg)),
+                    .child(div().w(px(22.)).h(px(22.)).rounded(px(2.)).bg(rgb(PH))),
             )
             .child(
-                // 标题组(wt + ws 贴近,对应 mockup .ws margin-top:-14)
                 div()
                     .flex()
                     .flex_col()
                     .items_center()
-                    .gap(px(2.))
+                    .gap(px(6.))
                     .child(
                         div()
-                            .text_size(px(21.))
-                            .font_weight(FontWeight(720.)) // §16 .wt 21/720
-                            .text_color(col(ui.foreground))
-                            .child("开一个新会话"),
+                            .flex()
+                            .flex_row()
+                            .font_family(mono.clone())
+                            .text_size(px(26.))
+                            .font_weight(FontWeight(600.))
+                            .child(div().text_color(rgb(T0)).child("TN"))
+                            .child(div().text_color(rgb(PH)).child("_")),
                     )
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(gpui::rgb(0xA6AFD4)) // §16 .ws fg-dim
+                            .font_family(mono.clone())
+                            .text_size(px(11.))
+                            .text_color(rgb(T2))
                             .child(if self.wsl_open {
-                                "选择一个 WSL 发行版,或点「‹ 返回」回到启动器"
+                                "选择一个 WSL 发行版 — ‹ 返回 回到启动器"
                             } else {
-                                "托管 AI 编码 CLI,或起一个本地/WSL shell"
+                                "TERMINAL INSTRUMENT — 人与智能体共用的终端"
                             }),
                     ),
             )
             .child(tiles)
             .child(hints);
 
-        // Inner (rounded 1px tighter for the gradient-border ring) + glass pane.
+        // 宠物 2× 形态(右下栖位 + 岗台 + 标签,SHEET 07 `.wperch`)。
+        let perch = self.pet_breed.map(|breed| {
+            div()
+                .absolute()
+                .right(px(46.))
+                .bottom(px(52.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .child(crate::pet::sprite_block(breed, 2.0))
+                .child(
+                    // 岗台:1px h1 + 左 28px 磷光点睛
+                    div()
+                        .w(px(180.))
+                        .h(px(1.))
+                        .bg(rgba(H1))
+                        .relative()
+                        .child(
+                            div()
+                                .absolute()
+                                .left(px(0.))
+                                .top(px(0.))
+                                .w(px(28.))
+                                .h(px(1.))
+                                .bg(rgba(PH_DIM)),
+                        ),
+                )
+                .child(
+                    div()
+                        .mt(px(6.))
+                        .font_family(mono.clone())
+                        .text_size(px(9.))
+                        .text_color(rgb(T3))
+                        .child(SharedString::from(format!(
+                            "{} · IDLE(欢迎页 2× 形态)",
+                            breed.tag()
+                        ))),
+                )
+        });
+
+        // 磷光板面:不透明 L1 基面 + 1px 发丝边(plate 范式,零投影)。
         let inner = div()
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()
             .overflow_hidden()
-            .rounded(px(R_PANEL - 1.)) // 1px tighter for the gradient-border ring (see glass_pane)
-            .bg(pane_fill(ui.chrome_bg))
-            .child(welcome);
-        glass_pane(inner, false, ui.accent)
+            .rounded(px(R_PANEL - 1.))
+            .bg(col(ui.surface_1))
+            .child(welcome)
+            .when_some(perch, |d, p| d.child(p));
+        plate(inner, false)
     }
 }
 

@@ -3,20 +3,19 @@
 //! Renders a compact "command block" bar at the bottom of a terminal pane,
 //! driven by [`tn_blocks::BlockModel`] (fed real OSC 133/633 markers by the
 //! shell-integration bypass). It shows the active or most-recent command: a
-//! status stripe (running = blue / ok = green / fail = red), the command text,
+//! status spine (running = 磷光 / ok = green / fail = red), the command text,
 //! duration, exit status, and cwd. Copy / rerun actions are wired by
 //! `TerminalView` (they need its context), which appends them to [`bar_base`].
 //!
-//! Calm Glass: a translucent inset footer, no glow. `TerminalView` hides it on
-//! the alternate screen (vim/less/...) — the full-screen app owns the viewport.
-//! The full per-row overlay around each historical block is deferred; this
-//! footer bar is the M3 cut.
+//! 磷光 `.blockbar`(SHEET 02):高 30 · L2 · 顶 1px h0 · 左 2px 状态脊 —— 脊色是
+//! 块的唯一状态语言;正文永不被块卡染色。`TerminalView` hides it on the alternate
+//! screen (vim/less/...) — the full-screen app owns the viewport.
 
 use gpui::{div, prelude::*, px, rgba, Div, Rgba, SharedString};
 use tn_blocks::{Block, BlockModel, BlockState};
 use tn_core::{Palette, Rgb};
 
-use crate::style::col;
+use crate::style::{col, ERR_SOFT, H0, OK_SOFT, PH_SOFT, R_CHIP};
 
 /// Colors the bar needs. The block card is **chrome** (Calm Glass), so its text
 /// follows the UI tokens (mockup `.block` uses `--fg` / `--muted` / `--accent`),
@@ -89,29 +88,31 @@ fn status_color(data: &BlockBar, pal: &BarPalette) -> Rgba {
     }
 }
 
-/// The exit-status chip: a colored pill with a check/✗/diamond icon (mockup's
-/// `.exit`), matching the block's state + exit code.
+/// The exit-status chip(SHEET 07 `.bx`):状态色字 + 同色 soft 底 · r3 · mono 11。
 fn exit_chip(data: &BlockBar, pal: &BarPalette) -> Div {
     let color = status_color(data, pal);
-    // mockup .exit:内联 · gap 3 · 10px · weight 680 · 状态色(无药丸底/无边)
+    let soft = match (data.state, data.exit) {
+        (BlockState::Running, _) => PH_SOFT,
+        (BlockState::Finished, Some(0)) => OK_SOFT,
+        (BlockState::Finished, Some(_)) => ERR_SOFT,
+        _ => 0x00000000,
+    };
     let chip = div()
         .flex()
         .flex_row()
         .items_center()
         .gap(px(3.))
+        .px(px(7.))
+        .py(px(1.))
+        .rounded(px(R_CHIP))
+        .bg(rgba(soft))
         .text_size(px(10.))
-        .font_weight(gpui::FontWeight(680.))
+        .font_weight(gpui::FontWeight(600.))
         .text_color(color);
     match (data.state, data.exit) {
-        (BlockState::Running, _) => chip
-            .child(crate::assets::icon("diamond", 11.).text_color(color))
-            .child(SharedString::from("运行中")),
-        (BlockState::Finished, Some(0)) => {
-            chip.child(crate::assets::icon("check", 11.).text_color(color))
-        }
-        (BlockState::Finished, Some(n)) => chip
-            .child(crate::assets::icon("close", 11.).text_color(color))
-            .child(SharedString::from(format!("exit {n}"))),
+        (BlockState::Running, _) => chip.child(SharedString::from("RUN")),
+        (BlockState::Finished, Some(0)) => chip.child(SharedString::from("✓ 0")),
+        (BlockState::Finished, Some(n)) => chip.child(SharedString::from(format!("✕ {n}"))),
         (BlockState::Finished, None) => chip.child(SharedString::from("结束")),
         _ => chip,
     }
@@ -174,39 +175,38 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
             .child(div().text_color(pal.fg).child(SharedString::from(rest)))
     };
 
-    // A floating rounded "block card" (Calm Glass, mockup .block): a glass panel with a
-    // 3px left status stripe. The stripe is the card's own **left border**, not an
-    // absolute child — gpui's `overflow_hidden` clips children RECTANGULARLY, not by
-    // `corner_radii` (踩过的坑), so a full-height absolute stripe would poke square
-    // corners past the rounded card (左两角变方). A border follows the rounded corners
-    // natively → the stripe curves into the 11px radius like mockup `.block::before`
-    // does when the browser clips it. `pl` drops 14→11 so the 3px border + 11 padding
-    // keeps the command text at the mockup's 14px from the card edge.
+    // SHEET 02 `.blockbar`:贴底全宽仪表条 — 高 30 · L2 · 顶 1px h0 · 左 2px
+    // 状态脊。脊走 border_l(单色);顶发丝走内层 1px 线(border_color 单色限制)。
     let mut row = div()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(9.)) // mockup .bh gap 9
-        .mx_2()
-        .mb(px(10.)) // mockup .block margin-bottom 10
-        .py(px(8.)) // mockup .bh padding 8(上下)
-        .pl(px(11.)) // mockup .bh padding-left 14 − 3px border
-        .pr(px(12.)) // mockup .bh padding-right 12
-        .rounded(px(11.)) // --r-card
-        .border_l(px(3.)) // mockup .block::before 3px 左缘状态条 → 走边框跟随圆角
+        .relative()
+        .gap(px(10.))
+        .h(px(30.))
+        .flex_none()
+        .pl(px(10.)) // 12 − 2px 脊
+        .pr(px(12.))
+        .border_l(px(2.)) // 状态脊:块的唯一状态语言
         .border_color(stripe)
-        .overflow_hidden() // clip the (truncated) command text to the card radius
-        .text_size(px(12.)) // mockup .bh font-size 12
-        .bg(rgba(0xffffff09)) // .035×255≈9 白叠加(mockup .block,无边框)
+        .bg(gpui::rgb(crate::style::L2))
+        .text_size(px(11.))
+        .child(
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .right(px(0.))
+                .h(px(1.))
+                .bg(rgba(H0)),
+        )
         .child(cmd_el)
         .child(div().flex_1());
 
     if let Some(ms) = data.duration_ms {
-        // mockup .dur:10.5 · 640 · muted
         row = row.child(
             div()
-                .text_size(px(10.5))
-                .font_weight(gpui::FontWeight(640.))
+                .text_size(px(10.))
                 .text_color(pal.muted)
                 .child(SharedString::from(fmt_duration(ms))),
         );
@@ -215,6 +215,7 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     if let Some(cwd) = &data.cwd {
         row = row.child(
             div()
+                .text_size(px(10.))
                 .text_color(pal.muted)
                 .child(SharedString::from(short_path(cwd, 22))),
         );

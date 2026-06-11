@@ -130,6 +130,17 @@ impl TerminalView {
                             let at_ms = start.elapsed().as_millis() as u64;
                             let mut bm = blocks.lock().unwrap();
                             for ev in events {
+                                // 宠物上下文信号:结构化 OSC 133 命令生命周期
+                                // (Running/Success/Error 演出;只读,不反向影响)。
+                                match &ev {
+                                    tn_shell::BlockEvent::OutputStart => {
+                                        crate::pet::signal_command_start();
+                                    }
+                                    tn_shell::BlockEvent::CommandFinished { exit } => {
+                                        crate::pet::signal_command_end(*exit);
+                                    }
+                                    _ => {}
+                                }
                                 bm.on_event(ev, abs_line, at_ms);
                             }
                         }

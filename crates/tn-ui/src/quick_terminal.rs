@@ -31,9 +31,7 @@ use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::platform;
 use crate::ssh_recents::{AuthBadge, SshRecents};
-use crate::style::{
-    col, cola, icon, quicklook_fill, quicklook_frame, HOVER, INSET, RIM, R_CARD, R_PANEL, UI_SANS,
-};
+use crate::style::{col, cola, icon, R_CARD, UI_SANS};
 use crate::terminal_view::{
     FileNamespace, LaunchSpec, ProcessExited, SshCloseRequested, SshConnected, SshRememberPassword,
     SshRetryRequested, TerminalView, UsageUpdated,
@@ -695,18 +693,17 @@ impl QuickTerminal {
         if self.ssh_prompt_open {
             return 500.0;
         }
-        // Sum each logical row's wrapped height (4 tiles per visual row).
+        // Sum each logical row's wrapped height (5 tiles per visual row, SHEET 04).
         let rows = self
             .picker_rows()
             .iter()
-            .map(|r| r.len().max(1).div_ceil(4))
+            .map(|r| r.len().max(1).div_ceil(5))
             .sum::<usize>()
             .max(1) as f32;
-        // lhead + footer + tiles-padding + divider + border (~126) + each tile row
-        // (~114) + 11px inter-row gaps. Deliberately generous so the bottom hint never
-        // clips (CJK line heights run taller than ASCII estimates); any surplus is
-        // absorbed by the `flex_1` body spacer rather than cutting the footer.
-        126.0 + rows * 114.0 + (rows - 1.0) * 11.0
+        // 顶缘磷光 2 + GHOST 头 38 + 页脚 30 + tiles padding 24 + 残影下沉区 16
+        // (~116) + 每行磁贴 (~92) + 8px 行间隙。Deliberately generous so the footer
+        // never clips; any surplus is absorbed by the `flex_1` body spacer.
+        116.0 + rows * 92.0 + (rows - 1.0) * 8.0
     }
 
     /// On-screen window rect for the current state: a bare launcher is a **card-sized**
@@ -719,27 +716,27 @@ impl QuickTerminal {
     /// on a HiDPI display. The session branch derives from `work` and is already physical.
     fn shown_for(&self, work: Rect, scale: f32) -> Rect {
         let qt = &self.config.config.quick_terminal;
-        if self.term.is_none() {
-            let s = scale.max(1.0);
-            let w = (CARD_W * s).min(work.width * 0.94);
-            let h = (self.card_height() * s).min(work.height * 0.94);
-            let x = work.x + (work.width - w) / 2.0;
-            let y = work.y + (work.height * 0.12).min(140.0 * s); // dropped a bit from the top
-            Rect::new(x, y, w, h)
+        let s = scale.max(1.0);
+        // 幽灵窗在两态都是同一「760 顶垂窗」(SHEET 04 — 上直角下圆角)。
+        // 宽固定 Ghost 卡宽、水平居中、顶贴屏;运行态不按屏宽拉伸成横条
+        //(原型与真机差异总结 P0:运行态比例/外部背景)。
+        let w = (CARD_W * s).min(work.width * 0.94);
+        let x = work.x + (work.width - w) / 2.0;
+        let h = if self.term.is_none() {
+            // 启动器:卡片自身高度(磁贴行数撑出)。
+            (self.card_height() * s).min(work.height * 0.94)
         } else {
-            qt.shown_rect(work)
-        }
+            // 运行态:沿用配置的下拉高度,只把宽度收回 Ghost 规格。
+            qt.shown_rect(work).height.min(work.height * 0.94)
+        };
+        Rect::new(x, work.y, w, h)
     }
 
     /// Off-screen rect matching [`shown_for`] — same size, pushed above the top edge.
     fn hidden_for(&self, work: Rect, scale: f32) -> Rect {
-        let qt = &self.config.config.quick_terminal;
-        if self.term.is_none() {
-            let s = self.shown_for(work, scale);
-            Rect::new(s.x, work.y - s.height, s.width, s.height)
-        } else {
-            qt.hidden_rect(work)
-        }
+        // 两态统一从屏顶滑入/滑出(幽灵顶垂语义),隐藏位 = 同尺寸推到屏顶之上。
+        let s = self.shown_for(work, scale);
+        Rect::new(s.x, work.y - s.height, s.width, s.height)
     }
 
     /// Re-snap the visible window to the current state's size (instant, no slide):
@@ -762,12 +759,10 @@ impl QuickTerminal {
                     return;
                 };
                 platform::set_bounds(h, rect);
-                // Round the launcher card window; a running session fills edge-to-edge.
-                if rounded {
-                    platform::set_round_region(h, rect.width, rect.height, R_PANEL * scale);
-                } else {
-                    platform::clear_region(h);
-                }
+                // 幽灵窗不再走 Win32 圆角 region:窗体透明,卡片自绘上直角下圆角
+                // (SHEET 04 顶垂形),残影也需要溢出卡片的透明区。
+                let _ = rounded;
+                platform::clear_region(h);
                 let _ = this.update(cx, |_, cx| cx.notify());
             },
         )
@@ -836,13 +831,9 @@ impl QuickTerminal {
                 };
                 if reveal {
                     platform::set_bounds(h, hidden);
-                    // Round the launcher window so its corners match the card (size is
-                    // constant across the slide, so set it once here). Square for a session.
-                    if rounded {
-                        platform::set_round_region(h, hidden.width, hidden.height, R_PANEL * scale);
-                    } else {
-                        platform::clear_region(h);
-                    }
+                    // 幽灵窗不走 Win32 圆角 region(卡片自绘顶垂形 + 残影透明区)。
+                    let _ = rounded;
+                    platform::clear_region(h);
                     platform::show(h, true);
                     let _ = this.update(cx, |_, cx| cx.notify()); // render -> consume focus
                 }
@@ -879,10 +870,97 @@ impl QuickTerminal {
         cx.notify();
     }
 
-    /// The launcher card (mockup `.quick`): fills the (card-sized, transparent) window
-    /// so its rounded corners float on the desktop. Tiles come from [`picker_items`] —
-    /// the aggregated root (profiles + WSL card + SSH placeholder), or, when drilled, a
-    /// Back tile + the WSL distros. `None` when closed.
+    /// 像素幽灵标(SHEET 04 `.gmark`):16×15 圆顶方底磷光块 + 双墨眼 — 与宠物
+    /// 像素语言同源。
+    fn ghost_mark(&self) -> Div {
+        let eye = || {
+            div()
+                .absolute()
+                .top(px(5.))
+                .w(px(3.))
+                .h(px(3.))
+                .bg(gpui::rgb(crate::style::PH_INK))
+        };
+        div()
+            .w(px(16.))
+            .h(px(15.))
+            .flex_none()
+            .relative()
+            .rounded_t(px(7.))
+            .rounded_b(px(2.))
+            .bg(gpui::rgb(crate::style::PH))
+            .child(eye().left(px(3.)))
+            .child(eye().right(px(3.)))
+    }
+
+    /// 幽灵窗外壳(SHEET 04):上直角下圆角(顶垂)· L1 · 1px h2 边(无顶边)·
+    /// 顶缘 2px 磷光线(横向小渐变,契约允许)+ 身后两道残影(1px 磷光轮廓,
+    /// ·45/·18,无填充无模糊 — 幽灵的专属签名)。窗体透明,底部留 16px 给残影下沉。
+    fn ghost_frame(&self, inner: Div) -> Div {
+        const ECHO_PAD: f32 = 16.0;
+        let echo = |inset: f32, sink: f32, alpha: u32| {
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(inset))
+                .right(px(inset))
+                .bottom(px(ECHO_PAD - sink))
+                .rounded_b(px(crate::style::R_WINDOW))
+                .border_b(px(1.))
+                .border_l(px(1.))
+                .border_r(px(1.))
+                .border_color(rgba((crate::style::PH << 8) | alpha))
+        };
+        div()
+            .size_full()
+            .relative()
+            // 残影在卡片之后(下层)
+            .child(echo(10., 8., 0x24)) // ph ·14%(= ph-dim × .45)
+            .child(echo(20., 15., 0x10)) // ph ·6%(= ph-dim × .18)
+            .child(
+                div()
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .right(px(0.))
+                    .bottom(px(ECHO_PAD))
+                    .flex()
+                    .flex_col()
+                    .rounded_b(px(crate::style::R_WINDOW))
+                    .overflow_hidden()
+                    .border_b(px(1.))
+                    .border_l(px(1.))
+                    .border_r(px(1.))
+                    .border_color(rgba(crate::style::H2))
+                    .bg(gpui::rgb(crate::style::L1)) // 不透明 L1(契约 1)
+                    .child(
+                        // 顶缘磷光:2px 中央亮、两端渐隐 = 召唤线落位。gpui 的
+                        // linear_gradient 只吃两停靠点,故拆左右两段镜像渐变拼成中央峰,
+                        // 避免右半段一路满亮(原型与真机差异总结 P1:顶缘不等强铺满)。
+                        div()
+                            .h(px(2.))
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .child(div().flex_1().h_full().bg(linear_gradient(
+                                90.,
+                                linear_color_stop(rgba(0x5BE7C400), 0.),
+                                linear_color_stop(gpui::rgb(crate::style::PH), 1.),
+                            )))
+                            .child(div().flex_1().h_full().bg(linear_gradient(
+                                90.,
+                                linear_color_stop(gpui::rgb(crate::style::PH), 0.),
+                                linear_color_stop(rgba(0x5BE7C400), 1.),
+                            ))),
+                    )
+                    .child(inner),
+            )
+    }
+
+    /// The launcher card(SHEET 04 板 B):垂下启动器 — GHOST_ 头 + 磁贴 + 页脚。
+    /// Tiles come from [`picker_items`] — the aggregated root (profiles + WSL card
+    /// + SSH placeholder), or, when drilled, a Back tile + the WSL distros.
+    /// `None` when closed.
     fn render_picker(&self, cx: &mut Context<Self>) -> Option<Div> {
         if !self.picker_open {
             return None;
@@ -892,110 +970,157 @@ impl QuickTerminal {
         let rows = self.picker_rows();
         let total: usize = rows.iter().map(|r| r.len()).sum();
         let sel = self.picker_sel.min(total.saturating_sub(1));
-        // One flex-wrap row per visual row; a running flat index keeps `picker_sel` +
-        // click in step with `picker_items`.
-        let mut row_divs: Vec<Div> = Vec::new();
+        // SHEET 04 `.tiles`:同一张牌桌 — 全部磁贴入一个流式网格(左起、gap 8、
+        // 填满卡宽),不再按 agents/others 分行居中。flat 索引与 `picker_items` 对齐。
+        let mut tiles: Vec<Div> = Vec::new();
         let mut flat = 0usize;
         for row in &rows {
-            let mut tiles: Vec<Div> = Vec::new();
             for item in row {
                 let i = flat;
                 flat += 1;
                 let c = self.item_card(item, cx);
                 tiles.push(self.launcher_tile(i, i == sel, c.name, c.sub, c.glyph, c.accent, cx));
             }
-            row_divs.push(
+        }
+        let row_divs: Vec<Div> = vec![div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(8.))
+            .children(tiles)];
+
+        let _ = ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+        let head_sub = if self.wsl_drill {
+            "‹ 选择 WSL 发行版"
+        } else {
+            "幽灵终端"
+        };
+
+        // GHOST_ 头(SHEET 04):gmark + GHOST_ + 副标 + AUTOHIDE chip — L2 抬升。
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .h(px(38.))
+            .px(px(14.))
+            .flex_none()
+            .bg(gpui::rgb(crate::style::L2))
+            .border_b(px(1.))
+            .border_color(rgba(crate::style::H1))
+            .font_family(mono.clone())
+            .child(self.ghost_mark())
+            .child(
                 div()
                     .flex()
                     .flex_row()
-                    .flex_wrap()
-                    .justify_center()
-                    .gap(px(11.))
-                    .children(tiles),
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .child(div().text_color(gpui::rgb(crate::style::T0)).child("GHOST"))
+                    .child(div().text_color(gpui::rgb(crate::style::PH)).child("_")),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .when(self.wsl_drill, |d| {
+                        d.hover(|s| s.text_color(gpui::rgb(crate::style::T0)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _e, _w, cx| {
+                                    this.wsl_drill = false;
+                                    this.picker_sel = 0;
+                                    this.resnap(cx);
+                                    cx.notify();
+                                }),
+                            )
+                    })
+                    .child(SharedString::from(head_sub)),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(crate::style::R_CHIP))
+                    .border_1()
+                    .border_color(rgba(crate::style::H1))
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(crate::style::T1))
+                    .child("AUTOHIDE · ON"),
             );
-        }
 
-        let head = if self.wsl_drill {
-            "‹ 选择 WSL 发行版"
-        } else {
-            "起一个会话 — Quick Terminal"
-        };
-        let hint = if self.wsl_drill {
-            "↑↓←→ 选择 · Enter 启动 · Esc 返回"
-        } else {
-            "↑↓←→ 选择 · Enter 启动 · Esc 收起 · 退出当前会话即回到此启动器"
-        };
+        // float-foot:kbd 提示 + 「会话常驻」tag。
+        let footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .h(px(30.))
+            .px(px(14.))
+            .flex_none()
+            .border_t(px(1.))
+            .border_color(rgba(crate::style::H1))
+            .font_family(mono.clone())
+            .text_size(px(10.))
+            .text_color(gpui::rgb(crate::style::T2))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(crate::style::kbd("⇥", mono.clone()))
+                    .child(div().child("选择")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(crate::style::kbd("↵", mono.clone()))
+                    .child(div().child("启动")),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.))
+                    .child(crate::style::kbd("Esc", mono.clone()))
+                    .child(div().child("隐匿")),
+            )
+            .child(div().flex_1())
+            .child(div().child(if self.wsl_drill {
+                "WSL"
+            } else {
+                "会话常驻 · 隐而不灭"
+            }));
 
-        // The card **fills the whole (card-sized, transparent) window** — its rounded
-        // corners show the desktop through, so it reads as just a floating card with no
-        // surrounding window rectangle. specular wash + cool gradient + rim edge.
-        let card = div()
+        let inner = div()
             .size_full()
-            .relative() // anchor the specular top wash
             .flex()
             .flex_col()
             .font_family(UI_SANS)
-            .rounded(px(R_PANEL))
-            .overflow_hidden()
-            .border_1()
-            .border_color(rgba(RIM))
             .track_focus(&self.picker_focus)
             .on_key_down(
                 cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_picker_key(ev, w, cx)),
             )
-            // mockup .quick bg:#151622@.78 → #0F1019@.85(略带通透,无 token)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0x151622c7), 0.),
-                linear_color_stop(rgba(0x0f1019d9), 1.),
-            ))
-            .child(crate::style::specular_wash(true, ui.accent))
+            .child(header)
             .child(
-                // .lhead:13 / 640 / fg-dim;drilled 时整行可点 = 返回
                 div()
-                    .px(px(22.))
-                    .pt(px(20.))
-                    .pb(px(4.))
-                    .text_size(px(13.))
-                    .font_weight(FontWeight(640.))
-                    .text_color(gpui::rgb(0xA6AFD4)) // fg-dim(无 token)
-                    .when(self.wsl_drill, |d| {
-                        d.hover(|s| s.text_color(col(ui.foreground))).on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| {
-                                this.wsl_drill = false;
-                                this.picker_sel = 0;
-                                this.resnap(cx);
-                                cx.notify();
-                            }),
-                        )
-                    })
-                    .child(SharedString::from(head)),
-            )
-            .child(
-                // .tiles:两行(agents 上 / shells·WSL·SSH 下),每行 4 列定宽磁贴居中、>4 换行
-                div()
-                    .px(px(22.))
-                    .pt(px(10.))
-                    .pb(px(18.))
+                    .p(px(12.))
                     .flex()
                     .flex_col()
-                    .gap(px(11.))
+                    .gap(px(8.))
                     .children(row_divs),
             )
-            .child(div().flex_1()) // body 留白:吸收窗口高度余量,提示贴底
-            .child(div().h(px(1.)).bg(rgba(0xffffff0d))) // mockup .body border-top 白 .05
-            .child(
-                // .body 底部提示(随视图变)
-                div()
-                    .px(px(22.))
-                    .py(px(12.))
-                    .text_size(px(11.5))
-                    .text_color(col(ui.muted))
-                    .child(SharedString::from(hint)),
-            );
+            .child(div().flex_1()) // body 留白:吸收窗口高度余量,页脚贴底
+            .child(footer);
 
-        Some(card)
+        Some(self.ghost_frame(inner))
     }
 
     fn render_ssh_prompt(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -1015,6 +1140,7 @@ impl QuickTerminal {
 
         let chips = crate::workspace::parse_ssh_target_chips(&typed);
         let has_error = ssh_err.is_some();
+        // `.chip`:1px h1 · r3 · mono 10(磷光芯片)
         let chip = |label: &str, val: String| {
             div()
                 .flex()
@@ -1023,17 +1149,18 @@ impl QuickTerminal {
                 .gap(px(4.))
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(999.))
-                .bg(rgba(HOVER))
+                .rounded(px(crate::style::R_CHIP))
+                .border_1()
+                .border_color(rgba(crate::style::H1))
+                .font_family(mono.clone())
                 .text_size(px(10.))
                 .child(
                     div()
-                        .text_color(col(ui.muted))
+                        .text_color(gpui::rgb(crate::style::T2))
                         .child(SharedString::from(label.to_string())),
                 )
                 .child(
                     div()
-                        .font_family(mono.clone())
                         .text_color(col(ui.accent))
                         .child(SharedString::from(val)),
                 )
@@ -1057,8 +1184,10 @@ impl QuickTerminal {
                 .gap(px(5.))
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(999.))
-                .bg(cola(t.ansi.red, 0.12))
+                .rounded(px(crate::style::R_CHIP))
+                .border_1()
+                .border_color(cola(t.ansi.red, 0.3))
+                .bg(rgba(crate::style::ERR_SOFT))
                 .text_size(px(10.))
                 .child(icon("alert", 11., t.ansi.red))
                 .child(
@@ -1092,6 +1221,7 @@ impl QuickTerminal {
             for (i, row) in rows.iter().enumerate() {
                 let selected = i == sel;
                 let connect_target = row.connect_target();
+                // `.prow` 语法:选中 = L4 + ph-dim 边 + 左 2px 磷光脊(浮层家族)。
                 let row_el = div()
                     .flex()
                     .flex_row()
@@ -1099,19 +1229,34 @@ impl QuickTerminal {
                     .gap(px(10.))
                     .px(px(11.))
                     .py(px(8.))
-                    .rounded(px(9.))
+                    .rounded(px(R_CARD))
+                    .relative()
                     .border_1()
                     .border_color(if selected {
-                        cola(ui.accent, 0.32)
+                        rgba(crate::style::PH_DIM)
                     } else {
-                        rgba(RIM)
+                        rgba(crate::style::H0)
                     })
                     .bg(if selected {
-                        cola(ui.accent, 0.10)
+                        gpui::rgb(crate::style::L4)
                     } else {
-                        rgba(INSET)
+                        gpui::rgb(crate::style::L2)
                     })
-                    .when(!selected, |d| d.hover(|s| s.bg(cola(ui.accent, 0.07))))
+                    .when(selected, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .left(px(-1.))
+                                .top(px(8.))
+                                .bottom(px(8.))
+                                .w(px(2.))
+                                .rounded(px(1.))
+                                .bg(gpui::rgb(crate::style::PH)),
+                        )
+                    })
+                    .when(!selected, |d| {
+                        d.hover(|s| s.bg(gpui::rgb(crate::style::L4)))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _e, _w, cx| {
@@ -1315,60 +1460,74 @@ impl QuickTerminal {
         let ime_entity = cx.entity();
         let rename_ime_active = self.ssh_rename.is_some();
 
-        Some(
-            div()
+        let inner = div()
                 .size_full()
                 .relative()
                 .flex()
                 .flex_col()
                 .font_family(UI_SANS)
-                .rounded(px(R_PANEL))
-                .overflow_hidden()
-                .border_1()
-                .border_color(rgba(RIM))
                 .track_focus(&self.ssh_prompt_focus)
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, _w, cx| this.on_ssh_prompt_key(ev, cx)),
                 )
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(rgba(0x151622e6), 0.),
-                    linear_color_stop(rgba(0x0f1019f2), 1.),
-                ))
-                .child(crate::style::specular_wash(true, ui.accent))
                 .child(
+                    // GHOST_ 头变体:‹ 返回 + SSH 快速连接
                     div()
-                        .px(px(22.))
-                        .pt(px(18.))
-                        .pb(px(7.))
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(9.))
-                        .text_size(px(13.))
-                        .font_weight(FontWeight(640.))
-                        .text_color(gpui::rgb(0xA6AFD4))
-                        .hover(|s| s.text_color(col(ui.foreground)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _e, _w, cx| this.close_ssh_prompt_to_picker(cx)),
+                        .gap(px(10.))
+                        .h(px(38.))
+                        .px(px(14.))
+                        .flex_none()
+                        .bg(gpui::rgb(crate::style::L2))
+                        .border_b(px(1.))
+                        .border_color(rgba(crate::style::H1))
+                        .font_family(mono.clone())
+                        .child(self.ghost_mark())
+                        .child(
+                            div()
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(gpui::rgb(crate::style::T0))
+                                .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| {
+                                        this.close_ssh_prompt_to_picker(cx)
+                                    }),
+                                )
+                                .child(SharedString::from("‹ SSH 快速连接")),
                         )
-                        .child(SharedString::from("‹ SSH 快速连接")),
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(2.))
+                                .rounded(px(crate::style::R_CHIP))
+                                .border_1()
+                                .border_color(cola(t.ansi.yellow, 0.3))
+                                .text_size(px(10.))
+                                .text_color(col(t.ansi.yellow))
+                                .child("SSH"),
+                        ),
                 )
                 .child(
+                    // 输入井:L0 凹井 + h1 边(error = 红边)
                     div()
-                        .mx(px(22.))
-                        .mb(px(12.))
+                        .mx(px(14.))
+                        .mt(px(12.))
+                        .mb(px(10.))
                         .px(px(12.))
                         .py(px(10.))
-                        .rounded(px(10.))
+                        .rounded(px(R_CARD))
                         .border_1()
                         .border_color(if has_error {
                             cola(t.ansi.red, 0.50)
                         } else {
-                            rgba(RIM)
+                            rgba(crate::style::H1)
                         })
-                        .bg(rgba(INSET))
+                        .bg(gpui::rgb(crate::style::L0))
                         .flex()
                         .flex_row()
                         .items_center()
@@ -1411,13 +1570,20 @@ impl QuickTerminal {
                 )
                 .child(list)
                 .child(div().flex_1())
-                .child(div().h(px(1.)).bg(rgba(0xffffff0d)))
                 .child(
+                    // float-foot:mono 10 t2
                     div()
-                        .px(px(22.))
-                        .py(px(12.))
-                        .text_size(px(11.5))
-                        .text_color(col(ui.muted))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(30.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(crate::style::H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(crate::style::T2))
                         .child(SharedString::from(footer)),
                 )
                 .when(rename_ime_active, |d| {
@@ -1435,16 +1601,18 @@ impl QuickTerminal {
                         .absolute()
                         .size_full(),
                     )
-                }),
-        )
+                });
+        Some(self.ghost_frame(inner))
     }
 
+    /// 行尾来源 chip(`.chip`):1px 同色 ·30% 边 + r3。
     fn ssh_row_chip(&self, label: &'static str, color: tn_config::Color) -> Div {
         div()
             .px(px(8.))
             .py(px(2.))
-            .rounded(px(999.))
-            .bg(cola(color, 0.12))
+            .rounded(px(crate::style::R_CHIP))
+            .border_1()
+            .border_color(cola(color, 0.3))
             .text_size(px(10.))
             .text_color(col(color))
             .child(SharedString::from(label))
@@ -1463,8 +1631,9 @@ impl QuickTerminal {
             .gap(px(5.))
             .px(px(8.))
             .py(px(2.))
-            .rounded(px(999.))
-            .bg(cola(color, 0.12))
+            .rounded(px(crate::style::R_CHIP))
+            .border_1()
+            .border_color(cola(color, 0.3))
             .child(icon(glyph, 11., color))
             .child(
                 div()
@@ -1474,8 +1643,8 @@ impl QuickTerminal {
             )
     }
 
-    /// One launcher tile (mockup `.tile` + `.tile.sel`): an agent-tinted icon chip,
-    /// the profile name, and a sub-label. Click launches it.
+    /// One launcher tile(SHEET 04 `.tile`):L2 + 1px h0 + r4 — 身份字形 mono 600 14
+    /// + 名 12 t0 + 副标 mono 10 t2;选中 = L4 + ph-dim 边 + 左 2px 磷光脊。
     #[allow(clippy::too_many_arguments)]
     fn launcher_tile(
         &self,
@@ -1487,24 +1656,46 @@ impl QuickTerminal {
         accent: tn_config::Color,
         cx: &mut Context<Self>,
     ) -> Div {
-        let t = &self.config.theme;
-        let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+        let glyph_ch = match glyph {
+            "spark" => "✻",
+            "term" => "❯",
+            "external" => "⇄",
+            "plus" => "+",
+            "chev-l" => "‹",
+            _ => "▣",
+        };
         div()
-            .w(px(170.)) // 4 列定宽塞进 760 宽卡(4×170 + 3×11 + 2×22 ≈ 757),>4 自动换行
+            .w(px(140.)) // 5 列定宽塞进 760 宽卡(5×140 + 4×8 + 2×12 ≈ 756),>5 换行
             .flex()
             .flex_col()
-            .gap(px(9.)) // .tile gap 9
-            .p(px(14.)) // .tile padding 14
-            .rounded(px(R_CARD)) // --r-card
-            .bg(rgba(INSET)) // .tile bg = g2(.04)
+            .gap(px(6.))
+            .pt(px(12.))
+            .px(px(12.))
+            .pb(px(10.))
+            .rounded(px(R_CARD))
+            .relative()
+            .bg(gpui::rgb(crate::style::L2))
             .border_1()
-            // .tile.sel: dynamic agent color border + bg; 否则 rim 边 + 动态 agent color hover 提亮
             .when(is_sel, |d| {
-                d.border_color(cola(accent, 0.4)).bg(cola(accent, 0.12))
+                d.bg(gpui::rgb(crate::style::L4))
+                    .border_color(rgba(crate::style::PH_DIM))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(-1.))
+                            .top(px(8.))
+                            .bottom(px(8.))
+                            .w(px(2.))
+                            .rounded(px(1.))
+                            .bg(gpui::rgb(crate::style::PH)),
+                    )
             })
             .when(!is_sel, |d| {
-                d.border_color(rgba(RIM))
-                    .hover(|s| s.bg(cola(accent, 0.08)).border_color(cola(accent, 0.30)))
+                d.border_color(rgba(crate::style::H0)).hover(|s| {
+                    s.bg(gpui::rgb(crate::style::L4))
+                        .border_color(rgba(crate::style::H1))
+                })
             })
             .on_mouse_down(
                 MouseButton::Left,
@@ -1514,31 +1705,29 @@ impl QuickTerminal {
                 }),
             )
             .child(
-                // .ic:30×30 圆角 9,accent@.14 底 + accent 图标 18
+                // `.tg`:身份字形 mono 600 14
                 div()
-                    .w(px(30.))
-                    .h(px(30.))
-                    .rounded(px(9.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(cola(accent, 0.14))
-                    .child(icon(glyph, 18., accent)),
+                    .font_family(mono.clone())
+                    .text_size(px(14.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(col(accent))
+                    .child(SharedString::from(glyph_ch)),
             )
             .child(
-                // .tn:13 / 640 / fg
+                // `.tn`:sans 600 12 t0
                 div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight(640.))
-                    .text_color(col(ui.foreground))
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(600.))
+                    .text_color(gpui::rgb(crate::style::T0))
                     .child(SharedString::from(name)),
             )
             .child(
-                // .td:11 / muted
+                // `.ts`:mono 10 t2 全大写(微标签节奏,契约 6)
                 div()
-                    .text_size(px(11.))
-                    .text_color(col(ui.muted))
-                    .child(SharedString::from(sub)),
+                    .font_family(mono)
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .child(SharedString::from(sub.to_uppercase())),
             )
     }
 }
@@ -1682,14 +1871,21 @@ impl Render for QuickTerminal {
 
         // The live session fills the window (its own header shows the agent +
         // usage ring). The launcher overlays everything when open.
+        let _ = ui;
         if let Some(term) = &self.term {
-            let mut session = div()
-                .size_full()
+            let mono = SharedString::from(self.config.font().family.clone());
+            let hotkey = self
+                .config
+                .config
+                .quick_terminal
+                .hotkey
+                .to_ascii_uppercase()
+                .replace('+', " + ");
+            let mut session_body = div()
+                .flex_1()
+                .min_h(px(0.))
                 .relative()
-                .rounded(px(R_PANEL - 1.))
                 .overflow_hidden()
-                .bg(quicklook_fill(ui.chrome_bg))
-                .child(crate::style::specular_wash(true, ui.accent))
                 .child(term.clone());
             // Launcher → session cross-fade: a dark wash over the fresh terminal that
             // eases out, so the session develops in instead of snapping.
@@ -1698,7 +1894,7 @@ impl Render for QuickTerminal {
                     (at.elapsed().as_secs_f32() / (TRANSITION_MS as f32 / 1000.0)).clamp(0.0, 1.0);
                 let a = (1.0 - ease_out_cubic(p)) * 0.96;
                 if a > 0.004 {
-                    session = session.child(
+                    session_body = session_body.child(
                         div()
                             .absolute()
                             .size_full()
@@ -1706,7 +1902,55 @@ impl Render for QuickTerminal {
                     );
                 }
             }
-            root = root.child(quicklook_frame(session, ui.accent));
+            // SHEET 04 板 C:会话态 = 终端正文 + float-foot(Esc 隐匿 · 再召唤 ·
+            // SESSION ALIVE 磷光 tag)。
+            let session = div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .bg(gpui::rgb(crate::style::L1)) // 不透明 L1 板面(契约 1)
+                .child(session_body)
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .h(px(26.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(crate::style::H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(crate::style::T2))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.))
+                                .child(crate::style::kbd("Esc", mono.clone()))
+                                .child(div().child("隐匿(会话保留)")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.))
+                                .child(crate::style::kbd(hotkey, mono.clone()))
+                                .child(div().child("再召唤")),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .text_color(gpui::rgb(crate::style::PH))
+                                .child("SESSION ALIVE"),
+                        ),
+                );
+            // 幽灵窗外壳:顶垂 + 顶缘磷光 + 残影签名(SHEET 04 板 C)。
+            root = root.child(self.ghost_frame(session));
         }
         if let Some(picker) = self.render_picker(cx) {
             root = root.child(picker);

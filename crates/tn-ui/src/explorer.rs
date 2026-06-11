@@ -12,30 +12,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    div, linear_color_stop, linear_gradient, prelude::*, px, rgba, uniform_list, AnyElement,
-    AsyncApp, Context, FocusHandle, KeyDownEvent, MouseButton, ScrollStrategy, SharedString,
-    UniformListScrollHandle, WeakEntity, Window,
+    div, prelude::*, px, rgb, rgba, uniform_list, AnyElement, AsyncApp, Context, FocusHandle,
+    KeyDownEvent, MouseButton, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity,
+    Window,
 };
 use tn_config::Loaded;
 use tn_pty::remote_fs::{RemoteFileService, RemoteId, RemotePath, SftpFileService};
 
 use crate::gitutil;
-use crate::style::{col, cola, glass_pane, icon, pane_fill, INSET, R_PANEL};
+use crate::style::{col, icon, plate, H0, PH, R_CHIP, R_PANEL, T1, T2};
 
-/// A small git-status tag chip (e.g. `M` yellow, `U` green).
+/// git 状态字标(SHEET 02 `.git`):纯色字母,无底无框 — M 黄 / U 绿 / D 红。
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
     div()
         .flex_none()
-        .w(px(15.))
-        .h(px(15.))
-        .rounded(px(5.))
-        .flex()
-        .items_center()
-        .justify_center()
-        .text_size(px(9.))
-        .font_weight(gpui::FontWeight(800.)) // §16 .tag weight 800
+        .text_size(px(10.))
+        .font_weight(gpui::FontWeight(600.))
         .text_color(col(c))
-        .bg(cola(c, 0.15)) // mockup .tag bg = 色 @ .15
         .child(SharedString::from(letter.to_string()))
 }
 
@@ -127,7 +120,7 @@ const IGNORED: &[&str] = &[".git", "target", "node_modules", ".idea", ".vs"];
 /// Cap the visible tree so a huge repo can't blow up a render pass.
 const MAX_ROWS: usize = 400;
 /// Fixed row height so `uniform_list` can measure once and assume the rest.
-const TREE_ROW_H: f32 = 26.0; // §16 .tnode height 26
+const TREE_ROW_H: f32 = 24.0; // SHEET 02 `.ti` height 24
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ExplorerPath {
@@ -459,26 +452,32 @@ fn tree_row(
     is_sel: bool,
     maybe_tag: Option<(char, tn_config::Color)>,
 ) -> gpui::Div {
+    // SHEET 02 `.ti`:24px 行 · r3;选中 = L2 + 1px h1 + 左 2px 磷光脊;hover L2。
+    let raised = col(ui.surface_2); // L2
     let mut r = div()
         .flex()
         .flex_row()
         .items_center()
         .relative()
-        .gap(px(7.)) // §16 .tnode gap 7
+        .gap(px(7.))
         .h(px(TREE_ROW_H))
         .pr_2()
         .pl(px(indent))
-        .rounded(px(8.)) // §16 .tnode radius 8
-        .text_size(px(12.5))
-        // mockup .tnode.active bg = 白渐变 .075→.025
+        .rounded(px(R_CHIP))
+        .text_size(px(12.))
         .when(is_sel, |d| {
-            d.bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0xffffff13), 0.), // .075 → 19 = 0x13
-                linear_color_stop(rgba(0xffffff06), 1.), // .025 → 6 = 0x06
-            ))
+            d.bg(raised).border_1().border_color(rgba(H0)).child(
+                div()
+                    .absolute()
+                    .left(px(-1.))
+                    .top(px(4.))
+                    .bottom(px(4.))
+                    .w(px(2.))
+                    .rounded(px(1.))
+                    .bg(rgb(PH)),
+            )
         })
-        .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))));
+        .when(!is_sel, |d| d.hover(move |s| s.bg(raised)));
 
     if row.depth > 0 {
         r = r.child(
@@ -488,7 +487,7 @@ fn tree_row(
                 .top(px(-2.))
                 .bottom(px(-2.))
                 .w(px(1.))
-                .bg(rgba(0xffffff0d)),
+                .bg(rgba(H0)),
         );
     }
 
@@ -500,24 +499,19 @@ fn tree_row(
         r = r.child(div().w(px(13.)).flex_none());
     }
 
-    // type icon
+    // type icon:目录 = info 蓝,文件 = t3 结构字符(SHEET 02 `.ti .ic`)
+    let _ = t;
     let (glyph, glyph_color) = if row.is_dir {
-        ("folder", ui.accent)
-    } else if is_sel {
-        ("file", t.agents.claude)
+        ("folder", ui.accent_alt)
     } else {
-        ("file", ui.muted)
+        ("file", tn_config::Color::new(0x3E, 0x48, 0x60))
     };
     r = r.child(icon(glyph, 14., glyph_color)).child(
         div()
             .flex_1()
             .overflow_hidden()
             .text_ellipsis()
-            .text_color(if is_sel || row.is_dir {
-                col(ui.foreground)
-            } else {
-                col(ui.muted)
-            })
+            .text_color(if is_sel { col(ui.foreground) } else { rgb(T1) })
             .when(row.is_dir, |d| d.font_weight(gpui::FontWeight(540.)))
             .child(SharedString::from(row.name.clone())),
     );
@@ -1154,7 +1148,7 @@ impl gpui::EventEmitter<OpenFile> for ExplorerView {}
 impl gpui::EventEmitter<ExplorerChanged> for ExplorerView {}
 
 impl Render for ExplorerView {
-    fn render(&mut self, window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut gpui::Window, cx: &mut Context<Self>) -> impl IntoElement {
         // If the file tree was rebuilt (or first shown), kick off async git refresh.
         if self.git_stale {
             self.git_stale = false;
@@ -1164,26 +1158,37 @@ impl Render for ExplorerView {
         let ui = &self.config.theme.ui;
         let root_name = self.root.header_label();
 
+        // SHEET 02 `.plate-head`:高 34 · L2 · 底 1px h0 · mono 11 微标签大写。
+        let mono = SharedString::from(self.config.font().family.clone());
         let header = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(9.)) // §16 .phead gap 9
-            .h(px(36.)) // §16 .phead height 36
-            .px(px(13.)) // §16 .phead padding 0 13
+            .gap(px(8.))
+            .h(px(crate::style::PLATE_HEAD_H))
+            .px(px(12.))
             .flex_none()
-            .text_size(px(11.5))
-            .font_weight(gpui::FontWeight(560.)) // §16 .phead weight 560
-            .text_color(col(ui.muted))
-            .child(icon("explorer", 14., ui.accent))
-            .child(div().child("Explorer · "))
+            .bg(col(ui.surface_2)) // L2 抬升
+            .border_b(px(1.))
+            .border_color(rgba(H0))
+            .font_family(mono.clone())
+            .text_size(px(10.))
+            .font_weight(gpui::FontWeight(600.))
+            .text_color(rgb(T2))
+            .child(div().child("EXPLORER"))
+            .child(div().flex_1())
             .child(
+                // 根名:chip(1px h1 · r3 · mono 10 t1)
                 div()
-                    .flex_1()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(R_CHIP))
+                    .border_1()
+                    .border_color(rgba(crate::style::H1))
+                    .font_weight(gpui::FontWeight(400.))
+                    .text_color(rgb(T1))
                     .overflow_hidden()
                     .text_ellipsis()
-                    .text_color(col(ui.accent))
-                    .font_weight(gpui::FontWeight::BOLD)
                     .child(SharedString::from(root_name)),
             );
 
@@ -1289,28 +1294,23 @@ impl Render for ExplorerView {
             .track_scroll(self.scroll_handle.clone())
             .into_any_element()
         };
-        // Inner content, rounded 1px tighter so the gradient-border ring shows
-        // (see style::glass_pane); g1 glass + specular + header + tree.
-        let is_focused = self.focus_handle.is_focused(window);
+        // 磷光板面:不透明 L1 基面 + 1px 发丝边,零投影(plate 范式;explorer 恒非焦点
+        // —— 焦点角标只给键盘焦点真正所在的 pane)。
         let inner = div()
             .track_focus(&self.focus_handle)
             .on_key_down(
                 cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
             )
             .size_full()
-            .relative() // anchor the absolute specular layer
             .flex()
             .flex_col()
             .min_h(px(0.))
             .overflow_hidden()
             .rounded(px(R_PANEL - 1.))
-            // mockup .sidebar 是 .pane:g1 玻璃(baked opaque,防 glass_pane 渐变边透底)
-            .bg(pane_fill(ui.chrome_bg))
-            .child(crate::style::specular_wash(is_focused, ui.accent))
+            .bg(col(ui.surface_1)) // L1 plate
             .child(header)
             .child(tree_content);
-        // mockup .pane::before 竖向渐变描边 + 浮起投影(与终端面板一致;explorer 恒非焦点)
-        glass_pane(inner, false, ui.accent)
+        plate(inner, false)
     }
 }
 

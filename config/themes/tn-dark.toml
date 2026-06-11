@@ -1,62 +1,63 @@
-# Tn Dark — Tn 的默认主题(Tokyo Night 调校)。
-# 这是 design/mockup.html 原型所用配色的权威定义。主题 schema 入口见 docs/架构/工作区与代码包边界.md。
+# Tn Dark — Tn 的默认主题(磷光 Phosphor 调校)。
+# 这是 design/phosphor.css :root 调色板的权威定义;结构 token(发丝线/文字阶梯/
+# 磷光衍生色)在 crates/tn-ui/src/style.rs。规范见 docs/设计/磷光设计语言.md。
 name = "Tn Dark"
 appearance = "dark"          # dark | light(用于跟随系统切换)
 
-# 16 色 ANSI 调色板
+# 16 色 ANSI 调色板(与磷光语义色同源:err/ok/warn/info/claude紫/磷光青)
 [ansi]
-black          = "#15161E"
-red            = "#F7768E"
-green          = "#9ECE6A"
-yellow         = "#E0AF68"
-blue           = "#7AA2F7"
-magenta        = "#BB9AF7"
-cyan           = "#7DCFFF"
-white          = "#A9B1D6"
-bright_black   = "#414868"
-bright_red     = "#F7768E"
-bright_green   = "#9ECE6A"
-bright_yellow  = "#E0AF68"
-bright_blue    = "#7AA2F7"
-bright_magenta = "#BB9AF7"
-bright_cyan    = "#7DCFFF"
-bright_white   = "#C0CAF5"
+black          = "#1A2030"
+red            = "#E8707E"
+green          = "#8CD7A2"
+yellow         = "#E5C07B"
+blue           = "#82B4F0"
+magenta        = "#C9A8FF"
+cyan           = "#5BE7C4"
+white          = "#A9B4CA"
+bright_black   = "#3E4860"
+bright_red     = "#F08C98"
+bright_green   = "#A3E3B5"
+bright_yellow  = "#EDD09A"
+bright_blue    = "#9CC5F5"
+bright_magenta = "#D7BEFF"
+bright_cyan    = "#7FF0D4"
+bright_white   = "#EAF0FB"
 
-# 终端绘制区
+# 终端绘制区(坐在 L1 板面上;光标 = 磷光 + 反相墨字)
 [terminal]
-background    = "#111424"
-foreground    = "#C0CAF5"
-cursor        = "#C0CAF5"
-cursor_text   = "#111424"
-selection_bg  = "#283457"
-selection_fg  = "#C0CAF5"
+background    = "#10141F"    # = L1 板面
+foreground    = "#C9D2E2"    # t0/t1 中点:正文可读又不抢 prompt
+cursor        = "#5BE7C4"    # 磷光:唯一生命色
+cursor_text   = "#06281F"    # ph-ink 反相墨色
+selection_bg  = "#1E3A3D"    # ph ·18% 烤实在 L1 上
+selection_fg  = "#EAF0FB"
 
-# UI chrome(窗口/标签/面板/分屏/命令面板等)
+# UI chrome — 磷光海拔阶梯(全部不透明,深度=结构而非透明度)
 [ui]
-chrome_bg        = "#0B0D16"   # 标题栏 / 最外层(= mockup .app over desktop 合成色:深冷,gap 不洗白面板)
-surface_1        = "#1F2335"   # 面板 / 卡片
-surface_2        = "#24283B"   # 抬升层 / block 卡片
-foreground       = "#C6D0F5"   # = mockup --fg(chrome 文字)
-muted            = "#6E76A0"   # 次要文字 / 注释 = mockup --muted
-border           = "#2A2E42"
-accent           = "#7AA2F7"   # 品牌强调(蓝)
-accent_alt       = "#BB9AF7"   # 次强调(紫)
-tab_active_bg    = "#111424"
-tab_inactive_fg  = "#6E76A0"   # = ui.muted(mockup 用 --muted 画非激活标签)
-block_border     = "#2A2E42"
-block_success    = "#9ECE6A"   # 退出码 0 的左条
-block_error      = "#F7768E"   # 非 0 退出
-block_running    = "#7AA2F7"
-palette_bg       = "#1F2335"
-palette_selected = "#283457"
+chrome_bg        = "#0B0E16"   # L0 底盘 chassis:整窗背景、接缝露出色
+surface_1        = "#10141F"   # L1 板面 plate:常驻 pane 基面
+surface_2        = "#151B29"   # L2 抬升 raised:header、卡片、hover 行
+foreground       = "#EAF0FB"   # t0 主文
+muted            = "#69748E"   # t2 弱文
+border           = "#262E40"   # ≈ h1 发丝线烤实(alpha 版在 style.rs)
+accent           = "#5BE7C4"   # 磷光:光标/运行/焦点/活动数据,永不发光
+accent_alt       = "#82B4F0"   # info 蓝(cwd、目录、链接)
+tab_active_bg    = "#151B29"   # L2:激活 tab 抬升一档
+tab_inactive_fg  = "#69748E"   # t2
+block_border     = "#202633"   # ≈ h0 烤实在 L2 上
+block_success    = "#8CD7A2"   # ok
+block_error      = "#E8707E"   # err
+block_running    = "#5BE7C4"   # 磷光 = 运行语义唯一色
+palette_bg       = "#1B2334"   # L3 浮板 sheet:浮层表面
+palette_selected = "#232C42"   # L4 顶面 crest:浮层内选中
 
-# 半透明 / 窗口质感(Windows 11)
+# 不透明仪器舱体:磷光契约第 1 条 —— 大面积只用纯色,杜绝半透明渐变色带
 [ui.window]
-backdrop = "mica"              # mica | acrylic | solid
-opacity  = 0.96
+backdrop = "solid"             # mica | acrylic | solid
+opacity  = 1.0
 corner   = "round"            # 圆角
 
-# AI agent 强调色(标签条 / 焦点描边 / 上下文环 / 用量读数)
+# AI agent 身份色(tab 身份棒 / 头像 / 用量环;不污染正文)
 [agents]
-claude = "#F0916D"             # 暖珊瑚橙
-codex  = "#73DACA"             # 青绿
+claude = "#C9A8FF"             # 磷光紫
+codex  = "#6FB3E8"             # 磷光蓝

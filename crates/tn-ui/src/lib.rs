@@ -14,6 +14,7 @@ mod gitutil;
 mod input;
 mod layout;
 mod perf;
+mod pet;
 mod platform;
 mod quick_look;
 mod quick_terminal;

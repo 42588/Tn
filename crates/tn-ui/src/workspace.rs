@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgba,
+    actions, canvas, div, linear_color_stop, linear_gradient, prelude::*, px, relative, rgb, rgba,
     uniform_list, AnyElement, App, AppContext, AsyncApp, Bounds, Context, ElementInputHandler,
     Entity, EntityInputHandler, FocusHandle, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PathPromptOptions, Pixels, Point, Rgba, ScrollStrategy,
@@ -42,11 +42,11 @@ use tn_pty::remote_fs::{RemoteFileService, RemotePath, SftpFileService};
 
 pub(crate) type PaneId = u64;
 
-// Calm Glass tokens + helpers (col/cola/soft_shadow/shadowed/icon/UI_SANS/radii)
-// now live in `crate::style` — single source of truth (see docs/修复与优化/基础性能与审查勘误.md).
+// 磷光 Phosphor tokens + helpers(col/cola/plate/float_panel/focus_brackets/icon)
+// live in `crate::style` — single source of truth(规范 docs/设计/磷光设计语言.md)。
 use crate::style::{
-    app_menu_shadows, col, cola, glass_pane, icon, overlay_panel_shadows, pane_fill, shadowed,
-    soft_shadow, DIVIDER, HOVER, INSET, RIM, R_CARD, R_PANEL, R_WINDOW, SHEEN, UI_SANS,
+    col, cola, icon, plate, shadow_float, shadowed, ERR_SOFT, H0, H1, H2, INFO, PH, PH_DIM,
+    R_CARD, R_CHIP, R_PANEL, SCRIM, SEAM, STATUSBAR_H, T0, T1, T2, T3, TITLEBAR_H, UI_SANS,
 };
 
 /// Trim a tab title to `max` characters, appending an ellipsis when clipped.
@@ -845,6 +845,8 @@ pub struct Workspace {
     /// One shared entity (stateless chrome); its `LaunchRequested` launches into
     /// the active tab.
     welcome: Entity<WelcomeView>,
+    /// 像素宠物 overlay(特色③)— 全局一只,状态栏上方栖位(SHEET 05)。
+    pet: Entity<crate::pet::PetView>,
     /// Current git branch of the app cwd (status bar), resolved at startup.
     branch: Option<String>,
     /// Fallback focus anchor for the workspace. gpui dispatches keybindings by
@@ -1200,6 +1202,8 @@ impl Workspace {
         // Welcome launchpad (new-tab default): clicking a tile launches that
         // profile into the active tab (welcome → panes).
         let welcome = cx.new(|cx| WelcomeView::new(cx, config.clone(), launch_profiles.clone()));
+        // 像素宠物(特色③):全局一只,品种在初始化时一次性决定(固定优先,否则随机)。
+        let pet = cx.new(|cx| crate::pet::PetView::new(cx, config.clone()));
         // Welcome launchpad events: launch a tile, open the SSH connector, or
         // add/edit/delete a custom agent (the in-app agent editor). Shared with
         // `reload_agents` so the recreated launchpad re-attaches identically.
@@ -1231,6 +1235,7 @@ impl Workspace {
             ql_refocus_active_pane: false,
             app_menu_open: false,
             welcome,
+            pet,
             branch: git_branch(),
             workspace_focus: cx.focus_handle(),
             palette_open: false,
@@ -2162,22 +2167,15 @@ impl Workspace {
                 let id = *id;
                 let is_focused = id == focused;
                 if let Some(view) = self.panes.get(&id).cloned() {
-                    // Inner content: g1 glass, rounded ONE px tighter than the outer so
-                    // the 1px gradient-border ring shows through (see `glass_pane`).
-                    // The TerminalView fills it + rounds its own corners to match; gpui
-                    // clips rectangularly so inner surfaces round themselves.
-                    let accent = self.agent_color(view.read(cx).agent().as_ref(), cx);
+                    // 磷光板面:内层不透明 L1 基面(契约 1)+ 内缩 1px 圆角让外层
+                    // 1px 发丝边露出(plate 范式);零投影,焦点 = 角标(契约 4/5)。
                     let inner = div()
                         .size_full()
-                        .relative() // anchor the absolute specular layer
                         .rounded(px(R_PANEL - 1.))
                         .overflow_hidden()
-                        .bg(pane_fill(self.config.theme.ui.chrome_bg))
-                        .child(crate::style::specular_wash(is_focused, accent))
+                        .bg(col(self.config.theme.ui.surface_1))
                         .child(view);
-                    // mockup .pane::before 竖向渐变描边(顶冷白承光 → 底 accent 回光,跟圆角)
-                    // + .pane 浮起投影栈;focused 边更亮、浮得更高(NO 暖橙、NO glow)。
-                    return glass_pane(inner, is_focused, accent)
+                    return plate(inner, is_focused)
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _ev, window, cx| {
@@ -2186,22 +2184,13 @@ impl Workspace {
                         )
                         .into_any_element();
                 }
-                // Inner content: g1 glass, rounded ONE px tighter than the outer so
-                // the 1px gradient-border ring shows through (see `glass_pane`).
-                // The TerminalView fills it + rounds its own corners to match; gpui
-                // clips rectangularly so inner surfaces round themselves.
-                let accent = self.config.theme.ui.accent;
                 let inner = div()
                     .size_full()
-                    .relative() // anchor the absolute specular layer
                     .rounded(px(R_PANEL - 1.))
                     .overflow_hidden()
-                    .bg(pane_fill(self.config.theme.ui.chrome_bg))
-                    .child(crate::style::specular_wash(is_focused, accent))
+                    .bg(col(self.config.theme.ui.surface_1))
                     .child("Pane missing");
-                // mockup .pane::before 竖向渐变描边(顶冷白承光 → 底 accent 回光,跟圆角)
-                // + .pane 浮起投影栈;focused 边更亮、浮得更高(NO 暖橙、NO glow)。
-                glass_pane(inner, is_focused, accent)
+                plate(inner, is_focused)
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _ev, window, cx| {
@@ -2247,12 +2236,10 @@ impl Workspace {
                     } else {
                         wrap.w_full().h(relative(frac))
                     };
-                    // 11px gap between split panes (mockup .col gap): pad the inner
-                    // side(s) of each wrap so panes pull back ~5.5px from the seam
-                    // (the divider handle then sits centered in the gap). Padding is
-                    // INSIDE relative(frac) → no overflow, and the wraps still tile
-                    // exactly, so the divider seams (relative(cum)) stay accurate.
-                    let g = px(5.5);
+                    // 磷光接缝:平铺板面间 2px 缝隙露出 L0 底盘(接缝即深度,
+                    // 契约 4)。每侧 pad 1px,加起来正好 SEAM;padding 在
+                    // relative(frac) 内 → 不溢出,divider seam (relative(cum)) 仍准。
+                    let g = px(SEAM / 2.);
                     wrap = if row {
                         wrap.when(i > 0, |w| w.pl(g)).when(i < last, |w| w.pr(g))
                     } else {
@@ -2379,9 +2366,10 @@ impl Workspace {
     /// encoding · theme. The per-agent ctx is aggregated across panes (one
     /// segment per agent present); detailed tokens/cost live in the pane's
     /// agent header (R2).
-    fn render_status_bar(&self, cx: &Context<Self>) -> gpui::Div {
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> gpui::Div {
         let t = &self.config.theme;
         let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
 
         // Aggregate context % per agent across all panes (first pane per agent id
         // wins). Agent-agnostic: one segment per distinct agent present, in the
@@ -2397,85 +2385,115 @@ impl Workspace {
             }
         }
 
-        // A single segment (icon? + content), and a faint vertical divider.
+        // SHEET 01 `.sb-seg`:仪表读数段 — 全高、px 10、段间 1px h0、hover L1。
         let seg = |children: Vec<AnyElement>| {
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(6.))
-                .px(px(13.)) // §16 .seg2 padding 0 13
-                .h(px(18.))
+                .px(px(10.))
+                .h_full()
+                .border_l(px(1.))
+                .border_color(rgba(H0))
+                .hover(|s| s.bg(col(ui.surface_1)).text_color(rgb(T1)))
                 .children(children)
         };
-        let sep = || div().w(px(1.)).h(px(13.)).flex_none().bg(rgba(DIVIDER));
-        let num = |s: String| -> AnyElement {
-            // mockup .status .num:weight 640 · fg-dim #A6AFD4(无主题 token → 字面量)
+        // `.sb-dot`:5px 磷光圆点(idle = t3)。
+        let dot = |live: bool| {
             div()
-                .font_weight(gpui::FontWeight(640.))
-                .text_color(gpui::rgb(0xA6AFD4))
-                .child(SharedString::from(s))
-                .into_any_element()
+                .w(px(5.))
+                .h(px(5.))
+                .rounded_full()
+                .flex_none()
+                .bg(if live { rgb(PH) } else { rgb(T3) })
         };
 
         let mut bar = div()
             .flex()
             .flex_row()
             .items_center()
-            .h(px(30.))
-            .px(px(6.)) // §16 .status padding 0 6
+            .h(px(STATUSBAR_H))
+            .px(px(10.))
+            .flex_none()
             .border_t(px(1.))
-            .border_color(rgba(SHEEN)) // box-shadow 0 1px 0 sheen inset → 顶部高光线
-            // mockup .status bg:linear-gradient(180, transparent → black .2)
-            .bg(linear_gradient(
-                180.,
-                linear_color_stop(rgba(0xffffff05), 0.),
-                linear_color_stop(rgba(0x00000036), 1.), // black @ .21
-            ))
-            .text_size(px(11.))
-            .font_weight(gpui::FontWeight(510.)) // §16 .status weight 510
-            .text_color(col(ui.muted));
+            .border_color(rgba(H0))
+            .bg(col(ui.chrome_bg)) // L0:状态栏坐在底盘上
+            .font_family(mono) // 仪表读数全等宽(SHEET 01)
+            .text_size(px(10.))
+            .text_color(rgb(T2));
 
         // branch
-        bar = bar.child(seg(vec![
-            icon("branch", 13., ui.accent).into_any_element(),
+        bar = bar.child(
             div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .h_full()
+                .hover(|s| s.bg(col(ui.surface_1)).text_color(rgb(T1)))
+                .child(dot(true))
                 .child(SharedString::from(
                     self.branch.clone().unwrap_or_else(|| "—".into()),
-                ))
-                .into_any_element(),
-        ]));
+                )),
+        );
         // sessions (tab count)
-        bar = bar.child(sep()).child(seg(vec![
-            num(self.tabs.len().to_string()),
-            div().child("sessions").into_any_element(),
-        ]));
-        // per-agent context readouts (one segment per distinct agent present)
+        bar = bar.child(seg(vec![div()
+            .child(SharedString::from(format!(
+                "{} SESSION{}",
+                self.tabs.len(),
+                if self.tabs.len() == 1 { "" } else { "S" }
+            )))
+            .into_any_element()]));
+        // per-agent context readouts(活值 = 磷光,SHEET 02)
         for (id, p) in &agent_pcts {
-            let accent = self.agent_color(Some(id), cx);
-            bar = bar.child(sep()).child(seg(vec![
-                icon("spark", 12., accent).into_any_element(),
-                div().child("ctx").into_any_element(),
-                num(format!("{p}%")),
-            ]));
+            bar = bar.child(seg(vec![div()
+                .text_color(rgb(PH))
+                .child(SharedString::from(format!(
+                    "{} CTX {p}%",
+                    id.as_str().to_ascii_uppercase()
+                )))
+                .into_any_element()]));
         }
 
         bar = bar.child(div().flex_1());
 
-        // right cluster: quick look file·lang, encoding, theme
+        // right cluster: quick look file·lang, encoding, theme, pet
         if let Some((name, lang)) = self.quick_look.read(cx).status() {
             bar = bar.child(seg(vec![div()
-                .text_color(col(ui.foreground))
+                .text_color(rgb(T1))
                 .child(SharedString::from(format!("{name} · {lang}")))
                 .into_any_element()]));
-            bar = bar.child(sep());
         }
-        bar = bar.child(seg(vec![div().child("UTF-8").into_any_element()]));
-        bar = bar.child(sep());
+        bar = bar.child(seg(vec![div().child("UTF-8 · LF").into_any_element()]));
         bar = bar.child(seg(vec![div()
-            .text_color(col(ui.accent))
-            .child(SharedString::from(t.name.clone()))
+            .child(SharedString::from(t.name.to_ascii_uppercase()))
             .into_any_element()]));
+        // 宠物法定席位:WESTIE · IDLE(点击 = 显隐开关;SHEET 05 板 A)
+        if let Some(pet_seg) = self.pet.read(cx).status_segment() {
+            bar = bar.child(
+                div()
+                    .id("pet-seg")
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(10.))
+                    .h_full()
+                    .border_l(px(1.))
+                    .border_color(rgba(H0))
+                    .hover(|s| s.bg(col(ui.surface_1)).text_color(rgb(T1)))
+                    .child(dot(pet_seg.live))
+                    .child(SharedString::from(pet_seg.label))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| {
+                            this.pet.update(cx, |p, cx| p.toggle_visible(cx));
+                        }),
+                    ),
+            );
+        }
         bar
     }
 
@@ -2489,40 +2507,49 @@ impl Workspace {
         }
         let ui = &self.config.theme.ui;
         let mono = SharedString::from(self.config.font().family.clone());
-        let danger_hover = cola(self.config.theme.ansi.red, 0.16);
 
-        // One `.mi` row: icon + label + optional keycap, with a click handler that
-        // closes the menu then runs `act`. `danger` = red hover (退出).
+        // SHEET 01 板 B `.mi`:行高 30 · px 10 · gap 10 · r4 · sans 12 · t1;
+        // hover = L4 + t0(不透明抬升,无 alpha hover)。danger(退出)= err。
         let mi = |icon_name: &'static str,
                   label: &'static str,
                   key: Option<&'static str>,
                   danger: bool,
                   act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
-            let hover_bg = if danger { danger_hover } else { rgba(HOVER) };
-            let fg = if danger {
-                col(self.config.theme.ansi.red)
-            } else {
-                gpui::rgb(0xA6AFD4)
-            }; // .mi = fg-dim
+            let crest = col(ui.palette_selected); // L4
+            let fg = if danger { rgb(crate::style::ERR) } else { rgb(T1) };
             div()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(10.)) // §16 .mi gap 10
-                .h(px(32.)) // §16 .mi height 32
-                .px(px(10.)) // §16 .mi padding 0 10
-                .rounded(px(8.)) // §16 .mi radius 8
-                .text_size(px(12.5))
+                .gap(px(10.))
+                .h(px(30.))
+                .px(px(10.))
+                .rounded(px(R_CARD))
+                .text_size(px(12.))
                 .text_color(fg)
-                .hover(move |s| s.bg(hover_bg))
-                .child(icon(icon_name, 15., ui.muted)) // §16 .mi .i 15 · muted
+                .hover(move |s| s.bg(crest).text_color(rgb(T0)))
+                .child(icon(
+                    icon_name,
+                    14.,
+                    if danger {
+                        tn_config::Color::new(0xE8, 0x70, 0x7E)
+                    } else {
+                        tn_config::Color::new(0x3E, 0x48, 0x60) // t3 结构字符
+                    },
+                ))
                 .child(div().child(label))
                 .when_some(key, |d, k| {
                     d.child(div().flex_1()).child(
                         div()
                             .font_family(mono.clone())
                             .text_size(px(10.))
-                            .text_color(gpui::rgb(0x474E72)) // .mi .k = faint
+                            .text_color(rgb(T2))
+                            .px(px(6.))
+                            .py(px(1.))
+                            .rounded(px(R_CHIP))
+                            .bg(col(ui.surface_2)) // .kbd:L2 + h1 边
+                            .border_1()
+                            .border_color(rgba(H1))
                             .child(k),
                     )
                 })
@@ -2536,24 +2563,20 @@ impl Workspace {
                     }),
                 )
         };
-        let sep = || div().h(px(1.)).mx(px(8.)).my(px(5.)).bg(rgba(0xffffff0f)); // §16 .sep 白 .06
+        let sep = || div().h(px(1.)).mx(px(8.)).my(px(5.)).bg(rgba(H1)); // .msep
 
-        // mockup .appmenu: 248px, r-card, g1-ish opaque glass, rim border, deep shadow.
+        // `.float.menu`:L3 浮板 + h2 边 + 浮层投影(全系统唯一投影,契约 4)。
         let popup = shadowed(
             div()
                 .absolute()
-                .left(px(12.)) // mockup .appmenu left 12
-                .top(px(46.)) // just below the 46px titlebar (mockup top 44)
-                .w(px(248.)) // §16 .appmenu width 248
-                .p(px(6.)) // §16 .appmenu padding 6
-                .rounded(px(R_CARD))
+                .left(px(10.))
+                .top(px(TITLEBAR_H + 4.))
+                .w(px(248.))
+                .p(px(5.))
+                .rounded(px(R_PANEL))
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(cola(ui.palette_bg, 0.97), 0.),
-                    linear_color_stop(rgba(0x161826f7), 1.),
-                )) // mockup .appmenu deep glass
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|_this, _e, _w, cx| cx.stop_propagation()),
@@ -2651,7 +2674,7 @@ impl Workspace {
                     true,
                     Box::new(|this, _w, cx| this.request_quit(cx)),
                 )),
-            app_menu_shadows(), // mockup .appmenu shadow
+            shadow_float(),
         );
 
         // Full-window click-away scrim (transparent): a click outside closes it.
@@ -2894,7 +2917,8 @@ impl Workspace {
         let target = picker.source_label();
         let current = picker.current.as_str().to_string();
 
-        const ROW_H: f32 = 34.0;
+        const ROW_H: f32 = 36.0; // SHEET 06 `.prow` 高 36
+        let crest = ui.palette_selected; // L4:hover / 选中抬升
         let mut list = div().flex().flex_col().gap(px(2.)).p(px(6.));
         // Clickable「上级目录」row — the only mouse path *up* the tree (dir rows
         // only go deeper). Without it you can't get from /root to /usr or /mnt
@@ -2902,6 +2926,7 @@ impl Workspace {
         // Kept fixed above the scroll list so it's always reachable.
         if let Some(parent) = picker.current.parent() {
             let parent_path = parent.clone();
+            let crest_bg = col(crest);
             list = list.child(
                 div()
                     .flex()
@@ -2910,8 +2935,8 @@ impl Workspace {
                     .h(px(ROW_H))
                     .gap(px(9.))
                     .px(px(11.))
-                    .rounded(px(9.))
-                    .hover(|s| s.bg(rgba(INSET)))
+                    .rounded(px(R_CHIP))
+                    .hover(move |s| s.bg(crest_bg))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _e, _w, cx| {
@@ -2967,10 +2992,12 @@ impl Workspace {
             // auto-sizing to scroll past it. `'static` closure → capture a weak handle.
             let dirs_rc: std::rc::Rc<Vec<PickerEntry>> = std::rc::Rc::new(dirs.clone());
             let entity = cx.entity().downgrade();
-            let accent = ui.accent;
+            // 目录 = info 蓝(SHEET 02 树语法)
+            let info = tn_config::Color::new((INFO >> 16) as u8, (INFO >> 8) as u8, INFO as u8);
             let fg = ui.foreground;
             let count = dirs_rc.len();
             let list_h = (count as f32 * ROW_H).clamp(ROW_H, 320.0);
+            let crest_bg = col(crest);
             list = list.child(
                 div().h(px(list_h)).flex().flex_col().min_h(px(0.)).child(
                     uniform_list("remote-dir-list", count, move |range, _w, _cx| {
@@ -2988,9 +3015,21 @@ impl Workspace {
                                     .h(px(ROW_H))
                                     .gap(px(9.))
                                     .px(px(11.))
-                                    .rounded(px(9.))
-                                    .when(is_sel, |d| d.bg(rgba(HOVER)))
-                                    .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                                    .rounded(px(R_CHIP))
+                                    .relative()
+                                    // 选中 = L4 + 左 2px 磷光脊(浮层家族统一语法)
+                                    .when(is_sel, |d| {
+                                        d.bg(crest_bg).child(
+                                            div()
+                                                .absolute()
+                                                .left(px(0.))
+                                                .top(px(6.))
+                                                .bottom(px(6.))
+                                                .w(px(2.))
+                                                .bg(rgb(PH)),
+                                        )
+                                    })
+                                    .when(!is_sel, |d| d.hover(move |s| s.bg(crest_bg)))
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         move |_e: &MouseDownEvent, _w, app| {
@@ -3007,13 +3046,13 @@ impl Workspace {
                                             app.stop_propagation();
                                         },
                                     )
-                                    .child(icon("folder", 14., accent))
+                                    .child(icon("folder", 14., info))
                                     .child(
                                         div()
                                             .flex_1()
                                             .overflow_hidden()
                                             .text_ellipsis()
-                                            .text_size(px(12.5))
+                                            .text_size(px(12.))
                                             .text_color(col(fg))
                                             .child(SharedString::from(name)),
                                     )
@@ -3027,6 +3066,8 @@ impl Workspace {
             );
         }
 
+        let mono = SharedString::from(self.config.font().family.clone());
+        // 浮层家族:L3 面 + h2 边 + r6 + float 投影;head = L4 / foot = kbd 提示。
         let panel = shadowed(
             div()
                 .flex()
@@ -3035,91 +3076,71 @@ impl Workspace {
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
-                    linear_color_stop(rgba(0x161826eb), 1.),
-                ))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .child(
+                    // float-head:高 38 · L4 · 底 1px h1 · mono 12
                     div()
                         .flex()
-                        .flex_col()
-                        .gap(px(5.))
-                        .px(px(16.))
-                        .py(px(13.))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(38.))
+                        .px(px(14.))
+                        .flex_none()
+                        .bg(col(ui.palette_selected))
+                        .border_b(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .text_color(rgb(T1))
+                        .child(icon("folder", 14., ui.accent_alt))
+                        .child(div().text_color(rgb(T0)).child("选择远端目录"))
+                        .child(div().flex_1())
                         .child(
                             div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.))
-                                .text_size(px(13.))
-                                .text_color(col(ui.foreground))
-                                .child(icon("folder", 15., ui.accent))
-                                .child("选择远端目录"),
-                        )
-                        .child(
-                            div()
-                                .font_family(SharedString::from(self.config.font().family.clone()))
-                                .text_size(px(11.))
-                                .text_color(col(ui.muted))
+                                .text_size(px(10.))
+                                .text_color(rgb(T2))
+                                .overflow_hidden()
+                                .text_ellipsis()
                                 .child(SharedString::from(format!("{target}:{current}"))),
                         ),
                 )
-                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
                 .child(list)
-                .child(div().h(px(1.)).bg(rgba(0xffffff0f)))
                 .child(
+                    // float-foot:kbd 提示 + 操作按钮(高 46 动作脚,SHEET 06)
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
+                        .h(px(46.))
                         .px(px(14.))
-                        .py(px(11.))
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(col(ui.muted))
-                                .child("Enter 进入 · Backspace 上级 · Ctrl+Enter 确认"),
-                        )
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
+                        .child(crate::style::kbd("↵", mono.clone()))
+                        .child(div().child("进入"))
+                        .child(crate::style::kbd("⌫", mono.clone()))
+                        .child(div().child("上级"))
                         .child(div().flex_1())
-                        .child(
-                            div()
-                                .px(px(10.))
-                                .py(px(5.))
-                                .rounded(px(7.))
-                                .text_size(px(11.))
-                                .text_color(col(ui.muted))
-                                .hover(|s| s.bg(rgba(INSET)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e, w, cx| {
-                                        this.cancel_remote_dir_picker(w, cx);
-                                    }),
-                                )
-                                .child("取消"),
-                        )
-                        .child(
-                            div()
-                                .px(px(10.))
-                                .py(px(5.))
-                                .rounded(px(7.))
-                                .text_size(px(11.))
-                                .text_color(col(ui.accent))
-                                .bg(cola(ui.accent, 0.12))
-                                .hover(|s| s.bg(cola(ui.accent, 0.18)))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e, _w, cx| {
-                                        this.confirm_remote_dir_picker(cx);
-                                    }),
-                                )
-                                .child("确认"),
-                        ),
+                        .child(crate::style::btn("取消").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, w, cx| {
+                                this.cancel_remote_dir_picker(w, cx);
+                            }),
+                        ))
+                        .child(crate::style::btn_primary("确认 (Ctrl+↵)").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, _e, _w, cx| {
+                                this.confirm_remote_dir_picker(cx);
+                            }),
+                        )),
                 ),
-            overlay_panel_shadows(),
+            shadow_float(),
         );
 
         Some(
@@ -3129,7 +3150,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .items_center()
-                .bg(rgba(0x0a0b118c))
+                .bg(rgba(SCRIM)) // 纯色压暗 scrim,无模糊(契约 7)
                 .track_focus(&self.remote_dir_focus)
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_remote_dir_key(ev, w, cx)),
@@ -3408,6 +3429,7 @@ impl Workspace {
 
         // ── live-parse chips: cheap user@host:port split (no IO) for the input row ──
         let chips = parse_ssh_target_chips(&typed);
+        // `.chip`:1px h1 · r3 · mono 10(磷光芯片,无胶囊)
         let chip = |label: &str, val: String| {
             div()
                 .flex()
@@ -3416,17 +3438,18 @@ impl Workspace {
                 .gap(px(4.))
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(999.))
-                .bg(rgba(HOVER))
+                .rounded(px(R_CHIP))
+                .border_1()
+                .border_color(rgba(H1))
+                .font_family(mono.clone())
                 .text_size(px(10.))
                 .child(
                     div()
-                        .text_color(col(ui.muted))
+                        .text_color(rgb(T2))
                         .child(SharedString::from(label.to_string())),
                 )
                 .child(
                     div()
-                        .font_family(mono.clone())
                         .text_color(col(ui.accent))
                         .child(SharedString::from(val)),
                 )
@@ -3454,8 +3477,10 @@ impl Workspace {
                 .gap(px(5.))
                 .px(px(8.))
                 .py(px(2.))
-                .rounded(px(999.))
-                .bg(cola(red, 0.12))
+                .rounded(px(R_CHIP))
+                .border_1()
+                .border_color(cola(red, 0.3))
+                .bg(rgba(ERR_SOFT))
                 .text_size(px(10.))
                 .child(icon("alert", 11., red))
                 .child(div().text_color(col(red)).child(SharedString::from(msg)))
@@ -3585,8 +3610,10 @@ impl Workspace {
                     .p(px(6.))
                     .max_h(px(360.))
                     .overflow_hidden();
+                let crest = col(ui.palette_selected); // L4
                 for (i, row_data) in rows.iter().enumerate() {
                     let is_sel = i == sel;
+                    // `.prow`:r3,选中 = L4 + 左 2px 磷光脊;hover = L4(SHEET 06)
                     let base = || {
                         div()
                             .flex()
@@ -3595,9 +3622,20 @@ impl Workspace {
                             .gap(px(11.))
                             .px(px(11.))
                             .py(px(9.))
-                            .rounded(px(9.))
-                            .when(is_sel, |d| d.bg(rgba(HOVER)))
-                            .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                            .rounded(px(R_CHIP))
+                            .relative()
+                            .when(is_sel, |d| {
+                                d.bg(crest).child(
+                                    div()
+                                        .absolute()
+                                        .left(px(0.))
+                                        .top(px(6.))
+                                        .bottom(px(6.))
+                                        .w(px(2.))
+                                        .bg(rgb(PH)),
+                                )
+                            })
+                            .when(!is_sel, |d| d.hover(move |s| s.bg(crest)))
                     };
                     let row = match row_data {
                         SshConnRow::Recent {
@@ -3764,7 +3802,7 @@ impl Workspace {
                                     div()
                                         .min_w(px(46.))
                                         .text_size(px(10.5))
-                                        .text_color(gpui::rgb(0x474E72))
+                                        .text_color(rgb(T3))
                                         .child(SharedString::from(when)),
                                 )
                         }
@@ -3817,12 +3855,14 @@ impl Workspace {
                                         .items_center()
                                         .px(px(8.))
                                         .py(px(2.))
-                                        .rounded(px(999.))
-                                        .bg(rgba(HOVER))
+                                        .rounded(px(R_CHIP))
+                                        .border_1()
+                                        .border_color(rgba(H1))
                                         .child(
                                             div()
+                                                .font_family(mono.clone())
                                                 .text_size(px(10.))
-                                                .text_color(col(ui.muted))
+                                                .text_color(rgb(T2))
                                                 .child(SharedString::from("ssh-config")),
                                         ),
                                 )
@@ -3836,7 +3876,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .child(input)
-                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
+                .child(div().h(px(1.)).bg(rgba(H1)))
                 .child(list)
         };
 
@@ -3863,24 +3903,24 @@ impl Workspace {
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
-                    linear_color_stop(rgba(0x161826eb), 1.),
-                ))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板(契约 1)
                 .child(panel_body)
-                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
                 .child(
+                    // float-foot:高 30 · 顶 1px h1 · mono 10 t2
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(8.))
+                        .h(px(30.))
                         .px(px(14.))
-                        .py(px(9.))
-                        .text_size(px(11.))
-                        .text_color(col(ui.muted))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
                         .child(SharedString::from(footer_text)),
                 )
                 .when(rename_ime_active, |d| {
@@ -3899,7 +3939,7 @@ impl Workspace {
                         .size_full(),
                     )
                 }),
-            overlay_panel_shadows(),
+            shadow_float(),
         );
 
         let pl = if self.explorer_open {
@@ -3918,7 +3958,7 @@ impl Workspace {
                 .justify_center()
                 .pl(px(pl))
                 .pr(px(12.))
-                .bg(rgba(0x0a0b118c))
+                .bg(rgba(SCRIM))
                 .track_focus(&self.ssh_prompt_focus)
                 .on_key_down(cx.listener(Self::on_ssh_prompt_key))
                 .on_mouse_down(
@@ -3966,10 +4006,11 @@ impl Workspace {
         } else {
             "启动会话 / 搜索…"
         };
+        let crest = col(ui.palette_selected); // L4
         let lead = if self.palette_wsl {
             div()
-                .rounded(px(6.))
-                .hover(|s| s.bg(rgba(INSET)))
+                .rounded(px(R_CHIP))
+                .hover(move |s| s.bg(crest))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _e, _w, cx| {
@@ -3981,20 +4022,28 @@ impl Workspace {
                 )
                 .child(icon("chev-l", 16., ui.muted))
         } else {
-            div().child(icon("term", 16., ui.muted)) // .pinput .i 16 muted
+            // `.pin` 前缀:磷光 prompt 字形 ❯(SHEET 06)
+            div()
+                .font_family(mono.clone())
+                .text_color(rgb(PH))
+                .child(SharedString::from("❯"))
         };
+        // `.pin`:高 44 · px 16 · mono 14 · 磷光块光标
         let input = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(10.)) // mockup .pinput gap 10
-            .px(px(16.)) // mockup .pinput padding 13px 16px
-            .py(px(13.))
-            .text_size(px(14.)) // mockup .pinput font-size 14
+            .gap(px(10.))
+            .h(px(44.))
+            .px(px(16.))
+            .flex_none()
+            .font_family(mono.clone())
+            .text_size(px(14.))
+            .border_b(px(1.))
+            .border_color(rgba(H1))
             .child(lead)
             .child(
-                // query + caret (AT the insertion point) + placeholder-when-empty, so the
-                // caret sits where text goes (start when empty), not floating after the hint.
+                // query + block cursor (AT the insertion point) + placeholder-when-empty.
                 div()
                     .flex()
                     .flex_row()
@@ -4002,23 +4051,33 @@ impl Workspace {
                     .when(!self.palette_query.is_empty(), |d| {
                         d.child(
                             div()
-                                .text_color(col(ui.foreground))
+                                .text_color(rgb(T0))
                                 .child(SharedString::from(self.palette_query.clone())),
                         )
                     })
                     .child(
-                        div()
-                            .text_color(col(ui.muted))
-                            .child(SharedString::from("▏")),
-                    ) // caret
+                        // 磷光块光标(`.cur`):浮层输入行的「活物」
+                        div().w(px(7.)).h(px(16.)).bg(rgb(PH)).rounded(px(1.)),
+                    )
                     .when(self.palette_query.is_empty(), |d| {
                         d.child(
                             div()
-                                .ml(px(2.))
-                                .text_color(col(ui.muted))
+                                .ml(px(6.))
+                                .text_color(rgb(T2))
                                 .child(SharedString::from(placeholder)),
                         )
                     }),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(rgb(T2))
+                    .child(SharedString::from(if self.palette_wsl {
+                        "WSL"
+                    } else {
+                        "PROFILES"
+                    })),
             );
 
         let reg = crate::agent_host::agent_registry(cx);
@@ -4033,16 +4092,27 @@ impl Workspace {
                     .unwrap_or_default(),
                 _ => card.sub.clone(),
             };
+            // `.prow`:高 36 · px 14 · sans 12;选中 = L4 + 左 2px 磷光脊
             div()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(10.)) // mockup .prow gap 10
-                .px(px(12.)) // mockup .prow padding 9px 12px
-                .py(px(9.))
-                .rounded(px(9.)) // mockup .prow radius 9
-                .when(is_sel, |d| d.bg(rgba(HOVER))) // .prow.sel bg --g3
-                .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                .gap(px(10.))
+                .h(px(36.))
+                .px(px(14.))
+                .relative()
+                .when(is_sel, |d| {
+                    d.bg(crest).child(
+                        div()
+                            .absolute()
+                            .left(px(0.))
+                            .top(px(6.))
+                            .bottom(px(6.))
+                            .w(px(2.))
+                            .bg(rgb(PH)),
+                    )
+                })
+                .when(!is_sel, |d| d.hover(move |s| s.bg(crest)))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _e, w, cx| {
@@ -4050,60 +4120,93 @@ impl Workspace {
                         this.activate_palette_sel(w, cx);
                     }),
                 )
+                // `.gi` 身份字形位:会话所有者身份色点
+                .child(
+                    div().w(px(16.)).flex().justify_center().flex_none().child(
+                        div()
+                            .w(px(7.))
+                            .h(px(7.))
+                            .rounded(px(1.))
+                            .bg(col(card.accent)),
+                    ),
+                )
                 .child(
                     div()
-                        .w(px(7.))
-                        .h(px(7.))
-                        .rounded_full()
-                        .bg(col(card.accent)),
-                ) // .dot 7px
-                .child(
-                    div()
-                        .text_size(px(13.)) // mockup .prow font-size 13
-                        // .prow color = fg-dim(#A6AFD4, 无 token) → 选中 fg
-                        .text_color(if is_sel {
-                            col(ui.foreground)
-                        } else {
-                            gpui::rgb(0xA6AFD4)
-                        })
+                        .text_size(px(12.))
+                        .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
                         .child(SharedString::from(card.name)),
                 )
                 .child(div().flex_1())
+                // `.src` 来源 tag:mono 10 · t3
                 .child(
                     div()
-                        .font_family(mono.clone()) // mockup .meta font mono
-                        .text_size(px(11.)) // .meta 11
-                        .text_color(gpui::rgb(0x474E72)) // .meta faint(无 token)
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(T3))
                         .child(SharedString::from(meta)),
                 )
         });
 
+        let n_rows = rows.len();
+        // SHEET 06 `.palette`:640px 浮层(L3 + h2 + r6 + float 投影)
         let panel = shadowed(
             div()
                 .flex()
                 .flex_col()
-                .w(px(560.)) // mockup .palette width 560
-                .rounded(px(R_PANEL)) // mockup .palette radius --r-pane
+                .w(px(640.))
+                .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM)) // mockup .palette border 1px --rim
-                // mockup .palette bg:两停冷调渐变 #1F2335@.92 → #161826@.92(底停无 token)
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
-                    linear_color_stop(rgba(0x161826eb), 1.),
-                ))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .child(input)
-                .child(div().h(px(1.)).bg(rgba(0xffffff0f))) // .pinput border-bottom 白 .06
+                .child(div().flex().flex_col().py(px(6.)).children(row_divs))
                 .child(
+                    // float-foot:kbd 提示 + 项数 tag
                     div()
                         .flex()
-                        .flex_col()
-                        .p(px(6.))
-                        .gap(px(2.))
-                        .children(row_divs),
-                ), // .plist padding 6
-            overlay_panel_shadows(), // mockup .palette box-shadow
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .h(px(30.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.))
+                                .child(crate::style::kbd("↑↓", mono.clone()))
+                                .child(div().child("选择")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.))
+                                .child(crate::style::kbd("↵", mono.clone()))
+                                .child(div().child("新标签启动")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(5.))
+                                .child(crate::style::kbd("Esc", mono.clone()))
+                                .child(div().child("关闭")),
+                        )
+                        .child(div().flex_1())
+                        .child(div().child(SharedString::from(format!("{n_rows} 项")))),
+                ),
+            shadow_float(),
         );
 
         Some(
@@ -4113,7 +4216,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .items_center()
-                .bg(rgba(0x0a0b118c)) // mockup .scrim rgba(10,11,17,.55)(无 token)
+                .bg(rgba(SCRIM)) // 纯色压暗 scrim,无模糊(契约 7)
                 .track_focus(&self.palette_focus)
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_palette_key(ev, w, cx)),
@@ -4258,9 +4361,11 @@ impl Workspace {
         let t = &self.config.theme;
         let ui = &t.ui;
 
+        let crest = col(ui.palette_selected); // L4
         let body = match self.split_dir {
             // ── phase 1: pick the split direction (click a tile / press an arrow) ──
             None => {
+                // SHEET 06 `.dir`:方向格 L2 + 1px h1 + r4;hover/on = ph-soft + ph 边
                 let dir_tile = |d: SplitDir| {
                     let (arrow, label) = d.label();
                     div()
@@ -4272,10 +4377,13 @@ impl Workspace {
                         .justify_center()
                         .gap(px(2.))
                         .rounded(px(R_CARD))
-                        .bg(rgba(INSET))
+                        .bg(col(ui.surface_2))
                         .border_1()
-                        .border_color(rgba(RIM))
-                        .hover(|s| s.bg(rgba(HOVER)).border_color(cola(ui.accent, 0.5)))
+                        .border_color(rgba(H1))
+                        .hover(|s| {
+                            s.bg(rgba(crate::style::PH_SOFT))
+                                .border_color(rgba(PH_DIM))
+                        })
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _e, _w, cx| {
@@ -4286,16 +4394,11 @@ impl Workspace {
                         )
                         .child(
                             div()
-                                .text_size(px(18.))
-                                .text_color(col(ui.accent))
+                                .text_size(px(16.))
+                                .text_color(rgb(T2))
                                 .child(arrow),
                         )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(col(ui.muted))
-                                .child(label),
-                        )
+                        .child(div().text_size(px(10.)).text_color(rgb(T2)).child(label))
                 };
                 let center = div()
                     .w(px(74.))
@@ -4304,14 +4407,14 @@ impl Workspace {
                     .items_center()
                     .justify_center()
                     .rounded(px(R_CARD))
-                    .bg(cola(ui.accent, 0.10))
+                    .bg(rgba(crate::style::PH_SOFT))
                     .border_1()
-                    .border_color(cola(ui.accent, 0.3))
+                    .border_color(rgba(PH_DIM))
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(col(ui.muted))
-                            .child("当前"),
+                            .text_size(px(10.))
+                            .text_color(rgb(PH))
+                            .child("当前 PANE"),
                     );
                 let spacer = || div().w(px(74.));
                 div()
@@ -4356,16 +4459,27 @@ impl Workspace {
                 let row_divs = rows.iter().enumerate().map(|(i, row)| {
                     let is_sel = i == sel;
                     let card = row_card(t, &self.launch_profiles, row, &reg);
+                    // `.prow`:选中 = L4 + 左 2px 磷光脊(浮层家族统一语法)
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap_2()
-                        .px_3()
-                        .py_1()
-                        .rounded(px(R_CARD))
-                        .when(is_sel, |d| d.bg(rgba(HOVER)))
-                        .when(!is_sel, |d| d.hover(|s| s.bg(rgba(INSET))))
+                        .gap(px(10.))
+                        .h(px(36.))
+                        .px(px(14.))
+                        .relative()
+                        .when(is_sel, |d| {
+                            d.bg(crest).child(
+                                div()
+                                    .absolute()
+                                    .left(px(0.))
+                                    .top(px(6.))
+                                    .bottom(px(6.))
+                                    .w(px(2.))
+                                    .bg(rgb(PH)),
+                            )
+                        })
+                        .when(!is_sel, |d| d.hover(move |s| s.bg(crest)))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _e, w, cx| {
@@ -4374,20 +4488,22 @@ impl Workspace {
                             }),
                         )
                         .child(
-                            div()
-                                .w(px(7.))
-                                .h(px(7.))
-                                .rounded_full()
-                                .bg(col(card.accent)),
+                            div().w(px(16.)).flex().justify_center().flex_none().child(
+                                div()
+                                    .w(px(7.))
+                                    .h(px(7.))
+                                    .rounded(px(1.))
+                                    .bg(col(card.accent)),
+                            ),
                         )
                         .child(
                             div()
-                                .text_size(px(12.5))
-                                .text_color(col(ui.foreground))
+                                .text_size(px(12.))
+                                .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
                                 .child(SharedString::from(card.name)),
                         )
                 });
-                div().flex().flex_col().p_1().gap_1().children(row_divs)
+                div().flex().flex_col().py(px(6.)).children(row_divs)
             }
         };
 
@@ -4420,40 +4536,60 @@ impl Workspace {
             }
         };
 
+        let mono = SharedString::from(self.config.font().family.clone());
+        // SHEET 06 板 B:浮层家族 — float-head(L4)+ body + float-foot(kbd 提示)
         let panel = shadowed(
             div()
                 .flex()
                 .flex_col()
-                .w(px(360.))
-                .rounded(px(R_WINDOW))
+                .w(px(420.))
+                .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(cola(ui.palette_bg, 0.86))
-                .child(div().h(px(1.)).bg(rgba(SHEEN)))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .child(
                     div()
-                        .px_3()
-                        .py_2()
                         .flex()
-                        .flex_col()
-                        .gap(px(1.))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(38.))
+                        .px(px(14.))
+                        .flex_none()
+                        .bg(col(ui.palette_selected)) // L4
+                        .border_b(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .child(div().text_color(rgb(PH)).child("◫"))
+                        .child(div().text_color(rgb(T0)).child(SharedString::from(title)))
+                        .child(div().flex_1())
                         .child(
                             div()
-                                .text_size(px(13.))
-                                .text_color(col(ui.foreground))
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(col(ui.muted))
-                                .child(hint),
+                                .text_size(px(10.))
+                                .text_color(rgb(T2))
+                                .child("当前 PANE"),
                         ),
                 )
-                .child(div().h(px(1.)).bg(rgba(RIM)))
-                .child(div().p_2().child(body)),
-            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)],
+                .child(div().p(px(10.)).child(body))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.))
+                        .h(px(30.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
+                        .child(SharedString::from(hint)),
+                ),
+            shadow_float(),
         );
 
         Some(
@@ -4463,7 +4599,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .items_center()
-                .bg(rgba(0x0a0b11cc))
+                .bg(rgba(SCRIM))
                 .track_focus(&self.split_focus)
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_split_key(ev, w, cx)),
@@ -4582,24 +4718,27 @@ impl Workspace {
         let ui = &self.config.theme.ui;
         let can_save = self.tab_to_layout().is_some(); // active tab has real panes
 
-        // A small pill button (label + click action). `accent` = filled/primary look.
+        // 小按钮(`.btn` 缩水版):L2 + h1 边 + r3;primary = ph-soft + ph。
+        let crest = col(ui.palette_selected); // L4
         let pill =
             |label: &'static str,
              accent: bool,
              act: Box<dyn Fn(&mut Self, &mut Window, &mut Context<Self>)>| {
-                let (fg, bg) = if accent {
-                    (col(ui.accent), cola(ui.accent, 0.14))
+                let (fg, bg, bc) = if accent {
+                    (rgb(PH), rgba(crate::style::PH_SOFT), rgba(PH_DIM))
                 } else {
-                    (gpui::rgb(0xA6AFD4), rgba(INSET))
+                    (rgb(T1), col(ui.surface_2).into(), rgba(H1))
                 };
                 div()
                     .px(px(9.))
                     .py(px(3.))
-                    .rounded(px(7.))
+                    .rounded(px(R_CHIP))
+                    .border_1()
+                    .border_color(bc)
                     .text_size(px(11.))
                     .text_color(fg)
                     .bg(bg)
-                    .hover(|s| s.bg(rgba(HOVER)))
+                    .hover(move |s| s.bg(crest))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _e, w, cx| act(this, w, cx)),
@@ -4620,13 +4759,13 @@ impl Workspace {
                 .gap(px(8.))
                 .h(px(34.))
                 .px(px(10.))
-                .rounded(px(8.))
-                .hover(|s| s.bg(rgba(INSET)))
+                .rounded(px(R_CHIP))
+                .hover(move |s| s.bg(crest))
                 .child(
                     div()
                         .w(px(40.))
-                        .text_size(px(12.5))
-                        .text_color(col(ui.foreground))
+                        .text_size(px(12.))
+                        .text_color(rgb(T0))
                         .child(SharedString::from(format!("槽 {}", i + 1))),
                 )
                 .child(
@@ -4663,40 +4802,53 @@ impl Workspace {
         } else {
             "当前标签无窗格可保存(欢迎页)· 加载=按布局替换当前标签 · Esc 关闭"
         };
+        let mono = SharedString::from(self.config.font().family.clone());
         let panel = shadowed(
             div()
                 .flex()
                 .flex_col()
-                .w(px(380.))
-                .rounded(px(R_WINDOW))
+                .w(px(420.))
+                .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(cola(ui.palette_bg, 0.86))
-                .child(div().h(px(1.)).bg(rgba(SHEEN)))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .child(
+                    // float-head:L4 · 高 38 · 底 1px h1
                     div()
-                        .px_3()
-                        .py_2()
                         .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .child(
-                            div()
-                                .text_size(px(13.))
-                                .text_color(col(ui.foreground))
-                                .child("布局"),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(10.5))
-                                .text_color(col(ui.muted))
-                                .child(hint),
-                        ),
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.))
+                        .h(px(38.))
+                        .px(px(14.))
+                        .flex_none()
+                        .bg(col(ui.palette_selected))
+                        .border_b(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono.clone())
+                        .text_size(px(12.))
+                        .child(div().text_color(rgb(PH)).child("▤"))
+                        .child(div().text_color(rgb(T0)).child("布局 · 7 槽位")),
                 )
-                .child(div().h(px(1.)).bg(rgba(RIM)))
-                .child(div().p_1().flex().flex_col().gap(px(1.)).children(rows)),
-            vec![soft_shadow(24.0, 64.0, -36.0, 0.6)],
+                .child(div().p(px(6.)).flex().flex_col().gap(px(1.)).children(rows))
+                .child(
+                    // float-foot:提示
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(30.))
+                        .px(px(14.))
+                        .flex_none()
+                        .border_t(px(1.))
+                        .border_color(rgba(H1))
+                        .font_family(mono)
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
+                        .child(hint),
+                ),
+            shadow_float(),
         );
 
         Some(
@@ -4706,7 +4858,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .items_center()
-                .bg(rgba(0x0a0b11cc))
+                .bg(rgba(SCRIM))
                 .track_focus(&self.layout_focus)
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
                     if ev.keystroke.key == "escape" {
@@ -5146,9 +5298,9 @@ impl Workspace {
             .px(px(14.))
             .py(px(11.))
             .rounded(px(R_CARD))
-            .bg(rgba(INSET))
+            .bg(col(ui.surface_1)) // 输入井:L1(比 L3 浮板深一档,不透明)
             .border_1()
-            .border_color(if active { cola(accent, 0.5) } else { rgba(RIM) })
+            .border_color(if active { rgba(PH_DIM) } else { rgba(H1) })
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _e, w, cx| {
@@ -5374,9 +5526,13 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(if on { cola(accent, 0.9) } else { rgba(INSET) })
+                    .bg(if on {
+                        cola(accent, 0.9)
+                    } else {
+                        col(ui.surface_2).into()
+                    })
                     .border_1()
-                    .border_color(if on { cola(accent, 0.9) } else { rgba(RIM) })
+                    .border_color(if on { cola(accent, 0.9) } else { rgba(H1) })
                     .when(on, |d| d.child(icon("check", 13., ui.chrome_bg))),
             )
             .child(
@@ -5402,7 +5558,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .gap(px(7.))
-            .child(div().h(px(1.)).bg(rgba(DIVIDER)).mx(px(16.)).mt(px(4.)))
+            .child(div().h(px(1.)).bg(rgba(H1)).mx(px(16.)).mt(px(4.)))
             .child(
                 div().px(px(16.)).pt(px(3.)).child(
                     div()
@@ -5456,9 +5612,17 @@ impl Workspace {
                                 .flex()
                                 .items_center()
                                 .justify_center()
-                                .bg(if net_on { cola(accent, 0.9) } else { rgba(INSET) })
+                                .bg(if net_on {
+                                    cola(accent, 0.9)
+                                } else {
+                                    col(ui.surface_2).into()
+                                })
                                 .border_1()
-                                .border_color(if net_on { cola(accent, 0.9) } else { rgba(RIM) })
+                                .border_color(if net_on {
+                                    cola(accent, 0.9)
+                                } else {
+                                    rgba(H1)
+                                })
                                 .when(net_on, |d| d.child(icon("check", 13., ui.chrome_bg))),
                         )
                         .child(
@@ -5508,14 +5672,14 @@ impl Workspace {
                     .px(px(10.))
                     .py(px(6.))
                     .rounded(px(R_CARD))
-                    .bg(rgba(INSET))
+                    .bg(col(ui.surface_2)) // L2 卡片
                     .border_1()
                     .border_color(cola(accent, 0.3))
                     .child(
                         div()
                             .w(px(22.))
                             .h(px(22.))
-                            .rounded(px(7.))
+                            .rounded(px(5.)) // SHEET 02 `.amark` r5
                             .flex()
                             .items_center()
                             .justify_center()
@@ -5533,59 +5697,25 @@ impl Workspace {
 
         // Buttons: [spacer] (删除) 取消 保存/添加.
         let red = t.ansi.red;
-        let cancel_btn = div()
-            .px(px(14.))
-            .py(px(7.))
-            .rounded(px(R_CARD))
-            .bg(rgba(INSET))
-            .border_1()
-            .border_color(rgba(RIM))
-            .text_size(px(12.5))
-            .text_color(col(ui.foreground))
-            .hover(|s| s.bg(rgba(HOVER)))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _e, w, cx| {
-                    cx.stop_propagation();
-                    this.close_agent_form(w, cx);
-                }),
-            )
-            .child(SharedString::from("取消"));
-        let save_btn = div()
-            .px(px(16.))
-            .py(px(7.))
-            .rounded(px(R_CARD))
-            .bg(if can_save {
-                cola(accent, 0.9)
-            } else {
-                rgba(INSET)
-            })
-            .border_1()
-            .border_color(if can_save {
-                cola(accent, 0.9)
-            } else {
-                rgba(RIM)
-            })
-            .text_size(px(12.5))
-            .font_weight(gpui::FontWeight(640.))
-            .text_color(if can_save {
-                col(ui.chrome_bg)
-            } else {
-                col(ui.muted)
-            })
-            .when(can_save, |d| d.hover(|s| s.bg(col(accent))))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _e, w, cx| {
-                    cx.stop_propagation();
-                    this.save_agent_form(w, cx);
-                }),
-            )
-            .child(SharedString::from(if editing {
-                "保存"
-            } else {
-                "添加"
-            }));
+        let cancel_btn = crate::style::btn("取消").on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _e, w, cx| {
+                cx.stop_propagation();
+                this.close_agent_form(w, cx);
+            }),
+        );
+        let save_btn = if can_save {
+            crate::style::btn_primary(if editing { "保存" } else { "添加" })
+        } else {
+            crate::style::btn(if editing { "保存" } else { "添加" })
+        }
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(|this, _e, w, cx| {
+                cx.stop_propagation();
+                this.save_agent_form(w, cx);
+            }),
+        );
         let mut buttons = div()
             .flex()
             .flex_row()
@@ -5595,27 +5725,15 @@ impl Workspace {
             .pt(px(8.))
             .pb(px(14.))
             .child(div().flex_1());
+        let _ = red;
         if editing {
-            buttons = buttons.child(
-                div()
-                    .px(px(12.))
-                    .py(px(7.))
-                    .rounded(px(R_CARD))
-                    .bg(rgba(INSET))
-                    .border_1()
-                    .border_color(cola(red, 0.4))
-                    .text_size(px(12.5))
-                    .text_color(col(red))
-                    .hover(|s| s.bg(cola(red, 0.12)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _e, w, cx| {
-                            cx.stop_propagation();
-                            this.delete_current_agent(w, cx);
-                        }),
-                    )
-                    .child(SharedString::from("删除")),
-            );
+            buttons = buttons.child(crate::style::btn_danger("删除").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, w, cx| {
+                    cx.stop_propagation();
+                    this.delete_current_agent(w, cx);
+                }),
+            ));
         }
         buttons = buttons.child(cancel_btn).child(save_btn);
 
@@ -5634,19 +5752,15 @@ impl Workspace {
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
                 .border_1()
-                .border_color(rgba(RIM))
-                .bg(linear_gradient(
-                    180.,
-                    linear_color_stop(cola(ui.palette_bg, 0.92), 0.),
-                    linear_color_stop(rgba(0x161826eb), 1.),
-                ))
+                .border_color(rgba(H2))
+                .bg(col(ui.palette_bg)) // L3 不透明浮板
                 .child(header)
                 .child(fields)
                 .child(color_row)
                 .child(toggle)
                 .child(advanced)
                 .child(preview)
-                .child(div().h(px(1.)).bg(rgba(DIVIDER)))
+                .child(div().h(px(1.)).bg(rgba(H1)))
                 .child(buttons)
                 .when(name_field_active, |d| {
                     d.child(
@@ -5664,7 +5778,7 @@ impl Workspace {
                         .size_full(),
                     )
                 }),
-            overlay_panel_shadows(),
+            shadow_float(),
         );
 
         let pl = if self.explorer_open {
@@ -5683,7 +5797,7 @@ impl Workspace {
                 .justify_center()
                 .pl(px(pl))
                 .pr(px(12.))
-                .bg(rgba(0x0a0b118c))
+                .bg(rgba(SCRIM))
                 .track_focus(&self.agent_form_focus)
                 .on_key_down(cx.listener(Self::on_agent_form_key))
                 .on_mouse_down(
@@ -6060,6 +6174,12 @@ impl Render for Workspace {
         // Compare roots before re-rooting so we only rebuild when the path
         // actually changed (never every frame). Welcome tabs have no real pane,
         // so they reset the shared explorer to the default Host root.
+        // 宠物上下文同步:welcome_only 模式 + 欢迎页 2× 形态(SHEET 05/07)。
+        let on_welcome = self.tabs[active].welcome;
+        let pet_breed = self.pet.read(cx).breed_for_welcome();
+        self.pet.update(cx, |p, _| p.set_on_welcome(on_welcome));
+        self.welcome.update(cx, |w, _| w.set_pet_breed(pet_breed));
+
         if self.tabs[active].welcome {
             self.reset_explorer_for_welcome_tab(cx);
         } else {
@@ -6122,87 +6242,93 @@ impl Render for Workspace {
             })
             .collect();
 
+        // SHEET 01 `.tabs`:会话即仪表 — 顶部 2px 身份色棒(磷光=shell,紫/蓝=agent)。
+        let surface_1 = ui.surface_1; // L1:hover 抬升
+        let surface_2 = ui.surface_2; // L2:激活 tab
+        let mono_family = SharedString::from(self.config.font().family.clone());
         let tabs = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap_1()
+            .gap(px(2.))
+            .px(px(6.))
             .children(
                 tab_info
                     .into_iter()
                     .enumerate()
                     .map(|(i, (label, panes, agent_dot))| {
                         let is_active = i == active;
-                        // `agent_dot` = the agent's resolved accent (Some = agent pane).
-                        let dot = agent_dot.unwrap_or(ui.muted);
-                        // Accent bar/icon color: agent identity, or UI accent for shells.
-                        let accent_c = agent_dot.unwrap_or(ui.accent);
+                        // 身份棒颜色:agent 身份色,shell = 磷光(SHEET 01 板 C)。
+                        let bar_c = agent_dot.unwrap_or(tn_config::Color::new(0x5B, 0xE7, 0xC4));
+                        let hover_bg = col(surface_1);
                         div()
                             .relative()
                             .flex()
                             .items_center()
-                            .gap(px(7.)) // §16 .tab gap:7px(原 gap_2=8)
-                            .h(px(34.)) // §16 .tab height:34px(原 py_1 无固定高)
-                            .px(px(14.)) // §16 .tab padding:0 14px(原 px_3=12)
-                            .rounded_t(px(R_CARD)) // §16 .tab radius:11 11 0 0(仅上,原四角)
-                            .text_size(px(12.5)) // §16 .tab font-size:12.5px(原 12.0)
-                            .font_weight(gpui::FontWeight(520.)) // §16 .tab font-weight:520(原未设)
-                            // Active tab = a glass pill (inset + rim + sheen) with a thin
-                            // agent-color accent bar at the top. Inactive sits flat and
-                            // lifts a touch on hover. No glow.
+                            .gap(px(8.)) // `.tab` gap 8
+                            .h(px(30.)) // 42 − 2×6(`.tab` margin:6px 0)
+                            .px(px(14.)) // `.tab` padding 0 14
+                            .rounded(px(R_CARD)) // r4
+                            .text_size(px(12.)) // sans 12
+                            // 激活 = L2 抬升 + 1px h1 + 顶部 2px 身份棒(横向小渐变,契约 2)
                             .when(is_active, |d| {
-                                d.text_color(col(ui.foreground))
-                                    .bg(linear_gradient(
-                                        180.,
-                                        linear_color_stop(rgba(0xffffff0e), 0.),
-                                        linear_color_stop(rgba(0xffffff03), 1.),
-                                    ))
-                                    // ::after 强调色条(agent 色),left/right 13,top 0,2px
+                                d.bg(col(surface_2))
+                                    .border_1()
+                                    .border_color(rgba(H1))
+                                    .text_color(rgb(T0))
                                     .child(
                                         div()
                                             .absolute()
-                                            .top(px(0.))
-                                            .left(px(13.))
-                                            .right(px(13.))
+                                            .top(px(-1.))
+                                            .left(px(8.))
+                                            .right(px(8.))
                                             .h(px(2.))
-                                            .rounded_full()
-                                            .bg(col(accent_c)),
+                                            .rounded_b(px(2.))
+                                            .bg(linear_gradient(
+                                                90.,
+                                                linear_color_stop(cola(bar_c, 0.), 0.),
+                                                linear_color_stop(col(bar_c), 0.5),
+                                            )),
                                     )
                             })
                             .when(!is_active, |d| {
-                                d.border_1()
-                                    .border_color(rgba(0x00000000))
-                                    .text_color(col(ui.tab_inactive_fg))
-                                    .hover(|s| s.bg(rgba(INSET)))
+                                d.text_color(rgb(T2))
+                                    .hover(move |s| s.bg(hover_bg).text_color(rgb(T1)))
                             })
-                            // Type icon in agent identity color: spark for agents
-                            // agent accent, terminal glyph (accent) for
-                            // a plain shell. See docs/产品体验/窗口框架与面板映射.md tab agent accent.
-                            .child(if agent_dot.is_some() {
-                                icon("spark", 13., dot)
-                            } else {
-                                icon("term", 13., ui.accent)
-                            })
+                            // `.gl` 身份字形:agent = ✳ 身份色;shell = ❯ t3(mono 600 11)
+                            .child(
+                                div()
+                                    .font_family(mono_family.clone())
+                                    .text_size(px(11.))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(if agent_dot.is_some() {
+                                        col(bar_c)
+                                    } else {
+                                        rgb(T3)
+                                    })
+                                    .child(if agent_dot.is_some() { "✻" } else { "❯" }),
+                            )
                             .child(label)
                             .when(panes > 1, |d| {
                                 d.child(
                                     div()
+                                        .font_family(mono_family.clone())
                                         .text_size(px(10.0))
-                                        .text_color(col(ui.muted))
-                                        .child(format!("\u{2317}{panes}")),
+                                        .text_color(rgb(T3))
+                                        .child(format!("⌗{panes}")),
                                 )
                             })
                             // Close button: kills the tab's process(es). stop_propagation
                             // so it closes the tab instead of just activating it.
                             .child(
                                 div()
-                                    .ml_1()
-                                    .px_1()
-                                    .rounded_md()
+                                    .ml(px(2.))
+                                    .px(px(2.))
+                                    .rounded(px(R_CHIP))
                                     .flex()
                                     .items_center()
                                     .justify_center()
-                                    .hover(|s| s.bg(rgba(HOVER)))
+                                    .hover(move |s| s.bg(hover_bg))
                                     .child(icon("close", 12., ui.muted))
                                     .on_mouse_down(
                                         MouseButton::Left,
@@ -6221,14 +6347,15 @@ impl Render for Workspace {
                     }),
             )
             .child(
+                // `.tab-new`:26×26 · r4 · hover L1
                 div()
-                    .w(px(29.)) // §16 .newtab 29×29
-                    .h(px(29.))
+                    .w(px(26.))
+                    .h(px(26.))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(9.))
-                    .hover(|s| s.bg(rgba(INSET)))
+                    .rounded(px(R_CARD))
+                    .hover(move |s| s.bg(col(surface_1)))
                     .child(icon("plus", 15., ui.muted))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -6246,12 +6373,14 @@ impl Render for Workspace {
             .id("brand")
             .flex()
             .items_center()
-            .gap(px(9.)) // mockup .brand gap 9
-            .pl_1()
-            .pr_2()
-            .rounded(px(8.))
-            .when(menu_open, |d| d.bg(rgba(INSET)))
-            .hover(|s| s.bg(rgba(INSET)))
+            .gap(px(9.)) // `.brand` gap 9
+            .h_full()
+            .pl(px(14.)) // `.brand` padding 0 16 0 14
+            .pr(px(16.))
+            .border_r(px(1.)) // 右接缝:brand 是仪表舱里的独立模块
+            .border_color(rgba(H0))
+            .when(menu_open, |d| d.bg(col(ui.surface_1)))
+            .hover(|s| s.bg(col(ui.surface_1)))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _e, _w, cx| {
@@ -6260,72 +6389,89 @@ impl Render for Workspace {
                 }),
             )
             .child(
+                // `.mark`:18×18 透明 + 1px ph-dim 边 + 8×8 磷光内核 — 最小的「活物」
                 div()
-                    .w(px(21.)) // mockup .brand .mark 21×21
-                    .h(px(21.))
-                    .rounded(px(7.))
+                    .w(px(18.))
+                    .h(px(18.))
+                    .rounded(px(R_CARD))
+                    .border_1()
+                    .border_color(rgba(PH_DIM))
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(linear_gradient(
-                        145.,
-                        linear_color_stop(col(ui.accent), 0.),
-                        linear_color_stop(col(ui.accent_alt), 1.),
-                    ))
-                    .child(icon("term", 13., ui.chrome_bg)),
+                    .child(div().w(px(8.)).h(px(8.)).rounded(px(1.)).bg(rgb(PH))),
             )
             .child(
+                // `.name`:TN + 磷光下划线光标(mono 600 12)
                 div()
-                    .text_size(px(14.))
-                    .font_weight(gpui::FontWeight(680.)) // mockup .name weight 680
-                    .text_color(col(ui.foreground))
-                    .child("Tn"),
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .font_family(SharedString::from(self.config.font().family.clone()))
+                    .text_size(px(12.))
+                    .font_weight(gpui::FontWeight(600.))
+                    .child(div().text_color(rgb(T0)).child("TN"))
+                    .child(div().text_color(rgb(PH)).child("_")),
             )
             .child(
-                // mockup .brand .caret 13×13 · muted · opacity .55 → 1 when open
-                crate::assets::icon("chev-d", 13.)
-                    .text_color(cola(ui.muted, if menu_open { 1.0 } else { 0.55 })),
+                // `.chev`:t3 结构字符;菜单开启时换磷光向上
+                crate::assets::icon("chev-d", 12.).text_color(if menu_open {
+                    rgb(PH)
+                } else {
+                    rgb(T3)
+                }),
             );
 
         // Window controls: the OS performs the action from the marked region
         // (HTMINBUTTON / HTMAXBUTTON / HTCLOSE) — no click handler needed.
-        // mockup .wctl .b.close:hover bg = 红 @ 0.22(原硬编码 0x33=0.2)
-        let danger_bg = cola(self.config.theme.ansi.red, 0.22);
+        // SHEET 01 `.wbtn`:44 宽全高方块,无色面 hover 才表态(L1;关闭 = err-soft)。
         // `.occlude()` (BlockMouse) prevents the root track_focus from intercepting
         // NC mouse-down events and calling prevent_default, which would swallow the
         // OS window command (same pattern as the drag spacer).
+        let hover_l1 = col(ui.surface_1);
         let ctl_btn = |name: &'static str, area: WindowControlArea, danger: bool| {
             div()
-                .w(px(35.)) // mockup .wctl .b 35×30
-                .h(px(30.))
+                .w(px(44.))
+                .h_full()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(9.)) // mockup .b radius 9
-                .hover(move |s| s.bg(if danger { danger_bg } else { rgba(INSET) })) // mockup hover = g2(.04)
+                .hover(move |s| {
+                    if danger {
+                        s.bg(rgba(ERR_SOFT))
+                    } else {
+                        s.bg(hover_l1)
+                    }
+                })
                 .occlude()
                 .window_control_area(area)
-                .child(icon(name, 13., ui.muted))
+                .child(icon(
+                    name,
+                    13.,
+                    if danger {
+                        tn_config::Color::new(0xE8, 0x70, 0x7E)
+                    } else {
+                        ui.muted
+                    },
+                ))
         };
         let controls = div()
             .flex()
             .flex_row()
-            .items_center()
-            .gap(px(2.))
+            .h_full()
             .child(ctl_btn("min", WindowControlArea::Min, false))
             .child(ctl_btn("max", WindowControlArea::Max, false))
             .child(ctl_btn("close", WindowControlArea::Close, true));
 
+        // SHEET 01 `.titlebar`:高 42 · L0 · 底 1px h0;brand/tabs/窗控全部贴边。
         let titlebar = div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(14.)) // mockup .titlebar gap 14
-            .h(px(46.))
-            .pl(px(16.)) // mockup .titlebar padding-left 16
-            .pr(px(10.)) // mockup .titlebar padding-right 10
-            // No bottom border: tabs float on the glass; the body separates by
-            // spacing, not a hard full-width divider (matches the mockup).
+            .h(px(TITLEBAR_H))
+            .flex_none()
+            .border_b(px(1.))
+            .border_color(rgba(H0))
             .child(brand)
             .child(tabs)
             // A flexible draggable spacer fills the gap between tabs and controls.
@@ -6342,25 +6488,16 @@ impl Render for Workspace {
             )
             .child(controls);
 
-        // Both side panels are clean panes (mockup .sidebar): no wrapper bars.
-        // The explorer toggles via Ctrl+Shift+B; the file view is no longer a
-        // docked column but a floating Quick Look overlay (built below) that pops
-        // over the terminal hugging the tree's right edge.
+        // SHEET 01/02 `.canvas`:L0 底盘露出 2px 接缝,板面平铺其上(接缝即深度,
+        // 契约 4 — 平铺零投影)。
         let body =
             div()
                 .flex_1()
                 .min_h(px(0.)) // let the flex child be bounded by the window, not its content
-                // No overflow_hidden (mockup .work doesn't clip): panes clip their own
-                // content + min_h 0 bounds them, so dropping it lets each pane's drop
-                // shadow bleed into the gaps and through the translucent status bar —
-                // the "float". The OS window is the only hard clip.
-                // mockup .work:padding 5px 12px 11px · gap 11(原 p_1/gap_2 偏挤)
-                .pt(px(5.))
-                .px(px(12.))
-                .pb(px(11.))
+                .p(px(SEAM))
                 .flex()
                 .flex_row()
-                .gap(px(11.))
+                .gap(px(SEAM))
                 // File explorer sidebar (left column), toggled by Ctrl+Shift+B.
                 // Width is adjustable by dragging the right edge (same look-and-feel
                 // as split-pane dividers).
@@ -6376,15 +6513,15 @@ impl Render for Workspace {
                             .flex_col()
                             .relative()
                             .child(div().flex_1().min_h(px(0.)).child(self.explorer.clone()))
-                            // Drag handle on the right edge; sits in the inter-column
-                            // gap so it doesn't occlude the tree.
+                            // Drag handle on the right edge; straddles the 2px seam
+                            // so it doesn't occlude the tree.
                             .child(
                                 div()
                                     .absolute()
                                     .top(px(0.))
                                     .bottom(px(0.))
-                                    .right(px(-4.)) // spill 4 px into the gap
-                                    .w(px(8.))
+                                    .right(px(-4.)) // 跨过 2px 接缝
+                                    .w(px(6.))
                                     .cursor_col_resize()
                                     .hover(|s| s.bg(cola(accent, 0.16)))
                                     .on_mouse_down(
@@ -6418,12 +6555,6 @@ impl Render for Workspace {
         // 它右边;关 → 锚到工作区左缘),仅在装了文件时渲染。它**不占分屏**——飘在终端上,
         // Esc/再按 Ctrl+Shift+J 收起。放在 root 的 body/status 之后 = 画在它们之上。
         let quick_look = (self.quick_look_open && self.quick_look.read(cx).has_file()).then(|| {
-            // Anchored to the explorer's right edge (body pad 12 + width + gap).
-            let left = if self.explorer_open {
-                self.explorer_width + 20.
-            } else {
-                40.
-            };
             // Click-away scrim over the **workspace body** (terminal area) — NOT the
             // explorer / titlebar / status bar. A click on the bare terminal used to
             // `focus_pane` and steal focus to the shell mid-edit (the「焦点漏到底层
@@ -6433,16 +6564,20 @@ impl Render for Workspace {
             // and the explorer stays clickable (scrim starts at its right edge) so
             // 点树里另一个文件仍能换预览。
             let scrim_left = if self.explorer_open {
-                self.explorer_width + 14.
+                self.explorer_width + 4.
             } else {
                 0.
             };
             div()
                 .absolute()
-                .top(px(46.)) // below the titlebar
-                .bottom(px(30.)) // above the status bar
+                .top(px(TITLEBAR_H)) // below the titlebar
+                .bottom(px(STATUSBAR_H)) // above the status bar
                 .left(px(scrim_left))
                 .right(px(0.))
+                // SHEET 03:纯色压暗 scrim(无模糊,契约 7)—— 把底层终端压暗,QuickLook
+                // 才像「工作区之上的临时速览浮层」而非嵌在 pane 内的 child。Explorer 不在
+                // scrim 范围内,保持可点(点树里另一个文件仍能换预览)。
+                .bg(rgba(SCRIM))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|ws, _e, _w, cx| {
@@ -6455,19 +6590,27 @@ impl Render for Workspace {
                     }),
                 )
                 .child(
+                    // SHEET 03:居中速览卡 — scrim 内水平/垂直居中。原型硬规格 1080×520
+                    // (≈2.08:1 横向速览),实现里宽 86%/上限 1080、高 80%/上限 600,
+                    // 让它在任何窗高下都保持「压扁的速览卡」比例,不被 pane 可用高度撑成
+                    // 近全屏编辑器(原型与真机差异总结 P0:尺寸/外边距)。
                     div()
                         .absolute()
-                        // 浮起「卡片」(原 top70/bottom60/left/right64,这里换算到 scrim 原点)。
-                        .top(px(24.)) // 70 − 46
-                        .bottom(px(30.)) // 60 − 30
-                        .left(px(left - scrim_left))
-                        // Relative right margin (was a fixed `right(64) + max_w(880)`). The
-                        // absolute cap froze the width, so on a maximized window the panel
-                        // stranded against the left with a big empty right (用户反馈失衡).
-                        // ~7% of the body ≈ the default 64px gap, but now scales with the
-                        // window so the viewer/editor keeps its proportion at any size.
-                        .right(relative(0.07))
-                        .child(self.quick_look.clone()),
+                        .top(px(0.))
+                        .bottom(px(0.))
+                        .left(px(0.))
+                        .right(px(0.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .w(relative(0.86))
+                                .max_w(px(1080.))
+                                .h(relative(0.80))
+                                .max_h(px(600.))
+                                .child(self.quick_look.clone()),
+                        ),
                 )
         });
 
@@ -6513,19 +6656,16 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             // No rounding here: the fill spans the whole window rect and DWM
-            // rounds the actual window corners. Rounding the fill more than DWM's
-            // radius left a sliver of bare acrylic (blurred desktop) at the edge.
-            // Flat window fill (no full-window gradient): a large translucent
-            // gradient over the whole window banded badly at real (large) window
-            // sizes — the mockup hides that with a feTurbulence noise dither + a
-            // backdrop blur, neither of which we have. Flat reads cleaner here; the
-            // depth lives in the inner panels' own gradients + shadows.
-            .bg(self.window_glass()) // mostly-opaque dark glass over the acrylic backdrop
+            // rounds the actual window corners (Win11). 磷光契约 1:整窗 L0 不透明
+            // 底盘 — 大面积零渐变零透明,色带从物理上不可能发生。
+            .bg(self.window_glass()) // opaque L0(theme backdrop = solid)
             .text_color(col(ui.foreground))
             .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))
+            // 像素宠物:状态栏上方 overlay(z 在浮层 scrim 之下)— SHEET 05
+            .child(self.pet.clone())
             .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p))
             .when_some(split_launcher, |d, s| d.child(s))
