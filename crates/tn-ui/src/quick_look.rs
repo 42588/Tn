@@ -6911,6 +6911,11 @@ impl Render for QuickLook {
                     cx.notify();
                 }
             }))
+            // 滚轮兜底吞噬:正文滚动由子区处理后,事件不得再穿透到底层终端
+            // (BUG发现 #5:QuickLook 内滚轮曾驱动底下 shell 的 scrollback)。
+            .on_scroll_wheel(cx.listener(|_this, _ev: &ScrollWheelEvent, _w, cx| {
+                cx.stop_propagation();
+            }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {

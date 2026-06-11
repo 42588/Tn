@@ -3220,6 +3220,10 @@ impl Workspace {
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_remote_dir_key(ev, w, cx)),
                 )
+                // 浮层 scrim 统一吞滚轮,不驱动底层终端(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .child(div().h(px(110.)))
                 .child(panel),
         )
@@ -4049,6 +4053,10 @@ impl Workspace {
                 .bg(rgba(SCRIM))
                 .track_focus(&self.ssh_prompt_focus)
                 .on_key_down(cx.listener(Self::on_ssh_prompt_key))
+                // 浮层 scrim 统一吞滚轮,不驱动底层终端(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _e, w, cx| {
@@ -4315,6 +4323,10 @@ impl Workspace {
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_palette_key(ev, w, cx)),
                 )
+                // 浮层 scrim 统一吞滚轮,不驱动底层终端(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .child(div().h(px(110.))) // top spacer (clears the title + tab bar)
                 .child(panel),
         )
@@ -4704,6 +4716,10 @@ impl Workspace {
                 .on_key_down(
                     cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_split_key(ev, w, cx)),
                 )
+                // 浮层 scrim 统一吞滚轮(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .child(div().h(px(120.)))
                 .child(panel),
         )
@@ -4960,6 +4976,10 @@ impl Workspace {
                 .items_center()
                 .bg(rgba(SCRIM))
                 .track_focus(&self.layout_focus)
+                // 浮层 scrim 统一吞滚轮(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .on_key_down(cx.listener(|this, ev: &KeyDownEvent, w, cx| {
                     if ev.keystroke.key == "escape" {
                         this.layout_manager_open = false;
@@ -5900,6 +5920,10 @@ impl Workspace {
                 .bg(rgba(SCRIM))
                 .track_focus(&self.agent_form_focus)
                 .on_key_down(cx.listener(Self::on_agent_form_key))
+                // 浮层 scrim 统一吞滚轮(BUG发现 #5 同类)。
+                .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _e, w, cx| {
@@ -6682,8 +6706,7 @@ impl Render for Workspace {
                 .left(px(0.))
                 .right(px(0.))
                 // SHEET 03:纯色压暗 scrim(无模糊,契约 7)—— 把底层终端压暗,QuickLook
-                // 才像「工作区之上的临时速览浮层」而非嵌在 pane 内的 child。Explorer 不在
-                // scrim 范围内,保持可点(点树里另一个文件仍能换预览)。
+                // 才像「工作区之上的临时速览浮层」而非嵌在 pane 内的 child。
                 .bg(rgba(SCRIM))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -6696,6 +6719,11 @@ impl Render for Workspace {
                         cx.notify();
                     }),
                 )
+                // scrim 吞滚轮:压暗区上滚动不得驱动底层终端 scrollback
+                // (BUG发现 #5 面板穿透;浮层本体的兜底见 quick_look.rs 根节点)。
+                .on_scroll_wheel(cx.listener(|_ws, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
                 .child(
                     // SHEET 03:居中速览卡 — scrim 内水平/垂直居中。原型硬规格
                     // 1080×520;窗体不够宽/高时按 86%/80% 退让,够则锁在 1080×520
