@@ -253,6 +253,23 @@ pub(crate) fn row_card(
     }
 }
 
+/// Title-case a `+`-joined hotkey string for chrome labels: `"ctrl+alt+space"` →
+/// `"Ctrl+Alt+Space"`. Keeps welcome/ghost hotkey captions consistent with the
+/// configured `quick_terminal.hotkey` (no hard-coded key that drifts on rebind).
+pub(crate) fn title_case_hotkey(s: &str) -> String {
+    s.split('+')
+        .map(|p| {
+            let p = p.trim();
+            let mut c = p.chars();
+            match c.next() {
+                Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 /// The identity glyph char for a [`CardId::glyph`] key — the mono "会话所有者" 记号
 /// shared by every launch surface (welcome / ghost / split), so a profile reads the
 /// same on all three.
@@ -648,6 +665,8 @@ impl Render for WelcomeView {
                 .child(row().children(others))
         };
 
+        // 幽灵终端热键随 config 显示(与幽灵终端页脚同源),避免改键后欢迎页文案漂移。
+        let ghost_key = title_case_hotkey(&self.config.config.quick_terminal.hotkey);
         let hints = div()
             .flex()
             .flex_row()
@@ -657,7 +676,7 @@ impl Render for WelcomeView {
             .mt(px(6.))
             .child(self.hint("Ctrl+Shift+P", "命令面板"))
             .child(self.hint("Ctrl+Shift+N", "分屏会话"))
-            .child(self.hint("Ctrl+Alt+Space", "幽灵终端"));
+            .child(self.hint(&ghost_key, "幽灵终端"));
 
         // SHEET 07 板 A:hero-mark(44×44 ph-dim 边 + 22×22 磷光内核)+ TN_ +
         // 副标(mono 11 t2)— 居中不放大,克制。
@@ -813,6 +832,16 @@ mod tests {
             _ => panic!("expected a collapsed WSL group at [1]"),
         }
         assert!(matches!(e[2], LaunchEntry::SshPrompt));
+    }
+
+    #[test]
+    fn title_case_hotkey_capitalizes_each_token() {
+        assert_eq!(title_case_hotkey("ctrl+alt+space"), "Ctrl+Alt+Space");
+        assert_eq!(
+            title_case_hotkey("Control + Super + F5"),
+            "Control+Super+F5"
+        );
+        assert_eq!(title_case_hotkey("alt+`"), "Alt+`");
     }
 
     #[test]
