@@ -3009,75 +3009,92 @@ impl Render for TerminalView {
         .map(|(phase, detail)| {
             let cur = phase.ordinal();
             let steps = [
-                (tn_pty::SshPhase::Connecting, "建立连接"),
+                (tn_pty::SshPhase::Connecting, "连接"),
                 (tn_pty::SshPhase::Authenticating, "认证"),
-                (tn_pty::SshPhase::OpeningShell, "打开远程 shell"),
+                (tn_pty::SshPhase::OpeningShell, "打开 shell"),
             ];
-            let mut steps_col = div().flex().flex_col().gap(px(8.)).px(px(14.)).pb(px(6.));
-            for (p, label) in steps {
+            // SHEET 07 板 C `.steps`:横排三步 — dotn(18 圆:done ✓ ok 边 / busy ●
+            // 磷光填充 / pending ○) + label,步间 .stlink 连接线(左步已过 = ok·50)。
+            let mut steps_row = div().flex().flex_row().items_center();
+            for (idx, (p, label)) in steps.into_iter().enumerate() {
                 let o = p.ordinal();
-                let marker = if o < cur {
-                    div()
-                        .w(px(14.))
-                        .flex()
-                        .justify_center()
-                        .flex_none()
-                        .child(crate::style::icon("check", 14., self.ui_green))
+                if idx > 0 {
+                    // .stlink:54×1 · h1;左侧步已完成 → 点亮 ok·50
+                    let lit = (idx - 1) < cur;
+                    steps_row = steps_row.child(div().w(px(54.)).h(px(1.)).mx(px(10.)).flex_none().bg(
+                        if lit {
+                            cola(self.ui_green, 0.5)
+                        } else {
+                            rgba(crate::style::H1)
+                        },
+                    ));
+                }
+                // .dotn:18×18 圆 · 1px 边 · mono 10 字形
+                let dotn = div()
+                    .w(px(18.))
+                    .h(px(18.))
+                    .flex_none()
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .text_size(px(10.));
+                let dotn = if o < cur {
+                    dotn.border_color(cola(self.ui_green, 0.4))
+                        .bg(gpui::rgb(crate::style::L2))
+                        .text_color(col(self.ui_green))
+                        .child("✓")
                 } else if o == cur {
-                    div()
-                        .w(px(14.))
-                        .flex()
-                        .justify_center()
-                        .items_center()
-                        .flex_none()
-                        .child(
-                            div()
-                                .w(px(8.))
-                                .h(px(8.))
-                                .rounded(px(999.))
-                                .bg(col(self.ui_accent)),
-                        )
+                    dotn.border_color(gpui::rgb(crate::style::PH))
+                        .bg(gpui::rgb(crate::style::PH))
+                        .text_color(gpui::rgb(crate::style::PH_INK))
+                        .child("●")
                 } else {
-                    div()
-                        .w(px(14.))
-                        .flex()
-                        .justify_center()
-                        .items_center()
-                        .flex_none()
-                        .child(
-                            div()
-                                .w(px(7.))
-                                .h(px(7.))
-                                .rounded(px(999.))
-                                .bg(cola(self.ui_muted, 0.5)),
-                        )
+                    dotn.border_color(rgba(crate::style::H1))
+                        .bg(gpui::rgb(crate::style::L2))
+                        .text_color(gpui::rgb(crate::style::T3))
+                        .child("○")
                 };
-                let txt = if o <= cur { self.ui_fg } else { self.ui_muted };
+                // .stp 文字:busy = t0,done/pending = t2
+                let label_color = if o == cur { self.ui_fg } else { self.ui_muted };
                 let detail_owned = detail.clone();
-                steps_col = steps_col.child(
+                steps_row = steps_row.child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
-                        .gap(px(9.))
-                        .child(marker)
-                        .child(
-                            div()
-                                .text_size(px(12.5))
-                                .text_color(col(txt))
-                                .child(SharedString::from(label.to_string())),
-                        )
+                        .gap(px(8.))
+                        .font_family(self.font_family.clone())
+                        .text_size(px(11.))
+                        .text_color(col(label_color))
+                        .child(dotn)
+                        .child(SharedString::from(label.to_string()))
                         .when(o == cur && !detail_owned.is_empty(), |d| {
                             d.child(
                                 div()
-                                    .font_family(self.font_family.clone())
-                                    .text_size(px(11.))
                                     .text_color(col(self.ui_muted))
-                                    .child(SharedString::from(detail_owned)),
+                                    .child(SharedString::from(format!("· {detail_owned}"))),
                             )
                         }),
                 );
             }
+            // body:p16 容器 — 横排步骤 + 认证顺序提示(SHEET 07 板 C)
+            let steps_col = div()
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(10.))
+                .child(steps_row)
+                .child(
+                    div()
+                        .font_family(self.font_family.clone())
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(crate::style::T2))
+                        .child(SharedString::from(
+                            "id_ed25519 → agent → password 顺序尝试;密码框支持显隐 / 记住本会话 / 重试",
+                        )),
+                );
             let cancel = div()
                 .flex()
                 .flex_row()
