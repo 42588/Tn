@@ -13,6 +13,7 @@ mod explorer;
 mod gitutil;
 mod input;
 mod layout;
+mod local_dir_picker;
 mod perf;
 mod pet;
 mod platform;

@@ -29,6 +29,9 @@ use gpui::{
 };
 use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
+use crate::local_dir_picker::{
+    read_local_dirs, LocalDirAction, LocalDirFocus, LocalDirPicker, WorkdirRecents,
+};
 use crate::platform;
 use crate::ssh_recents::{AuthBadge, SshRecents};
 use crate::style::{col, cola, icon, R_CARD, UI_SANS};
@@ -58,6 +61,8 @@ pub struct QuickTerminal {
     picker_sel: usize,
     /// Within the launcher, drilled into the WSL group's distro sub-picker.
     wsl_drill: bool,
+    /// In-place second level shown after activating an agent tile.
+    local_dir_picker: Option<LocalDirPicker>,
     picker_focus: FocusHandle,
     /// Compact SSH connector shown after activating the SSH launcher card.
     ssh_prompt_open: bool,
@@ -152,6 +157,7 @@ impl QuickTerminal {
             picker_open: false,
             picker_sel: 0,
             wsl_drill: false,
+            local_dir_picker: None,
             picker_focus: cx.focus_handle(),
             ssh_prompt_open: false,
             ssh_prompt_input: String::new(),
@@ -268,6 +274,7 @@ impl QuickTerminal {
             self.picker_open = true;
             self.picker_sel = self.default_picker_sel(); // pwsh 默认 PROFILE(SHEET 04)
             self.wsl_drill = false;
+            self.local_dir_picker = None;
         }
         self.pending_focus = true;
         self.slide(reveal, cx);
@@ -305,6 +312,9 @@ impl QuickTerminal {
             return;
         };
         match *item {
+            PickerItem::Launch(i) if crate::welcome::is_agent_profile(&self.launch_profiles[i]) => {
+                self.open_agent_dir_picker(i, cx)
+            }
             PickerItem::Launch(i) => self.launch_profile(i, cx),
             PickerItem::Pwsh => self.launch_spec(LaunchSpec::pwsh(), cx),
             PickerItem::DrillWsl => {
@@ -325,6 +335,7 @@ impl QuickTerminal {
     fn open_ssh_prompt(&mut self, cx: &mut Context<Self>) {
         self.picker_open = false;
         self.wsl_drill = false;
+        self.local_dir_picker = None;
         self.ssh_prompt_open = true;
         self.ssh_prompt_input.clear();
         self.ssh_prompt_sel = 0;
@@ -337,11 +348,103 @@ impl QuickTerminal {
         cx.notify();
     }
 
+    fn open_agent_dir_picker(&mut self, idx: usize, cx: &mut Context<Self>) {
+        let Some(profile) = self.launch_profiles.get(idx) else {
+            return;
+        };
+        let recents = WorkdirRecents::load().sorted_with_seed(None);
+        let initial = recents
+            .first()
+            .map(|r| r.path.clone())
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+        let mut picker = LocalDirPicker::new(idx, profile.name.clone(), initial, recents);
+        self.load_local_dir_picker_dirs(&mut picker);
+        self.local_dir_picker = Some(picker);
+        self.picker_open = true;
+        self.wsl_drill = false;
+        self.ssh_prompt_open = false;
+        self.ssh_rename = None;
+        self.ssh_rename_marked = None;
+        self.pending_focus = true;
+        self.resnap(cx);
+        cx.notify();
+    }
+
+    fn load_local_dir_picker_dirs(&mut self, picker: &mut LocalDirPicker) {
+        match read_local_dirs(&picker.current) {
+            Ok(dirs) => picker.apply_dirs(dirs),
+            Err(e) => {
+                tracing::warn!(path = %picker.current.display(), error = %e, "read local workdir failed");
+                picker.apply_dirs(Vec::new());
+            }
+        }
+    }
+
+    fn refresh_local_dir_picker(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut picker) = self.local_dir_picker.take() {
+            self.load_local_dir_picker_dirs(&mut picker);
+            self.local_dir_picker = Some(picker);
+            self.resnap(cx);
+            cx.notify();
+        }
+    }
+
+    fn close_local_dir_picker_to_launcher(&mut self, cx: &mut Context<Self>) {
+        self.local_dir_picker = None;
+        self.picker_open = true;
+        self.wsl_drill = false;
+        self.pending_focus = true;
+        self.resnap(cx);
+        cx.notify();
+    }
+
+    fn confirm_local_dir_picker(&mut self, cx: &mut Context<Self>) {
+        let Some(picker) = self.local_dir_picker.take() else {
+            return;
+        };
+        let cwd = picker.launch_cwd();
+        let mut recents = WorkdirRecents::load();
+        recents.record(cwd.clone());
+        recents.save();
+        self.launch_profile_with_cwd(picker.agent_index, cwd, cx);
+    }
+
+    fn browse_local_dir_picker(&mut self, cx: &mut Context<Self>) {
+        let recv = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: None,
+        });
+        cx.spawn(
+            async move |this: gpui::WeakEntity<Self>, cx: &mut gpui::AsyncApp| {
+                if let Ok(Ok(Some(paths))) = recv.await {
+                    if let Some(path) = paths.into_iter().next() {
+                        let _ = this.update(cx, |this, cx| {
+                            if let Some(mut picker) = this.local_dir_picker.take() {
+                                picker.current = path.clone();
+                                picker.selected = path;
+                                picker.focus = LocalDirFocus::Directories;
+                                this.load_local_dir_picker_dirs(&mut picker);
+                                this.local_dir_picker = Some(picker);
+                                this.resnap(cx);
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+            },
+        )
+        .detach();
+    }
+
     fn close_ssh_prompt_to_picker(&mut self, cx: &mut Context<Self>) {
         self.ssh_prompt_open = false;
         self.picker_open = true;
         self.picker_sel = 0;
         self.wsl_drill = false;
+        self.local_dir_picker = None;
         self.ssh_rename = None;
         self.ssh_rename_marked = None;
         self.pending_focus = true;
@@ -356,6 +459,22 @@ impl QuickTerminal {
             .launch_profiles
             .get(idx)
             .and_then(|p| LaunchSpec::from_profile_ephemeral(p, &reg))
+            .unwrap_or_else(LaunchSpec::pwsh);
+        self.launch_spec(spec, cx);
+    }
+
+    fn launch_profile_with_cwd(
+        &mut self,
+        idx: usize,
+        cwd: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        let reg = crate::agent_host::agent_registry(cx);
+        let spec = self
+            .launch_profiles
+            .get(idx)
+            .and_then(|p| LaunchSpec::from_profile_ephemeral(p, &reg))
+            .map(|spec| spec.with_cwd(cwd))
             .unwrap_or_else(LaunchSpec::pwsh);
         self.launch_spec(spec, cx);
     }
@@ -403,6 +522,7 @@ impl QuickTerminal {
             this.term_spec = None;
             this.picker_open = true;
             this.ssh_prompt_open = false;
+            this.local_dir_picker = None;
             this.ssh_rename = None;
             this.ssh_rename_marked = None;
             this.picker_sel = 0;
@@ -429,6 +549,7 @@ impl QuickTerminal {
                 this.term_spec = None;
                 this.picker_open = true;
                 this.ssh_prompt_open = false;
+                this.local_dir_picker = None;
                 this.ssh_rename = None;
                 this.ssh_rename_marked = None;
                 this.picker_sel = this.default_picker_sel();
@@ -443,6 +564,7 @@ impl QuickTerminal {
         self.term_spec = Some(term_spec);
         self.picker_open = false;
         self.ssh_prompt_open = false;
+        self.local_dir_picker = None;
         self.ssh_rename = None;
         self.ssh_rename_marked = None;
         self.wsl_drill = false;
@@ -456,6 +578,10 @@ impl QuickTerminal {
     /// (agents ↔ shells/WSL/SSH) at the same column, Enter activates, Esc backs out of
     /// the WSL sub-picker (or, at the root, returns to the session / hides the window).
     fn on_picker_key(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.local_dir_picker.is_some() {
+            self.on_local_dir_picker_key(ev, cx);
+            return;
+        }
         let lens: Vec<usize> = self.picker_rows().iter().map(|r| r.len()).collect();
         let n: usize = lens.iter().sum::<usize>().max(1);
         // Resolve the flat `picker_sel` to its (row, column).
@@ -509,6 +635,58 @@ impl QuickTerminal {
                 cx.notify();
             }
             "enter" => self.activate_sel(cx),
+            _ => {}
+        }
+    }
+
+    fn on_local_dir_picker_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        match ev.keystroke.key.as_str() {
+            "escape" => self.close_local_dir_picker_to_launcher(cx),
+            "tab" => {
+                if let Some(picker) = self.local_dir_picker.as_mut() {
+                    if ev.keystroke.modifiers.shift {
+                        picker.focus_prev();
+                    } else {
+                        picker.focus_next();
+                    }
+                    cx.notify();
+                }
+            }
+            "up" => {
+                if let Some(picker) = self.local_dir_picker.as_mut() {
+                    picker.move_selection(-1);
+                    cx.notify();
+                }
+            }
+            "down" => {
+                if let Some(picker) = self.local_dir_picker.as_mut() {
+                    picker.move_selection(1);
+                    cx.notify();
+                }
+            }
+            "left" => {
+                if self
+                    .local_dir_picker
+                    .as_mut()
+                    .and_then(|picker| picker.go_parent())
+                    .is_some()
+                {
+                    self.refresh_local_dir_picker(cx);
+                }
+            }
+            "right" => {
+                let action = self
+                    .local_dir_picker
+                    .as_mut()
+                    .and_then(LocalDirPicker::open_selected);
+                match action {
+                    Some(LocalDirAction::Open(_)) => self.refresh_local_dir_picker(cx),
+                    Some(LocalDirAction::Browse) => self.browse_local_dir_picker(cx),
+                    None => {}
+                }
+            }
+            "enter" => self.confirm_local_dir_picker(cx),
             _ => {}
         }
     }
@@ -711,6 +889,9 @@ impl QuickTerminal {
     fn card_height(&self) -> f32 {
         if self.ssh_prompt_open {
             return 500.0;
+        }
+        if self.local_dir_picker.is_some() {
+            return 540.0;
         }
         // Sum each logical row's wrapped height (5 tiles per visual row, SHEET 04).
         let rows = self
@@ -1011,6 +1192,9 @@ impl QuickTerminal {
         if !self.picker_open {
             return None;
         }
+        if let Some(picker) = self.local_dir_picker.as_ref() {
+            return Some(self.render_local_dir_picker(cx, picker));
+        }
         let t = &self.config.theme;
         let ui = &t.ui;
         let rows = self.picker_rows();
@@ -1167,6 +1351,442 @@ impl QuickTerminal {
             .child(footer);
 
         Some(self.ghost_frame(inner))
+    }
+
+    fn render_local_dir_picker(&self, cx: &mut Context<Self>, picker: &LocalDirPicker) -> Div {
+        let t = &self.config.theme;
+        let ui = &t.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+        let selected = picker.launch_cwd().display().to_string();
+        let current = picker.current.display().to_string();
+        let focused = picker.focus;
+
+        let section_label = |label: &'static str, active: bool| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(7.))
+                .h(px(24.))
+                .text_size(px(10.))
+                .font_family(mono.clone())
+                .font_weight(FontWeight(650.))
+                .text_color(if active {
+                    gpui::rgb(crate::style::T0)
+                } else {
+                    gpui::rgb(crate::style::T2)
+                })
+                .child(div().w(px(5.)).h(px(5.)).rounded(px(1.)).bg(if active {
+                    gpui::rgb(crate::style::PH)
+                } else {
+                    gpui::rgb(crate::style::T3)
+                }))
+                .child(label)
+        };
+
+        let recent_rows = if picker.recents.is_empty() {
+            div()
+                .flex()
+                .items_center()
+                .h(px(44.))
+                .px(px(11.))
+                .text_size(px(12.))
+                .text_color(gpui::rgb(crate::style::T2))
+                .child("暂无最近工作目录")
+        } else {
+            let mut list = div().flex().flex_col().gap(px(3.));
+            let start = if focused == LocalDirFocus::Recent {
+                picker.recent_sel.saturating_sub(4)
+            } else {
+                0
+            };
+            for (offset, item) in picker.recents.iter().enumerate().skip(start).take(5) {
+                let i = offset;
+                let is_sel = focused == LocalDirFocus::Recent && picker.recent_sel == i;
+                let path = item.path.clone();
+                let label = item.label.clone();
+                let sub = item.path.display().to_string();
+                list = list.child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(38.))
+                        .gap(px(9.))
+                        .px(px(11.))
+                        .rounded(px(R_CARD))
+                        .bg(if is_sel {
+                            col(ui.palette_selected)
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .border_1()
+                        .border_color(if is_sel {
+                            rgba(crate::style::PH_DIM)
+                        } else {
+                            rgba(crate::style::H0)
+                        })
+                        .hover(|s| s.bg(gpui::rgb(crate::style::L2)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                if let Some(picker) = this.local_dir_picker.as_mut() {
+                                    picker.focus = LocalDirFocus::Recent;
+                                    picker.recent_sel = i;
+                                    picker.current = path.clone();
+                                    picker.selected = path.clone();
+                                }
+                                this.refresh_local_dir_picker(cx);
+                            }),
+                        )
+                        .child(icon("folder", 14., ui.accent))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .flex()
+                                .flex_col()
+                                .gap(px(1.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight(620.))
+                                        .text_color(col(ui.foreground))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(SharedString::from(label)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(10.))
+                                        .text_color(col(ui.muted))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(SharedString::from(sub)),
+                                ),
+                        ),
+                );
+            }
+            list
+        };
+
+        let mut dir_rows = div().flex().flex_col().gap(px(3.));
+        if picker.dirs.is_empty() {
+            dir_rows = dir_rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(46.))
+                    .px(px(11.))
+                    .text_size(px(12.))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .child("没有可进入的子目录"),
+            );
+        } else {
+            let start = if focused == LocalDirFocus::Directories {
+                picker.dir_sel.saturating_sub(6)
+            } else {
+                0
+            };
+            for (offset, item) in picker.dirs.iter().enumerate().skip(start).take(7) {
+                let i = offset;
+                let is_sel = focused == LocalDirFocus::Directories && picker.dir_sel == i;
+                let path = item.path.clone();
+                let name = item.name.clone();
+                let is_git = item.is_git;
+                let is_drive = item.is_drive;
+                dir_rows = dir_rows.child(
+                    div()
+                        .relative()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .h(px(34.))
+                        .gap(px(9.))
+                        .px(px(11.))
+                        .rounded(px(R_CARD))
+                        .bg(if is_sel {
+                            col(ui.palette_selected)
+                        } else {
+                            rgba(0x00000000)
+                        })
+                        .border_1()
+                        .border_color(if is_sel {
+                            rgba(crate::style::PH_DIM)
+                        } else {
+                            rgba(crate::style::H0)
+                        })
+                        .hover(|s| s.bg(gpui::rgb(crate::style::L2)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                if let Some(picker) = this.local_dir_picker.as_mut() {
+                                    picker.focus = LocalDirFocus::Directories;
+                                    picker.dir_sel = i;
+                                    picker.current = path.clone();
+                                    picker.selected = path.clone();
+                                }
+                                this.refresh_local_dir_picker(cx);
+                            }),
+                        )
+                        .child(icon("folder", 14., ui.accent_alt))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w(px(0.))
+                                .text_size(px(12.))
+                                .font_weight(FontWeight(600.))
+                                .text_color(col(ui.foreground))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(SharedString::from(name)),
+                        )
+                        .when(is_git, |d| {
+                            d.child(
+                                div()
+                                    .px(px(7.))
+                                    .py(px(1.))
+                                    .rounded(px(crate::style::R_CHIP))
+                                    .border_1()
+                                    .border_color(cola(t.ansi.yellow, 0.35))
+                                    .text_size(px(10.))
+                                    .text_color(col(t.ansi.yellow))
+                                    .child("git"),
+                            )
+                        })
+                        .when(is_drive, |d| {
+                            d.child(
+                                div()
+                                    .px(px(7.))
+                                    .py(px(1.))
+                                    .rounded(px(crate::style::R_CHIP))
+                                    .border_1()
+                                    .border_color(cola(ui.accent_alt, 0.35))
+                                    .text_size(px(10.))
+                                    .text_color(col(ui.accent_alt))
+                                    .child("盘符"),
+                            )
+                        }),
+                );
+            }
+        }
+
+        let browse_active = focused == LocalDirFocus::Browse;
+        let browse = div()
+            .relative()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .h(px(44.))
+            .px(px(12.))
+            .rounded(px(R_CARD))
+            .border_1()
+            .border_color(if browse_active {
+                rgba(crate::style::PH_DIM)
+            } else {
+                rgba(crate::style::H1)
+            })
+            .bg(if browse_active {
+                col(ui.palette_selected)
+            } else {
+                gpui::rgb(crate::style::L1)
+            })
+            .hover(|s| s.bg(gpui::rgb(crate::style::L2)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    if let Some(picker) = this.local_dir_picker.as_mut() {
+                        picker.focus = LocalDirFocus::Browse;
+                    }
+                    this.browse_local_dir_picker(cx);
+                }),
+            )
+            .child(icon("external", 14., ui.accent))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(620.))
+                    .text_color(col(ui.foreground))
+                    .child("浏览本地文件夹"),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(col(ui.muted))
+                    .child("→"),
+            );
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .h(px(38.))
+            .px(px(14.))
+            .flex_none()
+            .bg(gpui::rgb(crate::style::L2))
+            .border_b(px(1.))
+            .border_color(rgba(crate::style::H1))
+            .font_family(mono.clone())
+            .child(self.ghost_mark())
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .font_weight(FontWeight(650.))
+                    .text_color(gpui::rgb(crate::style::T0))
+                    .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| this.close_local_dir_picker_to_launcher(cx)),
+                    )
+                    .child("GHOST_"),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .child(SharedString::from(format!(
+                        "{} 工作目录",
+                        picker.agent_name
+                    ))),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .px(px(8.))
+                    .py(px(2.))
+                    .rounded(px(crate::style::R_CHIP))
+                    .border_1()
+                    .border_color(cola(ui.accent, 0.35))
+                    .text_size(px(10.))
+                    .text_color(col(ui.accent))
+                    .child("AGENT"),
+            );
+
+        let footer = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.))
+            .h(px(34.))
+            .px(px(14.))
+            .flex_none()
+            .border_t(px(1.))
+            .border_color(rgba(crate::style::H1))
+            .font_family(mono.clone())
+            .text_size(px(10.))
+            .text_color(gpui::rgb(crate::style::T2))
+            .child(crate::style::kbd("Tab", mono.clone()))
+            .child(div().child("焦点"))
+            .child(crate::style::kbd("↑↓", mono.clone()))
+            .child(div().child("选择"))
+            .child(crate::style::kbd("←", mono.clone()))
+            .child(div().child("上级"))
+            .child(crate::style::kbd("→", mono.clone()))
+            .child(div().child("进入"))
+            .child(crate::style::kbd("Enter", mono.clone()))
+            .child(div().child("启动"))
+            .child(div().flex_1())
+            .child(crate::style::btn_primary("启动").on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e, _w, cx| {
+                    this.confirm_local_dir_picker(cx);
+                }),
+            ));
+
+        let inner = div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .font_family(UI_SANS)
+            .track_focus(&self.picker_focus)
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, w, cx| this.on_picker_key(ev, w, cx)),
+            )
+            .child(header)
+            .child(
+                div()
+                    .p(px(12.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .px(px(11.))
+                            .py(px(9.))
+                            .rounded(px(R_CARD))
+                            .border_1()
+                            .border_color(rgba(crate::style::H1))
+                            .bg(gpui::rgb(crate::style::L0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .font_family(mono.clone())
+                                    .text_color(gpui::rgb(crate::style::T2))
+                                    .child("当前工作目录"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(12.))
+                                    .text_color(col(ui.foreground))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(SharedString::from(selected)),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(10.))
+                            .child(
+                                div()
+                                    .w(px(260.))
+                                    .flex_none()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.))
+                                    .child(section_label(
+                                        "最近工作目录",
+                                        focused == LocalDirFocus::Recent,
+                                    ))
+                                    .child(recent_rows),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w(px(0.))
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(5.))
+                                    .child(section_label(
+                                        "当前目录",
+                                        focused == LocalDirFocus::Directories,
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_size(px(10.))
+                                            .text_color(col(ui.muted))
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(SharedString::from(current)),
+                                    )
+                                    .child(dir_rows),
+                            ),
+                    )
+                    .child(section_label("浏览", browse_active))
+                    .child(browse),
+            )
+            .child(div().flex_1())
+            .child(footer);
+
+        self.ghost_frame(inner)
     }
 
     fn render_ssh_prompt(&self, cx: &mut Context<Self>) -> Option<Div> {
@@ -1866,8 +2486,9 @@ impl Render for QuickTerminal {
 
         // Disable IME while editing the SSH target (ASCII user/host/port), but let
         // it work in rename mode so Chinese nicknames can be committed normally.
-        let ssh_should_disable_ime =
-            self.visible && self.ssh_prompt_open && self.ssh_rename.is_none();
+        let ssh_should_disable_ime = self.visible
+            && ((self.ssh_prompt_open && self.ssh_rename.is_none())
+                || self.local_dir_picker.is_some());
         if ssh_should_disable_ime != self.ssh_ime_disabled {
             if let Some(hwnd) = self.hwnd.or_else(|| crate::platform::hwnd_of(window)) {
                 crate::platform::set_ime_enabled(hwnd, !ssh_should_disable_ime);

@@ -160,6 +160,11 @@ impl LaunchSpec {
         Self::from_profile_inner(p, reg, false)
     }
 
+    pub fn with_cwd(mut self, cwd: impl Into<std::path::PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
     fn from_profile_inner(
         p: &tn_config::Profile,
         reg: &AgentRegistry,
@@ -340,5 +345,11 @@ mod tests {
         assert!(!is_host_process_path(std::path::Path::new(
             r"\\wsl$\Ubuntu\home\gua"
         )));
+    }
+
+    #[test]
+    fn with_cwd_sets_spawn_directory() {
+        let spec = LaunchSpec::pwsh().with_cwd(r"D:\coder\Tn");
+        assert_eq!(spec.cwd, Some(std::path::PathBuf::from(r"D:\coder\Tn")));
     }
 }
