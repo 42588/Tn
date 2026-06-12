@@ -302,6 +302,205 @@
   </div>
 </div>
 
+<!-- ══════════ F · 陪伴版 P2/P3 审核稿(规则 v2.1) ══════════ -->
+<div class="board" id="board-f">
+  <div class="board-cap"><span class="idx">F</span><span class="t">陪伴版审核稿 · 领养卡 / 哈欠 / 投喂 / 三帧律</span><span class="d">规则 v2.1 新视觉全集 — 审核通过后实现 P2(领养命名/每日见面)与 P3(小饼干);三帧律示例同步定调</span></div>
+  <div class="board-body">
+
+    <div class="tag" style="margin-bottom:10px">① 领养卡(规则 0 · 首次启用宠物的一次性浮层;整流程 ≤30 秒)</div>
+    <div style="display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap">
+      <div class="float" style="width:620px">
+        <div class="float-head">
+          <span style="color:var(--ph)">⌂</span>领养你的搭档
+          <span style="flex:1"></span>
+          <span class="chip ph">初次见面</span>
+        </div>
+        <div style="padding:14px 16px 4px; font:11px var(--mono); color:var(--t2)">挑一只,或交给缘分 —— 它会一直陪你写码。</div>
+        <div style="display:flex; gap:6px; padding:10px 16px 4px">
+          <div style="flex:1; background:var(--l2); border:1px solid var(--ph-dim); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px; position:relative">
+            <div style="position:absolute; left:-1px; top:8px; bottom:8px; width:2px; background:var(--ph); border-radius:1px"></div>
+            <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t0)">西高地</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">金毛</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/03-german-shepherd.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">德牧</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/04-bichon-frise.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">比熊</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/05-maltese.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">马尔济斯</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/06-shih-tzu.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">西施</span>
+          </div>
+          <div style="flex:1; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:8px 4px 6px; display:flex; flex-direction:column; align-items:center; gap:4px">
+            <img class="px" src="../../docs/宠物/原型/07-toy-poodle.svg" width="48" height="41" alt=""/>
+            <span style="font:600 10px var(--sans); color:var(--t1)">泰迪</span>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:10px; padding:8px 16px 0">
+          <span class="btn" style="padding:3px 12px; font-size:11px">🎲 交给缘分</span>
+          <span style="font:10px var(--mono); color:var(--t3)">随机只此一次 — 日常不再有随机入口</span>
+        </div>
+        <div style="margin:12px 16px 10px; padding:9px 12px; background:var(--l0); border:1px solid var(--h1); border-radius:var(--r-card); display:flex; align-items:center; gap:8px; font:13px var(--mono)">
+          <span style="color:var(--t2); font-size:11px">名字</span>
+          <span style="color:var(--t0)">豆豆</span>
+          <span class="cur">&nbsp;</span>
+          <span style="flex:1"></span>
+          <span style="font:10px var(--mono); color:var(--t3)">中文可用 · ≤8 字 · 默认「西高地」</span>
+        </div>
+        <div class="float-foot" style="gap:10px; height:42px">
+          <span><span class="kbd">↹</span> 选品种</span>
+          <span><span class="kbd">↵</span> 领养</span>
+          <span><span class="kbd">Esc</span> 跳过(缘分狗 + 默认名)</span>
+          <span style="flex:1"></span>
+          <span class="btn primary" style="padding:4px 18px">领养</span>
+        </div>
+      </div>
+      <div class="note" style="max-width:320px">浮层家族标准件(L3+L4 头+h2 边+投影+scrim)。选中品种 = L4 + 磷光左脊(全局选中语法)。<br/><br/><b>老用户迁移</b>:已有宠物的用户升级后首次启动,领养卡<b>预选当前品种</b>、名字默认品种名 → 一键「领养」即完成,档案天数从历史 first_met 起算,不重置。<br/><br/>跳过 = 缘分狗 + 默认名,绝不纠缠;之后改名/换形象都在右键菜单。</div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">② 深夜哈欠(规则 A 深夜问候 / 规则 B 深夜投喂后)— 唯一的"休息提醒",不说教</div>
+    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
+      <div class="scell">
+        <span class="chip">日常 · 对照</span>
+        <div class="sp"><div class="pix" id="pose-f-idle"></div></div>
+        <div class="fnote">站姿 idle(既有)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">哈欠 · 张口帧</span>
+        <div class="sp"><div class="pix" id="pose-f-yawn"></div></div>
+        <div class="fnote">眯眼(方案 A)+ 鼻下张开 2×0.7 格深色口型<br/>保持 600ms,接一次缓慢闭合</div>
+      </div>
+      <div class="scell">
+        <span class="chip">闭合帧</span>
+        <div class="sp"><div class="pix" id="pose-f-yawn2"></div></div>
+        <div class="fnote">口型收为 2×0.3 格(半闭)<br/>250ms 后回 idle/趴下</div>
+      </div>
+      <div class="scell">
+        <span class="chip">触发与气泡</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
+          <span style="font:10px var(--mono);color:var(--t2)">深夜(23-5)首次见面 → 「夜深了…」+ 哈欠</span>
+          <span style="font:10px var(--mono);color:var(--t2)">深夜投喂吃完 → 哈欠 → 主动趴下</span>
+        </div>
+        <div class="fnote">一个哈欠就是全部提醒;不弹窗、不重复、无文案说教。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">③ 投喂四帧(规则 B · 每日一块小饼干)— 抛接→咀嚼→爱心,全程 ~2s</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip ph">帧 1 · 饼干飞来</span>
+        <div class="sp"><div class="pix" id="pose-f-feed1"></div></div>
+        <div class="fnote">饼干 4×4 暖棕 #C99052<br/>从菜单方向抛物线入场(300ms)<br/>狗仰头盯着(竖耳)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">帧 2 · 起跳接住</span>
+        <div class="sp"><div class="pix" id="pose-f-feed2"></div></div>
+        <div class="fnote">三帧律起跳(蹲→空中)<br/>饼干落在嘴边</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">帧 3 · 咀嚼 A</span>
+        <div class="sp"><div class="pix" id="pose-f-feed3"></div></div>
+        <div class="fnote">左腮鼓起 1 格(毛色凸出)<br/>×2 交替,每拍 220ms</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">帧 4 · 咀嚼 B + 爱心</span>
+        <div class="sp"><div class="pix" id="pose-f-feed4"></div></div>
+        <div class="fnote">右腮鼓起 + 冒一颗爱心<br/>尾巴快摆 3s 收尾</div>
+      </div>
+      <div class="scell">
+        <span class="chip">菜单入口</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
+          <span style="font:11px var(--sans);color:var(--t1)">🍪 给小饼干 <span style="font:10px var(--mono);color:var(--ph)">· 今日还有 1 块</span></span>
+          <span style="font:11px var(--sans);color:var(--t3)">🍪 今天吃过啦</span>
+        </div>
+        <div class="fnote">右键菜单首组;喂过置灰;<b>不提示、不补偿、不囤积</b>。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">④ 关键互动三帧律示例(Success 跳改造)— 预备/主体/收尾,P1 同款用于 Play 与探头落地</div>
+    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
+      <div class="scell">
+        <span class="chip">帧 1 · 预备蹲</span>
+        <div class="sp"><div class="pix" id="pose-f-jump1"></div></div>
+        <div class="fnote">整身 +1.5px 下压 · 耳塌 1px<br/><b>80ms</b>(蓄力感)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">帧 2 · 空中</span>
+        <div class="sp"><div class="pix" id="pose-f-jump2"></div></div>
+        <div class="fnote">整身 −4px · <b>耳朵滞后 +1px</b>(次级运动)<br/><b>200ms</b> ease-out</div>
+      </div>
+      <div class="scell">
+        <span class="chip">帧 3 · 落地回弹</span>
+        <div class="sp"><div class="pix" id="pose-f-jump3"></div></div>
+        <div class="fnote">整身 +1px 压 · 尾巴上扬(跟随)<br/><b>100ms</b> 回正</div>
+      </div>
+      <div class="scell">
+        <span class="chip">时长总账</span>
+        <div class="sp" style="display:grid;place-items:center">
+          <span style="font:11px var(--mono);color:var(--t2)">80 + 200 + 100 ≈ 380ms</span>
+        </div>
+        <div class="fnote">单帧直切的互动反馈视为未完成(手感律 1);reduced motion 直切终帧。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">⑤ 入场方式池(回应「出现方式太单调」)— 见面四式随机,按性格加权;「今天它怎么出场」本身就是期待</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip">式一 · 岗台探头(既有)</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent1"></div></div>
+        <div class="fnote">岗台线后升起(已落地)<br/>偏好:西高地、德牧</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式二 · 小跑入场</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent2"></div></div>
+        <div class="fnote">从屏幕右缘小跑进窝(gait 交替)<br/>600ms ease-out · 到位刹车点头<br/>偏好:德牧(巡视感)、金毛</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式三 · 天降落地</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent3"></div></div>
+        <div class="fnote">从容器顶落下,耳朵上飘(次级)<br/>落地接三帧律回弹 · 400ms<br/>偏好:比熊、泰迪(俏皮)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式四 · 它先到了</span>
+        <div class="sp"><div class="pix" id="pose-f-ent4"></div></div>
+        <div class="fnote">现身时<b>已趴在岗台上睡着</b> → 察觉你 → 哈欠 → 起身摇尾<br/>偏好:西施、马尔济斯(慵懒)<br/>「它比你先来上班」</div>
+      </div>
+      <div class="scell">
+        <span class="chip">随机规则</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
+          <span style="font:10px var(--mono);color:var(--t2)">每日见面:四式按性格加权随机</span>
+          <span style="font:10px var(--mono);color:var(--t2)">日常显隐:轻量二式(探头/小跑)</span>
+          <span style="font:10px var(--mono);color:var(--t2)">连续两次不重样</span>
+        </div>
+        <div class="fnote">reduced motion → 直切落定;全部复用既有词汇(dx/dy/裁切/gait/趴姿+哈欠)。</div>
+      </div>
+    </div>
+
+    <table class="spec" style="margin-top:18px">
+      <caption>SPEC · 板 F 审核参数</caption>
+      <tr><th>项</th><th>规格</th><th>时长</th><th>备注</th></tr>
+      <tr><td class="k">领养卡</td><td>浮层 620 · 七犬直选(L4+磷光脊)+ 🎲 缘分 + 名字井(L0 凹井 · 磷光块光标 · ≤8 字)</td><td>一次性</td><td>老用户预选迁移;Esc 跳过零纠缠</td></tr>
+      <tr><td class="k">哈欠</td><td>眯眼 A + 口型 2×0.7 格(K 色)→ 半闭 2×0.3 格</td><td>600+250ms</td><td>仅深夜问候/深夜投喂;不重复</td></tr>
+      <tr><td class="k">饼干</td><td>4×4 #C99052 + 2 点缺口;抛物线入场</td><td>飞 300 · 嚼 220×4 · 摆尾 3s</td><td>每日 1 块,无数值</td></tr>
+      <tr><td class="k">三帧律</td><td>蹲 +1.5px/耳塌 → 空中 −4px/耳滞后 → 落 +1px/尾扬</td><td>80/200/100ms</td><td>Success/Play/探头落地/接饼干共用</td></tr>
+      <tr><td class="k">入场池</td><td>式一探头(线下升起)· 式二小跑(右缘入,gait)· 式三天降(顶落+回弹)· 式四它先到(趴睡→哈欠→起身)</td><td>500/600/400/1200ms</td><td>性格加权随机,连续两次不重样;日常显隐只用轻量二式</td></tr>
+    </table>
+
+    <div class="note" style="margin-top:14px">▸ <b>待审核五问</b>:① 领养卡版式与「老用户预选迁移」是否认可?② 哈欠口型(张开 0.7 格)够不够"困"?③ 投喂四帧节奏(飞 300ms/嚼两拍/爱心收尾)是否认可?④ 三帧律的蹲-跳-落手感方向对吗(80/200/100ms)?⑤ 入场池四式与性格偏好分配是否认可(还想加哪种出场)?<br/>全部在 14 列 quad 词汇内:口型/腮帮/饼干 = 追加小 quad,无新原语;气泡词表不破(投喂无字)。</div>
+  </div>
+</div>
+
 <script>
 // 审核稿像素渲染器:与 crates/tn-ui/src/pet.rs 同一份西高地网格(14×9)+ 同参数
 // 逐格展开为 div(= GPUI quad 的纸上等价)。仅本板使用,非 UI 运行时依赖。
@@ -350,10 +549,10 @@
       el.appendChild(d); };
     const rows = o.rows||STAND, eyes = o.eyes||STAND_EYES,
           ears = o.ears||STAND_EARS, tail = o.tail||STAND_TAIL;
-    const dy = o.dy||0;
+    const dy = o.dy||0, dxAll = o.dxAll||0;
     rows.forEach((row,ry)=>{ [...row].forEach((ch,rx)=>{
       const col = PAL[ch]; if(!col) return;
-      let x=rx*C, y=TOP+ry*C+dy, hh=C;
+      let x=rx*C+dxAll, y=TOP+ry*C+dy, hh=C;
       // 吸气:上半身(行≤6)上移 1px,行 7 拉高 1px 补缝(肚皮行不动,无裂缝
       // —— 与 pet.rs 同参数)。
       if(o.inhale){ if(ry<=6){ y-=1; } else if(ry==7){ y-=1; hh=C+1; } }
@@ -368,6 +567,16 @@
       }
       put(x,y,C,hh,col);
     });});
+    // 哈欠口型:鼻下 1px 毛色间隙 + 深色开口(规则 A/B 深夜;o.mouth = 高度格数)。
+    if(o.mouth){
+      const mrow = o.mouthRow!==undefined ? o.mouthRow : 5;
+      const my = TOP+(mrow+1)*C+dy+1; // 鼻行下一行 +1px,与鼻形分离
+      put(6*C+dxAll+1, my-1, 2*C-2, 1, FUR);          // 间隙衬条
+      put(6*C+dxAll+1, my, 2*C-2, C*o.mouth, EYE);    // 开口
+    }
+    // 咀嚼腮帮:面颊侧毛色凸出(规则 B;'L'/'R',5×7 明显鼓包)。
+    if(o.cheek=="L") put(2*C+1+dxAll, TOP+4*C+dy, 5, 7, FUR);
+    if(o.cheek=="R") put(11*C-1+dxAll, TOP+4*C+dy, 5, 7, FUR);
     (o.extra||[]).forEach(e=>put(e[0],e[1],e[2],e[3],e[4]));
     // 岗台线(1px h1 + 左 ph-dim 点睛)— 永远画在固定位,宠物相对它动。
     const s=document.createElement("i");
@@ -401,6 +610,27 @@
     extra:[[9*C+2, TOP-10-5, 5,5, HEART]] });
   draw("pose-play-2",   { dy:-1, tailDy:3,
     extra:[[11*C+2, TOP-13-1, 4,4, HEART]] });
+
+  // ── 板 F · 陪伴版审核稿 ──
+  const COOKIE = "#C99052";
+  const cookie = (x,y)=>[[x,y,4,4,COOKIE],[x+1,y+1,1,1,"#9A6A38"],[x+2,y+2,1,1,"#9A6A38"]];
+  draw("pose-f-idle",  {});
+  draw("pose-f-yawn",  { eye:"slit", mouth:0.7 });
+  draw("pose-f-yawn2", { eye:"slit", mouth:0.3 });
+  draw("pose-f-feed1", { earDy:-2, extra:cookie(2*C, TOP-6) });
+  draw("pose-f-feed2", { dy:-5, earDy:1, extra:cookie(6*C+4, TOP+5*C-8) });
+  draw("pose-f-feed3", { cheek:"L" });
+  draw("pose-f-feed4", { cheek:"R", tailDy:-2,
+    extra:[[10*C, TOP-8, 5,5, HEART]] });
+  draw("pose-f-jump1", { dy:1.5, earDy:1 });
+  draw("pose-f-jump2", { dy:-4, earDy:1 });
+  draw("pose-f-jump3", { dy:1, tailDy:-2 });
+  // ⑤ 入场方式池(四式)
+  draw("pose-f-ent1",  { dy:6*C, clip:true });           // 探头(既有,半露示意)
+  draw("pose-f-ent2",  { dxAll:7*C });                   // 小跑入场(右缘半入,gait 见注)
+  draw("pose-f-ent3",  { dy:-4*C, earDy:-2 });           // 天降(空中,耳朵上飘)
+  draw("pose-f-ent4",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL,
+    eye:"slit", mouth:0.5, mouthRow:6 });                // 睡醒(趴姿+哈欠)
 })();
 </script>
 
