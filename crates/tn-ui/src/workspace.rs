@@ -6301,7 +6301,8 @@ impl Render for Workspace {
         // 宠物上下文同步:welcome_only 模式 + 欢迎页 2× 形态(SHEET 05/07)。
         // 2× 形态由 PetView 自己渲染(on_welcome),welcome 不再持品种快照。
         let on_welcome = self.tabs[active].welcome;
-        self.pet.update(cx, |p, _| p.set_on_welcome(on_welcome));
+        self.pet
+            .update(cx, |p, cx| p.set_on_welcome(on_welcome, cx));
 
         // QuickLook RAIL 读数同步:从活动栏卡片打开时(`ql_rail_pane`)喂入
         //「(当前序号, 该 pane 本次改动文件总数)」,footer 显示 RAIL · n/N;从文件树

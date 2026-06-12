@@ -150,8 +150,13 @@ struct BreedSprite {
     ears: &'static [(i32, i32)],
     /// 尾巴格(Idle 慢摆 / Running 快摆)。
     tail: &'static [(i32, i32)],
-    /// 主毛色(blink 时盖住眼睛的颜色)。
+    /// 主毛色(闭眼衬底色 — SHEET 05-E 方案 A:衬底 + 下缘横缝)。
     fur: u32,
+    /// 趴姿网格(SLEEP,SHEET 05-E 审核定稿):腿收起、肚皮贴地(底行 = 岗台)、
+    /// 身长 +2 格、头压低 —— 姿态变形,不是位移;每品种保留识别点。
+    lie_rows: [&'static str; 9],
+    /// 趴姿眼睛格。
+    lie_eyes: [(i32, i32); 2],
 }
 
 const WESTIE: BreedSprite = BreedSprite {
@@ -170,6 +175,18 @@ const WESTIE: BreedSprite = BreedSprite {
     ears: &[(4, 0), (9, 0)],
     tail: &[(11, 6)],
     fur: 0xF4F1E1,
+    lie_rows: [
+        "..............",
+        "..............",
+        "....W....W....",
+        "...WPW..WPW...",
+        "...WWWWWWWW...",
+        "...WWKWWKWW...",
+        "..WWWWKKWWWW..",
+        ".WWWWWWWWWWWW.",
+        ".WWWWWWWWWWWW.",
+    ],
+    lie_eyes: [(5, 5), (8, 5)],
 };
 
 const GOLDEN: BreedSprite = BreedSprite {
@@ -188,6 +205,18 @@ const GOLDEN: BreedSprite = BreedSprite {
     ears: &[], // 垂耳
     tail: &[(12, 6), (13, 6)],
     fur: 0xF2C867,
+    lie_rows: [
+        "..............",
+        "..............",
+        "....GGGGGG....",
+        "...GGGGGGGG...",
+        "..DDGKGGKGDD..",
+        "..DDGGKKGGDD..",
+        "..DDGGGPGGDD..",
+        ".GGGGGGGGGGGG.",
+        ".GGGGGGGGGGGGG",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 const SHEPHERD: BreedSprite = BreedSprite {
@@ -206,6 +235,19 @@ const SHEPHERD: BreedSprite = BreedSprite {
     ears: &[(3, 0), (4, 0), (9, 0), (10, 0)],
     tail: &[(12, 6), (13, 6)],
     fur: 0x303338,
+    // 立耳犬趴下仍竖耳(识别点),整体比垂耳犬高一行。
+    lie_rows: [
+        "..............",
+        "...BB....BB...",
+        "...BTB..BTB...",
+        "..BBBBBBBBBB..",
+        "..BTTKTTKTTB..",
+        "..BBTTKKTTBB..",
+        ".BBBBBBBBBBBB.",
+        ".BBBBBBBBBBBBB",
+        ".TTTTTTTTTTTT.",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 const BICHON: BreedSprite = BreedSprite {
@@ -224,6 +266,19 @@ const BICHON: BreedSprite = BreedSprite {
     ears: &[], // 圆蓬,无立耳
     tail: &[(12, 5)],
     fur: 0xF4F1E1,
+    // 棉花球趴下 = 压扁成椭圆。
+    lie_rows: [
+        "..............",
+        "..............",
+        "....WWWWWW....",
+        "..WWWWWWWWWW..",
+        "..WWWKWWKWWW..",
+        "..WWPWKKWPWW..",
+        ".WWWWWPPWWWWW.",
+        ".WWWWWWWWWWWW.",
+        ".WWWWWWWWWWWW.",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 const MALTESE: BreedSprite = BreedSprite {
@@ -242,6 +297,19 @@ const MALTESE: BreedSprite = BreedSprite {
     ears: &[],
     tail: &[(12, 6)],
     fur: 0xF4F1E1,
+    // 蝴蝶结留头顶(识别点),长毛向右铺开。
+    lie_rows: [
+        "..............",
+        "......RR......",
+        ".....RWWR.....",
+        "....WWWWWW....",
+        "..WWWKWWKWWW..",
+        "..WWPWKKWPWW..",
+        ".WWWWWWWWWWWW.",
+        ".WWWWWWWWWWWWW",
+        ".WWWWWWWWWWWW.",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 const SHIH_TZU: BreedSprite = BreedSprite {
@@ -260,6 +328,19 @@ const SHIH_TZU: BreedSprite = BreedSprite {
     ears: &[],
     tail: &[(12, 6), (13, 6)],
     fur: 0xF4F1E1,
+    // 发饰留头顶,双色脸保留,尾巴平贴右侧。
+    lie_rows: [
+        "..............",
+        "......AA......",
+        ".....AAAA.....",
+        "....WWWWWW....",
+        "..CCWKWWKWCC..",
+        "..CCPWKKWPCC..",
+        ".CCWWWWWWWWCC.",
+        ".CCWWWWWWWWCCW",
+        ".WWWWWWWWWWWW.",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 const POODLE: BreedSprite = BreedSprite {
@@ -278,6 +359,19 @@ const POODLE: BreedSprite = BreedSprite {
     ears: &[],
     tail: &[],
     fur: 0x965F3E,
+    // 卷毛球压扁,深棕围边保留。
+    lie_rows: [
+        "..............",
+        "..............",
+        "....NNNNNN....",
+        "..NNNNNNNNNN..",
+        "..UUNKNNKNUU..",
+        "..UUPNKKNPUU..",
+        ".UNNNNNNNNNNU.",
+        ".NNNNNNNNNNNN.",
+        ".NNNNNNNNNNNN.",
+    ],
+    lie_eyes: [(5, 4), (8, 4)],
 };
 
 /// 像素字符 → 颜色(SVG 原件的 fill 值)。
@@ -394,8 +488,8 @@ impl PetContext {
 const SLEEP_AFTER_MS: u64 = 90_000;
 /// 双击逗弄的玩耍窗口(设计.md `play`:蹦跳 + 爱心)。
 const PLAY_MS: u64 = 1400;
-/// 探头入场窗口(现身/换品种/欢迎页切换时从岗台后冒出,规则「探头」)。
-const PEEK_MS: u64 = 450;
+/// 探头入场窗口(SHEET 05-E:从岗台线后升起,全高裁切,~500ms 缓出)。
+const PEEK_MS: u64 = 500;
 
 // ═══════════════════════════ 持久化(用户状态,不入项目配置) ═══════════════
 
@@ -543,6 +637,13 @@ impl PetView {
             }
         })
         .detach();
+        // 初次现身的探头入场(reduced motion → 直接落定)。
+        let mut view = view;
+        if view.motion_on() {
+            Self::spawn_peek_driver(cx);
+        } else {
+            view.peek_until_ms = 0;
+        }
         view
     }
 
@@ -636,11 +737,11 @@ impl PetView {
 
     /// workspace 每帧喂入:当前 tab 是否欢迎页(welcome_only 模式)。
     /// 形态切换(1×↔2×)时探头入场。
-    pub(crate) fn set_on_welcome(&mut self, on: bool) {
+    pub(crate) fn set_on_welcome(&mut self, on: bool, cx: &mut Context<Self>) {
         if self.on_welcome != on {
-            self.peek();
+            self.on_welcome = on;
+            self.peek(cx);
         }
-        self.on_welcome = on;
     }
 
     /// 状态栏席位:`Some(("WESTIE · IDLE", live))`;关闭系统时显示 PET · OFF
@@ -671,7 +772,7 @@ impl PetView {
     /// 与右键菜单同一菜单 — 双击已让位给玩耍互动)。
     pub(crate) fn open_settings(&mut self, cx: &mut Context<Self>) {
         if !self.state.enabled || !self.state.visible {
-            self.peek(); // 从隐藏被唤出 = 探头入场
+            self.peek(cx); // 从隐藏被唤出 = 探头入场
         }
         self.state.enabled = true;
         self.state.visible = true;
@@ -688,7 +789,7 @@ impl PetView {
             self.state.visible = !self.state.visible;
         }
         if self.state.visible {
-            self.peek(); // 现身 = 探头入场
+            self.peek(cx); // 现身 = 探头入场
         }
         self.menu_open = false;
         self.state.save();
@@ -716,18 +817,41 @@ impl PetView {
         cx.notify();
     }
 
-    /// 探头入场(规则「探头」):现身/换品种/欢迎页切换时从岗台后冒出。
-    fn peek(&mut self) {
-        if self.motion_on() {
-            self.peek_until_ms = now_ms() + PEEK_MS;
+    /// 探头入场(SHEET 05-E 审核定稿):现身/换品种/欢迎切换时,从岗台线后
+    /// 升起(线下裁切);500ms 内 30ms 一帧的专用驱动(240ms 主 tick 太粗)。
+    /// reduced motion → 直切落定,无动画。
+    fn peek(&mut self, cx: &mut Context<Self>) {
+        if !self.motion_on() {
+            return;
         }
+        self.peek_until_ms = now_ms() + PEEK_MS;
+        Self::spawn_peek_driver(cx);
+    }
+
+    /// 探头动画驱动:30ms 重绘直到窗口结束(自停;多个重叠无害)。
+    fn spawn_peek_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+            let alive = this
+                .update(cx, |pet, cx| {
+                    cx.notify();
+                    pet.peek_until_ms > now_ms()
+                })
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+        })
+        .detach();
     }
 
     fn refresh_random(&mut self, cx: &mut Context<Self>) {
         // 手动刷新走随机策略,不固定轮换(规则);不写 fixed_breed。
         self.breed = self.breed.random_other();
         self.menu_open = false;
-        self.peek(); // 新狗探头入场
+        self.peek(cx); // 新狗探头入场
         self.bubble = Some((SharedString::from(self.breed.name_cn()), now_ms() + 2000));
         cx.notify();
     }
@@ -736,28 +860,40 @@ impl PetView {
         self.breed = b;
         self.state.fixed_breed = Some(b); // 显式选择 = 固定品种(入用户配置)
         self.state.save();
-        self.peek(); // 新狗探头入场
+        self.peek(cx); // 新狗探头入场
         self.menu_open = false;
         cx.notify();
     }
 
     // ── 帧合成:状态变形 → quad 列表 ─────────────────────────────────────
 
-    /// 当前帧的像素格(格坐标 + 颜色 + 子格偏移修正),供 canvas 直绘。
-    /// 返回 (x_cell, y_cell, color, dx_px, dy_px, h_scale)。
-    fn frame_cells(&self) -> Vec<(i32, i32, u32, f32, f32, f32)> {
+    /// 探头是否进行中(painter 据此在岗台线下裁切)。
+    fn peeking(&self) -> bool {
+        self.peek_until_ms > now_ms()
+    }
+
+    /// 当前帧的像素格(格坐标 + 颜色 + 子格修正),供 canvas 直绘。
+    /// 返回 (x_cell, y_cell, color, dx_px, dy_px, w_scale, h_scale)。
+    fn frame_cells(&self) -> Vec<(i32, i32, u32, f32, f32, f32, f32)> {
         let sp = self.breed.sprite();
         let now = now_ms();
         let motion = self.motion_on();
-        // 闭眼(眨眼/摸摸/打盹)统一为「快乐眯眼 ^^」:眼格压成下缘横缝,而不是
-        // 盖毛色让眼睛凭空消失(BUG发现 #6:无眼很诡异)。reduced motion 下
-        // 眨眼/摸摸不触发,但 Sleep 是姿态而非动画,仍闭眼。
-        let squint = (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover))
-            || self.ctx == PetContext::Sleep;
+        let sleeping = self.ctx == PetContext::Sleep;
+        // 闭眼 = SHEET 05-E **方案 A(审核定稿)**:毛色衬底铺满整格 + 眼色 2px
+        // 横缝贴下缘 —— 不再让眼格露出透明洞(上一版"没生效"的根因)。
+        // reduced motion 下眨眼/摸摸不触发,但 Sleep 是姿态而非动画,仍闭眼。
+        let squint =
+            (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover)) || sleeping;
         let tilt = motion && self.tilt_until_ms > now;
-        let mut out = Vec::with_capacity(96);
+        // 打盹用趴姿网格(姿态变形,SHEET 05-E):腿收起、肚皮贴岗台、头压低。
+        let (rows, eyes): (&[&'static str; 9], &[(i32, i32); 2]) = if sleeping {
+            (&sp.lie_rows, &sp.lie_eyes)
+        } else {
+            (&sp.rows, &sp.eyes)
+        };
+        let mut out = Vec::with_capacity(110);
 
-        // 全身偏移(像素):呼吸 / 蹦跳 / 玩耍 / 拎起 / 委屈下沉 / 打盹趴下。
+        // 全身偏移(像素):呼吸 / 蹦跳 / 玩耍 / 拎起 / 委屈下沉。
         let mut body_dy = match self.ctx {
             PetContext::Success => -4.0, // 上跳 2 设计像素(≈4 物理 px)
             // 玩耍:逐 tick 蹦跳(高低交替,比 success 单跳更欢)。
@@ -770,19 +906,23 @@ impl PetView {
             }
             PetContext::Drag => -10.0, // 拎起悬空
             PetContext::Error => 2.0,  // 垂头丧气
-            PetContext::Sleep => 3.0,  // 趴下贴地(设计.md `sleep`)
             _ => 0.0,
         };
         if motion && self.ctx == PetContext::Idle && self.breath {
             body_dy += 1.0; // 呼吸 1px 沉浮
         }
-        // 探头入场:从岗台后冒出(450ms 上浮;规则「探头」)。
-        if motion && self.peek_until_ms > now {
-            let remain = (self.peek_until_ms - now) as f32 / PEEK_MS as f32;
-            body_dy += remain * 6.0;
+        // 探头入场(SHEET 05-E 审核定稿):从岗台线**后面**升起 —— 全高(9 格)
+        // 下沉起步、缓出上浮,线下部分由 painter 裁切;不是可见状态下的位移。
+        if self.peek_until_ms > now {
+            let p = 1.0 - (self.peek_until_ms - now) as f32 / PEEK_MS as f32;
+            let ease = 1.0 - (1.0 - p).powi(3);
+            body_dy += (1.0 - ease) * 9.0 * CELL;
         }
+        // 趴姿呼吸:背部隆起 1px —— 上半身(行 ≤6)上移,行 7 拉高 1px 补缝,
+        // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
+        let inhale = sleeping && motion && self.breath;
 
-        for (y, row) in sp.rows.iter().enumerate() {
+        for (y, row) in rows.iter().enumerate() {
             let y = y as i32;
             for (x, ch) in row.chars().enumerate() {
                 let x = x as i32;
@@ -791,36 +931,44 @@ impl PetView {
                 };
                 let mut dx = 0.0_f32;
                 let mut dy = body_dy;
-                let mut hs = 1.0_f32; // 高度比例(眯眼/委屈眼用)
-                let is_eye = sp.eyes.contains(&(x, y));
-                let is_ear = sp.ears.contains(&(x, y));
-                let is_tail = sp.tail.contains(&(x, y));
-                let is_leg = y == 8;
+                let ws = 1.0_f32;
+                let mut hs = 1.0_f32;
+                let is_eye = eyes.contains(&(x, y));
+                let is_ear = !sleeping && sp.ears.contains(&(x, y));
+                let is_tail = !sleeping && sp.tail.contains(&(x, y));
+                let is_leg = !sleeping && y == 8;
 
-                // 快乐眯眼 ^^:眼格压成 35% 高、沉到格底的深色横缝(闭眼仍有
-                // 眼线,不再「眼睛没了」)。
-                if is_eye && squint && self.ctx != PetContext::Error {
-                    hs = 0.35;
-                    dy += 2.0;
+                if inhale {
+                    if y <= 6 {
+                        dy -= 1.0;
+                    } else if y == 7 {
+                        dy -= 1.0;
+                        hs = (CELL + 1.0) / CELL; // 拉高补缝
+                    }
                 }
-                // 委屈眼「- -」:眼格压成 40% 高的横条(规则)。
+
+                // 闭眼(方案 A):先铺毛色衬底整格,再叠眼色 2px 下缘横缝。
+                if is_eye && squint && self.ctx != PetContext::Error {
+                    out.push((x, y, sp.fur, dx, dy, 1.0, 1.0)); // 衬底
+                    out.push((x, y, color, dx, dy + 2.0, 1.0, 2.0 / CELL)); // 下缘缝
+                    continue;
+                }
+                // 委屈眼「- -」:同样衬底,眼色 2px 横条居中(规则;区分于眯眼)。
                 if is_eye && self.ctx == PetContext::Error {
-                    hs = 0.4;
-                    dy += 2.0;
+                    out.push((x, y, sp.fur, dx, dy, 1.0, 1.0));
+                    out.push((x, y, color, dx, dy, 1.0, 2.0 / CELL));
+                    continue;
                 }
                 // Typing:立耳 +1 格(规则「耳朵立起 1px」);只对有立耳的犬。
                 if is_ear && self.ctx == PetContext::Typing {
                     dy -= CELL;
                 }
-                // 耳朵下垂(error);打盹耳朵微塌。
+                // 耳朵下垂(error)。
                 if is_ear && self.ctx == PetContext::Error {
                     dy += CELL * 0.6;
                 }
-                if is_ear && self.ctx == PetContext::Sleep {
-                    dy += CELL * 0.4;
-                }
-                // 尾摆:idle 慢摆 1px,running 快摆 2px,玩耍 3px 最欢;打盹不摆。
-                if is_tail && motion && self.ctx != PetContext::Sleep {
+                // 尾摆:idle 慢摆 1px,running 快摆 2px,玩耍 3px 最欢;趴姿不摆。
+                if is_tail && motion {
                     let amp = match self.ctx {
                         PetContext::Play => 3.0,
                         PetContext::Running => 2.0,
@@ -842,29 +990,29 @@ impl PetView {
                     dx += 3.0;
                     dy += 1.5;
                 }
-                out.push((x, y, color, dx, dy, hs));
+                out.push((x, y, color, dx, dy, ws, hs));
             }
         }
-        // Success:头顶冒像素小心(ok 色 5×5,SHEET 05 `.updot`)。
+        // Success:头顶冒像素小心(ok 色 ~5×5,SHEET 05 `.updot`)。
         if self.ctx == PetContext::Success {
-            out.push((9, -1, OK, 2.0, body_dy, 0.8));
+            out.push((9, -1, OK, 2.0, body_dy, 0.8, 0.8));
         }
-        // 玩耍:头顶双爱心(粉色,随相位交替闪)。
+        // 玩耍(定稿):头顶双爱心 #F08C98,随相位交替闪(reduced motion 双亮静帧)。
         if self.ctx == PetContext::Play {
             const HEART: u32 = 0xF08C98; // 像素爱心粉(宠物专属调色,非语义色)
             if !motion || self.phase {
-                out.push((9, -1, HEART, 2.0, body_dy, 0.8));
+                out.push((9, -1, HEART, 2.0, body_dy, 0.8, 0.8));
             }
             if !motion || !self.phase {
-                out.push((11, -2, HEART, 1.0, body_dy, 0.6));
+                out.push((11, -2, HEART, 1.0, body_dy, 0.65, 0.65));
             }
         }
-        // 打盹:头顶 zZ(弱灰,随呼吸相位起伏)。
-        if self.ctx == PetContext::Sleep {
+        // 打盹:头顶 zZ(t2 弱灰小方,3px/4px,随呼吸相位上浮 — 审核稿)。
+        if sleeping {
             const ZZ: u32 = 0x69748E; // t2 弱文灰
-            let lift = if motion && self.breath { -1.0 } else { 0.0 };
-            out.push((11, 0, ZZ, 0.0, body_dy + lift, 0.5));
-            out.push((12, -1, ZZ, 1.0, body_dy + lift * 1.5, 0.7));
+            let lift = if motion && self.breath { -2.0 } else { 0.0 };
+            out.push((11, 3, ZZ, 0.0, 2.0 + lift, 0.5, 0.5));
+            out.push((12, 1, ZZ, 3.0, 4.0 + lift * 1.5, 0.65, 0.65));
         }
         out
     }
@@ -916,6 +1064,8 @@ impl Render for PetView {
 
         let cells = self.frame_cells();
         let dragging = self.drag.is_some();
+        // 探头进行中:岗台线以下裁切(SHEET 05-E「从岗台线后升起」)。
+        let peek_clip = self.peeking();
 
         // ── 小狗本体(canvas 逐 quad 直绘;格距/偏移随形态 ×s) ──
         let sprite = canvas(
@@ -924,15 +1074,23 @@ impl Render for PetView {
                 let cell = CELL * s;
                 let ox = f32::from(bounds.origin.x) + SPRITE_X * s;
                 let oy = f32::from(bounds.origin.y) + SPRITE_Y * s;
-                for (x, y, color, dx, dy, hs) in &cells {
-                    let h = cell * hs;
+                // 岗台线(雪碧图底缘):探头时线下不画。
+                let shelf = oy + 9.0 * cell;
+                for (x, y, color, dx, dy, ws, hs) in &cells {
+                    let w = cell * ws;
+                    let mut h = cell * hs;
+                    let qx = ox + *x as f32 * cell + dx * s + (cell - w) * 0.5;
+                    let qy = oy + *y as f32 * cell + dy * s + (cell - h) * 0.5;
+                    if peek_clip {
+                        if qy >= shelf {
+                            continue;
+                        }
+                        h = h.min(shelf - qy);
+                    }
                     window.paint_quad(fill(
                         Bounds {
-                            origin: point(
-                                px(ox + *x as f32 * cell + dx * s),
-                                px(oy + *y as f32 * cell + dy * s + (cell - h) * 0.5),
-                            ),
-                            size: size(px(cell), px(h)),
+                            origin: point(px(qx), px(qy)),
+                            size: size(px(w), px(h)),
                         },
                         rgb(*color),
                     ));
@@ -1237,5 +1395,56 @@ impl Render for PetView {
                         }),
                     )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 站姿/趴姿网格的结构守卫:14 列 × 9 行,眼睛格必须落在深色 K 像素上
+    /// (SHEET 05-E:闭眼 = 毛色衬底 + 眼色横缝,坐标错位会画飞)。
+    #[test]
+    fn sprites_are_well_formed() {
+        for b in ALL_BREEDS {
+            let sp = b.sprite();
+            for (i, row) in sp.rows.iter().chain(sp.lie_rows.iter()).enumerate() {
+                assert_eq!(
+                    row.chars().count(),
+                    14,
+                    "{:?} row {i} must be 14 cols, got {:?}",
+                    b,
+                    row
+                );
+            }
+            for (label, rows, eyes) in [
+                ("stand", &sp.rows, &sp.eyes),
+                ("lie", &sp.lie_rows, &sp.lie_eyes),
+            ] {
+                for (ex, ey) in eyes.iter() {
+                    let ch = rows[*ey as usize].chars().nth(*ex as usize).unwrap();
+                    assert_eq!(ch, 'K', "{:?} {label} eye at ({ex},{ey}) must be K", b);
+                }
+            }
+        }
+    }
+
+    /// 趴姿肚皮必须贴岗台(底行非空)且头压低(首两行留白 ≥1)——「趴下」的
+    /// 姿态变形约束(审核稿:身高 9 → ≤8 行)。
+    #[test]
+    fn lie_pose_hugs_the_shelf() {
+        for b in ALL_BREEDS {
+            let sp = b.sprite();
+            assert!(
+                sp.lie_rows[8].chars().any(|c| c != '.'),
+                "{:?} lie pose belly row must touch the shelf",
+                b
+            );
+            assert!(
+                sp.lie_rows[0].chars().all(|c| c == '.'),
+                "{:?} lie pose must drop the head (row 0 empty)",
+                b
+            );
+        }
     }
 }
