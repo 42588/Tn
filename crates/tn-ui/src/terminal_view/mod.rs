@@ -758,7 +758,11 @@ impl TerminalView {
         // window callback (non-unwinding), so a spawn panic aborts the whole
         // process; fall back to a plain pwsh instead.
         let mut pty: Box<dyn PtyBackend> = if let Some(cfg) = &launch.ssh {
-            match SshBackend::spawn(cfg.clone(), pty_size) {
+            let mut ssh_cfg = cfg.clone();
+            if std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
+                ssh_cfg.shell_init = Some(Integration::new().ssh_init_cmd());
+            }
+            match SshBackend::spawn(ssh_cfg, pty_size) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
                     tracing::error!(host = %cfg.host, "ssh spawn failed: {e}; falling back to pwsh");
@@ -858,6 +862,7 @@ impl TerminalView {
         let title = Arc::new(Mutex::new(None));
         let agent_exited = Arc::new(AtomicBool::new(false));
         let bell = Arc::new(AtomicBool::new(false));
+        let cmd_done = Arc::new(AtomicBool::new(false));
 
         Self::spawn_reader(
             reader,
@@ -869,8 +874,9 @@ impl TerminalView {
             blocks.clone(),
             agent_exited.clone(),
             bell.clone(),
+            cmd_done.clone(),
         );
-        Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx);
+        Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx, cmd_done);
         Self::spawn_blink_loop(cx);
         // Watch the child so a pane (esp. the quick terminal) can react to its
         // shell/agent exiting. Harmless for the main window (no subscriber).

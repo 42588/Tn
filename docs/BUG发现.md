@@ -2,9 +2,9 @@
 
 跟踪与 triage 见 [docs/任务/2026-06-12-BUG发现清单处理.md](任务/2026-06-12-BUG发现清单处理.md)。
 
-1. ssh 链接后，执行命令并未与宠物联动 —— 待办:根因已定位(远端无 OSC 133 shell integration,同时也没有命令块条)
-2. ssh链接后，若意外断开，不会保存之前的快照，默认重新开始工作 —— 待办:方案已规划(重连复用同一 buffer,断开期冻结快照)
-3. ssh连接后，使用git初始化项目后，无法想Windows一样实时展示文件变更状态 —— 待办:方案已规划(远端节流轮询/命令结束触发刷新)
+1. ~~ssh 链接后，执行命令并未与宠物联动~~ —— ✅ 已修(2026-06-12):shell open 后立即注入 bash/zsh 自动检测的 OSC 133/633 集成脚本(base64 编码 + stty -echo 隐身注入);宠物 Running/Success/Error 演出完整激活
+2. ~~ssh链接后，若意外断开，不会保存之前的快照，默认重新开始工作~~ —— ✅ 已修(2026-06-12):首次连接成功后所有重连状态文字改走 PtyEvent 浮层(B1/B4),不再写入 terminal buffer;终端网格在断开/重连期间保持冻结快照
+3. ~~ssh连接后，使用git初始化项目后，无法想Windows一样实时展示文件变更状态~~ —— ✅ 已修(2026-06-12):reader 线程 CommandFinished 设 cmd_done flag;repaint loop 检测 SSH pane → 触发 refresh_changes(agent) / emit FilesChanged(shell);explorer 新增 compute_remote_git_status(SSH 侧 git status --porcelain)
 4. 幽灵启动器启动agent的方式不对，现在我们上面有codex的磁贴，但是点击进入我们只能进默认目录工作，无法切换目录（属于设计层面的问题） —— 待办:两个交互候选待定夺(a. 磁贴二级「最近目录」下钻;b. 跟随主窗焦点 pane cwd),定夺后回写 SHEET 04 再实现
 
 5. ~~quick look展开后出现了面板穿透的问题，我们的在quick look 中进行鼠标滚动等事件的时候，会影响底层的终端~~ —— ✅ 已修(2026-06-12):QuickLook 根节点 + 全部 7 处浮层 scrim 统一吞滚轮

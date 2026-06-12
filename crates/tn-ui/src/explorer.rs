@@ -17,6 +17,7 @@ use gpui::{
     Window,
 };
 use tn_config::Loaded;
+use tn_pty::remote_cmd::{RemoteCommandService, SshCommandService};
 use tn_pty::remote_fs::{RemoteFileService, RemoteId, RemotePath, SftpFileService};
 
 use crate::gitutil;
@@ -312,6 +313,7 @@ impl ExplorerRoot {
 
     fn supports_git_status(&self) -> bool {
         matches!(self.fs, ExplorerFs::Host)
+            || (matches!(self.fs, ExplorerFs::Ssh { .. }) && self.remote_path.is_some())
     }
 
     /// For a WSL root: `(distro, linux_path)` parsed from its `\\wsl$\<distro>\…`
@@ -970,6 +972,35 @@ impl ExplorerView {
             self.git_status.clear();
             return;
         }
+
+        // SSH root: run `git status --porcelain` on the remote host.
+        if let (ExplorerFs::Ssh { cfg }, Some(remote_path)) =
+            (&self.root.fs, self.root.remote_path.clone())
+        {
+            let cfg = cfg.clone();
+            let exec = cx.background_executor().clone();
+            let task = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+                let status = exec
+                    .spawn(async move {
+                        let (tx, rx) = futures::channel::oneshot::channel();
+                        std::thread::spawn(move || {
+                            let service = SshCommandService::shared();
+                            let _ =
+                                tx.send(Self::compute_remote_git_status(&*service, &cfg, &remote_path));
+                        });
+                        rx.await.unwrap_or_default()
+                    })
+                    .await;
+                this.update(cx, |this, cx| {
+                    this.git_status = status;
+                    cx.notify();
+                })
+                .ok();
+            });
+            self._git_task = Some(task);
+            return;
+        }
+
         let Some(root) = self.root.path_buf() else {
             self.git_status.clear();
             return;
@@ -996,6 +1027,42 @@ impl ExplorerView {
             .ok();
         });
         self._git_task = Some(task);
+    }
+
+    /// Run `git status --porcelain` on a remote SSH host and return the same
+    /// tag map as [`Self::compute_git_status`]. Uses the shared SSH command
+    /// service (1.5 s timeout); returns empty on error.
+    fn compute_remote_git_status(
+        service: &dyn RemoteCommandService,
+        cfg: &tn_pty::SshConfig,
+        root: &RemotePath,
+    ) -> HashMap<String, char> {
+        let out = match service.run(
+            cfg,
+            root,
+            "git",
+            &["-c", "core.quotePath=false", "status", "--porcelain"],
+            Duration::from_millis(1500),
+        ) {
+            Ok(out) if out.success() => out.stdout,
+            _ => return HashMap::new(),
+        };
+        let mut map = parse_porcelain(&out);
+        for (path, &tag) in map.clone().iter() {
+            let rank = Self::tag_rank(tag);
+            let mut parent = path.clone();
+            while let Some(pos) = parent.rfind('/') {
+                parent.truncate(pos);
+                map.entry(parent.clone())
+                    .and_modify(|t| {
+                        if rank > Self::tag_rank(*t) {
+                            *t = Self::rank_to_tag(rank);
+                        }
+                    })
+                    .or_insert(Self::rank_to_tag(rank));
+            }
+        }
+        map
     }
 
     /// Signal that the file tree may be stale — trigger a full rebuild + git
@@ -1333,6 +1400,7 @@ mod tests {
             user: "alice".into(),
             key_path: None,
             password: None,
+            shell_init: None,
         }
     }
 

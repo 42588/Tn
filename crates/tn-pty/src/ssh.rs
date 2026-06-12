@@ -57,6 +57,11 @@ pub struct SshConfig {
     pub key_path: Option<PathBuf>,
     /// Optional password (config-supplied). Prompting is not yet implemented.
     pub password: Option<String>,
+    /// Shell-integration init command injected into the remote shell right
+    /// after it opens (see `tn_shell::Integration::ssh_init_cmd`). When set,
+    /// the remote bash/zsh gains OSC 133/633 markers so command blocks and
+    /// pet signals work exactly as on local sessions. `None` = disabled.
+    pub shell_init: Option<String>,
 }
 
 impl SshConfig {
@@ -67,6 +72,7 @@ impl SshConfig {
             user: user.into(),
             key_path: None,
             password: None,
+            shell_init: None,
         }
     }
 
@@ -137,6 +143,7 @@ impl SshConfig {
             user,
             key_path,
             password: None,
+            shell_init: None,
         }
     }
 
@@ -410,6 +417,10 @@ async fn run_session(
     });
 
     let mut current_size = size;
+    // After the first successful shell open, suppress raw terminal text for
+    // status messages so the buffer stays frozen at the last session's output.
+    // All status is still shown via PtyEvent overlays (B1/B4 cards).
+    let mut connected_once = false;
 
     loop {
         let key_rejected = Arc::new(AtomicBool::new(false));
@@ -423,13 +434,15 @@ async fn run_session(
             allow_host_key_prompt: true,
         };
 
-        let _ = in_tx.send(
-            format!(
-                "\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n",
-                cfg.user, cfg.host, cfg.port
-            )
-            .into_bytes(),
-        );
+        if !connected_once {
+            let _ = in_tx.send(
+                format!(
+                    "\r\n\x1b[36m[SSH]\x1b[0m 正在连接 {}@{}:{} ...\r\n",
+                    cfg.user, cfg.host, cfg.port
+                )
+                .into_bytes(),
+            );
+        }
         emit_event(
             &event_tx,
             &waker,
@@ -455,16 +468,20 @@ async fn run_session(
                     // danger card, or a quiet TOFU rejection) — just stop.
                     return Err(anyhow!("host key rejected"));
                 }
-                let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
-                let _ = in_tx.send(msg.into_bytes());
+                if !connected_once {
+                    let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
+                    let _ = in_tx.send(msg.into_bytes());
+                }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
                     _ = kill_rx.recv() => return Ok(()),
                 }
             }
             Err(_) => {
-                let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s)\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", cfg.host, cfg.port);
-                let _ = in_tx.send(msg.into_bytes());
+                if !connected_once {
+                    let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s)\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", cfg.host, cfg.port);
+                    let _ = in_tx.send(msg.into_bytes());
+                }
                 tokio::select! {
                     _ = tokio::time::sleep(Duration::from_secs(5)) => continue,
                     _ = kill_rx.recv() => return Ok(()),
@@ -482,11 +499,13 @@ async fn run_session(
             }
         };
 
-        let _ = in_tx.send(
-            "\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n"
-                .as_bytes()
-                .to_vec(),
-        );
+        if !connected_once {
+            let _ = in_tx.send(
+                "\r\n\x1b[32m[SSH]\x1b[0m 连接成功! 打开远程 shell...\r\n"
+                    .as_bytes()
+                    .to_vec(),
+            );
+        }
         emit_event(
             &event_tx,
             &waker,
@@ -513,11 +532,18 @@ async fn run_session(
             .await
             .context("request pty")?;
         channel.request_shell(true).await.context("request shell")?;
+        // BUG #1: inject OSC 133/633 shell integration into the remote shell.
+        // Sent before drain_pending_input so it runs before any user keystrokes;
+        // stty -echo hides the injected bytes from the terminal grid.
+        if let Some(ref init) = cfg.shell_init {
+            let _ = channel.data_bytes(init.as_bytes().to_vec()).await;
+        }
         // Keystrokes typed while the progress/password/host-key overlays were up
         // must not replay into the remote shell after connect/reconnect. The UI
         // swallows them now, but drain defensively for bytes queued before that fix
         // or from non-keyboard paths.
         drain_pending_input(&mut out_rx);
+        connected_once = true;
 
         // Connected — let the UI record this target as a recent connection (A1),
         // tagged with the method that actually worked.
@@ -568,11 +594,9 @@ async fn run_session(
         if explicit_exit {
             return Ok(());
         } else {
-            let _ = in_tx.send(
-                "\r\n\x1b[33m[SSH]\x1b[0m 连接已断开。5 秒后自动重连... (Ctrl+D 取消)\r\n"
-                    .as_bytes()
-                    .to_vec(),
-            );
+            // BUG #2: buffer freeze — don't write status text to the terminal
+            // after first connect; the B4 reconnect banner (PtyEvent::Disconnected)
+            // already shows the status as an overlay, preserving the last grid state.
             if event_tx.send(crate::PtyEvent::Disconnected).is_ok() {
                 if let Some(w) = waker.lock().unwrap().as_ref() {
                     w();

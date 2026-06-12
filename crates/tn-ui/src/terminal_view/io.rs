@@ -24,8 +24,8 @@ use tn_pty::PtyBackend;
 use tn_shell::ShellParser;
 
 use super::{
-    CwdChanged, ProcessExited, SharedWriter, TerminalView, UsageUpdated, BELL_FLASH_MS,
-    CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
+    launch::FileNamespace, CwdChanged, FilesChanged, ProcessExited, SharedWriter, TerminalView,
+    UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
 impl TerminalView {
@@ -41,6 +41,7 @@ impl TerminalView {
         blocks: Arc<Mutex<BlockModel>>,
         agent_exited: Arc<AtomicBool>,
         bell: Arc<AtomicBool>,
+        cmd_done: Arc<AtomicBool>,
     ) {
         thread::spawn(move || {
             // Shell-integration bypass parser + a session clock. The parser is
@@ -142,6 +143,9 @@ impl TerminalView {
                                     }
                                     tn_shell::BlockEvent::CommandFinished { exit } => {
                                         pet_run.command_end(*exit);
+                                        // BUG #3: signal foreground to refresh remote git
+                                        // status after command completes on SSH panes.
+                                        cmd_done.store(true, Ordering::Relaxed);
                                     }
                                     _ => {}
                                 }
@@ -184,6 +188,7 @@ impl TerminalView {
         cx: &mut Context<Self>,
         dirty: Arc<AtomicBool>,
         mut wake_rx: mpsc::UnboundedReceiver<()>,
+        cmd_done: Arc<AtomicBool>,
     ) {
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             // `dirty` dedup guarantees at most one wake is queued at a time, so a
@@ -218,6 +223,21 @@ impl TerminalView {
                         if current_cwd != view.last_cwd {
                             view.last_cwd = current_cwd;
                             cx.emit(CwdChanged);
+                        }
+
+                        // BUG #3: command-end triggered git refresh for SSH panes.
+                        // On SSH, filesystem events are unavailable; refresh after
+                        // each command finishes instead (set by the reader thread).
+                        if cmd_done.swap(false, Ordering::Relaxed)
+                            && view.file_namespace == FileNamespace::Ssh
+                        {
+                            if view.agent.is_some() {
+                                // Agent pane: refresh rail + emit FilesChanged
+                                view.refresh_changes(cx);
+                            } else {
+                                // Shell pane: trigger explorer git-status rebuild
+                                cx.emit(FilesChanged);
+                            }
                         }
 
                         cx.notify();

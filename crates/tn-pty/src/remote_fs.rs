@@ -864,6 +864,7 @@ mod tests {
             user: "alice".into(),
             key_path: None,
             password: None,
+            shell_init: None,
         };
         let id = RemoteId::new(&cfg, "/home/alice");
         let child = id.child("src");

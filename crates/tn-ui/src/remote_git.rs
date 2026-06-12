@@ -245,6 +245,7 @@ mod tests {
             user: "alice".into(),
             key_path: None,
             password: None,
+            shell_init: None,
         }
     }
 

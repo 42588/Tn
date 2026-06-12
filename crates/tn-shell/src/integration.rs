@@ -181,6 +181,28 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
         SCRIPT.replace("__NONCE__", &self.nonce)
     }
 
+    /// Shell command to send immediately after `request_shell` on an SSH
+    /// session. Auto-detects bash vs zsh via `$BASH_VERSION`/`$ZSH_VERSION`,
+    /// base64-decodes the appropriate integration script, and `eval`s it.
+    /// Echo is suppressed during injection so the setup bytes stay invisible.
+    /// Requires `base64` (coreutils) on the remote; fails silently if absent.
+    pub fn ssh_init_cmd(&self) -> String {
+        let bash_b64 = base64(self.bash().as_bytes());
+        let zsh_b64 = base64(self.zsh().as_bytes());
+        let mut cmd = String::with_capacity(bash_b64.len() + zsh_b64.len() + 220);
+        cmd.push_str("stty -echo 2>/dev/null; ");
+        cmd.push_str("if [ -n \"$BASH_VERSION\" ]; then ");
+        cmd.push_str("eval \"$(printf '%s' '");
+        cmd.push_str(&bash_b64);
+        cmd.push_str("' | base64 -d 2>/dev/null)\" 2>/dev/null; ");
+        cmd.push_str("elif [ -n \"$ZSH_VERSION\" ]; then ");
+        cmd.push_str("eval \"$(printf '%s' '");
+        cmd.push_str(&zsh_b64);
+        cmd.push_str("' | base64 -d 2>/dev/null)\" 2>/dev/null; ");
+        cmd.push_str("fi; stty echo 2>/dev/null\r\n");
+        cmd
+    }
+
     /// Base64 of the UTF-16LE bytes of [`Self::powershell`], for launching
     /// `powershell.exe -NoExit -EncodedCommand <b64>`: the FTCS hooks are
     /// sourced at startup with no temp file and no echoed input line.
