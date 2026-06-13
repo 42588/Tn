@@ -280,6 +280,31 @@ fn should_scroll_to_bottom_before_input(offset: usize, _history: usize) -> bool 
     offset > 0
 }
 
+/// Width **in cells** of the glyph the cursor sits on at `col`: 2 for a
+/// double-width (CJK / wide-emoji) glyph, else 1. `row_runs` emits every wide
+/// char as its own `cols == 2` single-char run (it never merges a wide cell with
+/// its neighbours), so walking the runs and matching the leading cell is
+/// exhaustive. The block cursor uses this so it covers the **whole** glyph — a
+/// fixed one-cell block only covers the left half of a wide char, the
+/// "光标只覆盖一半 CJK 字" bug seen when moving the cursor back over CJK text.
+fn cursor_cell_cols(row: &[tn_core::CellRun], col: usize) -> usize {
+    let mut c = 0usize;
+    for run in row {
+        let step = if run.cols == 2 && run.text.chars().count() == 1 {
+            2
+        } else {
+            1
+        };
+        for _ in run.text.chars() {
+            if c == col {
+                return step;
+            }
+            c += step;
+        }
+    }
+    1
+}
+
 fn resize_anchoring_for_pane(agent_active: bool, alt_screen: bool) -> ResizeAnchoring {
     if agent_active || alt_screen {
         ResizeAnchoring::Bottom
@@ -3077,8 +3102,15 @@ impl Render for TerminalView {
                 let is_block = cursor_shape == tn_core::CursorShape::Block;
                 let is_underline = cursor_shape == tn_core::CursorShape::Underline;
 
+                // A double-width (CJK / wide-emoji) glyph spans two cells; the
+                // block/underline must cover both or it sits over only the left
+                // half of the character (visible when moving back over CJK text).
+                let cursor_cols = rows
+                    .get(cur_row)
+                    .map(|row| cursor_cell_cols(row, cur_col))
+                    .unwrap_or(1);
                 let anim_w = (if is_block || is_underline {
-                    self.cell_width
+                    cursor_cols as f32 * self.cell_width
                 } else {
                     2.0
                 }) + width_offset;
@@ -4564,6 +4596,35 @@ mod tests {
             should_scroll_to_bottom_before_input(8, 8),
             "the top of history is still not the live bottom"
         );
+    }
+
+    #[test]
+    fn cursor_block_spans_two_cells_on_a_wide_glyph() {
+        fn run(text: &str, cols: usize) -> tn_core::CellRun {
+            tn_core::CellRun {
+                text: text.into(),
+                fg: tn_core::Rgb::default(),
+                bg: tn_core::Rgb::default(),
+                bold: false,
+                italic: false,
+                underline: false,
+                cols,
+            }
+        }
+        // Row: "ab" (narrow, cols 2) + "为" (wide, cols 2) + "x" (narrow, cols 1).
+        // Cell layout: a=0, b=1, 为=2..=3 (leading cell 2), x=4.
+        let row = vec![run("ab", 2), run("为", 2), run("x", 1)];
+        assert_eq!(cursor_cell_cols(&row, 0), 1, "ascii 'a' is one cell");
+        assert_eq!(cursor_cell_cols(&row, 1), 1, "ascii 'b' is one cell");
+        assert_eq!(
+            cursor_cell_cols(&row, 2),
+            2,
+            "cursor on the leading cell of a wide CJK glyph covers two cells"
+        );
+        assert_eq!(cursor_cell_cols(&row, 4), 1, "ascii 'x' after the wide glyph");
+        // Past the end / empty row → one cell (plain block on a blank).
+        assert_eq!(cursor_cell_cols(&row, 9), 1);
+        assert_eq!(cursor_cell_cols(&[], 0), 1);
     }
 
     #[test]
