@@ -4299,14 +4299,19 @@ mod tests {
     }
 
     #[test]
-    fn builtin_agent_launch_applies_inline_defaults() {
+    fn builtin_agents_launch_without_inline_defaults() {
+        // Built-in Claude/Codex run as their native full-screen TUIs: no
+        // inline-mode env/args are injected. (History is owned by Tn's transcript
+        // surface, sourced from the session log — not terminal scrollback, which
+        // these agents never fully populate.)
         let claude = first_profile("[[profiles]]\nname=\"Claude\"\ncommand=\"claude\"\n");
         let claude_spec = LaunchSpec::from_profile(&claude, &reg()).expect("claude is launchable");
         assert!(
-            claude_spec.env.iter().any(|(k, v)| {
-                k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" && v == "1"
-            }),
-            "Claude must opt out of fullscreen rendering so terminal scrollback works, got {:?}",
+            !claude_spec
+                .env
+                .iter()
+                .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"),
+            "Claude must not be forced into inline mode, got {:?}",
             claude_spec.env
         );
 
@@ -4320,31 +4325,15 @@ mod tests {
             .find(|a| a.contains("& 'codex'"))
             .expect("hosted command");
         assert!(
-            invoke.contains("& 'codex' '--no-alt-screen' 'resume' '--last'"),
-            "Codex default args must be inserted before profile args, got {invoke:?}"
+            !invoke.contains("--no-alt-screen"),
+            "Codex must not be forced into inline mode, got {invoke:?}"
         );
+        // Profile args are still passed through untouched.
+        assert!(invoke.contains("& 'codex' 'resume' '--last'"), "got {invoke:?}");
     }
 
     #[test]
-    fn builtin_agent_launch_dedupes_default_args() {
-        let codex = first_profile(
-            "[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\nargs=[\"--no-alt-screen\", \"resume\"]\n",
-        );
-        let spec = LaunchSpec::from_profile(&codex, &reg()).expect("codex is launchable");
-        let invoke = spec
-            .args
-            .iter()
-            .find(|a| a.contains("& 'codex'"))
-            .expect("hosted command");
-        assert_eq!(
-            invoke.matches("--no-alt-screen").count(),
-            1,
-            "descriptor defaults must not duplicate an explicit user arg, got {invoke:?}"
-        );
-    }
-
-    #[test]
-    fn config_backed_builtin_agents_keep_inline_defaults() {
+    fn config_backed_builtin_agents_have_no_inline_defaults() {
         let cfg = tn_config::Config::from_toml_str(
             "[[agents]]\n\
              id=\"claude\"\n\
@@ -4377,9 +4366,10 @@ mod tests {
         }
 
         let claude = LaunchSpec::from_profile(&cfg.profiles[0], &reg).expect("claude launchable");
-        assert!(claude
+        assert!(!claude
             .env
-            .contains(&("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())));
+            .iter()
+            .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"));
 
         let codex = LaunchSpec::from_profile(&cfg.profiles[1], &reg).expect("codex launchable");
         let invoke = codex
@@ -4388,8 +4378,8 @@ mod tests {
             .find(|a| a.contains("& 'codex'"))
             .expect("hosted command");
         assert!(
-            invoke.contains("--no-alt-screen"),
-            "config-backed Codex must inherit the built-in inline arg, got {invoke:?}"
+            !invoke.contains("--no-alt-screen"),
+            "config-backed Codex must not inherit an inline arg, got {invoke:?}"
         );
     }
 

@@ -175,24 +175,20 @@ mod tests {
         let p = LayoutPane {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
-            env: vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())],
+            // Arbitrary launch env: the field is generic plumbing (any agent may
+            // declare `default_env`); it round-trips regardless of contents.
+            env: vec![("TN_EXAMPLE".into(), "1".into())],
             integrate_pwsh: true,
             shell_integration: None,
             agent: Some("claude".into()),
         };
         let spec = p.to_spec();
         assert_eq!(spec.agent, Some(AgentId::new("claude")));
-        assert_eq!(
-            spec.env,
-            vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())]
-        );
+        assert_eq!(spec.env, vec![("TN_EXAMPLE".into(), "1".into())]);
         assert!(spec.ssh.is_none());
         let back = LayoutPane::from_spec(&spec);
         assert_eq!(back.program, "powershell.exe");
-        assert_eq!(
-            back.env,
-            vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())]
-        );
+        assert_eq!(back.env, vec![("TN_EXAMPLE".into(), "1".into())]);
         assert_eq!(back.agent.as_deref(), Some("claude"));
         assert!(back.integrate_pwsh);
     }

@@ -51,11 +51,12 @@ fn claude_descriptor() -> AgentDescriptor {
         // has a fallback.
         accent: Some(Color::new(0xF0, 0x91, 0x6D)),
         glyph: None,
+        // No inline-mode injection: Claude runs as its native full-screen Ink TUI.
+        // History does NOT come from terminal scrollback (the agent only repaints
+        // the visible viewport, so terminal scrollback never holds the full
+        // conversation) — Tn owns the scrollable transcript from the session log.
         default_args: Vec::new(),
-        default_env: vec![(
-            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(),
-            "1".into(),
-        )],
+        default_env: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
         network_policy: AgentNetworkPolicy::Deny,
@@ -73,7 +74,11 @@ fn codex_descriptor() -> AgentDescriptor {
         command_aliases: vec!["codex".into()],
         accent: Some(Color::new(0x73, 0xDA, 0xCA)), // teal (mockup `.tile.codex`)
         glyph: None,
-        default_args: vec!["--no-alt-screen".into()],
+        // No `--no-alt-screen`: Codex runs as its native full-screen TUI. Inline
+        // mode only spilled a handful of lines into terminal scrollback (never the
+        // full transcript) and broke inline cursor/IME/input — Tn owns the
+        // scrollable history from the Codex rollout log instead.
+        default_args: Vec::new(),
         default_env: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
@@ -243,18 +248,15 @@ mod tests {
         assert_eq!(c.descriptor().label, "Claude Code");
         assert_eq!(c.descriptor().short, "Claude");
         assert!(c.descriptor().manages_own_cursor); // Ink TUI
-        assert_eq!(
-            c.descriptor().default_env,
-            vec![(
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
-                "1".to_string()
-            )]
-        );
+        // Native full-screen agents: no inline-mode injection (history comes from
+        // the Tn-owned transcript, not terminal scrollback).
+        assert!(c.descriptor().default_env.is_empty());
+        assert!(c.descriptor().default_args.is_empty());
         assert!(c.descriptor().capabilities.usage);
 
         let x = CodexAdapter::new();
         assert_eq!(x.descriptor().id, AgentId::new("codex"));
-        assert_eq!(x.descriptor().default_args, vec!["--no-alt-screen"]);
+        assert!(x.descriptor().default_args.is_empty());
         assert!(!x.descriptor().manages_own_cursor);
         assert!(x.descriptor().capabilities.usage);
     }
@@ -317,13 +319,9 @@ mod tests {
         assert_eq!(d.id, AgentId::new("cluade")); // user's id, not "claude"
         assert_eq!(d.label, "我的 Claude"); // user's label
         assert_eq!(d.accent, Some(Color::new(0xE0, 0xAF, 0x68))); // user's accent
-        assert_eq!(
-            d.default_env,
-            vec![(
-                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
-                "1".to_string()
-            )],
-            "manifest-backed Claude keeps the built-in inline-mode env"
+        assert!(
+            d.default_env.is_empty(),
+            "manifest-backed Claude inherits the built-in's (now empty) launch env"
         );
         assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
         assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
@@ -343,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_adapter_for_codex_manifest_keeps_inline_default_arg() {
+    fn builtin_adapter_for_codex_manifest_has_no_inline_default_arg() {
         let m = tn_config::AgentManifest {
             id: "codex".into(),
             label: Some("Codex".into()),
@@ -358,6 +356,6 @@ mod tests {
             sidecar: None,
         };
         let a = builtin_adapter_for_manifest(&m).expect("codex command matched a built-in");
-        assert_eq!(a.descriptor().default_args, vec!["--no-alt-screen"]);
+        assert!(a.descriptor().default_args.is_empty());
     }
 }
