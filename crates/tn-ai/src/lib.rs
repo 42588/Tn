@@ -18,6 +18,7 @@ mod adapter;
 mod claude;
 mod codex;
 mod detect;
+pub mod usage_windows;
 
 pub use adapter::{builtin_adapter_for_manifest, builtin_registry, ClaudeAdapter, CodexAdapter};
 pub use detect::{adapter_session_mtimes, resolve_pane_session};
