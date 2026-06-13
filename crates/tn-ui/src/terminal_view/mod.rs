@@ -1961,6 +1961,59 @@ impl TerminalView {
         // shell → absolute (base None).
         let base = self.agent.is_some().then(|| self.rail_cwd.clone()).flatten();
         let text = render_dropped_paths(paths, base.as_deref());
+        self.insert_input_text(&text, window, cx);
+    }
+
+    /// Drop a file dragged out of Tn's own explorer (left-button GPUI-native drag)
+    /// into this pane's input line — no Enter. The inserted string is rendered for
+    /// **this pane's namespace**: a WSL `\\wsl$\…` file becomes the Linux path a WSL
+    /// shell can open; an SSH file uses its remote path; a local file follows the
+    /// same agent-relative / shell-absolute rule as an external OS drop.
+    pub fn drop_dragged_file(
+        &mut self,
+        file: &crate::explorer::ExplorerFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.ssh_input_blocked() {
+            return;
+        }
+        let Some(text) = self.dropped_file_text(file) else {
+            return;
+        };
+        self.insert_input_text(&text, window, cx);
+    }
+
+    /// Resolve the input string for a dragged explorer file against this pane's
+    /// namespace. Pure aside from reading `self`; the formatting branches mirror
+    /// `render_drop_path` (local) and add WSL-UNC→Linux + SSH-remote handling.
+    fn dropped_file_text(&self, file: &crate::explorer::ExplorerFile) -> Option<String> {
+        use crate::explorer::ExplorerFile;
+        match file {
+            ExplorerFile::Local(p) => {
+                // WSL pane + a `\\wsl$\…` UNC → the Linux path the shell understands.
+                if matches!(self.file_namespace, FileNamespace::Wsl { .. }) {
+                    if let Some(linux) = crate::explorer::wsl_unc_to_linux(p) {
+                        return (!linux.is_empty()).then_some(linux);
+                    }
+                }
+                let base = self.agent.is_some().then(|| self.rail_cwd.clone()).flatten();
+                let s = render_drop_path(p, base.as_deref());
+                (!s.is_empty()).then_some(s)
+            }
+            // SSH file → its remote absolute path (the remote shell's own namespace).
+            ExplorerFile::Remote { id, .. } => {
+                let s = id.path.as_str().to_string();
+                (!s.is_empty()).then_some(s)
+            }
+        }
+    }
+
+    /// Write `text` into the PTY input line (no Enter), wrapped in bracketed-paste
+    /// markers when the program enabled DEC 2004 so it lands as input, not keys, and
+    /// focus the pane so the user's following Enter reaches this terminal. Shared by
+    /// external OS drops and internal explorer drags.
+    fn insert_input_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
         if text.is_empty() {
             return;
         }
@@ -2458,6 +2511,32 @@ impl TerminalView {
         let mode = self.terminal.lock().unwrap().input_mode();
         let up = lines > 0.0;
         let n = (lines.abs().round() as usize).clamp(1, 100);
+
+        // Diagnostic (BUG③ "agent 滚不动"): one line per wheel tick so a real-machine
+        // test reveals which branch runs and whether there's any scrollback to scroll.
+        // Filter with `tn::scroll`. Remove once the scroll story is confirmed.
+        {
+            let (offset, history) = self.terminal.lock().unwrap().scroll_position();
+            let branch = if mode.mouse_report {
+                "mouse_report"
+            } else if scroll_wheel_drives_terminal_app(self.agent.is_some(), mode.alt_screen) {
+                "arrows"
+            } else {
+                "scrollback"
+            };
+            tracing::info!(
+                target: "tn::scroll",
+                agent = ?self.agent_short.as_deref(),
+                alt_screen = mode.alt_screen,
+                mouse_report = mode.mouse_report,
+                sgr_mouse = mode.sgr_mouse,
+                history,
+                offset,
+                lines,
+                branch,
+                "wheel tick"
+            );
+        }
 
         // (1) App-driven mouse: forward a wheel report at the pointer's cell. Takes
         // precedence over the alt-screen arrow-key path — a TUI that captures the
@@ -3974,6 +4053,13 @@ impl Render for TerminalView {
                 this.drop_external_paths(paths.paths(), window, cx)
             }))
             .drag_over::<ExternalPaths>(|style, _paths, _window, _cx| {
+                style.bg(rgba(crate::style::PH_DIM))
+            })
+            // 从 Tn 自己的资源管理器左键拖文件/目录进窗格 → 路径落入输入行(等回车再发)。
+            .on_drop(cx.listener(|this, dragged: &crate::explorer::DraggedFile, window, cx| {
+                this.drop_dragged_file(&dragged.file, window, cx)
+            }))
+            .drag_over::<crate::explorer::DraggedFile>(|style, _d, _window, _cx| {
                 style.bg(rgba(crate::style::PH_DIM))
             })
             .relative()

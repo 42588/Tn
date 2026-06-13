@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use gpui::{
     div, prelude::*, px, rgb, rgba, uniform_list, AnyElement, AsyncApp, Context, FocusHandle,
-    KeyDownEvent, MouseButton, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity,
+    KeyDownEvent, ScrollStrategy, SharedString, UniformListScrollHandle, WeakEntity,
     Window,
 };
 use tn_config::Loaded;
@@ -182,6 +182,51 @@ pub enum ExplorerFile {
 
 /// Emitted when a file row is clicked, so the workspace can open it in the viewer.
 pub struct OpenFile(pub ExplorerFile);
+
+/// Drag payload: a file/dir dragged out of the explorer (left-button, GPUI-native
+/// drag) toward a terminal pane, whose `on_drop` inserts the path into the input
+/// line. Carries the resolved [`ExplorerFile`] (local / WSL UNC / SSH remote) so the
+/// pane can render the path correctly for its own namespace, plus a short label for
+/// the drag ghost. Held in GPUI's window-global `active_drag` during the gesture.
+#[derive(Clone)]
+pub struct DraggedFile {
+    pub file: ExplorerFile,
+    pub label: SharedString,
+}
+
+/// The small chip that follows the cursor while dragging a file out of the explorer.
+pub struct FileDragChip {
+    label: SharedString,
+}
+
+impl FileDragChip {
+    pub fn new(label: SharedString) -> Self {
+        Self { label }
+    }
+}
+
+impl gpui::Render for FileDragChip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // Phosphor chip: opaque L3 plate + hairline phosphor edge, mono label.
+        div()
+            .px(px(9.))
+            .py(px(3.))
+            .rounded(px(R_CHIP))
+            .border_1()
+            .border_color(rgba(PH))
+            .bg(rgb(crate::style::L3))
+            .text_size(px(11.))
+            .text_color(rgb(T1))
+            .child(self.label.clone())
+    }
+}
+
+/// Convert a `\\wsl$\<distro>\a\b` UNC path to the Linux path (`/a/b`) a WSL shell
+/// understands. `None` for non-WSL paths. Used when dropping a WSL file into a WSL
+/// pane so the inserted path is what the shell can actually open.
+pub fn wsl_unc_to_linux(path: &Path) -> Option<String> {
+    parse_wsl_unc(path).map(|(_distro, linux)| linux)
+}
 
 /// Emitted after the explorer's directory watcher observes a filesystem change.
 pub struct ExplorerChanged;
@@ -1322,7 +1367,25 @@ impl Render for ExplorerView {
                             let size = row.size;
                             let entity = tree_entity.clone();
                             let view_root = tree_view_root.clone();
-                            tree_row(
+                            // Drag payload (left-button GPUI-native drag): the resolved file +
+                            // a short label for the cursor ghost. Both files and dirs drag.
+                            let drag_file = explorer_file_for_path(&view_root, &path, size);
+                            let drag_label: SharedString = match &path {
+                                ExplorerPath::Local(p) => p
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default(),
+                                ExplorerPath::Remote(id) => id
+                                    .path
+                                    .as_str()
+                                    .trim_end_matches('/')
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or_default()
+                                    .to_string(),
+                            }
+                            .into();
+                            let mut el = tree_row(
                                 &tree_config.theme.ui,
                                 &tree_config.theme,
                                 row,
@@ -1330,30 +1393,42 @@ impl Render for ExplorerView {
                                 is_sel,
                                 git_tag,
                             )
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                move |_ev, _w, app| {
-                                    app.stop_propagation();
-                                    let path = path.clone();
-                                    let view_root = view_root.clone();
-                                    let _ = entity.update(app, move |this, cx| {
-                                        if is_dir {
-                                            if !this.expanded.remove(&path) {
-                                                this.expanded.insert(path.clone());
-                                            }
-                                            this.rebuild(cx);
-                                        } else {
-                                            let file =
-                                                explorer_file_for_path(&view_root, &path, size);
-                                            this.selected = Some(path);
-                                            if let Some(file) = file {
-                                                cx.emit(OpenFile(file));
-                                            }
+                            .id(("explorer-row", i))
+                            // Preview/expand/select on a real click (press+release): a
+                            // press-and-drag now starts a drag instead, and GPUI tells the
+                            // two apart — so left-click preview is unchanged.
+                            .on_click(move |_ev, _w, app| {
+                                app.stop_propagation();
+                                let path = path.clone();
+                                let view_root = view_root.clone();
+                                let _ = entity.update(app, move |this, cx| {
+                                    if is_dir {
+                                        if !this.expanded.remove(&path) {
+                                            this.expanded.insert(path.clone());
                                         }
-                                        cx.notify();
-                                    });
-                                },
-                            )
+                                        this.rebuild(cx);
+                                    } else {
+                                        let file = explorer_file_for_path(&view_root, &path, size);
+                                        this.selected = Some(path);
+                                        if let Some(file) = file {
+                                            cx.emit(OpenFile(file));
+                                        }
+                                    }
+                                    cx.notify();
+                                });
+                            });
+                            if let Some(file) = drag_file {
+                                el = el.on_drag(
+                                    DraggedFile {
+                                        file,
+                                        label: drag_label,
+                                    },
+                                    move |payload, _offset, _window, cx| {
+                                        cx.new(|_| FileDragChip::new(payload.label.clone()))
+                                    },
+                                );
+                            }
+                            el
                         })
                         .collect::<Vec<_>>()
                 },
@@ -1520,6 +1595,18 @@ mod tests {
         );
         assert!(matches!(root.fs, ExplorerFs::Wsl { .. }));
         assert!(!root.supports_git_status());
+    }
+
+    #[test]
+    fn wsl_unc_to_linux_path_for_drag_drop() {
+        // Dropping a WSL file into a WSL pane must yield the Linux path the shell
+        // can open, not the `\\wsl$\…` UNC.
+        assert_eq!(
+            wsl_unc_to_linux(Path::new(r"\\wsl$\Ubuntu\home\me\app.rs")).as_deref(),
+            Some("/home/me/app.rs")
+        );
+        // A plain Windows path is not a WSL UNC → None (the caller keeps it as-is).
+        assert_eq!(wsl_unc_to_linux(Path::new(r"D:\coder\Tn\app.rs")), None);
     }
 
     #[test]
