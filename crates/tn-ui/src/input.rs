@@ -537,6 +537,7 @@ mod tests {
                 app_keypad: true,
                 bracketed_paste: true,
                 alt_screen: true,
+                ..InputMode::default()
             },
         ];
         let mut produced = 0usize;

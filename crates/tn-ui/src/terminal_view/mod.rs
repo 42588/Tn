@@ -392,6 +392,30 @@ fn render_dropped_paths(paths: &[PathBuf], base: Option<&Path>) -> String {
         .join(" ")
 }
 
+/// Encode `count` mouse-wheel events as terminal mouse-report bytes for an app
+/// that has enabled mouse tracking (so a TUI like codex scrolls its **own**
+/// transcript — its content lives on the alt screen, not in our scrollback).
+/// `up` chooses wheel-up (button 64) vs wheel-down (65). `col`/`row` are the
+/// 1-based cell coordinates of the pointer. With `sgr` (DEC 1006) each event is
+/// `ESC[<b;col;rowM`; otherwise the legacy X10 form `ESC[M` + three `+32` bytes
+/// (coordinates capped at 223, the byte-encoding limit). Wheel events are press
+/// only — there is no matching release. Pure → unit-tested.
+fn encode_wheel_report(up: bool, col: usize, row: usize, sgr: bool, count: usize) -> Vec<u8> {
+    let button = if up { 64 } else { 65 };
+    let mut out = Vec::new();
+    for _ in 0..count.max(1) {
+        if sgr {
+            out.extend_from_slice(format!("\x1b[<{button};{col};{row}M").as_bytes());
+        } else {
+            out.extend_from_slice(b"\x1b[M");
+            out.push((button + 32) as u8);
+            out.push((col.clamp(1, 223) + 32) as u8);
+            out.push((row.clamp(1, 223) + 32) as u8);
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ScrollbarThumbStyle {
     width: f32,
@@ -2409,9 +2433,14 @@ impl TerminalView {
         }
     }
 
-    /// Mouse wheel: scroll the scrollback buffer on the main screen; on the
-    /// alternate screen (vim/less/...) translate it into arrow keys so the app
-    /// scrolls its own buffer.
+    /// Mouse wheel, in priority order:
+    /// 1. **App owns the mouse** (codex and other TUIs that set DECSET 1000/1002/1003):
+    ///    forward the wheel as a mouse button-64/65 report so the app scrolls its own
+    ///    transcript. Its content lives on the alt screen, *not* our scrollback, so
+    ///    only the app can scroll it — this is the fix for "agent 历史滚不动".
+    /// 2. **Alt screen without mouse capture** (`less`/`vim` with alternate-scroll):
+    ///    translate the wheel into cursor-key presses so the pager pages.
+    /// 3. **Main screen**: scroll our own scrollback buffer.
     fn on_scroll(
         &mut self,
         event: &ScrollWheelEvent,
@@ -2427,27 +2456,51 @@ impl TerminalView {
             return;
         }
         let mode = self.terminal.lock().unwrap().input_mode();
+        let up = lines > 0.0;
+        let n = (lines.abs().round() as usize).clamp(1, 100);
+
+        // (1) App-driven mouse: forward a wheel report at the pointer's cell. Takes
+        // precedence over the alt-screen arrow-key path — a TUI that captures the
+        // mouse expects button reports, not synthetic arrows.
+        if mode.mouse_report {
+            if self.ssh_input_blocked() {
+                return;
+            }
+            // cell_at gives 0-based (row, col); mouse protocol coords are 1-based.
+            // Fall back to the top-left cell when the pointer is outside the grid.
+            let (row, col) = self
+                .cell_at(event.position)
+                .map(|(r, c)| (r + 1, c + 1))
+                .unwrap_or((1, 1));
+            let bytes = encode_wheel_report(up, col, row, mode.sgr_mouse, n);
+            let mut w = self.writer.lock().unwrap();
+            let _ = w.write_all(&bytes);
+            let _ = w.flush();
+            return;
+        }
+
+        // (2) Alt-screen pager without mouse capture: synthesize cursor keys.
         if scroll_wheel_drives_terminal_app(self.agent.is_some(), mode.alt_screen) {
             if self.ssh_input_blocked() {
                 return;
             }
-            let up = lines > 0.0;
             let arrow: &[u8] = match (up, mode.app_cursor) {
                 (true, false) => b"\x1b[A",
                 (true, true) => b"\x1bOA",
                 (false, false) => b"\x1b[B",
                 (false, true) => b"\x1bOB",
             };
-            let n = (lines.abs().round() as usize).clamp(1, 100);
             let mut w = self.writer.lock().unwrap();
             for _ in 0..n {
                 let _ = w.write_all(arrow);
             }
             let _ = w.flush();
-        } else {
-            self.terminal.lock().unwrap().scroll(lines.round() as i32);
-            cx.notify();
+            return;
         }
+
+        // (3) Main screen: scroll our scrollback.
+        self.terminal.lock().unwrap().scroll(lines.round() as i32);
+        cx.notify();
     }
 }
 
@@ -4334,6 +4387,37 @@ mod tests {
             scroll_wheel_drives_terminal_app(false, true),
             "alternate-screen programs own the wheel"
         );
+    }
+
+    #[test]
+    fn wheel_report_sgr_encodes_button_and_one_based_cell() {
+        // Wheel-up at viewport (row 4, col 2) → 1-based (5, 3), SGR button 64.
+        assert_eq!(
+            encode_wheel_report(true, 3, 5, true, 1),
+            b"\x1b[<64;3;5M".to_vec()
+        );
+        // Wheel-down uses button 65.
+        assert_eq!(
+            encode_wheel_report(false, 3, 5, true, 1),
+            b"\x1b[<65;3;5M".to_vec()
+        );
+        // count repeats the whole report.
+        assert_eq!(
+            encode_wheel_report(true, 1, 1, true, 3),
+            b"\x1b[<64;1;1M\x1b[<64;1;1M\x1b[<64;1;1M".to_vec()
+        );
+    }
+
+    #[test]
+    fn wheel_report_legacy_packs_plus_32_bytes_and_caps_at_223() {
+        // Legacy X10: ESC[M then (button+32),(col+32),(row+32).
+        assert_eq!(
+            encode_wheel_report(true, 1, 1, false, 1),
+            vec![0x1b, b'[', b'M', 64 + 32, 1 + 32, 1 + 32]
+        );
+        // Coordinates beyond 223 clamp to the byte-encoding ceiling.
+        let big = encode_wheel_report(false, 500, 500, false, 1);
+        assert_eq!(big, vec![0x1b, b'[', b'M', 65 + 32, 223 + 32, 223 + 32]);
     }
 
     #[test]

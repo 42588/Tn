@@ -462,6 +462,16 @@ pub struct InputMode {
     /// Alternate screen (DECSET 1049) active — a full-screen app (vim, less) is
     /// running, so the mouse wheel should drive the app, not scrollback.
     pub alt_screen: bool,
+    /// Any mouse-reporting mode (DECSET 1000/1002/1003) is active — a TUI such as
+    /// codex has taken over the mouse, so the wheel must be forwarded as a mouse
+    /// button report (button 64/65) rather than scrolling our local scrollback.
+    pub mouse_report: bool,
+    /// SGR extended mouse encoding (DECSET 1006) — reports use `ESC[<b;col;row(M|m)`
+    /// instead of the legacy `ESC[M` + three `+32` bytes (which caps coords at 223).
+    pub sgr_mouse: bool,
+    /// Alternate scroll (DECSET 1007) — on the alt screen, translate the wheel into
+    /// cursor-key presses (how `less`/`vim` page without taking over the mouse).
+    pub alternate_scroll: bool,
 }
 
 /// A headless terminal: VTE parser + alacritty grid + event channel.
@@ -726,6 +736,9 @@ impl Terminal {
             line_feed_newline: m.contains(TermMode::LINE_FEED_NEW_LINE),
             bracketed_paste: m.contains(TermMode::BRACKETED_PASTE),
             alt_screen: m.contains(TermMode::ALT_SCREEN),
+            mouse_report: m.intersects(TermMode::MOUSE_MODE),
+            sgr_mouse: m.contains(TermMode::SGR_MOUSE),
+            alternate_scroll: m.contains(TermMode::ALTERNATE_SCROLL),
         }
     }
 
@@ -1145,6 +1158,26 @@ mod tests {
         assert!(t.input_mode().app_cursor);
         t.advance(b"\x1b[?1l"); // DECRST 1
         assert!(!t.input_mode().app_cursor);
+    }
+
+    #[test]
+    fn tracks_mouse_report_and_sgr_modes() {
+        // A TUI like codex enables mouse tracking (1000/1002/1003) + SGR (1006);
+        // the input layer needs both to forward the wheel as a mouse report.
+        // (ALTERNATE_SCROLL is on in the xterm default mode set, so it isn't checked
+        // here — only the mouse-capture bits a TUI flips on demand.)
+        let mut t = Terminal::new(GridSize::new(2, 10));
+        let m = t.input_mode();
+        assert!(!m.mouse_report && !m.sgr_mouse);
+        t.advance(b"\x1b[?1003h"); // any-motion mouse reporting
+        t.advance(b"\x1b[?1006h"); // SGR extended coordinates
+        let m = t.input_mode();
+        assert!(m.mouse_report, "1003 turns on mouse reporting");
+        assert!(m.sgr_mouse, "1006 selects SGR encoding");
+        t.advance(b"\x1b[?1003l");
+        t.advance(b"\x1b[?1006l");
+        let m = t.input_mode();
+        assert!(!m.mouse_report && !m.sgr_mouse);
     }
 
     #[test]
