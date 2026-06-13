@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -23,9 +24,9 @@ use std::time::{Duration, Instant, SystemTime};
 use futures::channel::mpsc;
 use gpui::{
     canvas, div, point, prelude::*, px, relative, rgba, size, AsyncApp, Bounds, ClipboardItem,
-    Context, Div, ElementInputHandler, EntityInputHandler, FocusHandle, FontWeight, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollDelta,
-    ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
+    Context, Div, ElementInputHandler, EntityInputHandler, ExternalPaths, FocusHandle, FontWeight,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
+    ScrollDelta, ScrollWheelEvent, SharedString, UTF16Selection, WeakEntity, Window,
 };
 use tn_agent::{
     AgentAdapter, AgentCapabilities, AgentDescriptor, AgentEvent, AgentId, AgentRegistry,
@@ -346,6 +347,49 @@ fn should_render_block_bar(agent_active: bool, alt_screen: bool) -> bool {
 
 fn scroll_wheel_drives_terminal_app(_agent_active: bool, alt_screen: bool) -> bool {
     alt_screen
+}
+
+/// `Some(relative)` when `path` lives inside `base`, comparing components
+/// case-insensitively so Windows drive-letter / casing differences (`D:\` vs
+/// `d:\`) still match. `None` when `path` is outside `base` (or equals it). The
+/// remainder keeps the original path's casing and separators. Pure → tested.
+fn relative_under(path: &Path, base: &Path) -> Option<String> {
+    let mut bc = base.components();
+    let mut pc = path.components();
+    loop {
+        match bc.next() {
+            // base exhausted → whatever remains of `pc` is the relative path.
+            None => break,
+            Some(b) => {
+                let p = pc.next()?;
+                if !b.as_os_str().eq_ignore_ascii_case(p.as_os_str()) {
+                    return None;
+                }
+            }
+        }
+    }
+    let rel = pc.as_path().to_string_lossy().into_owned();
+    (!rel.is_empty()).then_some(rel)
+}
+
+/// Render one dropped OS path for injection into the input line. Agent panes pass
+/// their working dir as `base` → a path inside the repo becomes **relative**
+/// (cleaner for a repo-scoped agent), anything outside falls back to absolute.
+/// Plain shells pass `base = None` → always absolute. No quoting (per spec). Pure.
+fn render_drop_path(path: &Path, base: Option<&Path>) -> String {
+    base.and_then(|b| relative_under(path, b))
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+/// Join dropped paths into the single space-separated string written to the input
+/// line (multi-drop → one line, per spec). Empty renders are dropped.
+fn render_dropped_paths(paths: &[PathBuf], base: Option<&Path>) -> String {
+    paths
+        .iter()
+        .map(|p| render_drop_path(p, base))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1825,6 +1869,45 @@ impl TerminalView {
             let _ = w.write_all(normalized.as_bytes());
         }
         let _ = w.flush();
+        cx.notify();
+    }
+
+    /// External OS file/dir drop (从文件管理器拖文件/目录进窗格). Writes the dropped
+    /// path(s) into the PTY's current input line — **no Enter**, so the user reviews
+    /// and sends. Agent panes get paths relative to the agent's working dir (repo-
+    /// scoped; falls back to absolute outside it); plain shells get absolute paths.
+    /// Multiple drops join with spaces; no quoting (per spec). Wrapped in bracketed-
+    /// paste markers when the program enabled DEC 2004 so it lands as input, not keys.
+    fn drop_external_paths(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+        if self.ssh_input_blocked() || paths.is_empty() {
+            return;
+        }
+        // Agent → relative to its working dir (rail_cwd = the launch/Open-Folder dir);
+        // shell → absolute (base None).
+        let base = self.agent.is_some().then(|| self.rail_cwd.clone()).flatten();
+        let text = render_dropped_paths(paths, base.as_deref());
+        if text.is_empty() {
+            return;
+        }
+        let bracketed = {
+            let mut t = self.terminal.lock().unwrap();
+            t.scroll_to_bottom();
+            t.input_mode().bracketed_paste
+        };
+        {
+            let mut w = self.writer.lock().unwrap();
+            if bracketed {
+                let _ = w.write_all(b"\x1b[200~");
+                let _ = w.write_all(text.as_bytes());
+                let _ = w.write_all(b"\x1b[201~");
+            } else {
+                let _ = w.write_all(text.as_bytes());
+            }
+            let _ = w.flush();
+        }
+        // A drop doesn't focus the pane on its own — focus it so the next keystroke
+        // (the user's Enter) reaches this terminal.
+        self.focus_handle.focus(window);
         cx.notify();
     }
 
@@ -3781,6 +3864,14 @@ impl Render for TerminalView {
             .on_key_down(
                 cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
             )
+            // 从文件管理器拖文件/目录进窗格 → 路径落入输入行(等用户回车再发)。整个
+            // 窗格都是落点;拖悬时整面磷光微亮提示可放下。
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.drop_external_paths(paths.paths(), window, cx)
+            }))
+            .drag_over::<ExternalPaths>(|style, _paths, _window, _cx| {
+                style.bg(rgba(crate::style::PH_DIM))
+            })
             .relative()
             .size_full()
             .flex()
@@ -4244,6 +4335,45 @@ mod tests {
         assert_eq!(rail_layout_for_width(None, 10.0), None);
         // Unmeasured first frame (f32::MAX default) keeps the rail — no flash.
         assert_eq!(rail_layout_for_width(Flex, f32::MAX), Flex);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dropped_path_is_relative_under_agent_cwd_else_absolute() {
+        let base = Path::new(r"D:\coder\Tn");
+        // Inside the repo → relative, original casing + separators kept.
+        assert_eq!(
+            render_drop_path(Path::new(r"D:\coder\Tn\crates\tn-ui\src\mod.rs"), Some(base)),
+            r"crates\tn-ui\src\mod.rs"
+        );
+        // Drive-letter casing differs → still matches (Windows case-insensitive).
+        assert_eq!(
+            render_drop_path(Path::new(r"d:\coder\Tn\README.md"), Some(base)),
+            "README.md"
+        );
+        // Outside the repo → absolute fallback.
+        assert_eq!(
+            render_drop_path(Path::new(r"E:\other\file.txt"), Some(base)),
+            r"E:\other\file.txt"
+        );
+        // Shell pane (no base) → always absolute.
+        assert_eq!(
+            render_drop_path(Path::new(r"D:\coder\Tn\a.rs"), None),
+            r"D:\coder\Tn\a.rs"
+        );
+        // Dropping the cwd itself yields no relative remainder → absolute fallback.
+        assert_eq!(render_drop_path(base, Some(base)), r"D:\coder\Tn");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn multi_drop_joins_with_spaces() {
+        let base = Path::new(r"D:\proj");
+        let paths = vec![
+            PathBuf::from(r"D:\proj\a.rs"),
+            PathBuf::from(r"D:\proj\sub\b.rs"),
+        ];
+        assert_eq!(render_dropped_paths(&paths, Some(base)), r"a.rs sub\b.rs");
     }
 
     #[test]
