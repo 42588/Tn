@@ -3,7 +3,7 @@
 # 所有字段都可省略,缺省时回退到内置默认值。颜色取自 [appearance].theme 指向的主题文件。
 
 [general]
-scrollback_lines = 5000        # 每个会话保留的滚动历史行数
+scrollback_lines = 50000       # 每个会话保留的滚动历史行数
 confirm_close    = true       # 关闭仍在运行的会话前确认(暂未接线)
 billing_mode     = "auto"     # 用量药丸的「初始」显示维度。每个窗格可点击药丸随时切换
                               #   ($ 费用 → % 上下文 → token 消耗),互不影响(运行时、不写盘)。

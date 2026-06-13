@@ -21,6 +21,7 @@ pub use color::{Color, ColorError, ACCENT_SWATCHES};
 pub use config::{
     Action, AgentManifest, Appearance, BillingMode, Config, Editor, EditorAnimations,
     EffectiveMotion, Font, General, Keybinding, Profile, ProfileKind, DEFAULT_CONFIG_TOML,
+    DEFAULT_SCROLLBACK_LINES, LEGACY_DEFAULT_SCROLLBACK_LINES,
 };
 pub use paths::{config_dir, config_path, themes_dir};
 pub use quick_terminal::{
@@ -98,7 +99,8 @@ pub fn load_from(dir: &Path, write_defaults: bool) -> Loaded {
         );
     }
 
-    let config = read_config(&config_file);
+    let mut config = read_config(&config_file);
+    lift_legacy_scrollback_default(&mut config);
     let themes = load_themes(&themes_path);
     let theme = themes
         .get(&config.appearance.theme)
@@ -324,6 +326,12 @@ fn read_config(file: &Path) -> Config {
     }
 }
 
+fn lift_legacy_scrollback_default(config: &mut Config) {
+    if config.general.scrollback_lines == LEGACY_DEFAULT_SCROLLBACK_LINES {
+        config.general.scrollback_lines = DEFAULT_SCROLLBACK_LINES;
+    }
+}
+
 /// Load every `*.toml` theme in `dir`, keyed by `Theme::name`. The built-in
 /// Tn Dark is always present (a same-named on-disk theme overrides it).
 fn load_themes(dir: &Path) -> HashMap<String, Theme> {
@@ -387,6 +395,25 @@ mod tests {
         let loaded = load_from(&dir, true);
         assert_eq!(loaded.config.font.size, 20.0); // user value kept
         assert_eq!(loaded.config.font.family, "CaskaydiaCove Nerd Font"); // inherited default
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_default_scrollback_is_lifted_on_load() {
+        let dir = unique_temp();
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "[general]\nscrollback_lines = 5000\n",
+        )
+        .unwrap();
+
+        let loaded = load_from(&dir, true);
+        assert_eq!(
+            loaded.config.general.scrollback_lines, 50_000,
+            "old first-run configs used 5k and must inherit the bugfix in memory"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

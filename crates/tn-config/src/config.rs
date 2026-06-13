@@ -13,6 +13,8 @@ use crate::theme::Backdrop;
 
 /// The authoritative default `config.toml` (written on first run).
 pub const DEFAULT_CONFIG_TOML: &str = include_str!("../../../config/config.toml");
+pub const DEFAULT_SCROLLBACK_LINES: usize = 50_000;
+pub const LEGACY_DEFAULT_SCROLLBACK_LINES: usize = 5_000;
 
 /// Top-level configuration. Sections each default field-by-field.
 #[derive(Clone, Debug, PartialEq, Default, Deserialize, Serialize)]
@@ -155,7 +157,7 @@ impl Default for General {
         Self {
             // 5k truncated long agent conversations (BUG: 历史「太长就看不到」). Lazy
             // allocation + disk-park of idle tabs make 50k affordable.
-            scrollback_lines: 50_000,
+            scrollback_lines: DEFAULT_SCROLLBACK_LINES,
             confirm_close: true,
             pricing_auto_refresh: default_true(),
             pricing_url: default_pricing_url(),
@@ -427,6 +429,10 @@ mod tests {
             .any(|p| p.kind == ProfileKind::Agent && p.agent.as_deref() == Some("agent")));
         assert!(c.agents.iter().any(|a| a.id == "agent"));
         assert!(c.keybindings.iter().any(|k| k.id == "new_tab"));
+        assert_eq!(
+            c.general.scrollback_lines, 50_000,
+            "bundled first-run config must not freeze new installs at the old 5k history cap"
+        );
         // Quick Terminal section parses and matches its documented defaults.
         assert!(c.quick_terminal.enabled);
         assert_eq!(c.quick_terminal.hotkey, "ctrl+alt+space");
