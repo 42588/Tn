@@ -18,15 +18,24 @@ use futures::channel::mpsc;
 use futures::future::{select, Either};
 use futures::StreamExt;
 use gpui::{AsyncApp, Context, WeakEntity};
+use tn_agent::AgentRegistry;
 use tn_blocks::BlockModel;
-use tn_core::{TermEvent, Terminal};
+use tn_core::{ScrollbackClearFilter, TermEvent, Terminal};
 use tn_pty::PtyBackend;
-use tn_shell::ShellParser;
+use tn_shell::{BlockEvent, ShellParser};
 
 use super::{
     launch::FileNamespace, CwdChanged, FilesChanged, ProcessExited, SharedWriter, TerminalView,
     UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
+
+fn command_line_runs_agent(command: &str, registry: &AgentRegistry) -> bool {
+    command
+        .split_whitespace()
+        .next()
+        .and_then(|token| registry.match_command(token))
+        .is_some()
+}
 
 impl TerminalView {
     /// Reader thread: PTY bytes -> engine; route engine `PtyWrite` replies back;
@@ -42,18 +51,23 @@ impl TerminalView {
         agent_exited: Arc<AtomicBool>,
         bell: Arc<AtomicBool>,
         cmd_done: Arc<AtomicBool>,
+        preserve_scrollback_clears: Arc<AtomicBool>,
+        agent_registry: AgentRegistry,
     ) {
         thread::spawn(move || {
             // Shell-integration bypass parser + a session clock. The parser is
             // stateful (a sequence can split across reads), so it lives here.
             let mut shell = ShellParser::new();
+            let mut scrollback_clear_filter = ScrollbackClearFilter::new();
             let start = Instant::now();
             // 16 KiB: balances throughput with lock-hold latency. Larger buffers
             // would hold the terminal lock longer during `advance()` and block the
             // UI thread on keystrokes (input stutter). Heap-boxed to keep the
             // thread stack small.
             let mut buf = vec![0u8; 16384];
+            let mut terminal_bytes = Vec::new();
             let mut replies = Vec::new();
+            let mut reader_agent_command = false;
             // 宠物 Running 守卫:记录本会话欠下的 OutputStart,reader 退出
             // (EOF/中断/面板关闭)时还清 —— 否则全局 RUN_COUNT 泄漏,宠物在
             // NO SESSION 下仍 RUNNING(二轮差异总结 §8 状态泄漏)。
@@ -71,6 +85,33 @@ impl TerminalView {
                         // The bypass parser is independent of the terminal lock;
                         // run it first so we know whether this batch produced any
                         let events = shell.advance(&buf[..n]);
+                        for ev in &events {
+                            match ev {
+                                BlockEvent::CommandLine(cmd)
+                                    if command_line_runs_agent(cmd, &agent_registry) =>
+                                {
+                                    reader_agent_command = true;
+                                    preserve_scrollback_clears.store(true, Ordering::Relaxed);
+                                }
+                                BlockEvent::CommandFinished { .. } if reader_agent_command => {
+                                    reader_agent_command = false;
+                                    preserve_scrollback_clears.store(false, Ordering::Relaxed);
+                                }
+                                _ => {}
+                            }
+                        }
+                        let input = if preserve_scrollback_clears.load(Ordering::Relaxed) {
+                            terminal_bytes = scrollback_clear_filter.advance(&buf[..n]);
+                            terminal_bytes.as_slice()
+                        } else {
+                            terminal_bytes = scrollback_clear_filter.reset();
+                            if terminal_bytes.is_empty() {
+                                &buf[..n]
+                            } else {
+                                terminal_bytes.extend_from_slice(&buf[..n]);
+                                terminal_bytes.as_slice()
+                            }
+                        };
                         if replies.capacity() > 1024 {
                             replies.shrink_to_fit();
                         }
@@ -84,7 +125,7 @@ impl TerminalView {
                         let processed = {
                             let mut t = terminal.lock().unwrap();
                             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                t.advance(&buf[..n]);
+                                t.advance(input);
                                 for e in t.drain_events() {
                                     match e {
                                         TermEvent::PtyWrite(s) => replies.push(s),
@@ -659,6 +700,28 @@ impl TerminalView {
         })
         .detach();
         Some(watcher)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use tn_agent::{AgentDescriptor, AgentId, GenericAdapter};
+
+    fn registry() -> AgentRegistry {
+        AgentRegistry::new().with(Arc::new(GenericAdapter::new(AgentDescriptor::generic(
+            AgentId::new("codex"),
+            "Codex",
+        ))))
+    }
+
+    #[test]
+    fn command_line_agent_detection_uses_first_token_only() {
+        let reg = registry();
+        assert!(command_line_runs_agent("codex --resume", &reg));
+        assert!(!command_line_runs_agent("cat codex.md", &reg));
     }
 }
 

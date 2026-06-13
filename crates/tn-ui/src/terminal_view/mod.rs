@@ -345,8 +345,21 @@ fn should_render_block_bar(agent_active: bool, alt_screen: bool) -> bool {
     !terminal_app_owns_viewport(agent_active, alt_screen)
 }
 
-fn scroll_wheel_drives_terminal_app(_agent_active: bool, alt_screen: bool) -> bool {
-    alt_screen
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrollWheelRoute {
+    MouseReport,
+    AppArrows,
+    Scrollback,
+}
+
+fn scroll_wheel_route(mode: tn_core::InputMode) -> ScrollWheelRoute {
+    if mode.mouse_report {
+        ScrollWheelRoute::MouseReport
+    } else if mode.alt_screen {
+        ScrollWheelRoute::AppArrows
+    } else {
+        ScrollWheelRoute::Scrollback
+    }
 }
 
 /// `Some(relative)` when `path` lives inside `base`, comparing components
@@ -660,6 +673,10 @@ pub struct TerminalView {
     // so the pane reverts to a plain shell (no stale header). Only agent panes
     // emit the sentinel, so a plain shell never trips this.
     agent_exited: Arc<AtomicBool>,
+    // While true, the PTY reader strips CSI 3 J (erase saved lines) before it
+    // reaches alacritty, so main-screen agent repaints can clear the visible grid
+    // without deleting Tn's scrollback.
+    preserve_scrollback_clears: Arc<AtomicBool>,
     // Set by the reader on a BEL byte; the foreground turns the
     // false->true edge into a flash/beep, then clears it. An atomic (not a wake
     // event) so a bell during a quiet moment still rides the next repaint.
@@ -960,7 +977,10 @@ impl TerminalView {
         let terminal = Arc::new(Mutex::new(term));
         let blocks = Arc::new(Mutex::new(BlockModel::new()));
         let title = Arc::new(Mutex::new(None));
+        let agent = launch.agent.clone();
+        let registry = crate::agent_host::agent_registry(cx);
         let agent_exited = Arc::new(AtomicBool::new(false));
+        let preserve_scrollback_clears = Arc::new(AtomicBool::new(agent.is_some()));
         let bell = Arc::new(AtomicBool::new(false));
         let cmd_done = Arc::new(AtomicBool::new(false));
 
@@ -975,6 +995,8 @@ impl TerminalView {
             agent_exited.clone(),
             bell.clone(),
             cmd_done.clone(),
+            preserve_scrollback_clears.clone(),
+            registry.clone(),
         );
         Self::spawn_repaint_loop(cx, dirty.clone(), wake_rx, cmd_done);
         Self::spawn_blink_loop(cx);
@@ -987,11 +1009,9 @@ impl TerminalView {
         // a fresh agent session exists for this cwd: that agent is often a
         // *separate* process (e.g. the dev's own Claude Code editing this repo).
         // So a plain pwsh pane stays a shell (no agent header, no usage).
-        let agent = launch.agent.clone();
         // The app-wide registry resolves this agent's descriptor (presentation +
         // capabilities + cursor quirk) and adapter (usage telemetry). Everything
         // below reads the descriptor/adapter — no concrete agent is named.
-        let registry = crate::agent_host::agent_registry(cx);
         // Resolve the agent's presentation + capabilities + starting pill mode once.
         let (agent_accent, agent_label, agent_short, agent_manages_cursor, agent_caps, usage_mode) =
             match &agent {
@@ -1133,6 +1153,7 @@ impl TerminalView {
             integrate_pwsh: launch.integrate_pwsh,
             change_watcher,
             agent_exited,
+            preserve_scrollback_clears,
             bell,
             bell_flash_at: None,
             bell_fading: false,
@@ -1382,6 +1403,8 @@ impl TerminalView {
     fn clear_agent(&mut self) {
         self.agent = None;
         self.agent_from_shell = false;
+        self.preserve_scrollback_clears
+            .store(false, Ordering::Relaxed);
         self.usage = None;
         self.agent_status = None;
         self.agent_model = None;
@@ -1557,6 +1580,8 @@ impl TerminalView {
             (Some((id, token, command)), false) => {
                 self.agent = Some(id.clone());
                 self.agent_from_shell = true;
+                self.preserve_scrollback_clears
+                    .store(true, Ordering::Relaxed);
                 self.usage = None;
                 // Resolve this pane's presentation + starting pill mode for the
                 // now-known agent (agent-agnostic, via the registry).
@@ -1953,13 +1978,22 @@ impl TerminalView {
     /// scoped; falls back to absolute outside it); plain shells get absolute paths.
     /// Multiple drops join with spaces; no quoting (per spec). Wrapped in bracketed-
     /// paste markers when the program enabled DEC 2004 so it lands as input, not keys.
-    fn drop_external_paths(&mut self, paths: &[PathBuf], window: &mut Window, cx: &mut Context<Self>) {
+    fn drop_external_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.ssh_input_blocked() || paths.is_empty() {
             return;
         }
         // Agent → relative to its working dir (rail_cwd = the launch/Open-Folder dir);
         // shell → absolute (base None).
-        let base = self.agent.is_some().then(|| self.rail_cwd.clone()).flatten();
+        let base = self
+            .agent
+            .is_some()
+            .then(|| self.rail_cwd.clone())
+            .flatten();
         let text = render_dropped_paths(paths, base.as_deref());
         self.insert_input_text(&text, window, cx);
     }
@@ -1997,7 +2031,11 @@ impl TerminalView {
                         return (!linux.is_empty()).then_some(linux);
                     }
                 }
-                let base = self.agent.is_some().then(|| self.rail_cwd.clone()).flatten();
+                let base = self
+                    .agent
+                    .is_some()
+                    .then(|| self.rail_cwd.clone())
+                    .flatten();
                 let s = render_drop_path(p, base.as_deref());
                 (!s.is_empty()).then_some(s)
             }
@@ -2487,10 +2525,8 @@ impl TerminalView {
     }
 
     /// Mouse wheel, in priority order:
-    /// 1. **App owns the mouse** (codex and other TUIs that set DECSET 1000/1002/1003):
-    ///    forward the wheel as a mouse button-64/65 report so the app scrolls its own
-    ///    transcript. Its content lives on the alt screen, *not* our scrollback, so
-    ///    only the app can scroll it — this is the fix for "agent 历史滚不动".
+    /// 1. **App owns the mouse** (TUIs that set DECSET 1000/1002/1003): forward the
+    ///    wheel as a mouse button-64/65 report so the app scrolls its own viewport.
     /// 2. **Alt screen without mouse capture** (`less`/`vim` with alternate-scroll):
     ///    translate the wheel into cursor-key presses so the pager pages.
     /// 3. **Main screen**: scroll our own scrollback buffer.
@@ -2511,18 +2547,18 @@ impl TerminalView {
         let mode = self.terminal.lock().unwrap().input_mode();
         let up = lines > 0.0;
         let n = (lines.abs().round() as usize).clamp(1, 100);
+        let (offset, history) = self.terminal.lock().unwrap().scroll_position();
+        let route = scroll_wheel_route(mode);
+        cx.stop_propagation();
 
         // Diagnostic (BUG③ "agent 滚不动"): one line per wheel tick so a real-machine
         // test reveals which branch runs and whether there's any scrollback to scroll.
         // Filter with `tn::scroll`. Remove once the scroll story is confirmed.
         {
-            let (offset, history) = self.terminal.lock().unwrap().scroll_position();
-            let branch = if mode.mouse_report {
-                "mouse_report"
-            } else if scroll_wheel_drives_terminal_app(self.agent.is_some(), mode.alt_screen) {
-                "arrows"
-            } else {
-                "scrollback"
+            let branch = match route {
+                ScrollWheelRoute::MouseReport => "mouse_report",
+                ScrollWheelRoute::AppArrows => "arrows",
+                ScrollWheelRoute::Scrollback => "scrollback",
             };
             tracing::info!(
                 target: "tn::scroll",
@@ -2541,7 +2577,7 @@ impl TerminalView {
         // (1) App-driven mouse: forward a wheel report at the pointer's cell. Takes
         // precedence over the alt-screen arrow-key path — a TUI that captures the
         // mouse expects button reports, not synthetic arrows.
-        if mode.mouse_report {
+        if route == ScrollWheelRoute::MouseReport {
             if self.ssh_input_blocked() {
                 return;
             }
@@ -2559,7 +2595,7 @@ impl TerminalView {
         }
 
         // (2) Alt-screen pager without mouse capture: synthesize cursor keys.
-        if scroll_wheel_drives_terminal_app(self.agent.is_some(), mode.alt_screen) {
+        if route == ScrollWheelRoute::AppArrows {
             if self.ssh_input_blocked() {
                 return;
             }
@@ -4056,9 +4092,11 @@ impl Render for TerminalView {
                 style.bg(rgba(crate::style::PH_DIM))
             })
             // 从 Tn 自己的资源管理器左键拖文件/目录进窗格 → 路径落入输入行(等回车再发)。
-            .on_drop(cx.listener(|this, dragged: &crate::explorer::DraggedFile, window, cx| {
-                this.drop_dragged_file(&dragged.file, window, cx)
-            }))
+            .on_drop(
+                cx.listener(|this, dragged: &crate::explorer::DraggedFile, window, cx| {
+                    this.drop_dragged_file(&dragged.file, window, cx)
+                }),
+            )
             .drag_over::<crate::explorer::DraggedFile>(|style, _d, _window, _cx| {
                 style.bg(rgba(crate::style::PH_DIM))
             })
@@ -4461,17 +4499,27 @@ mod tests {
 
     #[test]
     fn agent_main_screen_scroll_wheel_uses_scrollback_alt_screen_drives_app() {
-        assert!(
-            !scroll_wheel_drives_terminal_app(false, false),
-            "plain shell panes use the mouse wheel for terminal scrollback"
+        assert_eq!(
+            scroll_wheel_route(tn_core::InputMode::default()),
+            ScrollWheelRoute::Scrollback,
+            "main-screen panes use the mouse wheel for Tn scrollback"
         );
-        assert!(
-            !scroll_wheel_drives_terminal_app(true, false),
-            "main-screen agent panes must scroll terminal history, not send arrow keys into the agent input"
-        );
-        assert!(
-            scroll_wheel_drives_terminal_app(false, true),
+        assert_eq!(
+            scroll_wheel_route(tn_core::InputMode {
+                alt_screen: true,
+                ..tn_core::InputMode::default()
+            }),
+            ScrollWheelRoute::AppArrows,
             "alternate-screen programs own the wheel"
+        );
+        assert_eq!(
+            scroll_wheel_route(tn_core::InputMode {
+                mouse_report: true,
+                alt_screen: true,
+                ..tn_core::InputMode::default()
+            }),
+            ScrollWheelRoute::MouseReport,
+            "mouse-reporting apps must receive wheel reports before the alt-screen fallback"
         );
     }
 
@@ -4565,7 +4613,10 @@ mod tests {
         use ActivityRailLayout::*;
         // Wide enough → keep whatever the base layout decided (并排 / overlay).
         assert_eq!(rail_layout_for_width(Flex, RAIL_MIN_PANE_W + 1.0), Flex);
-        assert_eq!(rail_layout_for_width(Overlay, RAIL_MIN_PANE_W + 1.0), Overlay);
+        assert_eq!(
+            rail_layout_for_width(Overlay, RAIL_MIN_PANE_W + 1.0),
+            Overlay
+        );
         // Too narrow → drop the rail so the agent body keeps the full pane width.
         assert_eq!(rail_layout_for_width(Flex, RAIL_MIN_PANE_W - 1.0), None);
         assert_eq!(rail_layout_for_width(Overlay, RAIL_MIN_PANE_W - 1.0), None);
@@ -4581,7 +4632,10 @@ mod tests {
         let base = Path::new(r"D:\coder\Tn");
         // Inside the repo → relative, original casing + separators kept.
         assert_eq!(
-            render_drop_path(Path::new(r"D:\coder\Tn\crates\tn-ui\src\mod.rs"), Some(base)),
+            render_drop_path(
+                Path::new(r"D:\coder\Tn\crates\tn-ui\src\mod.rs"),
+                Some(base)
+            ),
             r"crates\tn-ui\src\mod.rs"
         );
         // Drive-letter casing differs → still matches (Windows case-insensitive).

@@ -474,6 +474,94 @@ pub struct InputMode {
     pub alternate_scroll: bool,
 }
 
+/// Streaming filter for `CSI 3 J` (erase saved lines).
+///
+/// Main-screen agent UIs often repaint with `CSI 2 J` followed by `CSI 3 J`.
+/// The former clears the visible grid and should remain intact; the latter asks
+/// the terminal to erase retained scrollback, which makes Tn's own scrollbar
+/// disappear even after very long output. This filter is intentionally narrow:
+/// it strips only the exact saved-lines erase sequence and preserves every other
+/// byte for the normal VTE parser.
+#[derive(Default)]
+pub struct ScrollbackClearFilter {
+    pending: Vec<u8>,
+}
+
+impl ScrollbackClearFilter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn advance(&mut self, bytes: &[u8]) -> Vec<u8> {
+        self.pending.extend_from_slice(bytes);
+        let mut out = Vec::with_capacity(self.pending.len());
+        let mut i = 0usize;
+        while i < self.pending.len() {
+            let b = self.pending[i];
+            if b == 0x1b {
+                let available = self.pending.len() - i;
+                if available < 2 {
+                    break;
+                }
+                if self.pending[i + 1] != b'[' {
+                    out.push(b);
+                    i += 1;
+                    continue;
+                }
+                if available < 3 {
+                    break;
+                }
+                if self.pending[i + 2] != b'3' {
+                    out.extend_from_slice(&self.pending[i..i + 2]);
+                    i += 2;
+                    continue;
+                }
+                if available < 4 {
+                    break;
+                }
+                if self.pending[i + 3] == b'J' {
+                    i += 4;
+                    continue;
+                }
+                out.extend_from_slice(&self.pending[i..i + 3]);
+                i += 3;
+                continue;
+            }
+            if b == 0x9b {
+                let available = self.pending.len() - i;
+                if available < 2 {
+                    break;
+                }
+                if self.pending[i + 1] != b'3' {
+                    out.push(b);
+                    i += 1;
+                    continue;
+                }
+                if available < 3 {
+                    break;
+                }
+                if self.pending[i + 2] == b'J' {
+                    i += 3;
+                    continue;
+                }
+                out.extend_from_slice(&self.pending[i..i + 2]);
+                i += 2;
+                continue;
+            }
+            out.push(b);
+            i += 1;
+        }
+        if i > 0 {
+            self.pending.drain(..i);
+        }
+        out
+    }
+
+    pub fn reset(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
 /// A headless terminal: VTE parser + alacritty grid + event channel.
 pub struct Terminal {
     term: Term<ChannelListener>,
@@ -1209,6 +1297,52 @@ mod tests {
             "scroll-to-bottom restores live view"
         );
         assert_eq!(t.snapshot().scroll_offset, 0);
+    }
+
+    #[test]
+    fn csi_3j_clears_scrollback() {
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        for i in 0..10 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        assert!(
+            t.snapshot().scroll_history > 0,
+            "precondition: history exists"
+        );
+
+        t.advance(b"\x1b[3J");
+
+        assert_eq!(
+            t.snapshot().scroll_history,
+            0,
+            "CSI 3 J is erase-saved-lines, which removes local scrollback"
+        );
+    }
+
+    #[test]
+    fn scrollback_clear_filter_strips_csi_3j_across_chunks() {
+        let mut filter = ScrollbackClearFilter::default();
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        for i in 0..10 {
+            let bytes = filter.advance(format!("line{i}\r\n").as_bytes());
+            t.advance(&bytes);
+        }
+        assert!(
+            t.snapshot().scroll_history > 0,
+            "precondition: history exists"
+        );
+
+        let bytes = filter.advance(b"\x1b[");
+        t.advance(&bytes);
+        let bytes = filter.advance(b"3");
+        t.advance(&bytes);
+        let bytes = filter.advance(b"J");
+        t.advance(&bytes);
+
+        assert!(
+            t.snapshot().scroll_history > 0,
+            "agent panes should be allowed to clear/repaint the visible screen without erasing Tn scrollback"
+        );
     }
 
     #[test]
