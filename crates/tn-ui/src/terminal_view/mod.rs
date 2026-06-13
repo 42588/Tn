@@ -664,6 +664,13 @@ pub struct TerminalView {
     // config default for this pane's agent (auto-resolved via usage_display) and
     // is cycled in memory when the user clicks the pill — independent per pane.
     usage_mode: tn_config::BillingMode,
+    // 额度面板:clicking the usage readout opens a popover with windowed spend
+    // (5h/日/周, from `tn_ai::usage_windows`, aggregated across all Claude sessions —
+    // account-wide, not per-pane). Computed off-thread on open; `quota_gen` drops
+    // stale background results. `None` = not yet computed.
+    quota_open: bool,
+    quota: Option<tn_ai::usage_windows::UsageWindows>,
+    quota_gen: usize,
     // Resolved agent presentation, recomputed whenever `agent` changes (construction,
     // sync_shell_agent, clear_agent) from the descriptor + theme — so the render path
     // never names a concrete agent. `agent_accent` falls back to `ui_accent` for a
@@ -1091,6 +1098,9 @@ impl TerminalView {
             sidecar_confirm,
             rail_state: RailState::Idle,
             rail_generation: 0,
+            quota_open: false,
+            quota: None,
+            quota_gen: 0,
             rail_cwd,
             agent_from_shell: false,
             spawn_cwd: launch.cwd.clone(),
@@ -1356,6 +1366,7 @@ impl TerminalView {
         self.agent_error = None;
         self.rail_state = RailState::Idle;
         self.rail_cwd = None;
+        self.quota_open = false; // close the 额度 popover (its pill is gone)
         self.change_watcher = None; // stop watching the working tree
         self.realtime_adapter = None; // drop sidecar → its child process is killed
         self.sidecar_confirm = None;
@@ -1637,6 +1648,46 @@ impl TerminalView {
                 cx.emit(UsageUpdated);
                 cx.emit(FilesChanged);
                 cx.notify(); // skeleton exits, real cards render
+            });
+        })
+        .detach();
+    }
+
+    /// Toggle the 额度 popover anchored at the usage readout. On open, kick a
+    /// background recompute of the windowed spend.
+    pub(super) fn toggle_quota(&mut self, cx: &mut Context<Self>) {
+        self.quota_open = !self.quota_open;
+        if self.quota_open {
+            self.refresh_quota(cx);
+        }
+        cx.notify();
+    }
+
+    /// Recompute the 5h/day/week windows off the UI thread (reads the last week of
+    /// Claude session logs). `quota_gen` drops a stale result if a newer refresh
+    /// landed first — same guard as `refresh_changes`.
+    fn refresh_quota(&mut self, cx: &mut Context<Self>) {
+        self.quota_gen = self.quota_gen.wrapping_add(1);
+        let gen = self.quota_gen;
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let windows = exec
+                .spawn(async move {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(tn_ai::usage_windows::current_windows(SystemTime::now()));
+                    });
+                    rx.await.ok()
+                })
+                .await;
+            let _ = this.update(cx, |v, cx| {
+                if v.quota_gen != gen {
+                    return;
+                }
+                if let Some(w) = windows {
+                    v.quota = Some(w);
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -3905,6 +3956,23 @@ impl Render for TerminalView {
             .when_some(ssh_password_card, |this, p| this.child(p))
             .when_some(ssh_hostkey_card, |this, p| this.child(p))
             .when_some(sidecar_card, |this, p| this.child(p))
+            // 额度 popover + transparent click-catcher: a click anywhere outside the
+            // popover dismisses it (the popover itself stops propagation).
+            .when(self.quota_open, |this| {
+                this.child(
+                    div()
+                        .absolute()
+                        .size_full()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|v, _e, _w, cx| {
+                                v.quota_open = false;
+                                cx.notify();
+                            }),
+                        )
+                        .child(self.render_quota_panel()),
+                )
+            })
     }
 }
 

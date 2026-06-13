@@ -20,6 +20,18 @@ use crate::style::{
     col, cola, AGENT_HEAD_H, H0, H1, PH, PLATE_HEAD_H, R_CARD, R_CHIP, T0, T1, T2, T3, UI_SANS,
 };
 
+/// Render a 5h-window reset as a relative "重置 ~Xh Ym 后" string. Past / unknown →
+/// "重置 ~即将". Pure (takes `now` implicitly via `SystemTime::now`).
+fn fmt_reset(reset: Option<std::time::SystemTime>) -> String {
+    match reset.and_then(|r| r.duration_since(std::time::SystemTime::now()).ok()) {
+        Some(d) => {
+            let mins = d.as_secs() / 60;
+            format!("重置 ~{}h{:02}m 后", mins / 60, mins % 60)
+        }
+        None => "重置 ~即将".to_string(),
+    }
+}
+
 fn short_chip(s: &str, max_chars: usize) -> String {
     let trimmed = s.trim();
     let total = trimmed.chars().count();
@@ -192,10 +204,12 @@ impl TerminalView {
                 }
                 BillingMode::Auto => format!("CTX {pct}%"),
             };
+            // SHEET 02:`84K / 200K` 读数(mono t2)+ Ø18 环 + 身份色 chip。Click the
+            // readout/ring → 额度 popover (windowed spend); click the chip → cycle
+            // THIS pane's $/%/tokens mode (at CLICK time — 不在 render 期 update,踩过
+            // re-lease panic 坑)。
+            let weak_quota = weak.clone();
             head = head.child(
-                // SHEET 02:`84K / 200K` 读数(mono t2)+ Ø18 环 + 身份色 chip。
-                // Clickable: cycles THIS pane's display mode at CLICK time(不在
-                // render 期 update — 已踩过 re-lease panic 坑)。
                 div()
                     .id("usage-pill")
                     .flex()
@@ -204,10 +218,7 @@ impl TerminalView {
                     .gap(px(8.))
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, move |_e, _w, app: &mut App| {
-                        let _ = weak.update(app, |v, c| {
-                            v.usage_mode = crate::usage_display::cycle(v.usage_mode);
-                            c.notify();
-                        });
+                        let _ = weak_quota.update(app, |v, c| v.toggle_quota(c));
                     })
                     .child(
                         div()
@@ -221,10 +232,163 @@ impl TerminalView {
                             ))),
                     )
                     .child(self.usage_ring(pct, accent))
-                    .child(self.agent_chip(reading, accent)),
+                    .child(
+                        div()
+                            .id("usage-mode")
+                            .cursor_pointer()
+                            .on_mouse_down(MouseButton::Left, move |_e, _w, app: &mut App| {
+                                app.stop_propagation(); // don't also open the popover
+                                let _ = weak.update(app, |v, c| {
+                                    v.usage_mode = crate::usage_display::cycle(v.usage_mode);
+                                    c.notify();
+                                });
+                            })
+                            .child(self.agent_chip(reading, accent)),
+                    ),
             );
         }
         head
+    }
+
+    /// 额度 popover(Stage 2):account-wide windowed spend (5h/日/周) anchored under
+    /// the usage readout. Honestly labelled 本地实算; the official cap/reset (Stage 3,
+    /// claude.ai) is a reserved row. Opened by clicking the usage readout/ring.
+    pub(super) fn render_quota_panel(&self) -> Div {
+        use tn_ai::usage_windows::Window;
+        let green = col(self.palette.ansi[2]);
+        let fmt_cost = |c: f64| -> String {
+            if c < 1.0 {
+                format!("${c:.3}")
+            } else {
+                format!("${c:.2}")
+            }
+        };
+        let row = |label: &str, w: &Window| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(10.))
+                .h(px(22.))
+                .child(
+                    div()
+                        .w(px(48.))
+                        .flex_none()
+                        .text_color(gpui::rgb(T2))
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .w(px(54.))
+                        .flex_none()
+                        .text_color(green)
+                        .child(SharedString::from(fmt_cost(w.cost_usd))),
+                )
+                .child(
+                    div()
+                        .w(px(64.))
+                        .flex_none()
+                        .text_color(gpui::rgb(T1))
+                        .child(SharedString::from(format!(
+                            "{} tok",
+                            crate::workspace::human_tokens(w.tokens)
+                        ))),
+                )
+                .child(
+                    div()
+                        .w(px(34.))
+                        .flex_none()
+                        .text_color(gpui::rgb(T3))
+                        .child(SharedString::from(format!("{}条", w.turns))),
+                )
+        };
+
+        let body: AnyElement = match &self.quota {
+            None => div()
+                .px(px(12.))
+                .py(px(12.))
+                .text_color(gpui::rgb(T3))
+                .child(SharedString::from("计算中…"))
+                .into_any_element(),
+            Some(q) => div()
+                .flex()
+                .flex_col()
+                .px(px(12.))
+                .py(px(8.))
+                .gap(px(2.))
+                .child(row("5 小时", &q.five_hour))
+                .child(
+                    div()
+                        .pl(px(48.))
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(T3))
+                        .child(SharedString::from(fmt_reset(q.reset_5h))),
+                )
+                .child(row("今天", &q.day))
+                .child(row("本周", &q.week))
+                .child(div().h(px(1.)).bg(rgba(H1)).my(px(6.)))
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(gpui::rgb(T3))
+                        .child(SharedString::from("官方配额:待接入(Stage 3)")),
+                )
+                .into_any_element(),
+        };
+
+        let head = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .h(px(30.))
+            .px(px(12.))
+            .flex_none()
+            .border_b(px(1.))
+            .border_color(rgba(H0))
+            .child(
+                div()
+                    .w(px(5.))
+                    .h(px(5.))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(gpui::rgb(PH)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .text_color(gpui::rgb(T2))
+                    .child(SharedString::from("用量额度")),
+            )
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(gpui::rgb(T3))
+                    .child(SharedString::from("本地实算")),
+            );
+
+        crate::style::shadowed(
+            div()
+                .absolute()
+                .top(px(40.))
+                .right(px(10.))
+                .w(px(272.))
+                .flex()
+                .flex_col()
+                .rounded(px(crate::style::R_PANEL - 1.))
+                .overflow_hidden()
+                .border_1()
+                .border_color(rgba(crate::style::H2))
+                .bg(gpui::rgb(crate::style::L3))
+                .font_family(self.font_family.clone())
+                .text_size(px(11.))
+                // Clicks inside the popover stay inside (don't toggle it shut).
+                .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
+                .child(head)
+                .child(body),
+            crate::style::shadow_float(),
+        )
     }
 
     /// Plain-shell pane header(SHEET 02 `.plate-head`):高 34 · L2 · 底 1px h0 ·
