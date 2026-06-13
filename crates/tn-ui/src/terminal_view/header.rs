@@ -332,7 +332,7 @@ impl TerminalView {
                     div()
                         .text_size(px(10.5))
                         .text_color(gpui::rgb(T3))
-                        .child(SharedString::from("官方配额:待接入(Stage 3)")),
+                        .child(SharedString::from("官方配额 · 暂未接入")),
                 )
                 .into_any_element(),
         };
