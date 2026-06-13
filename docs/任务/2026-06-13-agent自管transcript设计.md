@@ -85,7 +85,19 @@ pub struct TranscriptEntry {
   - 真机实测:本会话 Claude 日志 → 284 条(1 user+66 assistant+109 tool call+108 result);
     Codex 大会话 → 1070/2095 条全部解析,证明能拿到**完整**历史。`cargo test -p tn-agent -p tn-ai`
     27 绿(含 `transcript_*`)、`cargo check --workspace` 通过。
-- **2b** TranscriptModel + poller(tail → 条目),走 AgentEvent;升级 `TranscriptAppended` 为结构化。
+- **2b** TranscriptModel + poller(tail → 条目),走 AgentEvent。**✅ 已落地**
+  - 新事件 `AgentEvent::TranscriptEntries{entries, replace}`(结构化全量历史;与既有
+    `TranscriptAppended(String)` 头部 tail 预览**并存**,不动 sidecar 那条)。`replace=true` 为
+    全量快照(首次绑定 / 文件重写),false 为按序追加。
+  - `TerminalView::agent_transcript: Vec<TranscriptEntry>` per-pane 状态;`reduce_agent_event`
+    按 replace 覆盖 / append;`clear_agent` 清空。
+  - `io::spawn_transcript_poller`:镜像 usage poller 的会话解析/钉死 + 字节 offset 增量 tail,
+    每 2s 仅在 mtime 变化时读 delta、`adapter.parse_transcript(delta)`、emit。纯函数
+    `transcript_read_window(prev_offset,len)->(start,replace)` 决定增量/全量(文件变短=重写→全量)。
+  - 仅在 `descriptor.capabilities.transcript` 时启动(内置 Claude/Codex 的 `full_capabilities`
+    现含 `transcript: true`);两个启动点(`new` 与 `sync_shell_agent` 的 typed-agent 提升)都接上。
+  - `cargo test -p tn-agent -p tn-ai -p tn-ui` 18/27/198 绿(含 `transcript_read_window_*`)、
+    `check --workspace` 通过。数据已落到 `agent_transcript`,**尚无渲染**(2c)。
 - **2c** 历史叠层视图(可滚 + 滚动条)+ 进入/退出手势(A 或 B)。
 - **2d** 打磨:markdown、复制、搜索、跳到某轮、与「本次改动」rail / Quick Look 的协同。
 

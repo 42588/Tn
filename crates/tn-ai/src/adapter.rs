@@ -29,11 +29,14 @@ fn pty_runtimes() -> Vec<AgentRuntimeKind> {
     ]
 }
 
-/// Terminal + usage + cwd sync + git-diff rail — the full built-in agent surface.
+/// Terminal + usage + transcript + cwd sync + git-diff rail — the full built-in
+/// agent surface. `transcript` unlocks Tn's own scrollable history (parsed from
+/// the session log) since these TUI agents never fill terminal scrollback.
 fn full_capabilities() -> AgentCapabilities {
     AgentCapabilities {
         terminal: true,
         usage: true,
+        transcript: true,
         cwd_sync: true,
         git_diff: true,
         ..AgentCapabilities::default()

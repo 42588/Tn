@@ -648,6 +648,11 @@ pub struct TerminalView {
     agent_status: Option<AgentStatus>,
     agent_model: Option<String>,
     agent_transcript_tail: Option<String>,
+    /// Tn's **own** scrollable conversation history for this agent pane, parsed
+    /// from the session log by [`io::spawn_transcript_poller`] (TUI agents never
+    /// put the full conversation in terminal scrollback). Empty for non-agent /
+    /// no-transcript-capability panes. Rendered by the history overlay (Phase 2c).
+    agent_transcript: Vec<tn_agent::TranscriptEntry>,
     agent_permission_prompt: Option<String>,
     agent_error: Option<String>,
     /// Per-pane realtime telemetry adapter — a sidecar [`ExternalProcessAdapter`]
@@ -1084,6 +1089,9 @@ impl TerminalView {
             // adapter) hosts fine but reports no usage.
             if let Some(adapter) = registry.adapter(id) {
                 Self::spawn_usage_poller(cx, adapter.clone(), launched_at);
+                if adapter.descriptor().capabilities.transcript {
+                    Self::spawn_transcript_poller(cx, adapter.clone(), launched_at);
+                }
                 if adapter.has_realtime_events() {
                     Self::spawn_agent_event_poller(cx, adapter.clone());
                 }
@@ -1164,6 +1172,7 @@ impl TerminalView {
             agent_status: None,
             agent_model: None,
             agent_transcript_tail: None,
+            agent_transcript: Vec::new(),
             agent_permission_prompt: None,
             agent_error: None,
             realtime_adapter,
@@ -1437,6 +1446,7 @@ impl TerminalView {
         self.agent_status = None;
         self.agent_model = None;
         self.agent_transcript_tail = None;
+        self.agent_transcript.clear();
         self.agent_permission_prompt = None;
         self.agent_error = None;
         self.rail_state = RailState::Idle;
@@ -1530,6 +1540,13 @@ impl TerminalView {
             }
             AgentEvent::TranscriptAppended(text) => {
                 self.agent_transcript_tail = Some(tail_chars(&text, 180));
+            }
+            AgentEvent::TranscriptEntries { mut entries, replace } => {
+                if replace {
+                    self.agent_transcript = entries;
+                } else {
+                    self.agent_transcript.append(&mut entries);
+                }
             }
             AgentEvent::PermissionRequested(prompt) => {
                 self.agent_permission_prompt = Some(prompt);
@@ -1641,7 +1658,11 @@ impl TerminalView {
                 // ~now); the grace in resolve_pane_session absorbs detection lag.
                 // Only an agent with a usage adapter is polled.
                 if let Some(adapter) = registry.adapter(&id) {
-                    Self::spawn_usage_poller(cx, adapter.clone(), SystemTime::now());
+                    let started_at = SystemTime::now();
+                    Self::spawn_usage_poller(cx, adapter.clone(), started_at);
+                    if adapter.descriptor().capabilities.transcript {
+                        Self::spawn_transcript_poller(cx, adapter.clone(), started_at);
+                    }
                     if adapter.has_realtime_events() {
                         Self::spawn_agent_event_poller(cx, adapter.clone());
                     }
