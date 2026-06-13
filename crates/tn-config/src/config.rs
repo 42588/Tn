@@ -101,7 +101,12 @@ pub enum BillingMode {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct General {
-    /// Scrollback lines retained per session (not yet wired).
+    /// Scrollback lines retained per session (the agent/shell history you can wheel
+    /// back through). Wired at `terminal_view`'s `Terminal::with_scrollback`. Grows
+    /// lazily (memory scales with actual output, not the cap) and a backgrounded
+    /// tab's grid is parked to disk (`swap_out_async`), so a generous default is
+    /// affordable. This value *is* the bound (the engine retains exactly this many
+    /// history lines); raise it in config for marathon runs.
     pub scrollback_lines: usize,
     /// Confirm before closing a session that is still running (not yet wired).
     pub confirm_close: bool,
@@ -126,7 +131,9 @@ pub struct General {
 impl Default for General {
     fn default() -> Self {
         Self {
-            scrollback_lines: 5_000,
+            // 5k truncated long agent conversations (BUG: 历史「太长就看不到」). Lazy
+            // allocation + disk-park of idle tabs make 50k affordable.
+            scrollback_lines: 50_000,
             confirm_close: true,
             billing_mode: BillingMode::default(),
             claude_billing: None,
