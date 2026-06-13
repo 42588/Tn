@@ -246,7 +246,8 @@ mod tests {
         );
         // context = LAST turn total input = 200 + 0 + 2000.
         assert_eq!(u.context_used, 2200);
-        assert_eq!(u.context_max, 200_000);
+        // claude-opus-4-7 is a current-gen 1M model (was wrongly 200K before).
+        assert_eq!(u.context_max, 1_000_000);
         // input/cache_create/cache_read are separate additive buckets, each billed at its own rate.
         let expect =
             300.0 / 1e6 * 15.0 + 130.0 / 1e6 * 75.0 + 10.0 / 1e6 * 18.75 + 3000.0 / 1e6 * 1.5;
@@ -263,7 +264,7 @@ mod tests {
     fn context_frac_and_totals() {
         let u = parse_claude_session(SAMPLE).unwrap();
         assert_eq!(u.total_tokens(), 300 + 130 + 10 + 3000);
-        assert!((u.context_frac() - 2200.0 / 200_000.0).abs() < 1e-6);
+        assert!((u.context_frac() - 2200.0 / 1_000_000.0).abs() < 1e-6);
     }
 
     #[test]
@@ -280,9 +281,10 @@ mod tests {
 
     #[test]
     fn observed_context_above_window_infers_1m() {
-        // Opus id with no "1m" marker, but a turn larger than 200K → widen to 1M
-        // (real `claude-opus-4-7` 1M sessions look exactly like this).
-        let s = r#"{"type":"assistant","message":{"model":"claude-opus-4-7","usage":{"input_tokens":250000,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":50000}}}"#;
+        // A 200K-default model (Haiku) whose observed turn exceeds 200K → widen to
+        // 1M so the ring never reads >100%. (Current-gen Opus/Sonnet are already 1M
+        // from the model id, so the widening net only matters for 200K families.)
+        let s = r#"{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","usage":{"input_tokens":250000,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":50000}}}"#;
         let u = parse_claude_session(s).unwrap();
         assert_eq!(u.context_used, 300_000);
         assert_eq!(u.context_max, 1_000_000);
