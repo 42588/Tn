@@ -112,6 +112,22 @@ pub struct TranscriptEntry {
   > 真机要确认的 UX 取舍:① 向上滚直接打开叠层会**接管 agent 自己的滚轮**(codex/claude 的原生翻页)——
   > 这是有意的(Tn 历史是其超集),但若你想保留 agent 自滚,可改成带修饰键或显式按钮。② 叠层不透明
   > 盖住 live;若想半透明/并排可调。③ 折行用近似显示宽度(CJK 记 2),个别字形可能差一格。
+
+### 真机复测(2026-06-13)
+
+- **Claude:可用** ✅。向上滚出叠层、滚动条、头部/正文、提示都正常(用户截图确认)。
+- 修了两个真机暴露的问题:
+  1. **config-backed agent 缺 transcript 能力**:用户的 claude/codex 是 `[[agents]]` 声明,走
+     `builtin_adapter_for_manifest` —— 它只强制 `usage` 不强制 `transcript` → poller 不启动 →
+     `agent_transcript` 永远空 → 叠层不开。修:同时强制 `transcript=true`(`1b6dd8ab`)。
+  2. **Claude 斜杠命令元数据混入**:用户看到的「多个会话混在一起」其实是同一会话里 `/model`
+     等命令的元数据(Claude 把 `<command-name>`/`<local-command-stdout>`/`<local-command-caveat>`/
+     `<bash-input>` 当 user 文本块记日志),被当成假「You」turn。修:`is_claude_noise_text` 按标签
+     前缀跳过(`8408ea2`)。
+- **Codex:暂搁**(用户 codex 额度用尽,无法测)。本机最新 rollout 解析正常,故非解析问题,疑似
+  `agent_transcript` 为空(会话未对话/未写盘,或 resolve 绑定时机)。诊断已就绪:`on_scroll` 的
+  `tn::scroll` 日志现含 `transcript_len`/`history_open`,待有额度后抓一条 codex `wheel tick` 即可分清
+  「没绑上会话」还是「绑了没数据」。
 - **2d** 打磨:markdown、复制、搜索、跳到某轮、与「本次改动」rail / Quick Look 的协同。
 
 ## 已定(2026-06-13 用户拍板)
