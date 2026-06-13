@@ -4331,10 +4331,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_agent_launch_inline_defaults_codex_only() {
-        // Claude renders on the main screen → terminal scrollback works natively,
-        // so it needs NO launch flags. Codex's TUI is alt-screen (no scrollback),
-        // so it gets `--no-alt-screen` to inline onto the main screen.
+    fn builtin_agents_launch_without_inline_defaults() {
+        // Built-in Claude/Codex run as their native full-screen TUIs: no
+        // inline-mode env/args are injected. (History is owned by Tn's transcript
+        // surface, sourced from the session log — not terminal scrollback, which
+        // these agents never fully populate.)
         let claude = first_profile("[[profiles]]\nname=\"Claude\"\ncommand=\"claude\"\n");
         let claude_spec = LaunchSpec::from_profile(&claude, &reg()).expect("claude is launchable");
         assert!(
@@ -4342,7 +4343,7 @@ mod tests {
                 .env
                 .iter()
                 .any(|(k, _)| k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"),
-            "Claude needs no inline env, got {:?}",
+            "Claude must not be forced into inline mode, got {:?}",
             claude_spec.env
         );
 
@@ -4355,35 +4356,16 @@ mod tests {
             .iter()
             .find(|a| a.contains("& 'codex'"))
             .expect("hosted command");
-        // `--no-alt-screen` is inserted before the profile args.
         assert!(
-            invoke.contains("& 'codex' '--no-alt-screen' 'resume' '--last'"),
-            "Codex must be inlined onto the main screen, got {invoke:?}"
+            !invoke.contains("--no-alt-screen"),
+            "Codex must not be forced into inline mode, got {invoke:?}"
         );
+        // Profile args are still passed through untouched.
+        assert!(invoke.contains("& 'codex' 'resume' '--last'"), "got {invoke:?}");
     }
 
     #[test]
-    fn builtin_agent_launch_dedupes_default_args() {
-        // A user who already put `--no-alt-screen` in their profile must not get
-        // it duplicated by the descriptor default.
-        let codex = first_profile(
-            "[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\nargs=[\"--no-alt-screen\", \"resume\"]\n",
-        );
-        let spec = LaunchSpec::from_profile(&codex, &reg()).expect("codex is launchable");
-        let invoke = spec
-            .args
-            .iter()
-            .find(|a| a.contains("& 'codex'"))
-            .expect("hosted command");
-        assert_eq!(
-            invoke.matches("--no-alt-screen").count(),
-            1,
-            "descriptor default must not duplicate an explicit user arg, got {invoke:?}"
-        );
-    }
-
-    #[test]
-    fn config_backed_codex_keeps_inline_default() {
+    fn config_backed_builtin_agents_have_no_inline_defaults() {
         let cfg = tn_config::Config::from_toml_str(
             "[[agents]]\n\
              id=\"claude\"\n\
@@ -4428,8 +4410,8 @@ mod tests {
             .find(|a| a.contains("& 'codex'"))
             .expect("hosted command");
         assert!(
-            invoke.contains("--no-alt-screen"),
-            "config-backed Codex must inherit the built-in inline arg, got {invoke:?}"
+            !invoke.contains("--no-alt-screen"),
+            "config-backed Codex must not inherit an inline arg, got {invoke:?}"
         );
     }
 

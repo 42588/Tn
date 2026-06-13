@@ -74,13 +74,11 @@ fn codex_descriptor() -> AgentDescriptor {
         command_aliases: vec!["codex".into()],
         accent: Some(Color::new(0x73, 0xDA, 0xCA)), // teal (mockup `.tile.codex`)
         glyph: None,
-        // `--no-alt-screen`: Codex's full-screen TUI lives on the **alternate
-        // screen**, which has no scrollback and captures the mouse — so the wheel
-        // can't scroll back through history (unlike Claude, which renders on the
-        // main screen). Inline mode puts Codex's output on the main screen → it
-        // flows into the terminal's native scrollback, scrollable just like Claude.
-        // (The earlier typing regression was the CJK block-cursor bug, since fixed.)
-        default_args: vec!["--no-alt-screen".into()],
+        // No `--no-alt-screen`: Codex runs as its native full-screen TUI. Inline
+        // mode only spilled a handful of lines into terminal scrollback (never the
+        // full transcript) and broke inline cursor/IME/input — Tn owns the
+        // scrollable history from the Codex rollout log instead.
+        default_args: Vec::new(),
         default_env: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
@@ -250,17 +248,15 @@ mod tests {
         assert_eq!(c.descriptor().label, "Claude Code");
         assert_eq!(c.descriptor().short, "Claude");
         assert!(c.descriptor().manages_own_cursor); // Ink TUI
-        // Claude renders on the main screen → terminal scrollback works natively;
-        // no launch flags needed.
+        // Native full-screen agents: no inline-mode injection (history comes from
+        // the Tn-owned transcript, not terminal scrollback).
         assert!(c.descriptor().default_env.is_empty());
         assert!(c.descriptor().default_args.is_empty());
         assert!(c.descriptor().capabilities.usage);
 
         let x = CodexAdapter::new();
         assert_eq!(x.descriptor().id, AgentId::new("codex"));
-        // Codex's TUI is alt-screen (no scrollback) → inline it onto the main
-        // screen so its output reaches the terminal's native scrollback.
-        assert_eq!(x.descriptor().default_args, vec!["--no-alt-screen"]);
+        assert!(x.descriptor().default_args.is_empty());
         assert!(!x.descriptor().manages_own_cursor);
         assert!(x.descriptor().capabilities.usage);
     }
@@ -345,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_adapter_for_codex_manifest_keeps_inline_default_arg() {
+    fn builtin_adapter_for_codex_manifest_has_no_inline_default_arg() {
         let m = tn_config::AgentManifest {
             id: "codex".into(),
             label: Some("Codex".into()),
@@ -360,6 +356,6 @@ mod tests {
             sidecar: None,
         };
         let a = builtin_adapter_for_manifest(&m).expect("codex command matched a built-in");
-        assert_eq!(a.descriptor().default_args, vec!["--no-alt-screen"]);
+        assert!(a.descriptor().default_args.is_empty());
     }
 }
