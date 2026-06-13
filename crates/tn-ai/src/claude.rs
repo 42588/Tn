@@ -141,6 +141,29 @@ pub fn parse_claude_transcript(jsonl: &str) -> Vec<TranscriptEntry> {
     out
 }
 
+/// Claude logs slash commands and bash-tool plumbing as **user** text blocks
+/// wrapped in metadata tags (`<command-name>/model</command-name>`,
+/// `<local-command-stdout>…`, `<local-command-caveat>…`, `<bash-input>…`). These
+/// aren't real user turns — they'd otherwise show up as bogus "You" entries in
+/// the history (the "多个会话混在一起" the user saw). Skip a text block that is
+/// one of these standalone metadata blocks.
+fn is_claude_noise_text(text: &str) -> bool {
+    const NOISE_PREFIXES: &[&str] = &[
+        "<local-command-caveat>",
+        "<local-command-stdout>",
+        "<local-command-stderr>",
+        "<command-name>",
+        "<command-message>",
+        "<command-args>",
+        "<command-contents>",
+        "<bash-input>",
+        "<bash-stdout>",
+        "<bash-stderr>",
+    ];
+    let t = text.trim_start();
+    NOISE_PREFIXES.iter().any(|p| t.starts_with(p))
+}
+
 /// Append entries for one message's `content` (a plain string, or an array of
 /// `{type:"text"|"tool_use"|"tool_result"|"thinking", …}` blocks). `tool_use` /
 /// `tool_result` always become `Tool` entries regardless of the outer role;
@@ -148,7 +171,7 @@ pub fn parse_claude_transcript(jsonl: &str) -> Vec<TranscriptEntry> {
 fn push_claude_blocks(content: &Value, role: TranscriptRole, out: &mut Vec<TranscriptEntry>) {
     if let Some(s) = content.as_str() {
         let s = s.trim();
-        if !s.is_empty() {
+        if !s.is_empty() && !is_claude_noise_text(s) {
             push_collapsed(out, TranscriptEntry::message(role, s));
         }
         return;
@@ -161,7 +184,7 @@ fn push_claude_blocks(content: &Value, role: TranscriptRole, out: &mut Vec<Trans
             Some("text") => {
                 if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
                     let t = t.trim();
-                    if !t.is_empty() {
+                    if !t.is_empty() && !is_claude_noise_text(t) {
                         push_collapsed(out, TranscriptEntry::message(role, t));
                     }
                 }
@@ -426,6 +449,21 @@ mod tests {
         // string content also works.
         assert_eq!(t[4].role, TranscriptRole::Assistant);
         assert_eq!(t[4].text, "done");
+    }
+
+    #[test]
+    fn transcript_skips_slash_command_metadata_noise() {
+        // Real Claude logs slash commands as user text blocks wrapped in metadata
+        // tags — these must NOT appear as "You" turns.
+        let s = r#"
+{"type":"user","message":{"content":[{"type":"text","text":"<local-command-caveat>Caveat: …</local-command-caveat>"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"<command-name>/model</command-name>"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"<local-command-stdout>Set model to Haiku</local-command-stdout>"}]}}
+{"type":"user","message":{"content":[{"type":"text","text":"你好"}]}}
+"#;
+        let t = parse_claude_transcript(s);
+        assert_eq!(t.len(), 1, "only the real user message survives, got {t:?}");
+        assert_eq!(t[0].text, "你好");
     }
 
     #[test]
