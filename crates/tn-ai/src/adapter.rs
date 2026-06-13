@@ -233,12 +233,15 @@ pub fn builtin_adapter_for_manifest(m: &tn_config::AgentManifest) -> Option<Arc<
     let seed = builtin_registry();
     let id = probes.iter().find_map(|p| seed.match_command(p))?;
     let seed_descriptor = seed.get(&id)?;
-    // Keep the user's descriptor (color/label/Ink) but force `usage` on, since the
-    // built-in parser supplies it.
+    // Keep the user's descriptor (color/label/Ink) but force `usage` + `transcript`
+    // on, since the built-in parser supplies both (usage ring + Tn's own scrollable
+    // history). Without forcing `transcript`, a config-declared Claude/Codex would
+    // never start the transcript poller → the history overlay stays empty.
     let mut descriptor = AgentDescriptor::from_manifest(m);
     descriptor.default_args = seed_descriptor.default_args.clone();
     descriptor.default_env = seed_descriptor.default_env.clone();
     descriptor.capabilities.usage = true;
+    descriptor.capabilities.transcript = true;
     match id.as_str() {
         "claude" => Some(Arc::new(ClaudeAdapter::with_descriptor(descriptor))),
         "codex" => Some(Arc::new(CodexAdapter::with_descriptor(descriptor))),
@@ -335,6 +338,7 @@ mod tests {
             "manifest-backed Claude inherits the built-in's (now empty) launch env"
         );
         assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
+        assert!(d.capabilities.transcript); // built-in supplies history → overlay unlocked
         assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
                                                                  // And it actually parses Claude logs (built-in behavior, not generic).
         assert_eq!(

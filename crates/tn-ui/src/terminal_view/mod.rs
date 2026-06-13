@@ -2826,27 +2826,10 @@ impl TerminalView {
         let route = scroll_wheel_route(mode);
         cx.stop_propagation();
 
-        // Agent history overlay (Phase 2c): Tn's own full transcript — these TUI
-        // agents never fill terminal scrollback, so "scroll up = see history" is
-        // Tn's job. Scrolling up over a live agent that has transcript opens it;
-        // once open the wheel scrolls the overlay, and scrolling down past the
-        // newest line closes it back to live. Intercepts before the agent/
-        // scrollback routes below.
-        if self.agent.is_some() && !self.agent_transcript.is_empty() {
-            if self.history_open {
-                self.scroll_history(up, n, cx);
-                return;
-            } else if up {
-                self.open_history();
-                self.scroll_history(true, n, cx);
-                return;
-            }
-            // closed + scrolling down → fall through to the live agent routes.
-        }
-
         // Diagnostic (BUG③ "agent 滚不动"): one line per wheel tick so a real-machine
-        // test reveals which branch runs and whether there's any scrollback to scroll.
-        // Filter with `tn::scroll`. Remove once the scroll story is confirmed.
+        // test reveals which branch runs, whether there's scrollback, and — for the
+        // history overlay — whether the transcript actually populated. Filter with
+        // `tn::scroll`. Logged BEFORE the history gesture (which early-returns).
         {
             let branch = match route {
                 ScrollWheelRoute::MouseReport => "mouse_report",
@@ -2863,8 +2846,28 @@ impl TerminalView {
                 offset,
                 lines,
                 branch,
+                transcript_len = self.agent_transcript.len(),
+                history_open = self.history_open,
                 "wheel tick"
             );
+        }
+
+        // Agent history overlay (Phase 2c): Tn's own full transcript — these TUI
+        // agents never fill terminal scrollback, so "scroll up = see history" is
+        // Tn's job. Scrolling up over a live agent that has transcript opens it;
+        // once open the wheel scrolls the overlay, and scrolling down past the
+        // newest line closes it back to live. Intercepts before the agent/
+        // scrollback routes below.
+        if self.agent.is_some() && !self.agent_transcript.is_empty() {
+            if self.history_open {
+                self.scroll_history(up, n, cx);
+                return;
+            } else if up {
+                self.open_history();
+                self.scroll_history(true, n, cx);
+                return;
+            }
+            // closed + scrolling down → fall through to the live agent routes.
         }
 
         // (1) App-driven mouse: forward a wheel report at the pointer's cell. Takes
