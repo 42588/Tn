@@ -20,23 +20,43 @@ use tn_agent::{AgentAdapter, SessionRef};
 const SESSION_ACTIVE_MARGIN: Duration = Duration::from_secs(120);
 
 /// Pick the session this pane activated from a `(path, mtime)` list + the
-/// launch-time `baseline`: the newest-mtime one that (a) is absent from baseline
-/// (created after launch) or was **stale** then (baseline mtime older than
-/// `launched_at − SESSION_ACTIVE_MARGIN`), **and** (b) has since been written
-/// (`mtime ≥ launched_at`). Splitting this out keeps it unit-testable with
-/// synthetic timestamps (no filesystem).
+/// launch-time `baseline`. Two tiers, both requiring activity after launch
+/// (`mtime ≥ launched_at`):
+///
+/// 1. **Freshly created** — a path **absent** from baseline (the file didn't
+///    exist at launch). This unambiguously belongs to this pane, so it wins even
+///    over a more-active session. Critical when a concurrent dev agent edits the
+///    same repo (Tn dogfooding): that session is busier (newer mtime) but it
+///    existed at launch, so a brand-new `claude`/`codex` pane must not bind to it.
+/// 2. **Resumed** — a path **present** at baseline but **stale** then (baseline
+///    mtime older than `launched_at − SESSION_ACTIVE_MARGIN`), now written again.
+///    Only consulted when no freshly-created session qualifies. Ambiguous against
+///    a concurrent session with a >margin gap, but resume is the rarer case.
+///
+/// Splitting this out keeps it unit-testable with synthetic timestamps.
 fn pick_pane_session(
     sessions: Vec<(PathBuf, SystemTime)>,
     launched_at: SystemTime,
     baseline: &HashMap<PathBuf, SystemTime>,
 ) -> Option<PathBuf> {
+    // Tier 1: a file that did not exist at launch is unambiguously this pane's.
+    let fresh = sessions
+        .iter()
+        .filter(|(path, mtime)| *mtime >= launched_at && !baseline.contains_key(path))
+        .max_by_key(|(_, mtime)| *mtime)
+        .map(|(path, _)| path.clone());
+    if fresh.is_some() {
+        return fresh;
+    }
+    // Tier 2: a pre-existing session that was stale at launch and is active again
+    // (a resume). Excludes one that was concurrently writing at launch.
     let stale_before = launched_at
         .checked_sub(SESSION_ACTIVE_MARGIN)
         .unwrap_or(launched_at);
     sessions
         .into_iter()
         .filter(|(path, mtime)| {
-            *mtime >= launched_at && baseline.get(path).is_none_or(|&b| b < stale_before)
+            *mtime >= launched_at && baseline.get(path).is_some_and(|&b| b < stale_before)
         })
         .max_by_key(|(_, mtime)| *mtime)
         .map(|(path, _)| path)
@@ -130,6 +150,25 @@ mod tests {
         let sessions = vec![
             (mine.clone(), secs(1_000_000 + 30)), // written after launch
             (dev.clone(), secs(1_000_000 + 31)),  // newer, but concurrent → excluded
+        ];
+        assert_eq!(pick_pane_session(sessions, launch, &baseline), Some(mine));
+    }
+
+    #[test]
+    fn fresh_session_wins_over_more_active_concurrent_dev() {
+        // The dogfooding bug: a dev agent edits this very repo (its session existed
+        // before launch, went briefly stale, then writes furiously → newest mtime).
+        // The user opens a fresh pane (a NEW session file, absent from baseline).
+        // We MUST bind to the user's fresh file, not the busier dev session — or the
+        // pane shows another session's history.
+        let launch = secs(1_000_000);
+        let mine = PathBuf::from("mine.jsonl"); // created after launch (absent at baseline)
+        let dev = PathBuf::from("dev.jsonl"); // pre-existing, stale at launch, now very active
+        let mut baseline = HashMap::new();
+        baseline.insert(dev.clone(), secs(1_000_000 - 3600)); // stale gap > margin
+        let sessions = vec![
+            (mine.clone(), secs(1_000_000 + 10)),
+            (dev.clone(), secs(1_000_000 + 99)), // newer mtime, but NOT ours
         ];
         assert_eq!(pick_pane_session(sessions, launch, &baseline), Some(mine));
     }

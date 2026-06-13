@@ -2435,12 +2435,13 @@ impl TerminalView {
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // History overlay open: a click copies the entry under the cursor (the
         // overlay has no text selection of its own; this is how you get text out).
         if self.history_open {
+            self.focus_handle.focus(window); // so Esc/End still reach on_key after a click
             self.copy_history_entry_at(event.position, cx);
             cx.stop_propagation();
             return;
@@ -2658,7 +2659,9 @@ impl TerminalView {
         if self.history_open {
             let page = self.history_visible_rows().saturating_sub(1).max(1);
             match key {
-                "escape" | "end" => {
+                // Return to live. Enter/Esc/End consume the key (don't leak a
+                // newline to the agent); the hint advertises Esc.
+                "escape" | "enter" | "end" => {
                     self.close_history();
                     cx.stop_propagation();
                     cx.notify();
@@ -2861,7 +2864,7 @@ impl TerminalView {
     fn on_scroll(
         &mut self,
         event: &ScrollWheelEvent,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // Lines toward older output are positive.
@@ -2917,6 +2920,9 @@ impl TerminalView {
                 return;
             } else if up {
                 self.open_history();
+                // Take keyboard focus so Esc / End / arrow navigation reach on_key
+                // (opening via the wheel doesn't otherwise focus the pane).
+                self.focus_handle.focus(window);
                 self.scroll_history(true, n, cx);
                 return;
             }
