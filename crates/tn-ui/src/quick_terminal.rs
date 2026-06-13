@@ -877,6 +877,7 @@ impl QuickTerminal {
             LaunchSpec {
                 program,
                 args: Vec::new(),
+                env: Vec::new(),
                 integrate_pwsh: false,
                 shell_integration: None,
                 agent: None,

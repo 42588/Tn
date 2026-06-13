@@ -894,6 +894,9 @@ impl TerminalView {
             for a in &launch.args {
                 spec = spec.arg(a);
             }
+            for (k, v) in &launch.env {
+                spec = spec.env(k, v);
+            }
             if launch.file_namespace == FileNamespace::Host {
                 if let Some(cwd) = &launch.cwd {
                     spec = spec.cwd(cwd);
@@ -4292,6 +4295,101 @@ mod tests {
             spec.args.iter().any(|a| a.contains(AGENT_EXIT_SENTINEL)),
             "persistent agent emits the exit sentinel, got {:?}",
             spec.args
+        );
+    }
+
+    #[test]
+    fn builtin_agent_launch_applies_inline_defaults() {
+        let claude = first_profile("[[profiles]]\nname=\"Claude\"\ncommand=\"claude\"\n");
+        let claude_spec = LaunchSpec::from_profile(&claude, &reg()).expect("claude is launchable");
+        assert!(
+            claude_spec.env.iter().any(|(k, v)| {
+                k == "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN" && v == "1"
+            }),
+            "Claude must opt out of fullscreen rendering so terminal scrollback works, got {:?}",
+            claude_spec.env
+        );
+
+        let codex = first_profile(
+            "[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\nargs=[\"resume\", \"--last\"]\n",
+        );
+        let codex_spec = LaunchSpec::from_profile(&codex, &reg()).expect("codex is launchable");
+        let invoke = codex_spec
+            .args
+            .iter()
+            .find(|a| a.contains("& 'codex'"))
+            .expect("hosted command");
+        assert!(
+            invoke.contains("& 'codex' '--no-alt-screen' 'resume' '--last'"),
+            "Codex default args must be inserted before profile args, got {invoke:?}"
+        );
+    }
+
+    #[test]
+    fn builtin_agent_launch_dedupes_default_args() {
+        let codex = first_profile(
+            "[[profiles]]\nname=\"Codex\"\ncommand=\"codex\"\nargs=[\"--no-alt-screen\", \"resume\"]\n",
+        );
+        let spec = LaunchSpec::from_profile(&codex, &reg()).expect("codex is launchable");
+        let invoke = spec
+            .args
+            .iter()
+            .find(|a| a.contains("& 'codex'"))
+            .expect("hosted command");
+        assert_eq!(
+            invoke.matches("--no-alt-screen").count(),
+            1,
+            "descriptor defaults must not duplicate an explicit user arg, got {invoke:?}"
+        );
+    }
+
+    #[test]
+    fn config_backed_builtin_agents_keep_inline_defaults() {
+        let cfg = tn_config::Config::from_toml_str(
+            "[[agents]]\n\
+             id=\"claude\"\n\
+             aliases=[\"claude\"]\n\
+             manages_own_cursor=true\n\
+             \n\
+             [[agents]]\n\
+             id=\"codex\"\n\
+             aliases=[\"codex\"]\n\
+             \n\
+             [[profiles]]\n\
+             name=\"Claude\"\n\
+             kind=\"agent\"\n\
+             agent=\"claude\"\n\
+             command=\"claude\"\n\
+             \n\
+             [[profiles]]\n\
+             name=\"Codex\"\n\
+             kind=\"agent\"\n\
+             agent=\"codex\"\n\
+             command=\"codex\"\n",
+        )
+        .expect("config parses");
+        let mut reg = tn_agent::AgentRegistry::new();
+        for manifest in &cfg.agents {
+            match tn_ai::builtin_adapter_for_manifest(manifest) {
+                Some(adapter) => reg.register(adapter),
+                None => reg.register_manifest(manifest),
+            }
+        }
+
+        let claude = LaunchSpec::from_profile(&cfg.profiles[0], &reg).expect("claude launchable");
+        assert!(claude
+            .env
+            .contains(&("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())));
+
+        let codex = LaunchSpec::from_profile(&cfg.profiles[1], &reg).expect("codex launchable");
+        let invoke = codex
+            .args
+            .iter()
+            .find(|a| a.contains("& 'codex'"))
+            .expect("hosted command");
+        assert!(
+            invoke.contains("--no-alt-screen"),
+            "config-backed Codex must inherit the built-in inline arg, got {invoke:?}"
         );
     }
 

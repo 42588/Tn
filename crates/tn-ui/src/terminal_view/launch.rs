@@ -81,6 +81,17 @@ pub enum ShellIntegration {
     Bash,
 }
 
+fn merge_default_args(default_args: &[String], profile_args: &[String]) -> Vec<String> {
+    let mut args = Vec::with_capacity(default_args.len() + profile_args.len());
+    for arg in default_args {
+        if !profile_args.iter().any(|existing| existing == arg) {
+            args.push(arg.clone());
+        }
+    }
+    args.extend_from_slice(profile_args);
+    args
+}
+
 /// How to launch a pane's process: program + args + whether to inject shell-
 /// integration scripts. Built from a `tn_config::Profile` (command-bearing
 /// shell/agent profiles), or the default local PowerShell via [`LaunchSpec::pwsh`].
@@ -88,6 +99,7 @@ pub enum ShellIntegration {
 pub struct LaunchSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub env: Vec<(String, String)>,
     /// When true, the render reserves 212 px for the activity rail from the start
     /// so the terminal never resizes when sync_shell_agent promotes a shell to an
     /// agent, avoiding input lag. Derived from [`Self::shell_integration`] being set.
@@ -131,6 +143,7 @@ impl LaunchSpec {
         Self {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
+            env: Vec::new(),
             ssh: None,
             shell_integration: Some(ShellIntegration::Pwsh),
             integrate_pwsh: true,
@@ -189,17 +202,21 @@ impl LaunchSpec {
                     .as_deref()
                     .map(|a| reg.match_command(a).unwrap_or_else(|| AgentId::new(a)))
                     .or_else(|| reg.match_command(&command));
+                let mut args = p.args.clone();
+                let mut env = Vec::new();
                 if let Some(id) = &agent {
                     let desc = reg.descriptor_or_generic(id, &p.name);
                     if !desc.supports_runtime(AgentRuntimeKind::LocalPty) {
                         return None;
                     }
+                    args = merge_default_args(&desc.default_args, &args);
+                    env = desc.default_env.clone();
                 }
                 let lc = command.to_ascii_lowercase();
                 if lc.contains("powershell") || lc.contains("pwsh") {
-                    Some(Self::launch_pwsh(command, &p.args, agent))
+                    Some(Self::launch_pwsh(command, &args, env, agent))
                 } else {
-                    Some(Self::launch_hosted(command, &p.args, agent, persist))
+                    Some(Self::launch_hosted(command, &args, env, agent, persist))
                 }
             }
         }
@@ -220,6 +237,7 @@ impl LaunchSpec {
         Self {
             program: "wsl.exe".into(),
             args,
+            env: Vec::new(),
             shell_integration: Some(ShellIntegration::Bash),
             integrate_pwsh: true,
             agent: None,
@@ -240,6 +258,7 @@ impl LaunchSpec {
         Some(Self {
             program: format!("{}@{}", cfg.user, cfg.host),
             args: Vec::new(),
+            env: Vec::new(),
             shell_integration: None,
             integrate_pwsh: false,
             agent: None,
@@ -251,7 +270,12 @@ impl LaunchSpec {
 
     /// Native PowerShell: run directly with OSC 133 integration. Empty args
     /// default to `-NoLogo`.
-    fn launch_pwsh(command: String, profile_args: &[String], agent: Option<AgentId>) -> Self {
+    fn launch_pwsh(
+        command: String,
+        profile_args: &[String],
+        env: Vec<(String, String)>,
+        agent: Option<AgentId>,
+    ) -> Self {
         let mut args = profile_args.to_vec();
         if args.is_empty() {
             args.push("-NoLogo".into());
@@ -259,6 +283,7 @@ impl LaunchSpec {
         Self {
             program: command,
             args,
+            env,
             shell_integration: Some(ShellIntegration::Pwsh),
             integrate_pwsh: true,
             agent,
@@ -276,6 +301,7 @@ impl LaunchSpec {
     fn launch_hosted(
         command: String,
         profile_args: &[String],
+        env: Vec<(String, String)>,
         agent: Option<AgentId>,
         persist: bool,
     ) -> Self {
@@ -301,6 +327,7 @@ impl LaunchSpec {
         Self {
             program: "powershell.exe".into(),
             args,
+            env,
             shell_integration: None,
             integrate_pwsh: false,
             agent,

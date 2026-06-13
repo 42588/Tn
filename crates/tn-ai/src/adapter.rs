@@ -52,6 +52,10 @@ fn claude_descriptor() -> AgentDescriptor {
         accent: Some(Color::new(0xF0, 0x91, 0x6D)),
         glyph: None,
         default_args: Vec::new(),
+        default_env: vec![(
+            "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(),
+            "1".into(),
+        )],
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
         network_policy: AgentNetworkPolicy::Deny,
@@ -69,7 +73,8 @@ fn codex_descriptor() -> AgentDescriptor {
         command_aliases: vec!["codex".into()],
         accent: Some(Color::new(0x73, 0xDA, 0xCA)), // teal (mockup `.tile.codex`)
         glyph: None,
-        default_args: Vec::new(),
+        default_args: vec!["--no-alt-screen".into()],
+        default_env: Vec::new(),
         capabilities: full_capabilities(),
         runtime_support: pty_runtimes(),
         network_policy: AgentNetworkPolicy::Deny,
@@ -211,9 +216,12 @@ pub fn builtin_adapter_for_manifest(m: &tn_config::AgentManifest) -> Option<Arc<
     };
     let seed = builtin_registry();
     let id = probes.iter().find_map(|p| seed.match_command(p))?;
+    let seed_descriptor = seed.get(&id)?;
     // Keep the user's descriptor (color/label/Ink) but force `usage` on, since the
     // built-in parser supplies it.
     let mut descriptor = AgentDescriptor::from_manifest(m);
+    descriptor.default_args = seed_descriptor.default_args.clone();
+    descriptor.default_env = seed_descriptor.default_env.clone();
     descriptor.capabilities.usage = true;
     match id.as_str() {
         "claude" => Some(Arc::new(ClaudeAdapter::with_descriptor(descriptor))),
@@ -235,10 +243,18 @@ mod tests {
         assert_eq!(c.descriptor().label, "Claude Code");
         assert_eq!(c.descriptor().short, "Claude");
         assert!(c.descriptor().manages_own_cursor); // Ink TUI
+        assert_eq!(
+            c.descriptor().default_env,
+            vec![(
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+                "1".to_string()
+            )]
+        );
         assert!(c.descriptor().capabilities.usage);
 
         let x = CodexAdapter::new();
         assert_eq!(x.descriptor().id, AgentId::new("codex"));
+        assert_eq!(x.descriptor().default_args, vec!["--no-alt-screen"]);
         assert!(!x.descriptor().manages_own_cursor);
         assert!(x.descriptor().capabilities.usage);
     }
@@ -301,6 +317,14 @@ mod tests {
         assert_eq!(d.id, AgentId::new("cluade")); // user's id, not "claude"
         assert_eq!(d.label, "我的 Claude"); // user's label
         assert_eq!(d.accent, Some(Color::new(0xE0, 0xAF, 0x68))); // user's accent
+        assert_eq!(
+            d.default_env,
+            vec![(
+                "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".to_string(),
+                "1".to_string()
+            )],
+            "manifest-backed Claude keeps the built-in inline-mode env"
+        );
         assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
         assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
                                                                  // And it actually parses Claude logs (built-in behavior, not generic).
@@ -316,5 +340,24 @@ mod tests {
             ..m
         };
         assert!(builtin_adapter_for_manifest(&unknown).is_none());
+    }
+
+    #[test]
+    fn builtin_adapter_for_codex_manifest_keeps_inline_default_arg() {
+        let m = tn_config::AgentManifest {
+            id: "codex".into(),
+            label: Some("Codex".into()),
+            short: None,
+            aliases: vec!["codex".into()],
+            accent: None,
+            glyph: None,
+            manages_own_cursor: false,
+            capabilities: vec![],
+            runtime_support: vec![],
+            allow_network: false,
+            sidecar: None,
+        };
+        let a = builtin_adapter_for_manifest(&m).expect("codex command matched a built-in");
+        assert_eq!(a.descriptor().default_args, vec!["--no-alt-screen"]);
     }
 }

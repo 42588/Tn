@@ -3673,6 +3673,7 @@ impl Workspace {
         let spec = LaunchSpec {
             program,
             args: vec![],
+            env: vec![],
             integrate_pwsh: false,
             shell_integration: None,
             agent: None,

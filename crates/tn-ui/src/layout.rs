@@ -28,6 +28,8 @@ pub struct LayoutPane {
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
+    pub env: Vec<(String, String)>,
+    #[serde(default)]
     pub integrate_pwsh: bool,
     /// The launch-intent agent id (for example `"agent"` or any registered id), or
     /// `None` for a plain shell. Stored as the raw `AgentId` string — open by design.
@@ -40,6 +42,7 @@ impl LayoutPane {
         Self {
             program: s.program.clone(),
             args: s.args.clone(),
+            env: s.env.clone(),
             integrate_pwsh: s.integrate_pwsh,
             shell_integration: s.shell_integration.map(|si| match si {
                 crate::terminal_view::ShellIntegration::Pwsh => "pwsh".to_string(),
@@ -77,6 +80,7 @@ impl LayoutPane {
         LaunchSpec {
             program: self.program.clone(),
             args: self.args.clone(),
+            env: self.env.clone(),
             integrate_pwsh: self.integrate_pwsh,
             shell_integration,
             agent: self.agent.as_deref().map(AgentId::new),
@@ -171,15 +175,24 @@ mod tests {
         let p = LayoutPane {
             program: "powershell.exe".into(),
             args: vec!["-NoLogo".into()],
+            env: vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())],
             integrate_pwsh: true,
             shell_integration: None,
             agent: Some("claude".into()),
         };
         let spec = p.to_spec();
         assert_eq!(spec.agent, Some(AgentId::new("claude")));
+        assert_eq!(
+            spec.env,
+            vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())]
+        );
         assert!(spec.ssh.is_none());
         let back = LayoutPane::from_spec(&spec);
         assert_eq!(back.program, "powershell.exe");
+        assert_eq!(
+            back.env,
+            vec![("CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN".into(), "1".into())]
+        );
         assert_eq!(back.agent.as_deref(), Some("claude"));
         assert!(back.integrate_pwsh);
     }
@@ -192,6 +205,7 @@ mod tests {
                 LayoutNode::Pane(LayoutPane {
                     program: "pwsh".into(),
                     args: vec![],
+                    env: vec![],
                     integrate_pwsh: true,
                     shell_integration: None,
                     agent: None,
@@ -202,6 +216,7 @@ mod tests {
                         LayoutNode::Pane(LayoutPane {
                             program: "a".into(),
                             args: vec![],
+                            env: vec![],
                             integrate_pwsh: false,
                             shell_integration: None,
                             agent: Some("codex".into()),
@@ -209,6 +224,7 @@ mod tests {
                         LayoutNode::Pane(LayoutPane {
                             program: "b".into(),
                             args: vec![],
+                            env: vec![],
                             integrate_pwsh: false,
                             shell_integration: None,
                             agent: None,

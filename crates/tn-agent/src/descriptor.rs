@@ -90,8 +90,12 @@ pub struct AgentDescriptor {
     pub accent: Option<Color>,
     /// Optional embedded SVG icon name for launch tiles / header.
     pub glyph: Option<String>,
-    /// Extra args appended when launching (beyond the profile's own args).
+    /// Extra args inserted when launching, before the profile's own args.
+    /// This lets top-level flags (for example "keep native scrollback") precede
+    /// subcommands such as `resume`.
     pub default_args: Vec<String>,
+    /// Environment variables applied when launching this agent in a local PTY.
+    pub default_env: Vec<(String, String)>,
     pub capabilities: AgentCapabilities,
     pub runtime_support: Vec<AgentRuntimeKind>,
     pub network_policy: AgentNetworkPolicy,
@@ -194,6 +198,7 @@ impl AgentDescriptor {
             accent: m.accent,
             glyph: m.glyph.clone(),
             default_args: Vec::new(),
+            default_env: Vec::new(),
             capabilities,
             runtime_support,
             network_policy: if m.allow_network {
@@ -219,6 +224,7 @@ impl AgentDescriptor {
             accent: None,
             glyph: None,
             default_args: Vec::new(),
+            default_env: Vec::new(),
             capabilities: AgentCapabilities::terminal_only(),
             runtime_support: pty_runtimes(),
             network_policy: AgentNetworkPolicy::Deny,
