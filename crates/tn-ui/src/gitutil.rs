@@ -45,13 +45,31 @@ pub(crate) fn capture_bounded(root: &Path, args: &[&str], timeout: Duration) -> 
 /// including our own), so a change there must not trigger a refresh. Shared by the
 /// agent rail watcher (terminal_view/io.rs) and the explorer tree watcher (explorer.rs)
 /// so the two stay in sync (审查⑨: was copy-pasted in both).
+///
+/// **Exception — `.git` ref state.** Most of `.git` is noise, but HEAD-moving ops
+/// (commit / checkout / reset / merge / pull) rewrite ref state — `HEAD`, `logs/`,
+/// `refs/`, `packed-refs` — and those change what `git diff HEAD` returns. Our own
+/// read-only `git diff` / `git status` never write them, so letting them through
+/// can't self-trigger a refresh loop. Without this, a commit made *inside the pane*
+/// left the rail showing stale「本次改动」cards that opened to "无改动 · tree clean"
+/// (踩坑: rail/explorer never refreshed on commit because all of `.git` was filtered).
 pub(crate) fn is_noise_path(p: &Path) -> bool {
-    p.components().any(|c| {
-        matches!(
-            c.as_os_str().to_str(),
-            Some(".git" | "target" | "node_modules" | ".cargo" | "dist" | ".next")
-        )
-    })
+    let mut comps = p.components().filter_map(|c| c.as_os_str().to_str());
+    while let Some(c) = comps.next() {
+        match c {
+            "target" | "node_modules" | ".cargo" | "dist" | ".next" => return true,
+            ".git" => {
+                // The component right after `.git`. Ref state → not noise; everything
+                // else under `.git` (index, objects, locks, COMMIT_EDITMSG…) → noise.
+                return !matches!(
+                    comps.next(),
+                    Some("HEAD" | "ORIG_HEAD" | "logs" | "refs" | "packed-refs")
+                );
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `root` lives inside a git work tree (`git rev-parse --is-inside-work-tree`).
@@ -187,5 +205,28 @@ mod tests {
             del: 0,
         };
         assert_eq!(f.name(), "mod.rs");
+    }
+
+    #[test]
+    fn noise_filter_keeps_git_ref_state_but_drops_internals() {
+        let noise = |s: &str| is_noise_path(Path::new(s));
+        // .git internals churn on every git op (incl. our own reads) → noise.
+        assert!(noise(".git/index"));
+        assert!(noise(".git/index.lock"));
+        assert!(noise(".git/objects/ab/cdef"));
+        assert!(noise(".git/COMMIT_EDITMSG"));
+        assert!(noise("/home/u/proj/.git/index"));
+        // Build / vendored dirs → noise.
+        assert!(noise("target/debug/app"));
+        assert!(noise("node_modules/x/y.js"));
+        // HEAD-moving ref state (commit/checkout/reset) must refresh → NOT noise.
+        assert!(!noise(".git/HEAD"));
+        assert!(!noise(".git/logs/HEAD"));
+        assert!(!noise(".git/refs/heads/main"));
+        assert!(!noise(".git/packed-refs"));
+        assert!(!noise("/home/u/proj/.git/logs/HEAD"));
+        // Ordinary working-tree files → NOT noise.
+        assert!(!noise("src/main.rs"));
+        assert!(!noise("TODO.md"));
     }
 }
