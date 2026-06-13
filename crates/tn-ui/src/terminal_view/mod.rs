@@ -318,6 +318,9 @@ struct HistoryLine {
     role: tn_agent::TranscriptRole,
     /// A header line (role/tool label) vs a body line — drives color/emphasis.
     header: bool,
+    /// Index of the source entry in `agent_transcript` (so a click copies the
+    /// whole entry). `usize::MAX` for blank separator rows (no entry to copy).
+    entry: usize,
 }
 
 /// Display width of a char in terminal cells: 2 for CJK / full-width / most
@@ -402,18 +405,21 @@ fn transcript_to_history_lines(
                 text: String::new(),
                 role: e.role,
                 header: false,
+                entry: usize::MAX, // separator: nothing to copy
             });
         }
         out.push(HistoryLine {
             text: history_header(e, agent_label),
             role: e.role,
             header: true,
+            entry: i,
         });
         for line in wrap_to_cols(&e.text, cols) {
             out.push(HistoryLine {
                 text: line,
                 role: e.role,
                 header: false,
+                entry: i,
             });
         }
     }
@@ -774,6 +780,9 @@ pub struct TerminalView {
     /// Top line index shown in the open history overlay (0 = oldest at top). At
     /// the maximum it shows the newest entries (continuous with the live view).
     history_scroll: usize,
+    /// Index of the transcript entry just copied (click-to-copy), for a brief
+    /// "已复制" highlight; cleared by a one-shot timer.
+    history_copied: Option<usize>,
     agent_permission_prompt: Option<String>,
     agent_error: Option<String>,
     /// Per-pane realtime telemetry adapter — a sidecar [`ExternalProcessAdapter`]
@@ -1296,6 +1305,7 @@ impl TerminalView {
             agent_transcript: Vec::new(),
             history_open: false,
             history_scroll: 0,
+            history_copied: None,
             agent_permission_prompt: None,
             agent_error: None,
             realtime_adapter,
@@ -1572,6 +1582,7 @@ impl TerminalView {
         self.agent_transcript.clear();
         self.history_open = false;
         self.history_scroll = 0;
+        self.history_copied = None;
         self.agent_permission_prompt = None;
         self.agent_error = None;
         self.rail_state = RailState::Idle;
@@ -2386,12 +2397,54 @@ impl TerminalView {
         )
     }
 
+    /// Copy the transcript entry under `position` in the open history overlay to
+    /// the clipboard, and flash it. Overlay rows align 1:1 with the grid rows
+    /// (both start at `BODY_PAD_Y`, step `line_height`), so `cell_at`'s row is the
+    /// visible-window index. No-op on a separator row or outside the lines.
+    fn copy_history_entry_at(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((row, _)) = self.cell_at(position) else {
+            return;
+        };
+        let lines = self.history_lines();
+        let visible = self.history_visible_rows();
+        let top = self.history_scroll.min(lines.len().saturating_sub(visible));
+        let Some(line) = lines.get(top + row) else {
+            return;
+        };
+        let Some(entry) = self.agent_transcript.get(line.entry) else {
+            return; // separator (usize::MAX) or out of range
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(entry.text.clone()));
+        self.history_copied = Some(line.entry);
+        let copied = line.entry;
+        // Clear the flash after a beat (one-shot; no steady-state cost).
+        let exec = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            exec.timer(Duration::from_millis(1200)).await;
+            let _ = this.update(cx, |v, cx| {
+                if v.history_copied == Some(copied) {
+                    v.history_copied = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // History overlay open: a click copies the entry under the cursor (the
+        // overlay has no text selection of its own; this is how you get text out).
+        if self.history_open {
+            self.copy_history_entry_at(event.position, cx);
+            cx.stop_propagation();
+            return;
+        }
         let Some((row, col)) = self.cell_at(event.position) else {
             return;
         };
@@ -3512,6 +3565,8 @@ impl Render for TerminalView {
             let line_h = self.line_height;
             let accent = self.ui_accent;
             let dim = cola(self.palette.fg, 0.62);
+            let copied = self.history_copied;
+            let copied_bg = cola(self.ui_accent, 0.16);
 
             // Right-edge scrollbar mirroring the terminal's (thumb = viewport/total).
             let hist_scrollbar = (total > visible).then(|| {
@@ -3562,10 +3617,13 @@ impl Render for TerminalView {
                             } else {
                                 col(fg)
                             };
+                            let is_copied =
+                                hl.entry != usize::MAX && copied == Some(hl.entry);
                             div()
                                 .h(px(line_h))
                                 .overflow_hidden()
                                 .text_color(color)
+                                .when(is_copied, |d| d.bg(copied_bg))
                                 .when(hl.header, |d| d.font_weight(FontWeight::BOLD))
                                 .child(SharedString::from(hl.text))
                         })),
@@ -3577,11 +3635,12 @@ impl Render for TerminalView {
                         .top(px(2.))
                         .right(px(16.))
                         .text_size(px(11.))
-                        .text_color(dim)
-                        .child(SharedString::from(format!(
-                            "对话历史 · {} · 滚到底/Esc 返回",
-                            self.agent_label()
-                        ))),
+                        .text_color(if copied.is_some() { col(accent) } else { dim })
+                        .child(SharedString::from(if copied.is_some() {
+                            "已复制 ✓".to_string()
+                        } else {
+                            format!("对话历史 · {} · 点击复制 · 滚到底/Esc 返回", self.agent_label())
+                        })),
                 )
                 .when_some(hist_scrollbar, |this, s| this.child(s))
         });
@@ -4987,18 +5046,23 @@ mod tests {
             TranscriptEntry::tool_call("Bash", "cargo test"),
         ];
         let lines = transcript_to_history_lines(&entries, 80, "codex");
-        // entry0: header "You" + body "hello"
+        // entry0: header "You" + body "hello" — both map to source entry 0.
         assert_eq!(lines[0].text, "You");
         assert!(lines[0].header);
+        assert_eq!(lines[0].entry, 0);
         assert_eq!(lines[1].text, "hello");
         assert!(!lines[1].header);
-        // separator blank line before entry1
+        assert_eq!(lines[1].entry, 0);
+        // separator blank line before entry1 — no entry to copy.
         assert_eq!(lines[2].text, "");
-        // entry1: tool header uses the tool name, then its summary
+        assert_eq!(lines[2].entry, usize::MAX);
+        // entry1: tool header uses the tool name, then its summary — both map to 1.
         assert_eq!(lines[3].text, "⚙ Bash");
         assert!(lines[3].header);
         assert_eq!(lines[3].role, TranscriptRole::Tool);
+        assert_eq!(lines[3].entry, 1);
         assert_eq!(lines[4].text, "cargo test");
+        assert_eq!(lines[4].entry, 1);
     }
 
     #[test]
