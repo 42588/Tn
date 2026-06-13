@@ -305,6 +305,121 @@ fn cursor_cell_cols(row: &[tn_core::CellRun], col: usize) -> usize {
     1
 }
 
+// ── Agent transcript history overlay (Phase 2c) ────────────────────────────
+// Tn's own scrollable conversation history (TUI agents never fill terminal
+// scrollback). `agent_transcript` (structured entries) is flattened into fixed
+// `line_height` rows — like terminal scrollback — so it virtualizes (render only
+// the visible window) and reuses the grid's monospace look + scrollbar.
+
+/// One rendered line of the history overlay: a role header or a wrapped body line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryLine {
+    text: String,
+    role: tn_agent::TranscriptRole,
+    /// A header line (role/tool label) vs a body line — drives color/emphasis.
+    header: bool,
+}
+
+/// Display width of a char in terminal cells: 2 for CJK / full-width / most
+/// emoji, else 1. A standalone approximation (good enough for wrapping the
+/// history overlay) — the live grid uses alacritty's per-cell `WIDE_CHAR` flag.
+fn char_cols(c: char) -> usize {
+    let u = c as u32;
+    let wide = (0x1100..=0x115F).contains(&u)      // Hangul Jamo
+        || (0x2329..=0x232A).contains(&u)          // angle brackets
+        || (0x2E80..=0xA4CF).contains(&u)          // CJK … Yi
+        || (0xAC00..=0xD7A3).contains(&u)          // Hangul syllables
+        || (0xF900..=0xFAFF).contains(&u)          // CJK compatibility
+        || (0xFE30..=0xFE4F).contains(&u)          // CJK compatibility forms
+        || (0xFF00..=0xFF60).contains(&u)          // fullwidth forms
+        || (0xFFE0..=0xFFE6).contains(&u)
+        || (0x1F300..=0x1FAFF).contains(&u)        // emoji & pictographs (approx)
+        || (0x20000..=0x3FFFD).contains(&u); // CJK ext B+
+    if wide {
+        2
+    } else {
+        1
+    }
+}
+
+/// Hard-wrap `text` to `cols` display columns, breaking on existing newlines and
+/// then on width. Empty input yields one empty line (so a blank entry still takes
+/// a row). `cols` is floored to 1 to avoid an infinite loop on a degenerate grid.
+fn wrap_to_cols(text: &str, cols: usize) -> Vec<String> {
+    let cols = cols.max(1);
+    let mut out = Vec::new();
+    for raw in text.split('\n') {
+        let mut line = String::new();
+        let mut width = 0usize;
+        for ch in raw.chars() {
+            let w = char_cols(ch);
+            if width + w > cols && !line.is_empty() {
+                out.push(std::mem::take(&mut line));
+                width = 0;
+            }
+            line.push(ch);
+            width += w;
+        }
+        out.push(line);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
+/// One entry's header label: who/what produced it. `agent_label` names the
+/// assistant (e.g. "codex"/"Claude"); tool entries name the tool.
+fn history_header(entry: &tn_agent::TranscriptEntry, agent_label: &str) -> String {
+    use tn_agent::{TranscriptKind, TranscriptRole};
+    match entry.kind {
+        TranscriptKind::ToolCall => format!("⚙ {}", entry.tool.as_deref().unwrap_or("tool")),
+        TranscriptKind::ToolResult => {
+            format!("↳ {}", entry.tool.as_deref().unwrap_or("result"))
+        }
+        _ => match entry.role {
+            TranscriptRole::User => "You".to_string(),
+            TranscriptRole::Assistant => agent_label.to_string(),
+            TranscriptRole::Tool => "tool".to_string(),
+            TranscriptRole::System => "System".to_string(),
+        },
+    }
+}
+
+/// Flatten transcript entries into fixed-height rows for the history overlay: a
+/// header row per entry, then its body wrapped to `cols`, with a blank separator
+/// before each entry (except the first). Tool-result bodies are already
+/// preview-trimmed upstream; here we just wrap.
+fn transcript_to_history_lines(
+    entries: &[tn_agent::TranscriptEntry],
+    cols: usize,
+    agent_label: &str,
+) -> Vec<HistoryLine> {
+    let mut out = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        if i > 0 {
+            out.push(HistoryLine {
+                text: String::new(),
+                role: e.role,
+                header: false,
+            });
+        }
+        out.push(HistoryLine {
+            text: history_header(e, agent_label),
+            role: e.role,
+            header: true,
+        });
+        for line in wrap_to_cols(&e.text, cols) {
+            out.push(HistoryLine {
+                text: line,
+                role: e.role,
+                header: false,
+            });
+        }
+    }
+    out
+}
+
 fn resize_anchoring_for_pane(agent_active: bool, alt_screen: bool) -> ResizeAnchoring {
     if agent_active || alt_screen {
         ResizeAnchoring::Bottom
@@ -653,6 +768,12 @@ pub struct TerminalView {
     /// put the full conversation in terminal scrollback). Empty for non-agent /
     /// no-transcript-capability panes. Rendered by the history overlay (Phase 2c).
     agent_transcript: Vec<tn_agent::TranscriptEntry>,
+    /// History overlay open? Scrolling up over a live agent opens Tn's scrollable
+    /// transcript (Phase 2c); `Esc` / scrolling past the newest line closes it.
+    history_open: bool,
+    /// Top line index shown in the open history overlay (0 = oldest at top). At
+    /// the maximum it shows the newest entries (continuous with the live view).
+    history_scroll: usize,
     agent_permission_prompt: Option<String>,
     agent_error: Option<String>,
     /// Per-pane realtime telemetry adapter — a sidecar [`ExternalProcessAdapter`]
@@ -1173,6 +1294,8 @@ impl TerminalView {
             agent_model: None,
             agent_transcript_tail: None,
             agent_transcript: Vec::new(),
+            history_open: false,
+            history_scroll: 0,
             agent_permission_prompt: None,
             agent_error: None,
             realtime_adapter,
@@ -1447,6 +1570,8 @@ impl TerminalView {
         self.agent_model = None;
         self.agent_transcript_tail = None;
         self.agent_transcript.clear();
+        self.history_open = false;
+        self.history_scroll = 0;
         self.agent_permission_prompt = None;
         self.agent_error = None;
         self.rail_state = RailState::Idle;
@@ -2475,6 +2600,49 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
+        // History overlay open: Esc / End / navigation keys drive it; any other key
+        // closes it and falls through to the live agent (so you just start typing).
+        if self.history_open {
+            let page = self.history_visible_rows().saturating_sub(1).max(1);
+            match key {
+                "escape" | "end" => {
+                    self.close_history();
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                "up" => {
+                    self.scroll_history(true, 1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "down" => {
+                    self.scroll_history(false, 1, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "pageup" => {
+                    self.scroll_history(true, page, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "pagedown" => {
+                    self.scroll_history(false, page, cx);
+                    cx.stop_propagation();
+                    return;
+                }
+                "home" => {
+                    self.history_scroll = 0;
+                    cx.stop_propagation();
+                    cx.notify();
+                    return;
+                }
+                _ => {
+                    self.close_history();
+                    cx.notify(); // fall through: deliver this key to the live agent
+                }
+            }
+        }
 
         // NOTE: keys the IME is actively composing arrive as `VK_PROCESSKEY` and are
         // intercepted + routed to the IME by the window subclass (`platform::
@@ -2573,6 +2741,64 @@ impl TerminalView {
         }
     }
 
+    /// Body height in rows = the grid height (the overlay fills the same region).
+    fn history_visible_rows(&self) -> usize {
+        self.size.rows.max(1)
+    }
+
+    /// Wrap width for the history overlay: the grid columns (overlay shares the
+    /// grid's left inset; the scrollbar overlays the right edge).
+    fn history_cols(&self) -> usize {
+        self.size.cols.max(1)
+    }
+
+    /// This agent's short label for history headers (assistant rows), else "Agent".
+    fn agent_label(&self) -> &str {
+        self.agent_short.as_ref().map(|s| s.as_ref()).unwrap_or("Agent")
+    }
+
+    /// Flatten the current transcript into fixed-height display lines at the
+    /// current width. Recomputed on demand (wheel ticks are infrequent; entries
+    /// are bounded and these are cheap string ops). Phase 2d can memoize.
+    fn history_lines(&self) -> Vec<HistoryLine> {
+        transcript_to_history_lines(&self.agent_transcript, self.history_cols(), self.agent_label())
+    }
+
+    /// Largest top-line index: shows the newest entries pinned to the bottom.
+    fn history_max_scroll(&self, total: usize) -> usize {
+        total.saturating_sub(self.history_visible_rows())
+    }
+
+    /// Open the overlay anchored at the newest entries (continuous with the live
+    /// view the user was just looking at).
+    fn open_history(&mut self) {
+        self.history_open = true;
+        let total = self.history_lines().len();
+        self.history_scroll = self.history_max_scroll(total);
+    }
+
+    fn close_history(&mut self) {
+        self.history_open = false;
+    }
+
+    /// Move the overlay by `n` lines. Up goes toward older; scrolling down past
+    /// the newest line closes the overlay back to the live agent.
+    fn scroll_history(&mut self, up: bool, n: usize, cx: &mut Context<Self>) {
+        let total = self.history_lines().len();
+        let max = self.history_max_scroll(total);
+        if up {
+            self.history_scroll = self.history_scroll.saturating_sub(n);
+        } else if self.history_scroll >= max {
+            // Already showing the newest and scrolling down → back to live.
+            self.close_history();
+            cx.notify();
+            return;
+        } else {
+            self.history_scroll = (self.history_scroll + n).min(max);
+        }
+        cx.notify();
+    }
+
     /// Mouse wheel, in priority order:
     /// 1. **App owns the mouse** (TUIs that set DECSET 1000/1002/1003): forward the
     ///    wheel as a mouse button-64/65 report so the app scrolls its own viewport.
@@ -2599,6 +2825,24 @@ impl TerminalView {
         let (offset, history) = self.terminal.lock().unwrap().scroll_position();
         let route = scroll_wheel_route(mode);
         cx.stop_propagation();
+
+        // Agent history overlay (Phase 2c): Tn's own full transcript — these TUI
+        // agents never fill terminal scrollback, so "scroll up = see history" is
+        // Tn's job. Scrolling up over a live agent that has transcript opens it;
+        // once open the wheel scrolls the overlay, and scrolling down past the
+        // newest line closes it back to live. Intercepts before the agent/
+        // scrollback routes below.
+        if self.agent.is_some() && !self.agent_transcript.is_empty() {
+            if self.history_open {
+                self.scroll_history(up, n, cx);
+                return;
+            } else if up {
+                self.open_history();
+                self.scroll_history(true, n, cx);
+                return;
+            }
+            // closed + scrolling down → fall through to the live agent routes.
+        }
 
         // Diagnostic (BUG③ "agent 滚不动"): one line per wheel tick so a real-machine
         // test reveals which branch runs and whether there's any scrollback to scroll.
@@ -3249,6 +3493,96 @@ impl Render for TerminalView {
                 )
         });
 
+        // Agent history overlay (Phase 2c): Tn's own scrollable transcript, drawn
+        // over the live grid when opened (scroll up / it covers the body region
+        // only — header + rail stay). Flattened to fixed-height rows so it
+        // virtualizes (render just the visible window) and matches the grid's
+        // monospace look. Newest entries sit at the bottom, continuous with live.
+        let history_overlay = self.history_open.then(|| {
+            let lines = self.history_lines();
+            let total = lines.len();
+            let visible = self.history_visible_rows();
+            let max_scroll = total.saturating_sub(visible);
+            let top = self.history_scroll.min(max_scroll);
+            let window: Vec<HistoryLine> =
+                lines.into_iter().skip(top).take(visible).collect();
+            let line_h = self.line_height;
+            let accent = self.ui_accent;
+            let dim = cola(self.palette.fg, 0.62);
+
+            // Right-edge scrollbar mirroring the terminal's (thumb = viewport/total).
+            let hist_scrollbar = (total > visible).then(|| {
+                let total_f = total as f32;
+                let thumb_h = (visible as f32 / total_f).clamp(0.06, 1.0);
+                let top_f = (top as f32 / total_f).clamp(0.0, 1.0 - thumb_h);
+                let thumb = scrollbar_thumb_style(rail_layout);
+                div()
+                    .absolute()
+                    .top(relative(top_f))
+                    .right(px(0.))
+                    .w(px(thumb.width + thumb.margin_right))
+                    .h(relative(thumb_h))
+                    .flex()
+                    .justify_end()
+                    .child(
+                        div()
+                            .w(px(thumb.width))
+                            .h_full()
+                            .mr(px(thumb.margin_right))
+                            .rounded(px(2.))
+                            .bg(rgba(thumb.active_bg)),
+                    )
+            });
+
+            div()
+                .absolute()
+                .size_full()
+                .bg(col(bg)) // opaque: hide the live grid behind the history
+                .child(
+                    // Rows, inset like the grid; each flattened line is one row.
+                    div()
+                        .absolute()
+                        .left(px(BODY_PAD_X))
+                        .top(px(BODY_PAD_Y))
+                        .right(px(BODY_PAD_X))
+                        .flex()
+                        .flex_col()
+                        .children(window.into_iter().map(|hl| {
+                            let color = if hl.header {
+                                col(accent)
+                            } else if matches!(
+                                hl.role,
+                                tn_agent::TranscriptRole::Tool
+                                    | tn_agent::TranscriptRole::System
+                            ) {
+                                dim
+                            } else {
+                                col(fg)
+                            };
+                            div()
+                                .h(px(line_h))
+                                .overflow_hidden()
+                                .text_color(color)
+                                .when(hl.header, |d| d.font_weight(FontWeight::BOLD))
+                                .child(SharedString::from(hl.text))
+                        })),
+                )
+                // Floating hint (top-right): what this is + how to leave.
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(2.))
+                        .right(px(16.))
+                        .text_size(px(11.))
+                        .text_color(dim)
+                        .child(SharedString::from(format!(
+                            "对话历史 · {} · 滚到底/Esc 返回",
+                            self.agent_label()
+                        ))),
+                )
+                .when_some(hist_scrollbar, |this, s| this.child(s))
+        });
+
         // Visual bell: a brief translucent flash over the grid
         // that fades out, so a BEL registers without sound. `spawn_bell_fade`
         // drives the per-frame notifies and clears `bell_flash_at` when done.
@@ -3342,6 +3676,7 @@ impl Render for TerminalView {
                 .when_some(cursor_el, |this, c| this.child(c))
                 .when_some(ime_preedit, |this, p| this.child(p))
                 .when_some(scrollbar, |this, s| this.child(s))
+                .when_some(history_overlay, |this, o| this.child(o))
                 .when_some(bell_overlay, |this, o| this.child(o));
 
         // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail).
@@ -4617,6 +4952,50 @@ mod tests {
             should_scroll_to_bottom_before_input(8, 8),
             "the top of history is still not the live bottom"
         );
+    }
+
+    #[test]
+    fn char_cols_counts_cjk_as_two() {
+        assert_eq!(char_cols('a'), 1);
+        assert_eq!(char_cols('1'), 1);
+        assert_eq!(char_cols('，'), 2); // fullwidth comma
+        assert_eq!(char_cols('为'), 2); // CJK
+        assert_eq!(char_cols('あ'), 2); // hiragana
+    }
+
+    #[test]
+    fn wrap_to_cols_breaks_on_newlines_and_width() {
+        // Newlines split; each piece wraps at the column width.
+        assert_eq!(wrap_to_cols("abcdef", 3), vec!["abc", "def"]);
+        assert_eq!(wrap_to_cols("ab\ncd", 10), vec!["ab", "cd"]);
+        // A wide char counts as two columns: "为为" is width 4 → wraps at cols 3.
+        assert_eq!(wrap_to_cols("为为", 3), vec!["为", "为"]);
+        // Empty input still yields one (empty) row so a blank entry takes a line.
+        assert_eq!(wrap_to_cols("", 5), vec![String::new()]);
+        // Degenerate width never loops forever.
+        assert_eq!(wrap_to_cols("ab", 0), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn transcript_to_history_lines_headers_bodies_and_separators() {
+        use tn_agent::{TranscriptEntry, TranscriptRole};
+        let entries = vec![
+            TranscriptEntry::message(TranscriptRole::User, "hello"),
+            TranscriptEntry::tool_call("Bash", "cargo test"),
+        ];
+        let lines = transcript_to_history_lines(&entries, 80, "codex");
+        // entry0: header "You" + body "hello"
+        assert_eq!(lines[0].text, "You");
+        assert!(lines[0].header);
+        assert_eq!(lines[1].text, "hello");
+        assert!(!lines[1].header);
+        // separator blank line before entry1
+        assert_eq!(lines[2].text, "");
+        // entry1: tool header uses the tool name, then its summary
+        assert_eq!(lines[3].text, "⚙ Bash");
+        assert!(lines[3].header);
+        assert_eq!(lines[3].role, TranscriptRole::Tool);
+        assert_eq!(lines[4].text, "cargo test");
     }
 
     #[test]

@@ -98,7 +98,20 @@ pub struct TranscriptEntry {
     现含 `transcript: true`);两个启动点(`new` 与 `sync_shell_agent` 的 typed-agent 提升)都接上。
   - `cargo test -p tn-agent -p tn-ai -p tn-ui` 18/27/198 绿(含 `transcript_read_window_*`)、
     `check --workspace` 通过。数据已落到 `agent_transcript`,**尚无渲染**(2c)。
-- **2c** 历史叠层视图(可滚 + 滚动条)+ 进入/退出手势(A 或 B)。
+- **2c** 历史叠层视图(可滚 + 滚动条)+ 进入/退出手势(A:滚轮进)。**✅ 已落地(待真机)**
+  - 纯函数(全部带单测):`char_cols`(CJK/全角/emoji 记 2)、`wrap_to_cols`(按显示宽度+换行折行)、
+    `transcript_to_history_lines`(每条 = 头部行 + 折行正文 + 条间空行,固定行高 → 虚拟化、复用网格等宽外观)。
+  - 手势:`agent + 有 transcript` 时,**向上滚**打开叠层(锚定最新,与 live 连续);开着时滚轮翻动;
+    滚过最新行 / `End` / `Esc` 回 live;`↑↓/PageUp/PageDown/Home` 键盘导航;其它键关闭叠层并把该键交给
+    live agent(即开始打字就回到实时)。
+  - 渲染:叠层覆盖正文区(header/rail 不动),不透明盖住 live 网格;头部行用 accent 加粗、工具/系统正文
+    压暗;右侧滚动条镜像终端那条(thumb = 视口/总行);右上角浮提示「对话历史 · {agent} · 滚到底/Esc 返回」。
+  - `cargo test -p tn-ui` 201 绿(含 `char_cols_*`/`wrap_to_cols_*`/`transcript_to_history_lines_*`)、
+    `check --workspace` 通过。**渲染需真机目测**(叠层布局/滚动条/手势手感);UX 取舍见下。
+
+  > 真机要确认的 UX 取舍:① 向上滚直接打开叠层会**接管 agent 自己的滚轮**(codex/claude 的原生翻页)——
+  > 这是有意的(Tn 历史是其超集),但若你想保留 agent 自滚,可改成带修饰键或显式按钮。② 叠层不透明
+  > 盖住 live;若想半透明/并排可调。③ 折行用近似显示宽度(CJK 记 2),个别字形可能差一格。
 - **2d** 打磨:markdown、复制、搜索、跳到某轮、与「本次改动」rail / Quick Look 的协同。
 
 ## 已定(2026-06-13 用户拍板)
