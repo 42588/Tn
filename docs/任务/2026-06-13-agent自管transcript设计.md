@@ -71,17 +71,33 @@ pub struct TranscriptEntry {
 
 ## 分期(Phase 2 内部)
 
-- **2a** adapter transcript 解析 + 真实日志样本单测(纯、安全,可独立合)。
+- **2a** adapter transcript 解析 + 真实日志样本单测(纯、安全,可独立合)。**✅ 已落地**
+  - `tn-agent::transcript`:`TranscriptEntry{role,kind,tool,text}` + `TranscriptRole`
+    (User/Assistant/Tool/System)+ `TranscriptKind`(Message/Reasoning/ToolCall/ToolResult)+
+    `preview()`(截断)+ `push_collapsed()`(折叠连续重复 —— Codex 会重发同一 `user_message`)。
+  - `AgentAdapter::parse_transcript(text) -> Vec<TranscriptEntry>`(默认空;每行自含,全量/增量
+    delta 通用)。
+  - `tn-ai`:`claude::parse_claude_transcript`(user/assistant 的 text/tool_use/tool_result 块,
+    跳过 thinking 与 queue-operation/attachment/snapshot/title 等噪音)、
+    `codex::parse_codex_transcript`(用 `event_msg/user_message`+`agent_message` 取干净对话,避开
+    developer/context 注入与 output_text 重复;`function_call(_output)`/`custom_tool_call(_output)`
+    取工具;跳过加密 reasoning)。
+  - 真机实测:本会话 Claude 日志 → 284 条(1 user+66 assistant+109 tool call+108 result);
+    Codex 大会话 → 1070/2095 条全部解析,证明能拿到**完整**历史。`cargo test -p tn-agent -p tn-ai`
+    27 绿(含 `transcript_*`)、`cargo check --workspace` 通过。
 - **2b** TranscriptModel + poller(tail → 条目),走 AgentEvent;升级 `TranscriptAppended` 为结构化。
 - **2c** 历史叠层视图(可滚 + 滚动条)+ 进入/退出手势(A 或 B)。
 - **2d** 打磨:markdown、复制、搜索、跳到某轮、与「本次改动」rail / Quick Look 的协同。
 
-## 待决(开工 2c 前确认)
+## 已定(2026-06-13 用户拍板)
 
-1. **历史区怎么露出**:A 滚轮进叠层(贴心智、更费工) vs B 显式开关按钮(MVP、最稳)。
-2. **渲染保真度**:先做可读纯文本日志,还是一上来就 markdown。
+1. **历史区露出 = 候选 A:滚轮直接进历史叠层**。向上滚超过 live 顶部 → 弹出可滚 transcript
+   叠层 + 右侧真实滚动条;滚回底/按 End 回 live。一条滚轮手势连贯走「live → (终端极小
+   scrollback) → Tn transcript」。
+2. **渲染保真度 = 先可读纯文本日志**。role chip + 文本体,tool call 折一行摘要;markdown /
+   搜索 / 跳转留到 2d。
 
-> 2a 与方向无关,无论上面怎么定都能先做 —— 故 Phase 2 从 2a 起步。
+> 2a(解析)与上面无关,先起步。
 
 ## 验证基线
 

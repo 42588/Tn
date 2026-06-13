@@ -137,6 +137,10 @@ impl AgentAdapter for ClaudeAdapter {
         claude::update_claude_session(text, prev)
     }
 
+    fn parse_transcript(&self, text: &str) -> Vec<tn_agent::TranscriptEntry> {
+        claude::parse_claude_transcript(text)
+    }
+
     fn is_subscription(&self) -> bool {
         detect::claude_is_subscription()
     }
@@ -186,6 +190,10 @@ impl AgentAdapter for CodexAdapter {
 
     fn update_usage(&self, text: &str, prev: AiUsage) -> AiUsage {
         codex::update_codex_session(text, prev)
+    }
+
+    fn parse_transcript(&self, text: &str) -> Vec<tn_agent::TranscriptEntry> {
+        codex::parse_codex_transcript(text)
     }
 
     fn is_subscription(&self) -> bool {

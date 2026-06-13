@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 use serde_json::Value;
 
-use crate::{pricing, AiUsage};
+use crate::{preview, pricing, push_collapsed, AiUsage, TranscriptEntry, TranscriptRole};
 
 /// One `*_token_usage` block from a `token_count` event.
 #[derive(Clone, Copy, Default)]
@@ -156,6 +156,86 @@ pub fn update_codex_session(jsonl: &str, mut prev: AiUsage) -> AiUsage {
     }
     prev.cost_usd = delta.cost_usd;
     prev
+}
+
+/// Parse a Codex rollout JSONL into ordered transcript entries (Tn's own history
+/// surface — see [`tn_agent::TranscriptEntry`]). Each line is independent, so this
+/// works on a full file or an appended delta.
+///
+/// The clean conversation pair is `event_msg/user_message` and
+/// `event_msg/agent_message` (the `response_item/message` records also carry
+/// `developer`/`environment_context` injections and a duplicate of the assistant
+/// text, so we don't read those). Tool use comes from `response_item`
+/// `function_call`(`_output`) and `custom_tool_call`(`_output`). Encrypted
+/// `reasoning` is skipped.
+pub fn parse_codex_transcript(jsonl: &str) -> Vec<TranscriptEntry> {
+    let mut out = Vec::new();
+    for line in jsonl.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        let Some(p) = v.get("payload") else { continue };
+        let pt = p.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match (ty, pt) {
+            ("event_msg", "user_message") => {
+                if let Some(m) = nonempty_str(p.get("message")) {
+                    push_collapsed(&mut out, TranscriptEntry::message(TranscriptRole::User, m));
+                }
+            }
+            ("event_msg", "agent_message") => {
+                if let Some(m) = nonempty_str(p.get("message")) {
+                    push_collapsed(
+                        &mut out,
+                        TranscriptEntry::message(TranscriptRole::Assistant, m),
+                    );
+                }
+            }
+            ("response_item", "function_call") | ("response_item", "custom_tool_call") => {
+                let name = p.get("name").and_then(|n| n.as_str()).unwrap_or("tool");
+                push_collapsed(&mut out, TranscriptEntry::tool_call(name, codex_tool_summary(p)));
+            }
+            ("response_item", "function_call_output")
+            | ("response_item", "custom_tool_call_output") => {
+                let output = p
+                    .get("output")
+                    .and_then(|o| o.as_str().map(str::to_string).or_else(|| Some(o.to_string())))
+                    .unwrap_or_default();
+                push_collapsed(&mut out, TranscriptEntry::tool_result(None, preview(&output, 600)));
+            }
+            _ => {} // reasoning (encrypted) / lifecycle events / context items → skip
+        }
+    }
+    out
+}
+
+/// The trimmed string at `v`, or `None` if absent/blank.
+fn nonempty_str(v: Option<&Value>) -> Option<&str> {
+    let s = v?.as_str()?.trim();
+    (!s.is_empty()).then_some(s)
+}
+
+/// A one-glance preview of a Codex tool call: `function_call.arguments` is a JSON
+/// string (prefer its `command`); `custom_tool_call.input` is the raw payload
+/// (e.g. an apply_patch body).
+fn codex_tool_summary(p: &Value) -> String {
+    if let Some(args) = p.get("arguments").and_then(|a| a.as_str()) {
+        if let Ok(parsed) = serde_json::from_str::<Value>(args) {
+            if let Some(cmd) = parsed.get("command").and_then(|c| c.as_str()) {
+                return preview(cmd, 200);
+            }
+        }
+        return preview(args, 200);
+    }
+    if let Some(input) = p.get("input").and_then(|i| i.as_str()) {
+        return preview(input, 200);
+    }
+    String::new()
 }
 
 /// `$CODEX_HOME/sessions` (default `~/.codex/sessions`), if it exists.
@@ -316,6 +396,62 @@ mod tests {
     fn no_token_count_is_none() {
         let s = r#"{"type":"session_meta","payload":{"cwd":"C:\\x"}}"#;
         assert!(parse_codex_session(s).is_none());
+    }
+
+    // Trimmed real rollout shapes: user_message + agent_message events, a
+    // function_call + its output, a custom_tool_call, plus records we skip
+    // (developer context message, reasoning, token_count).
+    const TRANSCRIPT_SAMPLE: &str = r#"
+{"type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>"}]}}
+{"type":"event_msg","payload":{"type":"user_message","message":"  你好  ","images":[]}}
+{"type":"response_item","payload":{"type":"reasoning","summary":[],"encrypted_content":"gAAA"}}
+{"type":"event_msg","payload":{"type":"agent_message","message":"hi there"}}
+{"type":"response_item","payload":{"type":"function_call","name":"shell_command","arguments":"{\"command\":\"Get-Content x\",\"workdir\":\"C:\\\\x\"}"}}
+{"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":"Exit code: 0\nOutput:\nok"}}
+{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch"}}
+{"type":"event_msg","payload":{"type":"token_count","info":{}}}
+"#;
+
+    #[test]
+    fn transcript_uses_event_messages_and_tool_items_skips_noise() {
+        let t = parse_codex_transcript(TRANSCRIPT_SAMPLE);
+        assert_eq!(
+            t.len(),
+            5,
+            "user + assistant + function_call + function_output + custom_tool_call"
+        );
+
+        assert_eq!(t[0].role, TranscriptRole::User);
+        assert_eq!(t[0].text, "你好"); // trimmed; developer/context message skipped
+
+        assert_eq!(t[1].role, TranscriptRole::Assistant);
+        assert_eq!(t[1].text, "hi there");
+
+        // function_call → Tool/ToolCall; arguments JSON parsed → command preview.
+        assert_eq!(t[2].role, TranscriptRole::Tool);
+        assert_eq!(t[2].kind, crate::TranscriptKind::ToolCall);
+        assert_eq!(t[2].tool.as_deref(), Some("shell_command"));
+        assert_eq!(t[2].text, "Get-Content x");
+
+        assert_eq!(t[3].kind, crate::TranscriptKind::ToolResult);
+        assert!(t[3].text.contains("Exit code: 0"));
+
+        // custom_tool_call (apply_patch) → ToolCall with the raw input preview.
+        assert_eq!(t[4].tool.as_deref(), Some("apply_patch"));
+        assert_eq!(t[4].text, "*** Begin Patch");
+    }
+
+    #[test]
+    fn transcript_collapses_consecutive_duplicate_user_messages() {
+        // Codex re-emits the same user_message on resends/forks (real logs show a
+        // bare `你好`/`你好` rollout). Consecutive exact dups collapse to one.
+        let s = r#"
+{"type":"event_msg","payload":{"type":"user_message","message":"你好"}}
+{"type":"event_msg","payload":{"type":"user_message","message":"你好"}}
+"#;
+        let t = parse_codex_transcript(s);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].text, "你好");
     }
 
     #[test]
