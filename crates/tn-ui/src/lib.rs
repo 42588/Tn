@@ -17,6 +17,7 @@ mod local_dir_picker;
 mod perf;
 mod pet;
 mod platform;
+mod pricing_sync;
 mod quick_look;
 mod quick_terminal;
 mod remote_dir_picker;
@@ -83,6 +84,16 @@ struct AppState {
 pub fn run() {
     // ── Load config ────────────────────────────────────────────────────
     let config = Arc::new(tn_config::load());
+
+    // ── Usage-ring pricing (auto-detect 定价) ───────────────────────────
+    // Install the cached price table now (offline, instant), then refresh it from
+    // the public list in the background when due. The built-in fallback covers
+    // offline / disabled, so the ring is never wrong — just less current.
+    {
+        let age = pricing_sync::install_cached();
+        let g = &config.config.general;
+        pricing_sync::spawn_refresh(g.pricing_auto_refresh, g.pricing_url.clone(), age);
+    }
 
     // ── Determine primary vs secondary instance ────────────────────────
     // "Primary" = we can register the global Quick Terminal hotkey. Only

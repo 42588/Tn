@@ -114,6 +114,17 @@ pub struct General {
     /// `auto`. Each pane can then cycle its own pill at runtime by clicking it.
     #[serde(default)]
     pub billing_mode: BillingMode,
+    /// Refresh the usage-ring pricing/context table from a public price list on
+    /// startup (LiteLLM JSON; cached, with a built-in fallback so offline still
+    /// works). Default `true`. Set `false` to stay fully offline on the bundled
+    /// table. See [`pricing_url`](Self::pricing_url).
+    #[serde(default = "default_true")]
+    pub pricing_auto_refresh: bool,
+    /// Where to fetch the pricing table (LiteLLM's public `model_prices_and_
+    /// context_window.json`). Overridable so a moved URL is fixable without a
+    /// rebuild; an unreachable URL just leaves the built-in fallback in place.
+    #[serde(default = "default_pricing_url")]
+    pub pricing_url: String,
     /// Per-agent starting-mode overrides of [`billing_mode`]. `None` (default)
     /// inherits the global value. Lets one window default a Claude Pro/Max member
     /// to `%` and a Codex API user to `$` (or `tokens` for a proxy model).
@@ -128,6 +139,17 @@ pub struct General {
     pub billing: std::collections::HashMap<String, BillingMode>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+/// LiteLLM's public, community-maintained price + context-window list (covers
+/// Anthropic, OpenAI/Codex, and more). Costs are per token; tn-agent converts.
+fn default_pricing_url() -> String {
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
+        .to_string()
+}
+
 impl Default for General {
     fn default() -> Self {
         Self {
@@ -135,6 +157,8 @@ impl Default for General {
             // allocation + disk-park of idle tabs make 50k affordable.
             scrollback_lines: 50_000,
             confirm_close: true,
+            pricing_auto_refresh: default_true(),
+            pricing_url: default_pricing_url(),
             billing_mode: BillingMode::default(),
             claude_billing: None,
             codex_billing: None,

@@ -248,9 +248,10 @@ mod tests {
         assert_eq!(u.context_used, 2200);
         // claude-opus-4-7 is a current-gen 1M model (was wrongly 200K before).
         assert_eq!(u.context_max, 1_000_000);
-        // input/cache_create/cache_read are separate additive buckets, each billed at its own rate.
+        // input/cache_create/cache_read are separate additive buckets, each billed at its
+        // own rate. claude-opus-4-7 is current-gen Opus → $5/$25/$6.25/$0.50 per MTok.
         let expect =
-            300.0 / 1e6 * 15.0 + 130.0 / 1e6 * 75.0 + 10.0 / 1e6 * 18.75 + 3000.0 / 1e6 * 1.5;
+            300.0 / 1e6 * 5.0 + 130.0 / 1e6 * 25.0 + 10.0 / 1e6 * 6.25 + 3000.0 / 1e6 * 0.50;
         assert!((u.cost_usd - expect).abs() < 1e-9);
     }
 
