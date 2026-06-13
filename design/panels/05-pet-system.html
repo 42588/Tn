@@ -2,23 +2,26 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 磷光 · 05 宠物系统</title>
+<title>Tn 磷光 · 05 宠物系统(陪伴版 v2.3)</title>
 <link rel="stylesheet" href="../phosphor.css" />
 <style>
+  /* —— 栖位(右下岗台 overlay) —— */
   .perch{ position:absolute; right:30px; bottom:36px; display:flex; flex-direction:column; align-items:center; gap:0; z-index:3; }
   .perch .shelf{ width:100px; margin-top:-2px; }
   .perch .bubble{ position:absolute; top:-26px; right:-6px; }
-  /* 品种架 */
+  /* —— 品种架 / 性格架 —— */
   .kennel{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
   .kcell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card);
-          padding:14px 10px 10px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+          padding:14px 8px 10px; display:flex; flex-direction:column; align-items:center; gap:6px; position:relative; }
   .kcell:hover{ background:var(--l2); border-color:var(--h1); }
   .kcell.on{ border-color:var(--ph-dim); background:var(--l2); }
+  .kcell.on::before{ content:""; position:absolute; left:-1px; top:10px; bottom:10px; width:2px; background:var(--ph); border-radius:1px; }
   .kcell .kid{ font:600 9px var(--mono); color:var(--t3); }
   .kcell.on .kid{ color:var(--ph); }
   .kcell .kn{ font:600 12px var(--sans); color:var(--t0); }
   .kcell .kp{ font:9px var(--mono); color:var(--t2); }
-  /* 状态机 */
+  .kcell .kq{ font:9px var(--mono); color:var(--t2); padding:1px 6px; border:1px solid var(--h0); border-radius:var(--r-chip); }
+  /* —— 状态机 / 姿态格 —— */
   .fsm{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
   .scell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:12px; }
   .scell .sp{ display:grid; place-items:center; height:88px; background:var(--l0);
@@ -26,31 +29,80 @@
   .scell .fnote{ font:10px/1.8 var(--mono); color:var(--t2); }
   .scell .fnote b{ color:var(--t1); font-weight:500; }
   .updot{ position:absolute; width:5px; height:5px; background:var(--ok); border-radius:1px; }
-  /* 互动 */
+  /* —— 互动 —— */
   .play{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
   .pcell{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:12px; }
   .pcell .sp{ display:flex; align-items:center; justify-content:center; gap:14px; height:96px;
               background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-chip); margin:10px 0; position:relative; }
   .cursor-glyph{ font:14px var(--mono); color:var(--t1); }
-  .petmenu{ width:190px; padding:5px; }
-  .petmenu .mi{ display:flex; align-items:center; gap:9px; height:28px; padding:0 10px; border-radius:var(--r-chip);
+  /* —— 右键菜单(规则 0/B/F/G/I 全集) —— */
+  .petmenu{ width:236px; padding:5px; }
+  .petmenu .mi{ display:flex; align-items:center; gap:9px; min-height:28px; padding:4px 10px; border-radius:var(--r-chip);
                 font:11px var(--sans); color:var(--t1); }
   .petmenu .mi:hover,.petmenu .mi.on{ background:var(--l4); color:var(--t0); }
+  .petmenu .mi .ic{ width:14px; text-align:center; color:var(--t3); flex:none; }
+  .petmenu .mi .sub{ margin-left:auto; color:var(--t3); font:10px var(--mono); }
+  .petmenu .mi.read{ color:var(--t2); }
+  .petmenu .mi.read:hover{ background:transparent; color:var(--t2); }
+  .petmenu .mi.read b{ color:var(--t0); font-weight:600; }
+  .petmenu .mi.mem{ color:var(--t2); font:10px var(--mono); }
+  .petmenu .mi.mem:hover{ background:transparent; }
+  .petmenu .mi.mem .ph{ color:var(--ph); }
+  .petmenu .mi.feed .ph{ color:var(--ph); font:10px var(--mono); margin-left:auto; }
+  .petmenu .mi.done{ color:var(--t3); }
+  .petmenu .mi.danger{ color:var(--err); }
+  .petmenu .mi.off{ color:var(--err); }
   .petmenu .msep{ height:1px; background:var(--h1); margin:4px 6px; }
+  .petmenu .grp{ font:600 9px var(--mono); color:var(--t3); padding:6px 10px 2px; text-transform:uppercase; }
+  /* —— 磷光通道场景台 —— */
+  .scn{ background:var(--l0); border:1px solid var(--h0); border-radius:var(--r-plate); position:relative; overflow:hidden; }
+  .scn .pane{ position:absolute; background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); }
+  .scn .summon{ position:absolute; top:0; left:0; right:0; height:2px;
+                background:linear-gradient(90deg,transparent 18%,var(--ph) 50%,transparent 82%); }
+  .scn .gw{ position:absolute; top:0; background:var(--l1); border:1px solid var(--h2); border-top:none;
+            border-radius:0 0 8px 8px; box-shadow:var(--shadow-float); }
+  .scn .gw::before{ content:""; position:absolute; top:0; left:0; right:0; height:2px;
+                    background:linear-gradient(90deg,transparent,var(--ph),transparent); }
+  .scn .echo{ position:absolute; border:1px solid var(--ph-dim); border-top:none; border-radius:0 0 8px 8px; opacity:.4; }
+  .scn .qpanel{ position:absolute; background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-card); box-shadow:var(--shadow-float); }
+  .scn .scrim{ position:absolute; inset:0; background:var(--scrim); }
+  .scn .floatm{ position:absolute; background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-card); box-shadow:var(--shadow-float); }
+  .crack{ position:absolute; width:1px; background:var(--ph); }
+  .crack.h{ width:auto; height:1px; }
+  .dot{ position:absolute; width:4px; height:4px; background:var(--ph); border-radius:1px; }
+  .dot.dim{ background:var(--ph-dim); }
+  .shelfm{ position:absolute; height:1px; background:var(--h1); }
+  .shelfm::before{ content:""; position:absolute; left:0; top:0; width:18px; height:1px; background:var(--ph-dim); }
+  .clipbox{ position:absolute; overflow:hidden; }
+  .flabel{ position:absolute; font:9px/1.4 var(--mono); color:var(--t3); }
+  .flabel b{ color:var(--ph); font-weight:500; }
+  .scn .pdog{ position:absolute; image-rendering:pixelated; }
+  /* —— 三动词 —— */
+  .verbs{ display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
+  .vc{ background:var(--l1); border:1px solid var(--h0); border-radius:var(--r-card); padding:11px 13px; }
+  .vc .vh{ font:600 11px var(--mono); color:var(--ph); }
+  .vc .vb{ font:10px/1.7 var(--mono); color:var(--t2); margin-top:5px; }
+  .vc .vb em{ font-style:normal; color:var(--t1); }
+  .channel-grid{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }
 </style>
 </head>
 <body>
 
 <div class="sheet-head">
   <div class="no">TN · PHOSPHOR — SHEET 05 / 07 · 特色 ③</div>
-  <h1>宠物系统 <em>PIXEL COMPANION — 栖位 · 品种 · 上下文状态机 · 互动</em></h1>
-  <div class="refs">规则来源 <b>docs/宠物/宠物系统规则.md</b> · 资产 <b>docs/宠物/原型/*.svg(14×12 像素网格)</b> · 渲染:逐像素 quad,与磷光网格同源;不入 terminal grid、不抢焦点、可关闭</div>
+  <h1>宠物系统 <em>PIXEL COMPANION — 主宠领养 · 七犬性格 · 活物引擎 · 工作共情 · 磷光通道</em></h1>
+  <div class="refs">规则来源 <b>docs/宠物/宠物系统规则.md(v2.3 陪伴版)</b> · 资产 <b>docs/宠物/原型/*.svg(14×12 像素网格)</b> · 渲染:逐像素 quad,与磷光网格同源;不入 terminal grid、不抢焦点、可关闭、缺席零惩罚</div>
 </div>
 <div class="sheet-rule"></div>
 
-<!-- ══════════ A · 栖位 ══════════ -->
+<div class="note" style="margin:0 auto 36px; max-width:1480px">
+  ▸ <b>读图次序</b>(随规则阅读地图):身份层 <b>A/B</b> → 生命层 <b>C/D/E</b> → 仪式·工作层 <b>F</b> → 互动层 <b>G</b> → 空间层 <b>H</b> → 治理层 <b>SPEC</b>。
+  北极星:<span style="color:var(--t1)">用户清晨打开 Tn 的第一眼,是想看看自己的狗</span> —— 衡量标准只有一条:<b>用户愿意把宠物开着</b>。
+</div>
+
+<!-- ══════════ A · 栖位 · 法定席位 ══════════ -->
 <div class="board">
-  <div class="board-cap"><span class="idx">A</span><span class="t">栖位 · 右下角驻守</span><span class="d">状态栏上方 overlay,踩一条 1px 发丝「岗台」;拖拽可移位,落点存用户配置</span></div>
+  <div class="board-cap"><span class="idx">A</span><span class="t">栖位 · 右下岗台 + 法定席位</span><span class="d">状态栏上方 overlay,踩一条 1px 发丝「岗台」;名字上屏(规则 0)— 状态栏段从品种名换成「豆豆 · IDLE」</span></div>
   <div class="board-body">
     <div class="win">
       <div class="titlebar">
@@ -68,8 +120,8 @@
           </div>
         </div>
         <div class="perch">
-          <span class="bubble">Woof!</span>
-          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="84" height="72" alt="westie" />
+          <span class="bubble">早!</span>
+          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="84" height="72" alt="豆豆 · 西高地" />
           <div class="shelf"></div>
         </div>
       </div>
@@ -78,236 +130,17 @@
         <div class="sb-seg">1 SESSION</div>
         <div class="sb-spring"></div>
         <div class="sb-seg">TN DARK</div>
-        <div class="sb-seg" style="color:var(--t1)"><span class="sb-dot idle"></span><span>WESTIE · IDLE</span></div>
+        <div class="sb-seg" style="color:var(--t1)"><span class="sb-dot idle"></span><span>豆豆 · IDLE</span></div>
       </div>
     </div>
-    <div class="note">铁律:不进 terminal grid、不写 buffer、不遮 prompt/光标/选区/浮层;状态栏段 <b>WESTIE · IDLE</b> 是宠物在「仪表系统」中的法定席位,点击=开关,右键=菜单。气泡 2s 自动消散。</div>
+    <div class="note">铁律:不进 terminal grid、不写 buffer、不遮 prompt/光标/选区/浮层;固定容器占位杜绝布局抖动。状态栏段 <b>豆豆 · IDLE</b> 是宠物的法定席位(名字替代品种名),点击=开关,右键=菜单;关闭后保留 <b>PET · OFF</b>,功能零损失。名字三处上屏:状态栏席位 · 右键档案行 · 欢迎页 2× 标签 —— <b>名字不进气泡</b>(词表封闭)。气泡 2s 自散、不可叠加。</div>
   </div>
 </div>
 
-<!-- ══════════ B · 品种架 ══════════ -->
+<!-- ══════════ B · 主宠领养与命名(规则 0) ══════════ -->
 <div class="board">
-  <div class="board-cap"><span class="idx">B</span><span class="t">品种架 · 七只小狗</span><span class="d">初始化随机抽取,固定品种优先;手动刷新仍走随机(不固定轮换)— 现行规则</span></div>
+  <div class="board-cap"><span class="idx">B</span><span class="t">主宠 · 领养与命名(归属之锚)</span><span class="d">规则 0 — 一只 · 命名 · 唯一;首次启用宠物的一次性领养卡(浮层家族),整流程 ≤30 秒可跳过。<b style="color:var(--err)">「随机刷新」已废除</b></span></div>
   <div class="board-body">
-    <div class="kennel">
-      <div class="kcell on"><span class="kid">D01 · 当前</span><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/><span class="kn">西高地</span><span class="kp">精神 · 好奇</span></div>
-      <div class="kcell"><span class="kid">D02</span><img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="70" height="60" alt=""/><span class="kn">金毛</span><span class="kp">温和 · 可靠</span></div>
-      <div class="kcell"><span class="kid">D03</span><img class="px" src="../../docs/宠物/原型/03-german-shepherd.svg" width="70" height="60" alt=""/><span class="kn">德牧</span><span class="kp">专注 · 守护</span></div>
-      <div class="kcell"><span class="kid">D04</span><img class="px" src="../../docs/宠物/原型/04-bichon-frise.svg" width="70" height="60" alt=""/><span class="kn">比熊</span><span class="kp">开心 · 蓬松</span></div>
-      <div class="kcell"><span class="kid">D05</span><img class="px" src="../../docs/宠物/原型/05-maltese.svg" width="70" height="60" alt=""/><span class="kn">马尔济斯</span><span class="kp">乖巧 · 精致</span></div>
-      <div class="kcell"><span class="kid">D06</span><img class="px" src="../../docs/宠物/原型/06-shih-tzu.svg" width="70" height="60" alt=""/><span class="kn">西施</span><span class="kp">慵懒 · 陪伴</span></div>
-      <div class="kcell"><span class="kid">D07</span><img class="px" src="../../docs/宠物/原型/07-toy-poodle.svg" width="70" height="60" alt=""/><span class="kn">泰迪</span><span class="kp">俏皮 · 黏人</span></div>
-    </div>
-    <div class="note">像素网格与磷光网格同源:狗 = 14×12 逐像素 quad(≤168 quad/帧),GPUI 直绘,无 SVG tint 限制问题;选中卡 = ph-dim 边 + L2,无放大动画。</div>
-  </div>
-</div>
-
-<!-- ══════════ C · 上下文状态机 ══════════ -->
-<div class="board">
-  <div class="board-cap"><span class="idx">C</span><span class="t">上下文状态机</span><span class="d">事件驱动(shell integration / process lifecycle),不扫描输出文本;优先级 Drag &gt; Error/Success &gt; Running &gt; Typing &gt; Hover &gt; Idle</span></div>
-  <div class="board-body">
-    <div class="fsm">
-      <div class="scell">
-        <span class="chip">IDLE</span>
-        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
-        <div class="fnote"><b>眨眼</b> 4–8s 随机间隔<br/><b>尾巴</b> 1px 摆动<br/><b>呼吸</b> 1px 沉浮</div>
-      </div>
-      <div class="scell">
-        <span class="chip" style="color:var(--info); border-color:rgba(130,180,240,.3)">TYPING</span>
-        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
-        <div class="fnote"><b>KeyPress 触发</b><br/>耳朵立起 +1px<br/>身体朝向活动 pane</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">RUNNING</span>
-        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
-        <div class="fnote"><b>进程 &gt;1s 触发</b><br/>小跑:脚掌 2 帧交替<br/>= 天然 loading 指示</div>
-      </div>
-      <div class="scell">
-        <span class="chip okc">SUCCESS</span>
-        <div class="sp">
-          <span class="updot" style="top:14px; right:34%"></span>
-          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:-8px"/>
-        </div>
-        <div class="fnote"><b>Exit 0 触发</b><br/>上跳 2px 回落 · 冒小心<br/>结束即回真实上下文</div>
-      </div>
-      <div class="scell">
-        <span class="chip errc">ERROR</span>
-        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:6px"/></div>
-        <div class="fnote"><b>Exit ≠0 触发</b><br/>耳垂 · 眼变「- -」<br/>持续 3s 复原</div>
-      </div>
-    </div>
-    <div class="note">姿态只换帧,永不重抽品种;品种生命周期 = 终端进程生命周期。所有帧同占位(动效只移少量像素),容器恒定不抖布局。</div>
-  </div>
-</div>
-
-<!-- ══════════ D · 互动与设置 ══════════ -->
-<div class="board">
-  <div class="board-cap"><span class="idx">D</span><span class="t">鼠标互动 · 右键菜单</span><span class="d">轻互动,不拟人化过度;命令面板亦可达宠物设置(键盘可达性)</span></div>
-  <div class="board-body">
-    <div class="play">
-      <div class="pcell">
-        <span class="chip">HOVER · 摸摸</span>
-        <div class="sp"><span class="cursor-glyph">➤</span><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt=""/></div>
-        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">看向鼠标或闭眼享受;无长说明,不遮输出</div>
-      </div>
-      <div class="pcell">
-        <span class="chip">CLICK · 歪头杀</span>
-        <div class="sp"><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="transform:rotate(-8deg)"/><span class="bubble">汪!</span></div>
-        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">头部像素错位重绘;气泡 2s 消散(reduced motion 可关)</div>
-      </div>
-      <div class="pcell">
-        <span class="chip">DRAG · 拎起换窝</span>
-        <div class="sp">
-          <img class="px" src="../../docs/宠物/原型/01-westie.svg" width="70" height="60" alt="" style="margin-top:-14px"/>
-          <div class="shelf" style="position:absolute; bottom:18px; left:24px; right:24px"></div>
-        </div>
-        <div class="fnote" style="font:10px/1.8 var(--mono); color:var(--t2)">悬空姿态;松手落点写入用户配置,不写项目配置</div>
-      </div>
-    </div>
-    <div style="display:flex; gap:28px; margin-top:18px; align-items:flex-start">
-      <div class="float petmenu">
-        <div class="mi on"><span style="color:var(--ph)">↻</span>随机刷新</div>
-        <div class="mi"><span style="color:var(--t3)">⌂</span>更换品种…</div>
-        <div class="msep"></div>
-        <div class="mi"><span style="color:var(--t3)">◌</span>仅欢迎页显示</div>
-        <div class="mi"><span style="color:var(--t3)">−</span>隐藏</div>
-        <div class="mi"><span style="color:var(--err)">⏻</span>关闭宠物系统</div>
-      </div>
-      <table class="spec" style="flex:1; margin-top:0">
-        <caption>SPEC · 宠物</caption>
-        <tr><th>项</th><th>规格</th><th>备注</th></tr>
-        <tr><td class="k">容器</td><td>固定 100×84(狗 84×72 + 岗台)</td><td>恒定占位,杜绝布局抖动</td></tr>
-        <tr><td class="k">岗台</td><td>1px h1,左 28px ph-dim 点睛</td><td>宠物世界与 UI 的唯一接缝</td></tr>
-        <tr><td class="k">默认位</td><td>右下,状态栏上 8px / 右 30px</td><td>多 pane 全局一只;全屏隐藏</td></tr>
-        <tr><td class="k">气泡</td><td>L4 · 1px h2 · r4 · mono 11</td><td>只允许短句:「汪!」「Woof!」</td></tr>
-        <tr><td class="k">欢迎页形态</td><td>2× 尺寸(168×144)</td><td>见 SHEET 07 欢迎页</td></tr>
-        <tr><td class="k">可访问性</td><td>可关 · reduced motion 全静帧</td><td>读屏只报「宠物:品种,显示/隐藏」</td></tr>
-      </table>
-    </div>
-  </div>
-</div>
-
-<!-- ══════════ E · 互动姿态重做 · 审核稿(BUG发现 #6) ══════════ -->
-<div class="board" id="board-e">
-  <div class="board-cap"><span class="idx">E</span><span class="t">互动姿态重做 · 审核稿</span><span class="d">BUG发现 #6 — 闭眼 / 打盹 / 探头 重设计,审核通过后按本板参数实现;双击玩耍已认可,此处定稿。像素图 = 与实现同一份网格数据逐格绘制(西高地示例,七犬同参数)</span></div>
-  <div class="board-body">
-
-    <div class="tag" style="margin-bottom:10px">① 闭眼(HOVER 摸摸 / 眨眼 / 打盹共用)— 根因复盘 + 两案二选一</div>
-    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
-      <div class="scell" style="border-color:rgba(232,112,126,.35)">
-        <span class="chip errc">现状 · 透明洞(BUG)</span>
-        <div class="sp"><div class="pix" id="pose-bug"></div></div>
-        <div class="fnote">眼格缩成横缝后,格子其余部分<b>露出透明底</b> —— 深色终端上 = 黑窟窿,看起来仍是「眼睛没了」。上一版"没生效"的根因。</div>
-      </div>
-      <div class="scell" style="border-color:var(--ph-dim)">
-        <span class="chip ph">方案 A · 下缘横缝 — ✔ 已选定</span>
-        <div class="sp"><div class="pix" id="pose-squint-a"></div></div>
-        <div class="fnote"><b>毛色衬底铺满整格</b> + 眼色 2px 横缝贴下缘。实现 = 每眼 2 个 quad;最稳,远看是「眯成一条线」。<b>审核决议:选定,已落地 pet.rs。</b></div>
-      </div>
-      <div class="scell">
-        <span class="chip">方案 B · ^^ 拱缝 — 未采用</span>
-        <div class="sp"><div class="pix" id="pose-squint-b"></div></div>
-        <div class="fnote"><b>毛色衬底</b> + 三段拱形(两侧低中间高)。每眼 4 个 quad;审核未采用,存档备选。</div>
-      </div>
-      <div class="scell">
-        <span class="chip warnc">ERROR「- -」同修</span>
-        <div class="sp"><div class="pix" id="pose-error"></div></div>
-        <div class="fnote">委屈眼同样补毛色衬底(现状同有透明洞问题):衬底 + 眼色 2px 横条居中,严格区分于眯眼(贴下缘/拱形)。</div>
-      </div>
-    </div>
-
-    <div class="tag" style="margin:22px 0 10px">② SLEEP 打盹 — <b>真·趴下</b>:腿收起、肚皮贴地、身体压扁拉长、头放低 = 专用趴姿网格(姿态变形),不是整体下移</div>
-    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
-      <div class="scell" style="border-color:rgba(232,112,126,.35)">
-        <span class="chip errc">上一版(BUG)· 只是下移</span>
-        <div class="sp"><div class="pix" id="pose-sleep-bug"></div></div>
-        <div class="fnote">整体 +3px 平移,狗仍是<b>站姿</b> —— 没有「趴」的动作,用户实测无感。</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">趴姿 · 呼气帧</span>
-        <div class="sp"><div class="pix" id="pose-sleep-1"></div></div>
-        <div class="fnote">腿收進身下 · 肚皮贴岗台<br/>身高 9 行 → 7 行,身长 +2 格<br/>头压低 · 闭眼(①选定方案)</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">趴姿 · 吸气帧</span>
-        <div class="sp"><div class="pix" id="pose-sleep-2"></div></div>
-        <div class="fnote">背部隆起 1px(呼吸,~2s)<br/>zZ 弱灰随相位上浮<br/>尾巴平放不摆 · 状态栏灰点</div>
-      </div>
-      <div class="scell">
-        <span class="chip">触发与唤醒</span>
-        <div class="sp" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
-          <span style="font:10px var(--mono);color:var(--t2)">空闲 &gt; 90s → 趴下</span>
-          <span style="font:14px var(--mono);color:var(--t3)">↓</span>
-          <span style="font:10px var(--mono);color:var(--t2)">键入/运行/摸/点 → 起身</span>
-        </div>
-        <div class="fnote">趴姿 = <b>每品种一张趴姿网格</b>(14 列 ≤9 行,保留耳形/毛色识别点);起身 = 直切回站姿(reduced motion 同)。</div>
-      </div>
-    </div>
-
-    <div class="tag" style="margin:22px 0 10px">③ PEEK 探头 — <b>真·冒出来</b>:从岗台线后面升起,线下全程裁切;t=0 整只在台下不可见,逐帧露出耳尖→头→全身</div>
-    <div class="fsm">
-      <div class="scell">
-        <span class="chip errc" style="white-space:nowrap">上一版(BUG)</span>
-        <div class="sp"><div class="pix" id="pose-peek-bug"></div></div>
-        <div class="fnote">整只全程可见,只位移 6px —— 不是「冒出来」。</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">t=0 · 台下</span>
-        <div class="sp"><div class="pix" id="pose-peek-1"></div></div>
-        <div class="fnote">整只在岗台线以下<br/>(不可见,只有岗台)</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">t≈30% · 露耳尖</span>
-        <div class="sp"><div class="pix" id="pose-peek-2"></div></div>
-        <div class="fnote">耳尖+头顶先出线<br/>「谁在那儿?」</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">t≈65% · 露眼睛</span>
-        <div class="sp"><div class="pix" id="pose-peek-3"></div></div>
-        <div class="fnote">眼睛过线 = 探头瞬间<br/>(本帧停留感最强)</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">t=100% · 落定</span>
-        <div class="sp"><div class="pix" id="pose-peek-4"></div></div>
-        <div class="fnote">全身出线,脚踩岗台<br/>全程 ~500ms 缓出</div>
-      </div>
-    </div>
-
-    <div class="tag" style="margin:22px 0 10px">④ PLAY 双击逗弄(已认可 · 定稿)— 1.4s 后回真实上下文</div>
-    <div class="fsm" style="grid-template-columns:repeat(5,1fr)">
-      <div class="scell">
-        <span class="chip okc">PLAY · 高跳相位</span>
-        <div class="sp"><div class="pix" id="pose-play-1"></div></div>
-        <div class="fnote">身体 −5px · 尾摆 +3px<br/>大爱心亮</div>
-      </div>
-      <div class="scell">
-        <span class="chip okc">PLAY · 低落相位</span>
-        <div class="sp"><div class="pix" id="pose-play-2"></div></div>
-        <div class="fnote">身体 −1px · 尾摆 −3px<br/>小爱心亮(双心交替闪)</div>
-      </div>
-      <div class="scell" style="grid-column:span 3">
-        <span class="chip">SPEC · 审核参数</span>
-        <table class="spec" style="margin-top:10px">
-          <tr><th>姿态</th><th>触发</th><th>像素参数</th><th>时长</th></tr>
-          <tr><td class="k">眯眼</td><td>hover / 眨眼 / 打盹</td><td>毛色衬底整格 + 眼色缝(A:6×2px 下缘 / B:三段拱),每眼 ≤4 quad</td><td>hover 持续 · 眨眼 160ms</td></tr>
-          <tr><td class="k">委屈眼</td><td>Exit ≠0</td><td>毛色衬底 + 眼色 2px 横条居中(「- -」)</td><td>3s</td></tr>
-          <tr><td class="k">SLEEP</td><td>空闲 &gt; 90s</td><td><b>趴姿网格</b>(每品种一张,14 列 ≤9 行):腿收起、肚皮贴岗台、身长 +2 格、头压低、闭眼;吸气帧背部 −1px;zZ 灰 #69748E 两格随呼吸</td><td>到唤醒,直切起身</td></tr>
-          <tr><td class="k">PEEK</td><td>现身/换品种/欢迎切换</td><td><b>岗台线下裁切</b>:身 +54px(全高)→ 0 升起,耳尖→眼→全身逐段出线;线下不画</td><td>~500ms 缓出</td></tr>
-          <tr><td class="k">PLAY</td><td>双击</td><td>身 −5/−1 交替 · 尾 ±3 · 双爱心 #F08C98 交替闪 · 气泡「汪汪!」</td><td>1.4s</td></tr>
-        </table>
-      </div>
-    </div>
-
-    <div class="note" style="margin-top:16px">▸ <b>审核决议(2026-06-12,已全部落地 pet.rs)</b>:① 眯眼 = <b>方案 A 下缘横缝</b>(B 拱缝存档未采用);② 趴姿造型认可 → <b>七个品种各一张趴姿网格</b>已落地(立耳犬保竖耳、蝴蝶结/发饰留头顶、垂耳贴颊;结构守卫测试 `sprites_are_well_formed`/`lie_pose_hugs_the_shelf`);③ SLEEP 阈值维持 90s;④ PEEK「岗台线下升起」+ 三触发点(现身/换品种/欢迎切换)认可,500ms 缓出、30ms 帧驱动。<br/>渲染契约:全部姿态 = 14 列网格逐格 quad(衬底+缝 = 每眼 2 quad)+ 岗台线高度截断,无新原语;reduced motion 下眨眼/探头/交替闪静帧,SLEEP 保留静态趴姿。本板像素由内嵌脚本按<b>与 pet.rs 同一套网格语义</b>展开,所见即实现。</div>
-  </div>
-</div>
-
-<!-- ══════════ F · 陪伴版 P2/P3 审核稿(规则 v2.1) ══════════ -->
-<div class="board" id="board-f">
-  <div class="board-cap"><span class="idx">F</span><span class="t">陪伴版审核稿 · 领养卡 / 哈欠 / 投喂 / 三帧律</span><span class="d">规则 v2.1 新视觉全集 — 审核通过后实现 P2(领养命名/每日见面)与 P3(小饼干);三帧律示例同步定调</span></div>
-  <div class="board-body">
-
-    <div class="tag" style="margin-bottom:10px">① 领养卡(规则 0 · 首次启用宠物的一次性浮层;整流程 ≤30 秒)</div>
     <div style="display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap">
       <div class="float" style="width:620px">
         <div class="float-head">
@@ -366,10 +199,249 @@
           <span class="btn primary" style="padding:4px 18px">领养</span>
         </div>
       </div>
-      <div class="note" style="max-width:320px">浮层家族标准件(L3+L4 头+h2 边+投影+scrim)。选中品种 = L4 + 磷光左脊(全局选中语法)。<br/><br/><b>老用户迁移</b>:已有宠物的用户升级后首次启动,领养卡<b>预选当前品种</b>、名字默认品种名 → 一键「领养」即完成,档案天数从历史 first_met 起算,不重置。<br/><br/>跳过 = 缘分狗 + 默认名,绝不纠缠;之后改名/换形象都在右键菜单。</div>
+      <table class="spec" style="flex:1; min-width:420px; margin-top:0">
+        <caption>SPEC · 规则 0 主宠归属</caption>
+        <tr><th>项</th><th>规则</th><th>备注</th></tr>
+        <tr><td class="k">唯一性</td><td>主宠只有一只</td><td>名字 / 档案 / 窝位 / 饼干记忆都属于它</td></tr>
+        <tr><td class="k">改名…</td><td>右键随时改,档案不动</td><td>改名是亲昵,不是重置</td></tr>
+        <tr><td class="k">换个形象…</td><td>品种架直选,名字与档案延续</td><td>像换发型 · 零失去焦虑 · 无送别弹窗</td></tr>
+        <tr><td class="k">随机刷新</td><td><span style="color:var(--err)">从菜单废除</span></td><td>持续性老虎机瓦解身份连续性</td></tr>
+        <tr><td class="k">交给缘分</td><td>只在领养卡里存在</td><td>随机的魅力留给初遇,不留给日常</td></tr>
+        <tr><td class="k">老用户迁移</td><td>领养卡预选当前品种 + 默认名</td><td>一键领养;天数从历史 first_met 起算不重置</td></tr>
+        <tr><td class="k">串门偶遇(远期)</td><td>里程碑/节日另一只路过 10s</td><td>无收集 · 无图鉴 · 无拥有</td></tr>
+      </table>
+    </div>
+    <div class="note">浮层家族标准件(L3 面 + L4 头 + h2 边 + float 投影 + 纯色 scrim)。选中品种 = L4 + 磷光左脊(全局选中语法)。依恋的两个心理条件 —— <b>身份连续性</b>(每次见到的是同一只)与 <b>不可替代性</b> —— 随机刷新两条全毁,升级解锁走向反面(狗变进度条)。故:一只、命名、唯一。</div>
+  </div>
+</div>
+
+<!-- ══════════ C · 七犬性格(规则 D) ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">C</span><span class="t">七犬性格 · 七脾气</span><span class="d">规则 D — 参数化性格让「换一只狗」= 「换一种陪伴感」;这是品种好奇心的全部来源:没有图鉴、没有成就、没有「更好的狗」</span></div>
+  <div class="board-body">
+    <div class="kennel">
+      <div class="kcell on"><span class="kid">D01 · 豆豆</span><img class="px" src="../../docs/宠物/原型/01-westie.svg" width="64" height="55" alt=""/><span class="kn">西高地</span><span class="kp">精神 · 好奇</span><span class="kq">「汪!」</span></div>
+      <div class="kcell"><span class="kid">D02</span><img class="px" src="../../docs/宠物/原型/02-golden-retriever.svg" width="64" height="55" alt=""/><span class="kn">金毛</span><span class="kp">温和 · 可靠</span><span class="kq">「汪~」</span></div>
+      <div class="kcell"><span class="kid">D03</span><img class="px" src="../../docs/宠物/原型/03-german-shepherd.svg" width="64" height="55" alt=""/><span class="kn">德牧</span><span class="kp">专注 · 警觉</span><span class="kq">点头(不出声)</span></div>
+      <div class="kcell"><span class="kid">D04</span><img class="px" src="../../docs/宠物/原型/04-bichon-frise.svg" width="64" height="55" alt=""/><span class="kn">比熊</span><span class="kp">开心 · 活泼</span><span class="kq">「汪汪!」</span></div>
+      <div class="kcell"><span class="kid">D05</span><img class="px" src="../../docs/宠物/原型/05-maltese.svg" width="64" height="55" alt=""/><span class="kn">马尔济斯</span><span class="kp">乖巧 · 安静</span><span class="kq">「…汪」</span></div>
+      <div class="kcell"><span class="kid">D06</span><img class="px" src="../../docs/宠物/原型/06-shih-tzu.svg" width="64" height="55" alt=""/><span class="kn">西施</span><span class="kp">慵懒 · 陪伴</span><span class="kq">「呼…」</span></div>
+      <div class="kcell"><span class="kid">D07</span><img class="px" src="../../docs/宠物/原型/07-toy-poodle.svg" width="64" height="55" alt=""/><span class="kn">泰迪</span><span class="kp">俏皮 · 黏人</span><span class="kq">「汪!汪!」</span></div>
+    </div>
+    <table class="spec" style="margin-top:18px">
+      <caption>SPEC · 性格参数表(表即实现:常量表,不加品种私有代码路径)</caption>
+      <tr><th>品种</th><th>性格</th><th>眨眼间隔</th><th>尾摆幅度</th><th>打盹阈值</th><th>偏好微动作(规则 C)</th><th>口癖(气泡)</th></tr>
+      <tr><td class="k">西高地</td><td>精神好奇</td><td>4–6s(勤)</td><td>1px 快</td><td>120s(坐不住)</td><td>竖耳听声 · 望屏外</td><td>「汪!」</td></tr>
+      <tr><td class="k">金毛</td><td>温和可靠</td><td>5–8s</td><td>2px 大尾</td><td>90s</td><td>伸懒腰 · 舔爪</td><td>「汪~」</td></tr>
+      <tr><td class="k">德牧</td><td>专注警觉</td><td>6–9s(稳)</td><td>1px 小</td><td>180s(站岗)</td><td>竖耳听声(高频)</td><td>点头 1 格(不出声)</td></tr>
+      <tr><td class="k">比熊</td><td>开心活泼</td><td>4–7s</td><td>2px 弹</td><td>90s</td><td>追尾转圈(高频)</td><td>「汪汪!」</td></tr>
+      <tr><td class="k">马尔济斯</td><td>乖巧安静</td><td>5–8s</td><td>1px 轻</td><td>60s(爱打盹)</td><td>舔爪 · 伸懒腰</td><td>「…汪」</td></tr>
+      <tr><td class="k">西施</td><td>慵懒陪伴</td><td>6–10s(眯)</td><td>1px 慢</td><td><span class="hex">45s</span>(最爱睡)</td><td>伸懒腰(高频) · 舔爪</td><td>「呼…」</td></tr>
+      <tr><td class="k">泰迪</td><td>俏皮黏人</td><td>4–6s</td><td><span class="hex">3px 最欢</span></td><td>120s</td><td>追尾转圈 · 抓痒</td><td>「汪!汪!」</td></tr>
+    </table>
+    <div class="note">性格只调 <b>参数与权重</b>,不做数值差异(没有「更好的狗」)。识别点(耳形/毛色/饰品)贯穿站姿与趴姿:立耳犬保竖耳、蝴蝶结/发饰留头顶、垂耳贴颊。性格差异服务于 <b>领养时刻的选择</b> 与「换个形象」的新鲜感,不再暗示轮换收集。</div>
+  </div>
+</div>
+
+<!-- ══════════ D · 上下文状态机 · 活物引擎(规则 C) ══════════ -->
+<div class="board">
+  <div class="board-cap"><span class="idx">D</span><span class="t">上下文状态机 + 活物引擎</span><span class="d">事件驱动(OSC 133/633 · process lifecycle · 本地时钟),不扫描输出文本;idle 不再是静止+眨眼,而是有生活的小狗</span></div>
+  <div class="board-body">
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip">IDLE</span>
+        <div class="sp"><div class="pix" id="pose-idle"></div></div>
+        <div class="fnote"><b>眨眼</b> 按品种间隔<br/><b>尾巴</b> 1px 摆动<br/><b>呼吸</b> 1px 沉浮</div>
+      </div>
+      <div class="scell">
+        <span class="chip" style="color:var(--info); border-color:rgba(130,180,240,.3)">TYPING</span>
+        <div class="sp"><div class="pix" id="pose-typing"></div></div>
+        <div class="fnote"><b>KeyPress 触发</b><br/>耳朵立起 +1px<br/>身体朝向活动 pane</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">RUNNING</span>
+        <div class="sp"><div class="pix" id="pose-running"></div></div>
+        <div class="fnote"><b>进程 &gt;1s 触发</b><br/>小跑:脚掌 2 帧交替<br/>= 天然 loading 指示</div>
+      </div>
+      <div class="scell">
+        <span class="chip okc">SUCCESS</span>
+        <div class="sp"><div class="pix" id="pose-success"></div></div>
+        <div class="fnote"><b>Exit 0 触发</b><br/>上跳回落 · 冒小心<br/>结束即回真实上下文</div>
+      </div>
+      <div class="scell">
+        <span class="chip errc">ERROR</span>
+        <div class="sp"><div class="pix" id="pose-err"></div></div>
+        <div class="fnote"><b>Exit ≠0 触发</b><br/>耳垂 · 眼变「- -」<br/>持续 3s 复原</div>
+      </div>
     </div>
 
-    <div class="tag" style="margin:22px 0 10px">② 深夜哈欠(规则 A 深夜问候 / 规则 B 深夜投喂后)— 唯一的"休息提醒",不说教</div>
+    <div class="tag" style="margin:22px 0 10px">活物引擎 · idle 微动作池(规则 C)— 20–60s 随机触发一个,时长 ≤1.5s,做完回 idle;按品种性格加权,同一动作不连续两次</div>
+    <div class="fsm" style="grid-template-columns:repeat(6,1fr)">
+      <div class="scell"><span class="chip">① 抓痒</span><div class="sp"><div class="pix" id="pose-c-scratch"></div></div><div class="fnote">后腿格上抬 2px<br/>快速抖 3 次</div></div>
+      <div class="scell"><span class="chip">② 舔爪</span><div class="sp"><div class="pix" id="pose-c-lick"></div></div><div class="fnote">头低 1 格<br/>前爪上抬</div></div>
+      <div class="scell"><span class="chip">③ 追尾转圈</span><div class="sp"><div class="pix" id="pose-c-spin"></div></div><div class="fnote">整身水平镜像 2 次<br/>翻转即「转身」(零新网格)</div></div>
+      <div class="scell"><span class="chip">④ 竖耳听声</span><div class="sp"><div class="pix" id="pose-c-ear"></div></div><div class="fnote">双耳 +1 格<br/>保持 0.6s</div></div>
+      <div class="scell"><span class="chip">⑤ 望屏外</span><div class="sp"><div class="pix" id="pose-c-look"></div></div><div class="fnote">头部右移 1 格 0.8s<br/>「窗外有鸟」</div></div>
+      <div class="scell"><span class="chip">⑥ 伸懒腰</span><div class="sp"><div class="pix" id="pose-c-stretch"></div></div><div class="fnote">前低后高<br/>头 +1px / 尾 −1px 保持 0.5s</div></div>
+    </div>
+    <div class="note">优先级(详见 SPEC 事件优先级总表):<b>Drag</b> &gt; 摸头/投喂 &gt; <b>PetSpatialCue</b> &gt; Error/Success/Running/Typing &gt; Hover/Sleep/Idle &gt; idle 微动作。专注保护:Typing/Running/Error/浮层打开期间一律不触发,进行中遇上下文变化立即弃帧切换。打扰预算:微动作 ≤2 次/分钟、无声、无气泡、不离开栖位;<b>reduced motion 下整章停用</b>。</div>
+  </div>
+</div>
+
+<!-- ══════════ E · 姿态审核定稿(已落地 pet.rs) ══════════ -->
+<div class="board" id="board-e">
+  <div class="board-cap"><span class="idx">E</span><span class="t">互动姿态审核定稿</span><span class="d">闭眼 / 趴姿 / 探头 / 双击逗弄 — 审核通过并已落地 pet.rs;像素图 = 与实现同一份网格数据逐格绘制(西高地示例,七犬同参数)</span></div>
+  <div class="board-body">
+
+    <div class="tag" style="margin-bottom:10px">① 闭眼(HOVER 摸摸 / 眨眼 / 打盹共用)— 根因复盘 + 选定方案</div>
+    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
+      <div class="scell" style="border-color:rgba(232,112,126,.35)">
+        <span class="chip errc">现状 · 透明洞(BUG)</span>
+        <div class="sp"><div class="pix" id="pose-bug"></div></div>
+        <div class="fnote">眼格缩成横缝后,格子其余部分<b>露出透明底</b> —— 深色终端上 = 黑窟窿。上一版「没生效」的根因。</div>
+      </div>
+      <div class="scell" style="border-color:var(--ph-dim)">
+        <span class="chip ph">方案 A · 下缘横缝 — ✔ 已选定</span>
+        <div class="sp"><div class="pix" id="pose-squint-a"></div></div>
+        <div class="fnote"><b>毛色衬底铺满整格</b> + 眼色 2px 横缝贴下缘。每眼 2 个 quad;远看是「眯成一条线」。<b>已落地 pet.rs。</b></div>
+      </div>
+      <div class="scell">
+        <span class="chip">方案 B · ^^ 拱缝 — 未采用</span>
+        <div class="sp"><div class="pix" id="pose-squint-b"></div></div>
+        <div class="fnote"><b>毛色衬底</b> + 三段拱形。每眼 4 个 quad;审核未采用,存档备选。</div>
+      </div>
+      <div class="scell">
+        <span class="chip warnc">ERROR「- -」同修</span>
+        <div class="sp"><div class="pix" id="pose-error"></div></div>
+        <div class="fnote">委屈眼同补毛色衬底:衬底 + 眼色 2px 横条居中,区分于眯眼(贴下缘)。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">② SLEEP 打盹 — <b>真·趴下</b>:腿收起、肚皮贴地、身体压扁拉长、头放低 = 专用趴姿网格(姿态变形,不是整体下移)</div>
+    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
+      <div class="scell" style="border-color:rgba(232,112,126,.35)">
+        <span class="chip errc">上一版(BUG)· 只是下移</span>
+        <div class="sp"><div class="pix" id="pose-sleep-bug"></div></div>
+        <div class="fnote">整体 +3px 平移,狗仍是<b>站姿</b> —— 没有「趴」的动作,用户实测无感。</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">趴姿 · 呼气帧</span>
+        <div class="sp"><div class="pix" id="pose-sleep-1"></div></div>
+        <div class="fnote">腿收進身下 · 肚皮贴岗台<br/>身高 9 行 → 7 行,身长 +2 格<br/>头压低 · 闭眼(①选定方案)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">趴姿 · 吸气帧</span>
+        <div class="sp"><div class="pix" id="pose-sleep-2"></div></div>
+        <div class="fnote">背部隆起 1px(呼吸,~2s)<br/>zZ 弱灰随相位上浮<br/>尾巴平放不摆 · 状态栏灰点</div>
+      </div>
+      <div class="scell">
+        <span class="chip">触发与唤醒</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
+          <span style="font:10px var(--mono);color:var(--t2)">空闲 &gt; 打盹阈值(按品种)→ 趴下</span>
+          <span style="font:14px var(--mono);color:var(--t3)">↓</span>
+          <span style="font:10px var(--mono);color:var(--t2)">键入/运行/摸/点 → 起身</span>
+        </div>
+        <div class="fnote">趴姿 = <b>每品种一张趴姿网格</b>;起身 = 直切回站姿(reduced motion 同)。主窗失焦 → 打盹倒计时加速 ×2。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">③ PEEK 探头 — <b>真·冒出来</b>:从岗台线后面升起,线下全程裁切;逐帧露出耳尖→头→全身</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip errc" style="white-space:nowrap">上一版(BUG)</span>
+        <div class="sp"><div class="pix" id="pose-peek-bug"></div></div>
+        <div class="fnote">整只全程可见,只位移 6px —— 不是「冒出来」。</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">t=0 · 台下</span>
+        <div class="sp"><div class="pix" id="pose-peek-1"></div></div>
+        <div class="fnote">整只在岗台线以下<br/>(不可见,只有岗台)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">t≈30% · 露耳尖</span>
+        <div class="sp"><div class="pix" id="pose-peek-2"></div></div>
+        <div class="fnote">耳尖+头顶先出线<br/>「谁在那儿?」</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">t≈65% · 露眼睛</span>
+        <div class="sp"><div class="pix" id="pose-peek-3"></div></div>
+        <div class="fnote">眼睛过线 = 探头瞬间<br/>(本帧停留感最强)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">t=100% · 落定</span>
+        <div class="sp"><div class="pix" id="pose-peek-4"></div></div>
+        <div class="fnote">全身出线,脚踩岗台<br/>全程 ~500ms 缓出</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">④ PLAY 双击逗弄(已认可定稿)— 1.4s 后回真实上下文</div>
+    <div class="fsm" style="grid-template-columns:repeat(5,1fr)">
+      <div class="scell">
+        <span class="chip okc">PLAY · 高跳相位</span>
+        <div class="sp"><div class="pix" id="pose-play-1"></div></div>
+        <div class="fnote">身体 −5px · 尾摆 +3px<br/>大爱心亮</div>
+      </div>
+      <div class="scell">
+        <span class="chip okc">PLAY · 低落相位</span>
+        <div class="sp"><div class="pix" id="pose-play-2"></div></div>
+        <div class="fnote">身体 −1px · 尾摆 −3px<br/>小爱心亮(双心交替闪)</div>
+      </div>
+      <div class="scell" style="grid-column:span 3">
+        <span class="chip">SPEC · 审核参数</span>
+        <table class="spec" style="margin-top:10px">
+          <tr><th>姿态</th><th>触发</th><th>像素参数</th><th>时长</th></tr>
+          <tr><td class="k">眯眼</td><td>hover / 眨眼 / 打盹</td><td>毛色衬底整格 + 眼色缝(A:6×2px 下缘),每眼 ≤4 quad</td><td>hover 持续 · 眨眼 160ms</td></tr>
+          <tr><td class="k">委屈眼</td><td>Exit ≠0</td><td>毛色衬底 + 眼色 2px 横条居中(「- -」)</td><td>3s</td></tr>
+          <tr><td class="k">SLEEP</td><td>空闲 &gt; 打盹阈值</td><td><b>趴姿网格</b>(每品种一张,14 列 ≤9 行):腿收起、肚皮贴岗台、身长 +2 格、头压低、闭眼;吸气帧背部 −1px;zZ 灰 #69748E</td><td>到唤醒,直切起身</td></tr>
+          <tr><td class="k">PEEK</td><td>现身/换形象/欢迎切换</td><td><b>岗台线下裁切</b>:身 +54px(全高)→ 0 升起,耳尖→眼→全身逐段出线;线下不画</td><td>~500ms 缓出</td></tr>
+          <tr><td class="k">PLAY</td><td>双击</td><td>身 −5/−1 交替 · 尾 ±3 · 双爱心 #F08C98 交替闪 · 气泡按口癖</td><td>1.4s</td></tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="note" style="margin-top:16px">▸ <b>审核决议(2026-06-12,已全部落地 pet.rs)</b>:① 眯眼 = <b>方案 A 下缘横缝</b>;② 七个品种各一张趴姿网格已落地(结构守卫测试 <b>sprites_are_well_formed</b> / <b>lie_pose_hugs_the_shelf</b>);③ SLEEP 阈值改为<b>按品种打盹阈值</b>(规则 D);④ PEEK「岗台线下升起」+ 三触发点认可,500ms 缓出、30ms 帧驱动。渲染契约:全部姿态 = 14 列网格逐格 quad + 岗台线高度截断,无新原语;reduced motion 下眨眼/探头/交替闪静帧,SLEEP 保留静态趴姿。本板像素由内嵌脚本按<b>与 pet.rs 同一套网格语义</b>展开,所见即实现。</div>
+  </div>
+</div>
+
+<!-- ══════════ F · 陪伴循环 · 共情审核稿(规则 A/B/E/F) ══════════ -->
+<div class="board" id="board-f">
+  <div class="board-cap"><span class="idx">F</span><span class="t">陪伴循环 · 共情 · 审核稿</span><span class="d">每日见面(规则 A)→ 小饼干(规则 B)→ 工作共情(规则 E)→ 羁绊档案(规则 F);三帧律手感同步定调。审核通过后实现 P2/P3</span></div>
+  <div class="board-body">
+
+    <div class="tag" style="margin-bottom:10px">① 每日见面 · 入场池(规则 A)— 见面四式按性格加权随机,连续两次不重样;「今天它怎么出场」本身就是期待</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip">式一 · 岗台探头(既有)</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent1"></div></div>
+        <div class="fnote">岗台线后升起(已落地)<br/>偏好:西高地、德牧</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式二 · 小跑入场</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent2"></div></div>
+        <div class="fnote">从屏幕右缘小跑进窝(gait 交替)<br/>600ms ease-out · 到位刹车点头<br/>偏好:德牧、金毛</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式三 · 天降落地</span>
+        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent3"></div></div>
+        <div class="fnote">从容器顶落下,耳朵上飘(次级)<br/>落地接三帧律回弹 · 400ms<br/>偏好:比熊、泰迪(俏皮)</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">式四 · 它先到了</span>
+        <div class="sp"><div class="pix" id="pose-f-ent4"></div></div>
+        <div class="fnote">现身时<b>已趴在岗台上睡着</b> → 察觉你 → 哈欠 → 起身摇尾<br/>偏好:西施、马尔济斯(慵懒)</div>
+      </div>
+      <div class="scell">
+        <span class="chip">落定 + 时段问候</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:4px;padding:0 12px">
+          <span style="font:10px var(--mono);color:var(--t2)">清晨「早!」· 白天「来啦!」</span>
+          <span style="font:10px var(--mono);color:var(--t2)">傍晚「晚上好」· 深夜「夜深了…」</span>
+          <span style="font:10px var(--mono);color:var(--ph)">状态栏短显「第 N 天」5s</span>
+        </div>
+        <div class="fnote">落定后开心两连跳(0.8s)→ 问候气泡 → 见面补货今日小饼干 1 块。日常显隐只用轻量二式(探头/小跑)。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">② 深夜哈欠(规则 A 深夜问候 / 规则 B 深夜投喂后)— 唯一的「休息提醒」,不说教</div>
     <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
       <div class="scell">
         <span class="chip">日常 · 对照</span>
@@ -387,16 +459,16 @@
         <div class="fnote">口型收为 2×0.3 格(半闭)<br/>250ms 后回 idle/趴下</div>
       </div>
       <div class="scell">
-        <span class="chip">触发与气泡</span>
+        <span class="chip">触发</span>
         <div class="sp" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px">
           <span style="font:10px var(--mono);color:var(--t2)">深夜(23-5)首次见面 → 「夜深了…」+ 哈欠</span>
           <span style="font:10px var(--mono);color:var(--t2)">深夜投喂吃完 → 哈欠 → 主动趴下</span>
         </div>
-        <div class="fnote">一个哈欠就是全部提醒;不弹窗、不重复、无文案说教。</div>
+        <div class="fnote">一个哈欠就是全部提醒;不弹窗、不重复、无文案说教、不评价作息。</div>
       </div>
     </div>
 
-    <div class="tag" style="margin:22px 0 10px">③ 投喂四帧(规则 B · 每日一块小饼干)— 抛接→咀嚼→爱心,全程 ~2s</div>
+    <div class="tag" style="margin:22px 0 10px">③ 投喂四帧(规则 B · 每日一块小饼干)— 抛接→咀嚼→爱心,全程 ~2s;无数值、不囤积、不补偿</div>
     <div class="fsm">
       <div class="scell">
         <span class="chip ph">帧 1 · 饼干飞来</span>
@@ -419,16 +491,48 @@
         <div class="fnote">右腮鼓起 + 冒一颗爱心<br/>尾巴快摆 3s 收尾</div>
       </div>
       <div class="scell">
-        <span class="chip">菜单入口</span>
+        <span class="chip">菜单入口(规则 B)</span>
         <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
           <span style="font:11px var(--sans);color:var(--t1)">🍪 给小饼干 <span style="font:10px var(--mono);color:var(--ph)">· 今日还有 1 块</span></span>
           <span style="font:11px var(--sans);color:var(--t3)">🍪 今天吃过啦</span>
         </div>
-        <div class="fnote">右键菜单首组;喂过置灰;<b>不提示、不补偿、不囤积</b>。</div>
+        <div class="fnote">右键菜单首组;喂过置灰;深夜投喂吃完接哈欠→趴下。</div>
       </div>
     </div>
 
-    <div class="tag" style="margin:22px 0 10px">④ 关键互动三帧律示例(Success 跳改造)— 预备/主体/收尾,P1 同款用于 Play 与探头落地</div>
+    <div class="tag" style="margin:22px 0 10px">④ 工作共情(规则 E)— 全部来自结构化事件(块命令行 + exit code),零文本扫描;永不评判</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip okc">三连胜</span>
+        <div class="sp"><div class="pix" id="pose-e-win3"></div></div>
+        <div class="fnote">连续 3 条 exit 0<br/>Success 跳升级:双爱心</div>
+      </div>
+      <div class="scell">
+        <span class="chip okc">大功告成</span>
+        <div class="sp"><div class="pix" id="pose-e-big"></div></div>
+        <div class="fnote">运行 &gt;60s 命令 exit 0<br/>连跳两次 + 双爱心 + 口癖</div>
+      </div>
+      <div class="scell">
+        <span class="chip">提交时刻</span>
+        <div class="sp"><div class="pix" id="pose-e-commit"></div></div>
+        <div class="fnote">命令行以 git commit/push 开头且 exit 0<br/>小庆祝跳 + 单爱心</div>
+      </div>
+      <div class="scell" style="border-color:rgba(232,112,126,.2)">
+        <span class="chip errc">连败陪伴</span>
+        <div class="sp"><div class="pix" id="pose-e-lose"></div></div>
+        <div class="fnote">连续 ≥3 条 exit ≠0<br/><b>不演出</b>:就近趴下陪着,气泡「呜…」仅一次<br/>下个 exit 0 自然起身</div>
+      </div>
+      <div class="scell">
+        <span class="chip">翻盘 / 深夜陪工</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
+          <span style="font:10px var(--mono);color:var(--t2)">翻盘:exit≠0 后首个 exit 0 → Success + 气泡「!」</span>
+          <span style="font:10px var(--mono);color:var(--t2)">深夜 Running → 小跑帧减速一半</span>
+        </div>
+        <div class="fnote">共情共享冷却:<b>每 10 分钟最多 2 次</b>庆祝,超出静默(惊喜稀释自保护)。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">⑤ 关键互动三帧律示例(Success 跳改造)— 预备/主体/收尾,用于 Play / 探头落地 / 接饼干 / 领养落地</div>
     <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
       <div class="scell">
         <span class="chip">帧 1 · 预备蹲</span>
@@ -446,64 +550,336 @@
         <div class="fnote">整身 +1px 压 · 尾巴上扬(跟随)<br/><b>100ms</b> 回正</div>
       </div>
       <div class="scell">
-        <span class="chip">时长总账</span>
-        <div class="sp" style="display:grid;place-items:center">
-          <span style="font:11px var(--mono);color:var(--t2)">80 + 200 + 100 ≈ 380ms</span>
-        </div>
-        <div class="fnote">单帧直切的互动反馈视为未完成(手感律 1);reduced motion 直切终帧。</div>
-      </div>
-    </div>
-
-    <div class="tag" style="margin:22px 0 10px">⑤ 入场方式池(回应「出现方式太单调」)— 见面四式随机,按性格加权;「今天它怎么出场」本身就是期待</div>
-    <div class="fsm">
-      <div class="scell">
-        <span class="chip">式一 · 岗台探头(既有)</span>
-        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent1"></div></div>
-        <div class="fnote">岗台线后升起(已落地)<br/>偏好:西高地、德牧</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">式二 · 小跑入场</span>
-        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent2"></div></div>
-        <div class="fnote">从屏幕右缘小跑进窝(gait 交替)<br/>600ms ease-out · 到位刹车点头<br/>偏好:德牧(巡视感)、金毛</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">式三 · 天降落地</span>
-        <div class="sp" style="overflow:hidden"><div class="pix" id="pose-f-ent3"></div></div>
-        <div class="fnote">从容器顶落下,耳朵上飘(次级)<br/>落地接三帧律回弹 · 400ms<br/>偏好:比熊、泰迪(俏皮)</div>
-      </div>
-      <div class="scell">
-        <span class="chip ph">式四 · 它先到了</span>
-        <div class="sp"><div class="pix" id="pose-f-ent4"></div></div>
-        <div class="fnote">现身时<b>已趴在岗台上睡着</b> → 察觉你 → 哈欠 → 起身摇尾<br/>偏好:西施、马尔济斯(慵懒)<br/>「它比你先来上班」</div>
-      </div>
-      <div class="scell">
-        <span class="chip">随机规则</span>
+        <span class="chip">羁绊档案(规则 F)</span>
         <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
-          <span style="font:10px var(--mono);color:var(--t2)">每日见面:四式按性格加权随机</span>
-          <span style="font:10px var(--mono);color:var(--t2)">日常显隐:轻量二式(探头/小跑)</span>
-          <span style="font:10px var(--mono);color:var(--t2)">连续两次不重样</span>
+          <span style="font:10px var(--mono);color:var(--t1)">pet_state.json += first_met</span>
+          <span style="font:10px var(--mono);color:var(--t1)">+ days_together · treats_fed</span>
+          <span style="font:10px var(--mono);color:var(--ph)">里程碑 第 7/30/100/365 天</span>
         </div>
-        <div class="fnote">reduced motion → 直切落定;全部复用既有词汇(dx/dy/裁切/gait/趴姿+哈欠)。</div>
+        <div class="fnote">仅此三项,永不扩成数值系统;里程碑当日问候多一跳,<b>没有奖励、没有解锁</b> —— 纪念日本身就是全部。</div>
       </div>
     </div>
 
     <table class="spec" style="margin-top:18px">
       <caption>SPEC · 板 F 审核参数</caption>
       <tr><th>项</th><th>规格</th><th>时长</th><th>备注</th></tr>
-      <tr><td class="k">领养卡</td><td>浮层 620 · 七犬直选(L4+磷光脊)+ 🎲 缘分 + 名字井(L0 凹井 · 磷光块光标 · ≤8 字)</td><td>一次性</td><td>老用户预选迁移;Esc 跳过零纠缠</td></tr>
-      <tr><td class="k">哈欠</td><td>眯眼 A + 口型 2×0.7 格(K 色)→ 半闭 2×0.3 格</td><td>600+250ms</td><td>仅深夜问候/深夜投喂;不重复</td></tr>
-      <tr><td class="k">饼干</td><td>4×4 #C99052 + 2 点缺口;抛物线入场</td><td>飞 300 · 嚼 220×4 · 摆尾 3s</td><td>每日 1 块,无数值</td></tr>
-      <tr><td class="k">三帧律</td><td>蹲 +1.5px/耳塌 → 空中 −4px/耳滞后 → 落 +1px/尾扬</td><td>80/200/100ms</td><td>Success/Play/探头落地/接饼干共用</td></tr>
-      <tr><td class="k">入场池</td><td>式一探头(线下升起)· 式二小跑(右缘入,gait)· 式三天降(顶落+回弹)· 式四它先到(趴睡→哈欠→起身)</td><td>500/600/400/1200ms</td><td>性格加权随机,连续两次不重样;日常显隐只用轻量二式</td></tr>
+      <tr><td class="k">入场池</td><td>探头(线下升起)· 小跑(右缘 gait)· 天降(顶落+回弹)· 它先到(趴睡→哈欠→起身)</td><td>500/600/400/1200ms</td><td>性格加权,连续两次不重样;日常显隐只用轻量二式</td></tr>
+      <tr><td class="k">哈欠</td><td>眯眼 A + 口型 2×0.7 格 → 半闭 2×0.3 格</td><td>600+250ms</td><td>仅深夜问候/深夜投喂;不重复</td></tr>
+      <tr><td class="k">饼干</td><td>4×4 #C99052 + 2 点缺口;抛物线入场</td><td>飞 300 · 嚼 220×4 · 摆尾 3s</td><td>每日 1 块,无数值,忘了就忘了</td></tr>
+      <tr><td class="k">工作共情</td><td>三连胜/大功告成/翻盘/连败陪伴/提交/深夜陪工</td><td>复用 Success/Play/趴姿</td><td>共享冷却 ≤2 次/10 分钟;永不评判</td></tr>
+      <tr><td class="k">三帧律</td><td>蹲 +1.5px/耳塌 → 空中 −4px/耳滞后 → 落 +1px/尾扬</td><td>80/200/100ms</td><td>Success/Play/探头落地/接饼干/领养落地共用</td></tr>
     </table>
+  </div>
+</div>
 
-    <div class="note" style="margin-top:14px">▸ <b>待审核五问</b>:① 领养卡版式与「老用户预选迁移」是否认可?② 哈欠口型(张开 0.7 格)够不够"困"?③ 投喂四帧节奏(飞 300ms/嚼两拍/爱心收尾)是否认可?④ 三帧律的蹲-跳-落手感方向对吗(80/200/100ms)?⑤ 入场池四式与性格偏好分配是否认可(还想加哪种出场)?<br/>全部在 14 列 quad 词汇内:口型/腮帮/饼干 = 追加小 quad,无新原语;气泡词表不破(投喂无字)。</div>
+<!-- ══════════ G · 主动互动 · 互动记忆审核稿(规则 G/H/I) ══════════ -->
+<div class="board" id="board-g">
+  <div class="board-cap"><span class="idx">G</span><span class="t">主动互动 · 互动记忆 · 右键菜单(板 G 审核稿)</span><span class="d">规则 G/H/I — 把回应升级为相处;记住的是宠物相关偏好,<b>不是用户行为画像</b>;玩具三件与叼回收尾待此板审核</span></div>
+  <div class="board-body">
+
+    <div class="tag" style="margin-bottom:10px">① 主动互动四式(规则 G)— 不占主动演出预算,但遵守三帧律、reduced motion 与工作神圣边界</div>
+    <div class="fsm">
+      <div class="scell">
+        <span class="chip ph">摸头 · 长按 350ms</span>
+        <div class="sp"><div class="pix" id="pose-g-pat"></div></div>
+        <div class="fnote">头低 1 格 → 快乐眯眼 → 尾巴快摆 + 单爱心<br/>2s 内重复只延长开心,不叠气泡</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">叫名字 · 菜单</span>
+        <div class="sp"><div class="pix" id="pose-g-call"></div></div>
+        <div class="fnote">竖耳/抬头 → 朝用户方向小跑 1 格 → 回窝坐好<br/>10s 冷却;名字不进气泡长句</div>
+      </div>
+      <div class="scell">
+        <span class="chip ph">换窝安顿 · 拖拽松手</span>
+        <div class="sp"><div class="pix" id="pose-g-settle"></div></div>
+        <div class="fnote">落地回弹 → 嗅嗅地面 → 坐好/趴好<br/>落在常用窝区域尾巴多摆 1s</div>
+      </div>
+      <div class="scell">
+        <span class="chip">久别亲近</span>
+        <div class="sp"><div class="pix" id="pose-g-miss"></div></div>
+        <div class="fnote">距上次亲密 ≥3 个自然日后首次互动<br/>常规演出 + <b>额外一颗爱心</b><br/>不出现「你终于来了」愧疚文案</div>
+      </div>
+      <div class="scell">
+        <span class="chip">边界</span>
+        <div class="sp" style="display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:5px;padding:0 12px">
+          <span style="font:10px var(--mono);color:var(--t2)">优先级:Drag &gt; 摸头判定 &gt; Play</span>
+          <span style="font:10px var(--mono);color:var(--t2)">&gt; 叫名字/投喂/换窝安顿 &gt; 上下文姿态</span>
+        </div>
+        <div class="fnote">Typing/Running/浮层打开时不触发长按判定;不扩大占位、不遮输入与选区;reduced motion 只切眯眼终帧。</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">② 摆个玩具(规则 G)— 球 / 骨头 / 小毯子 / 收起;<b style="color:var(--err)">无货币 · 无稀有度 · 无收集</b>,玩具是布置不是经济系统</div>
+    <div class="fsm" style="grid-template-columns:repeat(4,1fr)">
+      <div class="scell">
+        <span class="chip">小球</span>
+        <div class="sp"><div class="pix" id="pose-g-ball"></div></div>
+        <div class="fnote">岗台边一颗胶皮球(暖红,<b>非磷光</b>)<br/>Play 收尾叼起又放下</div>
+      </div>
+      <div class="scell">
+        <span class="chip">骨头</span>
+        <div class="sp"><div class="pix" id="pose-g-bone"></div></div>
+        <div class="fnote">米白骨头摆设<br/>叼回动作待审核(此板定稿)</div>
+      </div>
+      <div class="scell">
+        <span class="chip">小毯子</span>
+        <div class="sp"><div class="pix" id="pose-g-blanket"></div></div>
+        <div class="fnote">蓝灰软垫贴岗台<br/>Play 收尾趴在小毯子旁</div>
+      </div>
+      <div class="scell">
+        <span class="chip">收起 · 空岗台</span>
+        <div class="sp"><div class="pix" id="pose-g-none"></div></div>
+        <div class="fnote">同一时间最多一个;可随时收起<br/>不是收集品、无稀有度提示</div>
+      </div>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">③ 右键菜单全集(规则 0/B/F/G/I)+ 记忆透明 — 它记得你,但可见、可解释、可清除</div>
+    <div style="display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap">
+      <div class="float petmenu">
+        <div class="mi feed"><span class="ic">🍪</span>给小饼干<span class="ph">· 今日还有 1 块</span></div>
+        <div class="msep"></div>
+        <div class="mi read"><span class="ic" style="color:var(--ph)">⌂</span><b>豆豆</b> · 西高地 · 在一起第 47 天</div>
+        <div class="mi mem"><span class="ic">✦</span>它记得:<span class="ph">爱摸头 · 小球 · 右下角小窝</span></div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">♪</span>叫名字</div>
+        <div class="mi"><span class="ic">◍</span>摆个玩具…<span class="sub">球 / 骨头 / 毯子 / 收起 ▸</span></div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">✎</span>改名…</div>
+        <div class="mi"><span class="ic">⌂</span>换个形象…<span class="sub">品种架 ▸</span></div>
+        <div class="msep"></div>
+        <div class="mi danger"><span class="ic">↺</span>重置互动记忆…</div>
+        <div class="msep"></div>
+        <div class="mi"><span class="ic">◌</span>仅欢迎页显示</div>
+        <div class="mi"><span class="ic">−</span>隐藏</div>
+        <div class="mi off"><span class="ic">⏻</span>关闭宠物系统</div>
+      </div>
+      <div style="flex:1; min-width:440px; display:flex; flex-direction:column; gap:14px">
+        <table class="spec" style="margin-top:0">
+          <caption>SPEC · 互动记忆(规则 H · 偏好不是画像)</caption>
+          <tr><th>记忆项</th><th>来源</th><th>用途(只改权重与收尾)</th></tr>
+          <tr><td class="k">favorite_interaction</td><td>摸头/投喂/逗弄/叫名的衰减计数</td><td>爱摸头→更易眯眼趴低;爱逗弄→Play 后偶尔叼玩具回来</td></tr>
+          <tr><td class="k">favorite_perch</td><td>拖拽落点按屏幕四象限粗分</td><td>拖回常用区域触发「认窝」安顿</td></tr>
+          <tr><td class="k">toy_choice</td><td>用户显式选择的当前摆设</td><td>决定岗台小物与 Play 收尾动作</td></tr>
+          <tr><td class="k">quiet_hours_seen</td><td>深夜首见/深夜投喂的低精度计数</td><td>深夜入场更偏「它先到了」与趴姿</td></tr>
+          <tr><td class="k">last_affection_at</td><td>最近一次亲密互动的本地日期</td><td>判定久别亲近额外爱心</td></tr>
+        </table>
+        <div class="note" style="margin-top:0">记忆透明(规则 I):菜单档案组第二行显示「它记得:…」最多 3 个短标签,无数据时显示<b>「还在认识你」</b>。标签词表:<span style="color:var(--t1)">爱摸头 / 爱逗弄 / 爱叫名 / 爱饼干 / 小球 / 骨头 / 小毯子 / 四角小窝</span>。「重置互动记忆…」二次确认后清空五项偏好,<b>不清</b>名字/品种/首见日期/天数/累计饼干/窝坐标/开关。屏幕阅读器只读短标签,不朗读内部计数;入口键盘可达。</div>
+      </div>
+    </div>
+
+    <div class="note" style="margin-top:14px">▸ <b>待审核(板 G)</b>:① 摸头眯眼、叫名字转头、换窝安顿可复用既有 dy/dx/镜像/眯眼/爱心词汇;② <b>球/骨头/小毯子三件与叼回收尾</b>需定稿造型(本板像素为示意,玩具用暖色非磷光);③ 记忆驱动变化只能作为既有主动互动的收尾,<b>不能</b>变成独立提醒、弹窗或状态栏常驻 —— 它记得你爱摸头,但不会提醒你该摸头。数据写入用户配置目录 pet_state.json,不进项目配置、不跟随仓库。</div>
+  </div>
+</div>
+
+<!-- ══════════ H · 磷光通道审核稿(规则 J · v2.3 标志性动效) ══════════ -->
+<div class="board" id="board-h">
+  <div class="board-cap"><span class="idx">H</span><span class="t">磷光通道 · 空间共演(板 H 审核稿)</span><span class="d">规则 J — Tn 与其他终端的分水岭:关键 UI 不是凭空弹出,而是由宠物打开空间通道召唤出来。宠物 = <b>Tn 空间的钥匙</b>,不是界面搬运工</span></div>
+  <div class="board-body">
+
+    <div class="tag ph" style="margin-bottom:10px">J1 · 三个空间动词 — 一切通道演出由这三个动词组合而成</div>
+    <div class="verbs">
+      <div class="vc"><div class="vh">开门</div><div class="vb">宠物打开隐藏空间:真实 UI 接缝(岗台线/屏顶召唤线/QuickLook 边缘/pane 分隔线)亮起 <em>1px 磷光裂缝</em>,宠物蹲下蓄力后钻入或跃入。<br/>边界:只服务关键转场,不绑普通 hover/button。</div></div>
+      <div class="vc"><div class="vh">穿梭</div><div class="vb">宠物在 UI 空间之间迁移:主终端消失 → 目标 UI 边缘探头/落地,<em>保留同一只主宠身份</em>。<br/>边界:不复制宠物;同一时刻只有一个主宠位置。</div></div>
+      <div class="vc"><div class="vh">召回</div><div class="vb">UI 收起,宠物带着空间闭合:回头叼/拉一个 <em>磷光光点</em>,面板或幽灵窗收束,从原岗台探头回来。<br/>边界:UI 收起不等待动画完成,动画可追随收尾。</div></div>
+    </div>
+
+    <div class="tag ph" style="margin:24px 0 10px">J2 · 四个标志性场景(必须先出审核稿)— 完整共演 700–1200ms,但 UI 本体立即响应或在 80–160ms 预备后响应</div>
+    <div class="channel-grid">
+
+      <!-- 场景 1:幽灵终端进出 -->
+      <div>
+        <div class="tag" style="margin-bottom:8px">场景 1 · 幽灵终端打开 <span style="color:var(--t3)">(GhostEnter / GhostExit)</span></div>
+        <div class="scn" style="height:188px">
+          <div class="summon"></div>
+          <div class="gw" style="left:90px; right:90px; height:96px">
+            <div style="padding:10px 12px; font:10px var(--mono); color:var(--t2)">GHOST<span style="color:var(--ph)">_</span> · 幽灵终端</div>
+          </div>
+          <!-- 主岗台(右下) -->
+          <div class="shelfm" style="left:300px; right:24px; bottom:22px"></div>
+          <div class="flabel" style="right:26px; bottom:8px">主终端岗台</div>
+          <!-- 光点轨迹:主岗台 → 屏顶召唤线 -->
+          <div class="dot" style="right:64px; bottom:30px"></div>
+          <div class="dot dim" style="right:120px; bottom:70px"></div>
+          <div class="dot dim" style="right:200px; bottom:110px"></div>
+          <div class="dot" style="left:300px; top:18px"></div>
+          <!-- 幽灵窗底边探头(dog 从底边露出) -->
+          <div class="clipbox" style="left:300px; top:78px; width:54px; height:30px">
+            <img class="pdog" src="../../docs/宠物/原型/01-westie.svg" width="48" height="41" style="left:0; top:-4px; position:absolute"/>
+          </div>
+          <div class="flabel" style="left:300px; top:110px">幽灵窗底边探头</div>
+        </div>
+        <div class="note" style="margin-top:8px">完整:岗台跃入 1px 裂缝 → 屏顶召唤线亮起 → 幽灵终端垂下 → 从幽灵窗底边探头。<b>隐藏(GhostExit)</b>:缩回幽灵窗 → 顶缘残影收束 → 主岗台重新钻出。短版:光点从岗台飞到屏顶,直接探头。</div>
+      </div>
+
+      <!-- 场景 2:Quick Look 光点展开 -->
+      <div>
+        <div class="tag" style="margin-bottom:8px">场景 2 · Quick Look 打开 <span style="color:var(--t3)">(QuickLookOpen / Close / Switch)</span></div>
+        <div class="scn" style="height:188px">
+          <div class="pane" style="left:14px; top:16px; width:300px; bottom:16px"></div>
+          <div style="position:absolute; left:30px; top:30px; font:10px var(--mono); color:var(--t3)">❯ pwsh</div>
+          <!-- 边缘裂缝 -->
+          <div class="crack" style="left:322px; top:16px; bottom:16px"></div>
+          <!-- QuickLook 面板从裂缝展开 -->
+          <div class="qpanel" style="left:330px; right:14px; top:16px; bottom:16px">
+            <div style="padding:8px 10px; font:10px var(--mono); color:var(--t2); border-bottom:1px solid var(--h1)">element.rs · QUICK LOOK</div>
+            <div style="padding:8px 10px; font:10px/1.6 var(--mono); color:var(--t3)">impl Element for…</div>
+          </div>
+          <!-- 光点(面板前缘)+ 宠物叼光点退到边缘 -->
+          <div class="dot" style="left:326px; top:96px"></div>
+          <img class="pdog" src="../../docs/宠物/原型/01-westie.svg" width="40" height="34" style="position:absolute; left:288px; top:120px"/>
+          <div class="flabel" style="left:250px; top:158px"><b>叼光点</b> → 退到边缘看一眼</div>
+        </div>
+        <div class="note" style="margin-top:8px">完整:叼出磷光光点 → 光点贴住 QuickLook 侧边展开成面板 → 退到边缘。<b>关闭</b>:回头拉住光点,面板沿原方向收束,小跑回窝。<b>切换文件</b>:嗅一下光点/抬头换向,内容切换,不重新推拉面板。</div>
+      </div>
+
+      <!-- 场景 3:命令面板 / 浮层升起 -->
+      <div>
+        <div class="tag" style="margin-bottom:8px">场景 3 · 命令面板 / 设置浮层 <span style="color:var(--t3)">(OverlayOpen)</span></div>
+        <div class="scn" style="height:188px">
+          <div class="pane" style="left:14px; right:14px; top:16px; bottom:16px; opacity:.5"></div>
+          <div class="scrim"></div>
+          <div class="floatm" style="left:140px; right:140px; top:34px; height:84px">
+            <div style="padding:8px 12px; font:11px var(--mono); color:var(--t0); border-bottom:1px solid var(--h1)">❯ <span style="color:var(--ph)">ssh</span></div>
+            <div style="padding:8px 12px; font:10px var(--mono); color:var(--t2)">prod-01 · staging · 宠物设置…</div>
+          </div>
+          <!-- 岗台 + 探头 + 光点升起 -->
+          <div class="shelfm" style="left:150px; width:120px; bottom:30px"></div>
+          <div class="clipbox" style="left:152px; bottom:31px; width:46px; height:24px">
+            <img class="pdog" src="../../docs/宠物/原型/01-westie.svg" width="42" height="36" style="position:absolute; left:0; top:0"/>
+          </div>
+          <div class="dot" style="left:196px; bottom:54px"></div>
+          <div class="dot dim" style="left:200px; bottom:78px"></div>
+          <div class="dot dim" style="left:204px; bottom:100px"></div>
+          <div class="flabel" style="left:150px; bottom:14px">岗台探头 · <b>不进入浮层</b></div>
+        </div>
+        <div class="note" style="margin-top:8px">完整:宠物从岗台后探头,一个光点升起成浮层;<b>宠物不进入浮层</b>。短版:浮层边缘微亮,宠物不动。浮层需要抢占键盘焦点时禁止共演,由正式 UI 处理。</div>
+      </div>
+
+      <!-- 场景 4:分屏裂缝小跑 -->
+      <div>
+        <div class="tag" style="margin-bottom:8px">场景 4 · 分屏 <span style="color:var(--t3)">(SplitCreate)</span></div>
+        <div class="scn" style="height:188px">
+          <div class="pane" style="left:14px; top:16px; width:300px; bottom:16px"></div>
+          <div class="pane" style="left:330px; right:14px; top:16px; bottom:16px"></div>
+          <!-- 发光分隔线 -->
+          <div class="crack" style="left:322px; top:16px; bottom:16px"></div>
+          <div style="position:absolute; left:30px; top:30px; font:10px var(--mono); color:var(--t3)">pane A</div>
+          <div style="position:absolute; left:346px; top:30px; font:10px var(--mono); color:var(--t3)">pane B(新)</div>
+          <!-- 宠物沿分隔线小跑 -->
+          <img class="pdog" src="../../docs/宠物/原型/01-westie.svg" width="38" height="33" style="position:absolute; left:303px; top:64px"/>
+          <div class="dot dim" style="left:322px; top:40px"></div>
+          <div class="dot dim" style="left:322px; top:130px"></div>
+          <div class="flabel" style="left:250px; bottom:8px">沿新分隔线小跑一小段,<b>新 pane 像被划开</b></div>
+        </div>
+        <div class="note" style="margin-top:8px">完整:宠物沿新分隔线小跑一小段,分隔线短暂发光。短版:分隔线光点扫过。另:欢迎页进入工作区(2×→1× 换岗)、SSH/远端重连(从 pane 边缘带回光点)同属此族,不再单独出图。</div>
+      </div>
+
+    </div>
+
+    <div class="tag ph" style="margin:24px 0 10px">J3 · 视觉纪律 + J4 · 节律降级</div>
+    <div class="row2" style="display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap">
+      <div class="note" style="flex:1; min-width:420px; margin-top:0">
+        <b>视觉纪律(J3)</b><br/>
+        · 魔法只由 <b>磷光线 · 裂缝 · 光点 · 残影</b> 组成;<span style="color:var(--err)">禁烟雾 / 粒子风暴 / 大面渐变 / 柔光雾 / 全屏遮罩</span>。<br/>
+        · 通道必须依附真实 UI 接缝(岗台线/召唤线/QuickLook 边缘/pane 分隔线/浮层出现点);禁止屏幕中央凭空开洞。<br/>
+        · 宠物仍是像素小狗:不长翅膀、不变形、不变光团;消失/出现靠遮挡、位移、裂缝。<br/>
+        · 颜色只用 ph / ph-dim / h2;亮度峰值 ≤ 幽灵终端顶缘,不压过正式焦点。<br/>
+        · 完整共演只给标志性入口;普通面板开关、菜单 hover、状态更新不使用通道语法。
+      </div>
+      <table class="spec" style="flex:1; min-width:420px; margin-top:0">
+        <caption>J4 · 节律与降级</caption>
+        <tr><th>模式</th><th>条件</th><th>规则</th></tr>
+        <tr><td class="k">完整共演</td><td>首次/间隔 ≥30s/标志场景</td><td>700–1200ms,UI 立即或 80–160ms 预备后响应</td></tr>
+        <tr><td class="k">短版共演</td><td>10–30s 内重复开关</td><td>只保留光点/探头/换岗,≤350ms</td></tr>
+        <tr><td class="k">静默换岗</td><td>快速切换/reduced motion/全屏/alt-screen/IME 组合/选区拖拽</td><td>不钻洞不跳跃,直接切锚点或保持原位</td></tr>
+        <tr><td class="k">禁止共演</td><td>UI 打开失败/权限确认/复制选择中/浮层抢键盘焦点</td><td>宠物不解释错误,由正式 UI 处理</td></tr>
+      </table>
+    </div>
+
+    <table class="spec" style="margin-top:18px">
+      <caption>J5 · 实现模型 — PetSpatialCue(不是上下文状态,而是一次 UI 转场提示;由 UI 控制层显式发事件,不读终端内容)</caption>
+      <tr><th>Cue</th><th>来源</th><th>默认演出</th></tr>
+      <tr><td class="k">GhostEnter / GhostExit</td><td>幽灵终端显示 / 隐藏</td><td>主岗台开门 → 屏顶穿梭 → 幽灵窗探头 / 缩回 → 主岗台召回</td></tr>
+      <tr><td class="k">QuickLookOpen / Close / Switch</td><td>Quick Look 打开 / 关闭 / 切换条目</td><td>叼光点 → 面板展开 / 拉光点 → 收束 / 嗅光点换向</td></tr>
+      <tr><td class="k">OverlayOpen</td><td>命令面板 / 设置 / 确认件浮层打开</td><td>岗台探头 + 光点升起(宠物不进入浮层)</td></tr>
+      <tr><td class="k">SplitCreate</td><td>新分屏出现</td><td>沿分隔线小跑</td></tr>
+      <tr><td class="k">WelcomeToWorkspace</td><td>欢迎页进入工作区</td><td>2× 宠物跃入地面裂缝 → 1× 岗台探头</td></tr>
+      <tr><td class="k">RemoteReconnect</td><td>SSH / 远端重连成功</td><td>从远端 pane 边缘带光点回来</td></tr>
+    </table>
+    <div class="note" style="margin-top:12px">▸ <b>待审核(板 H)</b>:四个关键转场的完整共演时序(开门蓄力帧 / 穿梭遮挡裁切 / 召回收束方向)。<b>硬约束</b>:宠物动画不得阻塞 UI —— 窗口/面板完成打开即直接跳收尾状态;同一时刻只允许一个 PetSpatialCue,新 cue 到来旧 cue 收尾或取消(<b>不做宠物分身</b>);事件只含 cue 类型/源锚点/目标锚点/是否高频降级,不携带文件内容、命令输出或路径。reduced motion 下改为静态换岗 + 1px 磷光点闪烁,屏幕阅读器不朗读通道演出。</div>
+  </div>
+</div>
+
+<!-- ══════════ SPEC · 治理层(词表 / 优先级 / 预算 / 反规则 / 分期) ══════════ -->
+<div class="board" id="board-spec">
+  <div class="board-cap"><span class="idx">SPEC</span><span class="t">治理层 · 所有规则共同遵守的硬约束</span><span class="d">文案词表 · 事件优先级总表 · 节律预算 · 反规则 · 实现分期</span></div>
+  <div class="board-body">
+    <div class="row2" style="display:flex; gap:28px; align-items:flex-start; flex-wrap:wrap">
+      <table class="spec" style="flex:1; min-width:420px; margin-top:0">
+        <caption>文案词表(气泡全集,≤6 字铁律 · 词表封闭)</caption>
+        <tr><th>场景</th><th>词</th></tr>
+        <tr><td class="k">清晨 / 白天见面</td><td>「早!」 /「来啦!」</td></tr>
+        <tr><td class="k">傍晚 / 深夜见面</td><td>「晚上好」 /「夜深了…」+ 哈欠帧</td></tr>
+        <tr><td class="k">里程碑</td><td>「第 7 天!」「第 30 天!」「100 天啦!」「一周年!」</td></tr>
+        <tr><td class="k">单击 / Play</td><td>按品种口癖(规则 D)</td></tr>
+        <tr><td class="k">翻盘 / 连败陪伴</td><td>「!」 /「呜…」(仅一次)</td></tr>
+        <tr><td class="k">投喂 / 摸头 / 叫名字</td><td>(无字 — 动作就是回应)</td></tr>
+        <tr><td class="k">玩具 / 磷光通道</td><td>(无字 — 叼回 / 开门·穿梭·召回)</td></tr>
+      </table>
+      <table class="spec" style="flex:1; min-width:420px; margin-top:0">
+        <caption>事件优先级总表(先裁决,再进具体规则)</caption>
+        <tr><th>级</th><th>事件 / 状态</th><th>处理</th></tr>
+        <tr><td class="k">1</td><td>Drag / 拖拽换窝</td><td>立即接管位置;结束后触发换窝安顿</td></tr>
+        <tr><td class="k">2</td><td>摸头 / 投喂 / 叫名字 / Play</td><td>规则 G/B;可覆盖 idle / 共情 / 共演收尾</td></tr>
+        <tr><td class="k">3</td><td>PetSpatialCue</td><td>规则 J;同一时刻一个 cue,高频降级</td></tr>
+        <tr><td class="k">4</td><td>Error/Success/Running/Typing</td><td>v1 状态机 + 规则 E;不扫描输出</td></tr>
+        <tr><td class="k">5</td><td>Hover / Sleep / Idle</td><td>基础姿态 / 活物引擎 / 打盹</td></tr>
+        <tr><td class="k">6</td><td>idle 微动作</td><td>仅无输入/无运行/无浮层/无 cue 时</td></tr>
+      </table>
+    </div>
+
+    <div class="tag" style="margin:22px 0 10px">节律与打扰预算(硬约束)</div>
+    <div class="note" style="margin-top:0">
+      · 主动演出(非用户触发):<b>微动作 ≤2 次/分钟 · 庆祝 ≤2 次/10 分钟 · 气泡 ≤4 条/小时</b>。<br/>
+      · 用户主动互动不占预算,但同类 2s 内合并;叫名字冷却 10s;久别亲近每天最多 1 次。<br/>
+      · 空间共演:完整 ≥30s 间隔,10–30s 内重复降短版,10s 内连续操作静默换岗。<br/>
+      · Typing / Running / 浮层 / alt-screen / 全屏专注 → 暂停一切主动演出(上下文姿态除外);主窗失焦 → 打盹倒计时 ×2;所有气泡 2s 自散、不可叠加(新顶旧)。
+    </div>
+
+    <div class="tag errc" style="margin:22px 0 10px; color:var(--err)">不采用(反规则 — 比规则更重要)</div>
+    <div class="note" style="margin-top:0; color:var(--t1)">
+      <span style="color:var(--err)">✕</span> 饥饿/心情/健康值 ·
+      <span style="color:var(--err)">✕</span> 等级/经验条/成就/图鉴/商城(<b>升级解锁品种已正式否决</b>) ·
+      <span style="color:var(--err)">✕</span> 玩具「买」(只可「挑」:无货币/稀有度/消耗) ·
+      <span style="color:var(--err)">✕</span> 随机刷新常驻入口 ·
+      <span style="color:var(--err)">✕</span> 推送/通知/红点 ·
+      <span style="color:var(--err)">✕</span> 失去与告别戏码 ·
+      <span style="color:var(--err)">✕</span> 长对话/错误详情/用量/权限 ·
+      <span style="color:var(--err)">✕</span> 品种间数值差异 ·
+      <span style="color:var(--err)">✕</span> 行为画像(不推断效率/情绪/作息) ·
+      <span style="color:var(--err)">✕</span> 隐藏亲密度分数/好感度/streak ·
+      <span style="color:var(--err)">✕</span> 把记忆变成提醒 ·
+      <span style="color:var(--err)">✕</span> 泛魔法动效(磷光通道只属标志性转场) ·
+      <span style="color:var(--err)">✕</span> 宠物分身 ·
+      <span style="color:var(--err)">✕</span> 让宠物解释 UI 失败。
+    </div>
+
+    <table class="spec" style="margin-top:22px">
+      <caption>实现分期(v2.3 修订)</caption>
+      <tr><th>期</th><th>内容</th><th>前置</th></tr>
+      <tr><td class="k">P1</td><td>性格参数表(D)+ 活物引擎(C)+ 打扰预算骨架 + 既有互动补三帧</td><td>无新网格,既有变换词汇可达</td></tr>
+      <tr><td class="k">P2</td><td>领养仪式与命名(0)+ 每日见面(A)+ 羁绊档案(F)+ 共情庆祝(E)</td><td>领养卡 + 哈欠帧 → 板 F 审核稿</td></tr>
+      <tr><td class="k">P3</td><td>小饼干投喂(B:抛接/咀嚼帧)</td><td>板 F 接物/咀嚼 2 帧</td></tr>
+      <tr><td class="k">P4</td><td>主动互动与互动记忆(G/H/I):摸头/叫名/安顿/玩具/偏好记忆/菜单透明与重置</td><td>玩具三件与叼回收尾 → 板 G 审核稿</td></tr>
+      <tr><td class="k">P5</td><td>磷光通道(J):PetSpatialCue + 幽灵进出 + QuickLook 光点 + 浮层/分屏/欢迎页/远端换岗</td><td>板 H 审核稿;UI 本体不得等待宠物动画</td></tr>
+      <tr><td class="k">远期</td><td>串门偶遇(行走帧)、节日皮肤、岗台季节小物</td><td>各自单独审核稿</td></tr>
+    </table>
   </div>
 </div>
 
 <script>
 // 审核稿像素渲染器:与 crates/tn-ui/src/pet.rs 同一份西高地网格(14×9)+ 同参数
-// 逐格展开为 div(= GPUI quad 的纸上等价)。仅本板使用,非 UI 运行时依赖。
+// 逐格展开为 div(= GPUI quad 的纸上等价)。仅本图纸使用,非 UI 运行时依赖。
 (function(){
   // 站姿(= pet.rs WESTIE.rows)
   const STAND = [
@@ -518,8 +894,7 @@
     "....WW..WW....",
   ];
   const STAND_EYES = [[5,4],[8,4]], STAND_EARS = [[4,0],[9,0]], STAND_TAIL = [[11,6]];
-  // 趴姿(审核稿新增,姿态变形而非位移):腿收起、肚皮贴地(底行=岗台)、
-  // 身高 9→7 行、身长 +2 格、头压低;每品种后续各补一张同规格趴姿网格。
+  // 趴姿(姿态变形而非位移):腿收起、肚皮贴地(底行=岗台)、身高 9→7 行、身长 +2 格、头压低。
   const LIE = [
     "..............",
     "..............",
@@ -538,8 +913,10 @@
   const SHELF_Y = TOP + 9*C;             // 岗台线(站姿脚底 / 趴姿肚皮)
 
   function draw(id, o){
+    o = o || {};
     const el = document.getElementById(id); if(!el) return;
     el.style.cssText = "position:relative;width:"+(16*C+PADX*2)+"px;height:"+(SHELF_Y+10)+"px";
+    if(o.flip) el.style.transform = "scaleX(-1)";   // 追尾转圈 = 整身镜像(零新网格)
     const clipY = o.clip ? SHELF_Y : Infinity; // 冒出:岗台线以下裁切
     const put=(x,y,w,h,c)=>{
       if(y >= clipY) return;
@@ -550,12 +927,14 @@
     const rows = o.rows||STAND, eyes = o.eyes||STAND_EYES,
           ears = o.ears||STAND_EARS, tail = o.tail||STAND_TAIL;
     const dy = o.dy||0, dxAll = o.dxAll||0;
+    const headDx = o.headDx||0, headDy = o.headDy||0;  // 头部(行≤5):望屏外/舔爪/伸懒腰
     rows.forEach((row,ry)=>{ [...row].forEach((ch,rx)=>{
       const col = PAL[ch]; if(!col) return;
       let x=rx*C+dxAll, y=TOP+ry*C+dy, hh=C;
-      // 吸气:上半身(行≤6)上移 1px,行 7 拉高 1px 补缝(肚皮行不动,无裂缝
-      // —— 与 pet.rs 同参数)。
+      // 吸气:上半身(行≤6)上移 1px,行 7 拉高 1px 补缝(与 pet.rs 同参数)。
       if(o.inhale){ if(ry<=6){ y-=1; } else if(ry==7){ y-=1; hh=C+1; } }
+      if(ry<=5){ x+=headDx; y+=headDy; }              // 头部整体偏移
+      if(ry==8){ y += o.legDy||0; }                   // 腿行(抓痒/起跳)
       if(ears.some(e=>e[0]==rx&&e[1]==ry)) y += o.earDy||0;
       if(tail.some(t=>t[0]==rx&&t[1]==ry)) y += o.tailDy||0;
       if(eyes.some(e=>e[0]==rx&&e[1]==ry)){
@@ -579,61 +958,98 @@
     if(o.cheek=="R") put(11*C-1+dxAll, TOP+4*C+dy, 5, 7, FUR);
     (o.extra||[]).forEach(e=>put(e[0],e[1],e[2],e[3],e[4]));
     // 岗台线(1px h1 + 左 ph-dim 点睛)— 永远画在固定位,宠物相对它动。
-    const s=document.createElement("i");
-    s.style.cssText="position:absolute;left:0;right:0;top:"+SHELF_Y+"px;height:1px;background:rgba(255,255,255,.09)";
-    el.appendChild(s);
-    const p=document.createElement("i");
-    p.style.cssText="position:absolute;left:0;width:22px;top:"+SHELF_Y+"px;height:1px;background:rgba(91,231,196,.32)";
-    el.appendChild(p);
+    if(!o.noShelf){
+      const s=document.createElement("i");
+      s.style.cssText="position:absolute;left:0;right:0;top:"+SHELF_Y+"px;height:1px;background:rgba(255,255,255,.09)";
+      el.appendChild(s);
+      const p=document.createElement("i");
+      p.style.cssText="position:absolute;left:0;width:22px;top:"+SHELF_Y+"px;height:1px;background:rgba(91,231,196,.32)";
+      el.appendChild(p);
+    }
   }
 
+  // 玩具(非磷光 — 生命色只给活物;玩具是布置):球/骨头/小毯子。
+  const RUBBER = "#C77B7B", BONEC = "#E8E1C8", BLKT = "#5A6B8C", BLKT2 = "#46566F";
+  const ball = (x,y)=>[[x+1,y,3,1,RUBBER],[x,y+1,5,3,RUBBER],[x+1,y+4,3,1,RUBBER],[x+1,y+1,1,1,"#E0A0A0"]];
+  const bone = (x,y)=>[[x,y,2,2,BONEC],[x,y+4,2,2,BONEC],[x+2,y+1,1,4,BONEC],[x+9,y,2,2,BONEC],[x+9,y+4,2,2,BONEC],[x+7,y+1,1,4,BONEC],[x+3,y+2,4,2,BONEC]];
+  const blanket = (x,y)=>[[x,y,30,2,BLKT],[x,y+2,30,4,BLKT2],[x+2,y+1,26,1,BLKT]];
+
+  // ── 板 D · 状态机 ──
+  draw("pose-idle",    {});
+  draw("pose-typing",  { earDy:-2 });
+  draw("pose-running", { dxAll:2, legDy:-1 });
+  draw("pose-success", { dy:-3, extra:[[9*C+2, TOP-6, 4,4, HEART]] });
+  draw("pose-err",     { eye:"sad", earDy:3 });
+  // ── 板 D · 活物引擎 idle 微动作池 ──
+  draw("pose-c-scratch", { legDy:-3, extra:[[3*C, TOP+7*C-3, 3,5, FUR]] });   // 后腿上抬
+  draw("pose-c-lick",    { headDy:3, extra:[[5*C, TOP+8*C-4, 3,4, FUR]] });   // 头低 + 前爪抬
+  draw("pose-c-spin",    { flip:true });                                       // 镜像 = 转身
+  draw("pose-c-ear",     { earDy:-3 });                                        // 双耳竖起
+  draw("pose-c-look",    { headDx:C });                                        // 头右移 1 格
+  draw("pose-c-stretch", { headDy:2, tailDy:-2, earDy:1 });                    // 前低后高
+
+  // ── 板 E · 姿态审核定稿 ──
   // ① 闭眼方案
   draw("pose-bug",      { eye:"hole" });
   draw("pose-squint-a", { eye:"slit" });
   draw("pose-squint-b", { eye:"arc" });
   draw("pose-error",    { eye:"sad", earDy:3 });
-  // ② 打盹:上一版只是下移(BUG 复现) vs 真·趴姿网格两帧
+  // ② 打盹
   draw("pose-sleep-bug",{ eye:"slit", dy:3, earDy:2 });
   draw("pose-sleep-1",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit",
     extra:[[11*C, TOP+3*C+2, 3,3, ZZ],[12*C+3, TOP+2*C-2, 4,4, ZZ]] });
   draw("pose-sleep-2",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit",
     inhale:true,
     extra:[[11*C, TOP+3*C+0, 3,3, ZZ],[12*C+3, TOP+2*C-5, 4,4, ZZ]] });
-  // ③ 探头:上一版位移(BUG 复现) vs 真·岗台线下裁切升起
+  // ③ 探头
   draw("pose-peek-bug", { dy:6 });
-  draw("pose-peek-1",   { dy:9*C,  clip:true });  // 整只在台下
-  draw("pose-peek-2",   { dy:6*C,  clip:true });  // 露耳尖+头顶(3 行)
-  draw("pose-peek-3",   { dy:3*C,  clip:true });  // 露到眼睛(6 行)
-  draw("pose-peek-4",   { dy:0,    clip:true });  // 落定
-  // ④ 玩耍(已认可定稿)
-  draw("pose-play-1",   { dy:-5, tailDy:-3,
-    extra:[[9*C+2, TOP-10-5, 5,5, HEART]] });
-  draw("pose-play-2",   { dy:-1, tailDy:3,
-    extra:[[11*C+2, TOP-13-1, 4,4, HEART]] });
+  draw("pose-peek-1",   { dy:9*C,  clip:true });
+  draw("pose-peek-2",   { dy:6*C,  clip:true });
+  draw("pose-peek-3",   { dy:3*C,  clip:true });
+  draw("pose-peek-4",   { dy:0,    clip:true });
+  // ④ 玩耍(定稿)
+  draw("pose-play-1",   { dy:-5, tailDy:-3, extra:[[9*C+2, TOP-10-5, 5,5, HEART]] });
+  draw("pose-play-2",   { dy:-1, tailDy:3,  extra:[[11*C+2, TOP-13-1, 4,4, HEART]] });
 
-  // ── 板 F · 陪伴版审核稿 ──
+  // ── 板 F · 陪伴循环审核稿 ──
   const COOKIE = "#C99052";
   const cookie = (x,y)=>[[x,y,4,4,COOKIE],[x+1,y+1,1,1,"#9A6A38"],[x+2,y+2,1,1,"#9A6A38"]];
+  // 入场池
+  draw("pose-f-ent1",  { dy:6*C, clip:true });
+  draw("pose-f-ent2",  { dxAll:7*C });
+  draw("pose-f-ent3",  { dy:-4*C, earDy:-2 });
+  draw("pose-f-ent4",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit", mouth:0.5, mouthRow:6 });
+  // 哈欠
   draw("pose-f-idle",  {});
   draw("pose-f-yawn",  { eye:"slit", mouth:0.7 });
   draw("pose-f-yawn2", { eye:"slit", mouth:0.3 });
+  // 投喂四帧
   draw("pose-f-feed1", { earDy:-2, extra:cookie(2*C, TOP-6) });
   draw("pose-f-feed2", { dy:-5, earDy:1, extra:cookie(6*C+4, TOP+5*C-8) });
   draw("pose-f-feed3", { cheek:"L" });
-  draw("pose-f-feed4", { cheek:"R", tailDy:-2,
-    extra:[[10*C, TOP-8, 5,5, HEART]] });
+  draw("pose-f-feed4", { cheek:"R", tailDy:-2, extra:[[10*C, TOP-8, 5,5, HEART]] });
+  // 工作共情
+  draw("pose-e-win3",  { dy:-4, tailDy:-2, extra:[[9*C+1, TOP-10, 4,4, HEART],[11*C, TOP-12, 4,4, HEART]] });
+  draw("pose-e-big",   { dy:-5, tailDy:-3, extra:[[8*C, TOP-11, 5,5, HEART],[11*C+1, TOP-13, 4,4, HEART]] });
+  draw("pose-e-commit",{ dy:-3, tailDy:-2, extra:[[10*C, TOP-7, 4,4, HEART]] });
+  draw("pose-e-lose",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"sad", earDy:2 });
+  // 三帧律
   draw("pose-f-jump1", { dy:1.5, earDy:1 });
   draw("pose-f-jump2", { dy:-4, earDy:1 });
   draw("pose-f-jump3", { dy:1, tailDy:-2 });
-  // ⑤ 入场方式池(四式)
-  draw("pose-f-ent1",  { dy:6*C, clip:true });           // 探头(既有,半露示意)
-  draw("pose-f-ent2",  { dxAll:7*C });                   // 小跑入场(右缘半入,gait 见注)
-  draw("pose-f-ent3",  { dy:-4*C, earDy:-2 });           // 天降(空中,耳朵上飘)
-  draw("pose-f-ent4",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL,
-    eye:"slit", mouth:0.5, mouthRow:6 });                // 睡醒(趴姿+哈欠)
+
+  // ── 板 G · 主动互动 + 玩具 ──
+  draw("pose-g-pat",     { eye:"slit", headDy:2, tailDy:-2, extra:[[10*C, TOP-7, 4,4, HEART]] });   // 摸头眯眼+爱心
+  draw("pose-g-call",    { earDy:-3, headDx:C, dxAll:2 });                                           // 竖耳抬头朝向
+  draw("pose-g-settle",  { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit", tailDy:-1 }); // 换窝坐好
+  draw("pose-g-miss",    { eye:"slit", tailDy:-2, extra:[[9*C, TOP-7, 4,4, HEART],[11*C+1, TOP-9, 4,4, HEART]] }); // 久别双心
+  draw("pose-g-ball",    { extra:ball(13*C, SHELF_Y-5) });
+  draw("pose-g-bone",    { extra:bone(11*C, SHELF_Y-6) });
+  draw("pose-g-blanket", { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit", extra:blanket(0, SHELF_Y-6) });
+  draw("pose-g-none",    {});
 })();
 </script>
 
-<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>06 浮层与启动器</b> — 命令面板 · 分屏启动器 · SSH 卡片 · 确认件。</div>
+<div class="note" style="max-width:1480px;margin:0 auto">▸ 下一页:<b>06 浮层与启动器</b> — 命令面板 · 分屏启动器 · SSH 卡片 · 确认件。磷光通道(板 H)的浮层升起/分屏裂缝转场,锚点即此页 UI 接缝。</div>
 </body>
 </html>
