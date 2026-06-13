@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-const MAX_RECENTS: usize = 12;
+const MAX_RECENTS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LocalDirFocus {
@@ -142,7 +142,42 @@ impl LocalDirPicker {
         }
     }
 
+    pub(crate) fn enter_focused_directory(&mut self) -> Option<PathBuf> {
+        if self.focus != LocalDirFocus::Directories {
+            return None;
+        }
+        let path = self.dirs.get(self.dir_sel)?.path.clone();
+        self.current = path.clone();
+        self.selected = path.clone();
+        Some(path)
+    }
+
+    pub(crate) fn go_focused_parent(&mut self) -> Option<PathBuf> {
+        (self.focus == LocalDirFocus::Directories)
+            .then(|| self.go_parent())
+            .flatten()
+    }
+
+    pub(crate) fn open_focused_for_navigation(&mut self) -> Option<LocalDirAction> {
+        match self.focus {
+            LocalDirFocus::Directories => self.enter_focused_directory().map(LocalDirAction::Open),
+            LocalDirFocus::Browse => Some(LocalDirAction::Browse),
+            LocalDirFocus::Recent => None,
+        }
+    }
+
     pub(crate) fn go_parent(&mut self) -> Option<PathBuf> {
+        if is_windows_virtual_root(&self.current) {
+            return None;
+        }
+        if is_windows_drive_root(&self.current) {
+            let root = windows_virtual_root();
+            self.current = root.clone();
+            self.selected = root.clone();
+            self.focus = LocalDirFocus::Directories;
+            self.dir_sel = 0;
+            return Some(root);
+        }
         let parent = self.current.parent()?.to_path_buf();
         self.current = parent.clone();
         self.selected = parent.clone();
@@ -150,7 +185,18 @@ impl LocalDirPicker {
     }
 
     pub(crate) fn launch_cwd(&self) -> PathBuf {
+        if is_windows_virtual_root(&self.selected) {
+            return first_local_drive_root().unwrap_or_else(|| self.selected.clone());
+        }
         self.selected.clone()
+    }
+
+    pub(crate) fn current_label(&self) -> String {
+        if is_windows_virtual_root(&self.current) {
+            "This PC".to_string()
+        } else {
+            self.current.display().to_string()
+        }
     }
 
     pub(crate) fn apply_dirs(&mut self, dirs: Vec<LocalDirEntry>) {
@@ -182,10 +228,12 @@ impl WorkdirRecents {
     }
 
     pub(crate) fn load() -> Self {
-        Self::path()
+        let mut recents = Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| serde_json::from_str::<WorkdirRecents>(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        recents.trim();
+        recents
     }
 
     pub(crate) fn save(&self) {
@@ -204,7 +252,14 @@ impl WorkdirRecents {
     }
 
     pub(crate) fn record(&mut self, path: PathBuf) {
-        let now = now_secs();
+        let next_tick = self
+            .entries
+            .iter()
+            .map(|e| e.last_used)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let now = now_secs().max(next_tick);
         if let Some(e) = self.entries.iter_mut().find(|e| same_path(&e.path, &path)) {
             e.last_used = now;
             e.source = RecentSource::Recent;
@@ -222,16 +277,8 @@ impl WorkdirRecents {
         self.trim();
     }
 
-    pub(crate) fn sorted_with_seed(&self, seed: Option<PathBuf>) -> Vec<RecentWorkdir> {
-        let mut out = Vec::new();
-        if let Some(path) = seed {
-            out.push(RecentWorkdir {
-                label: "Explorer root".into(),
-                path,
-                source: RecentSource::Explorer,
-                last_used: u64::MAX,
-            });
-        }
+    pub(crate) fn sorted_with_seed(&self, _seed: Option<PathBuf>) -> Vec<RecentWorkdir> {
+        let mut out: Vec<RecentWorkdir> = Vec::new();
         let mut entries = self.entries.clone();
         entries.sort_by(|a, b| b.last_used.cmp(&a.last_used));
         for e in entries {
@@ -252,11 +299,14 @@ impl WorkdirRecents {
     }
 }
 
-pub(crate) fn read_local_dirs(path: &std::path::Path) -> std::io::Result<Vec<LocalDirEntry>> {
-    let mut out = local_drive_entries();
+pub(crate) fn read_local_dirs(path: &Path) -> std::io::Result<Vec<LocalDirEntry>> {
+    if is_windows_virtual_root(path) {
+        return Ok(local_drive_entries());
+    }
+
+    let mut out = Vec::new();
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
-        Err(_) if !out.is_empty() => return Ok(out),
         Err(e) => return Err(e),
     };
     for entry in entries {
@@ -286,6 +336,38 @@ pub(crate) fn read_local_dirs(path: &std::path::Path) -> std::io::Result<Vec<Loc
             .cmp(&b.name.to_ascii_lowercase())
     });
     Ok(out)
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_virtual_root() -> PathBuf {
+    PathBuf::from(r"\\tn\windows-root")
+}
+
+#[cfg(not(windows))]
+pub(crate) fn windows_virtual_root() -> PathBuf {
+    PathBuf::from("/")
+}
+
+fn is_windows_virtual_root(path: &Path) -> bool {
+    cfg!(windows) && same_path(path, &windows_virtual_root())
+}
+
+fn first_local_drive_root() -> Option<PathBuf> {
+    local_drive_entries()
+        .first()
+        .map(|entry| entry.path.clone())
+}
+
+fn is_windows_drive_root(path: &Path) -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let mut components = path.components();
+    matches!(components.next(), Some(Component::Prefix(prefix)) if matches!(
+        prefix.kind(),
+        std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+    )) && matches!(components.next(), Some(Component::RootDir))
+        && components.next().is_none()
 }
 
 #[cfg(windows)]
@@ -459,6 +541,17 @@ mod tests {
         assert_eq!(picker.go_parent(), Some(PathBuf::from(r"D:\coder\Tn")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn parent_from_windows_drive_root_returns_to_virtual_root() {
+        let drive_root = existing_drive_root();
+        let mut picker = LocalDirPicker::new(0, "Codex", drive_root.clone(), Vec::new());
+
+        assert_eq!(picker.go_parent(), Some(windows_virtual_root()));
+        assert!(is_windows_virtual_root(&picker.current));
+        assert_eq!(picker.current_label(), "This PC");
+    }
+
     #[test]
     fn launch_cwd_tracks_the_highlighted_directory_without_entering_it() {
         let mut picker = LocalDirPicker::new(
@@ -490,7 +583,7 @@ mod tests {
     }
 
     #[test]
-    fn recents_are_upserted_sorted_and_seeded_with_explorer_root() {
+    fn recents_are_upserted_sorted_and_seed_does_not_render_as_recent() {
         let mut recents = WorkdirRecents::default();
         recents.record(PathBuf::from(r"D:\coder\Tn"));
         recents.record(PathBuf::from(r"D:\lab"));
@@ -498,9 +591,83 @@ mod tests {
 
         assert_eq!(recents.entries.len(), 2);
         let sorted = recents.sorted_with_seed(Some(PathBuf::from(r"D:\welcome")));
-        assert_eq!(sorted[0].source, RecentSource::Explorer);
-        assert_eq!(sorted[0].path, PathBuf::from(r"D:\welcome"));
-        assert_eq!(sorted.len(), 3);
+        assert_eq!(sorted.len(), 2);
+        assert_eq!(sorted[0].source, RecentSource::Recent);
+        assert_eq!(sorted[0].path, PathBuf::from(r"D:\coder\Tn"));
+        assert_eq!(sorted[1].path, PathBuf::from(r"D:\lab"));
+    }
+
+    #[test]
+    fn sorted_with_seed_uses_seed_only_as_initial_cwd_not_recent_row() {
+        let mut recents = WorkdirRecents::default();
+        recents.record(PathBuf::from(r"D:\coder\Tn"));
+
+        let sorted = recents.sorted_with_seed(Some(PathBuf::from(r"D:\welcome")));
+
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].source, RecentSource::Recent);
+        assert_eq!(sorted[0].path, PathBuf::from(r"D:\coder\Tn"));
+    }
+
+    #[test]
+    fn horizontal_navigation_only_applies_to_directory_focus() {
+        let mut picker = LocalDirPicker::new(
+            0,
+            "Codex",
+            PathBuf::from(r"D:\coder"),
+            vec![recent("Lab", r"D:\lab")],
+        );
+        picker.apply_dirs(vec![LocalDirEntry {
+            name: "Tn".into(),
+            path: PathBuf::from(r"D:\coder\Tn"),
+            is_git: true,
+            is_drive: false,
+        }]);
+
+        assert_eq!(picker.focus, LocalDirFocus::Recent);
+        assert_eq!(picker.open_focused_for_navigation(), None);
+        assert_eq!(picker.enter_focused_directory(), None);
+        assert_eq!(picker.go_focused_parent(), None);
+        assert_eq!(picker.current, PathBuf::from(r"D:\coder"));
+
+        picker.focus_next();
+        assert_eq!(
+            picker.open_focused_for_navigation(),
+            Some(LocalDirAction::Open(PathBuf::from(r"D:\coder\Tn")))
+        );
+        assert_eq!(picker.current, PathBuf::from(r"D:\coder\Tn"));
+        assert_eq!(picker.go_focused_parent(), Some(PathBuf::from(r"D:\coder")));
+    }
+
+    #[test]
+    fn right_navigation_preserves_browse_focus_action() {
+        let mut picker = LocalDirPicker::new(0, "Codex", PathBuf::from(r"D:\coder"), Vec::new());
+        picker.focus = LocalDirFocus::Browse;
+
+        assert_eq!(
+            picker.open_focused_for_navigation(),
+            Some(LocalDirAction::Browse)
+        );
+        assert_eq!(picker.current, PathBuf::from(r"D:\coder"));
+    }
+
+    #[test]
+    fn recents_keep_only_the_five_most_recent_paths() {
+        let mut recents = WorkdirRecents::default();
+        for i in 0..7 {
+            recents.record(PathBuf::from(format!(r"D:\work\project-{i}")));
+        }
+
+        assert_eq!(recents.entries.len(), 5);
+        let paths = recents
+            .sorted_with_seed(None)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect::<Vec<_>>();
+        assert_eq!(paths[0], PathBuf::from(r"D:\work\project-6"));
+        assert_eq!(paths[4], PathBuf::from(r"D:\work\project-2"));
+        assert!(!paths.contains(&PathBuf::from(r"D:\work\project-0")));
+        assert!(!paths.contains(&PathBuf::from(r"D:\work\project-1")));
     }
 
     #[test]
@@ -526,24 +693,28 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn read_local_dirs_includes_existing_windows_drive_roots_first() {
-        let base = std::env::temp_dir();
-        let dirs = read_local_dirs(&base).unwrap();
-        let expected = ('A'..='Z')
-            .map(|letter| PathBuf::from(format!("{letter}:\\")))
-            .find(|path| path.exists())
-            .expect("Windows must expose at least one drive root");
+    fn read_local_dirs_shows_drives_only_at_windows_virtual_root() {
+        let dirs = read_local_dirs(&windows_virtual_root()).unwrap();
+        let expected = existing_drive_root();
 
         assert_eq!(dirs.first().map(|d| d.path.clone()), Some(expected));
         assert!(dirs.first().is_some_and(|d| d.is_drive));
+        assert!(dirs.iter().all(|d| d.is_drive));
     }
 
     #[cfg(windows)]
     #[test]
-    fn read_local_dirs_keeps_drive_roots_when_current_path_is_missing() {
-        let missing = PathBuf::from(r"Z:\tn-definitely-missing-current-directory");
-        let dirs = read_local_dirs(&missing).unwrap();
+    fn read_local_dirs_does_not_mix_drives_into_normal_windows_directories() {
+        let dirs = read_local_dirs(&std::env::temp_dir()).unwrap();
 
-        assert!(dirs.iter().any(|d| d.is_drive));
+        assert!(dirs.iter().all(|d| !d.is_drive));
+    }
+
+    #[cfg(windows)]
+    fn existing_drive_root() -> PathBuf {
+        ('A'..='Z')
+            .map(|letter| PathBuf::from(format!("{letter}:\\")))
+            .find(|path| path.exists())
+            .expect("Windows must expose at least one drive root")
     }
 }

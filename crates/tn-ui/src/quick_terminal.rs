@@ -30,7 +30,8 @@ use gpui::{
 use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
 
 use crate::local_dir_picker::{
-    read_local_dirs, LocalDirAction, LocalDirFocus, LocalDirPicker, WorkdirRecents,
+    read_local_dirs, windows_virtual_root, LocalDirAction, LocalDirFocus, LocalDirPicker,
+    WorkdirRecents,
 };
 use crate::platform;
 use crate::ssh_recents::{AuthBadge, SshRecents};
@@ -49,6 +50,9 @@ const TRANSITION_MS: u64 = 190;
 /// Launcher card width in **logical** px: matches the 760px mockup card. Scaled to physical
 /// by the monitor DPI when sizing the window (see [`QuickTerminal::shown_for`]).
 const CARD_W: f32 = 760.0;
+const LOCAL_DIR_CARD_H: f32 = 500.0;
+const LOCAL_DIR_RECENTS_H: f32 = 158.0;
+const LOCAL_DIR_LIST_H: f32 = 176.0;
 
 pub struct QuickTerminal {
     config: Arc<Loaded>,
@@ -357,7 +361,7 @@ impl QuickTerminal {
             .first()
             .map(|r| r.path.clone())
             .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+            .unwrap_or_else(windows_virtual_root);
         let mut picker = LocalDirPicker::new(idx, profile.name.clone(), initial, recents);
         self.load_local_dir_picker_dirs(&mut picker);
         self.local_dir_picker = Some(picker);
@@ -426,6 +430,7 @@ impl QuickTerminal {
                                 picker.current = path.clone();
                                 picker.selected = path;
                                 picker.focus = LocalDirFocus::Directories;
+                                picker.dir_sel = 0;
                                 this.load_local_dir_picker_dirs(&mut picker);
                                 this.local_dir_picker = Some(picker);
                                 this.resnap(cx);
@@ -669,7 +674,7 @@ impl QuickTerminal {
                 if self
                     .local_dir_picker
                     .as_mut()
-                    .and_then(|picker| picker.go_parent())
+                    .and_then(LocalDirPicker::go_focused_parent)
                     .is_some()
                 {
                     self.refresh_local_dir_picker(cx);
@@ -679,7 +684,7 @@ impl QuickTerminal {
                 let action = self
                     .local_dir_picker
                     .as_mut()
-                    .and_then(LocalDirPicker::open_selected);
+                    .and_then(LocalDirPicker::open_focused_for_navigation);
                 match action {
                     Some(LocalDirAction::Open(_)) => self.refresh_local_dir_picker(cx),
                     Some(LocalDirAction::Browse) => self.browse_local_dir_picker(cx),
@@ -891,7 +896,7 @@ impl QuickTerminal {
             return 500.0;
         }
         if self.local_dir_picker.is_some() {
-            return 540.0;
+            return LOCAL_DIR_CARD_H;
         }
         // Sum each logical row's wrapped height (5 tiles per visual row, SHEET 04).
         let rows = self
@@ -1358,7 +1363,7 @@ impl QuickTerminal {
         let ui = &t.ui;
         let mono = SharedString::from(self.config.font().family.clone());
         let selected = picker.launch_cwd().display().to_string();
-        let current = picker.current.display().to_string();
+        let current = picker.current_label();
         let focused = picker.focus;
 
         let section_label = |label: &'static str, active: bool| {
@@ -1388,7 +1393,8 @@ impl QuickTerminal {
             div()
                 .flex()
                 .items_center()
-                .h(px(44.))
+                .h(px(LOCAL_DIR_RECENTS_H))
+                .overflow_hidden()
                 .px(px(11.))
                 .text_size(px(12.))
                 .text_color(gpui::rgb(crate::style::T2))
@@ -1468,10 +1474,15 @@ impl QuickTerminal {
                         ),
                 );
             }
-            list
+            list.h(px(LOCAL_DIR_RECENTS_H)).overflow_hidden()
         };
 
-        let mut dir_rows = div().flex().flex_col().gap(px(3.));
+        let mut dir_rows = div()
+            .h(px(LOCAL_DIR_LIST_H))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap(px(3.));
         if picker.dirs.is_empty() {
             dir_rows = dir_rows.child(
                 div()
@@ -1713,6 +1724,7 @@ impl QuickTerminal {
                     .flex()
                     .flex_col()
                     .gap(px(10.))
+                    .h(px(428.))
                     .child(
                         div()
                             .px(px(11.))

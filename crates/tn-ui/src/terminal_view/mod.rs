@@ -195,6 +195,12 @@ const COLS: usize = 110;
 const BODY_PAD_X: f32 = 15.0;
 const BODY_PAD_Y: f32 = 11.0;
 const ACTIVITY_RAIL_W: f32 = 212.0;
+/// Below this pane content width the activity rail (本次改动) is dropped so the agent
+/// body keeps a usable width instead of being squeezed to nothing / visually covered
+/// (窄面板自适应:正文为主,rail 为辅). The 248px rail shell plus a comfortable body
+/// minimum — anything narrower and the rail stops earning its space. Restores the
+/// instant the pane widens past it; see [`rail_layout_for_width`].
+const RAIL_MIN_PANE_W: f32 = 560.0;
 
 fn fit_grid_size_from_bounds(
     bounds_w: f32,
@@ -309,6 +315,19 @@ fn activity_rail_layout(
     }
 }
 
+/// 窄面板自适应折叠:drop the rail once the pane is too narrow to host it without
+/// crushing the agent body. `pane_w` is the *stable* pane content width (independent
+/// of whether the rail is currently shown), so this is a single hard threshold with
+/// no hysteresis dance — it only flips when the user actually drags across it, and
+/// restores automatically on widen.
+fn rail_layout_for_width(base: ActivityRailLayout, pane_w: f32) -> ActivityRailLayout {
+    if base != ActivityRailLayout::None && pane_w < RAIL_MIN_PANE_W {
+        ActivityRailLayout::None
+    } else {
+        base
+    }
+}
+
 fn body_region_container_layout(rail_layout: ActivityRailLayout) -> BodyRegionContainerLayout {
     match rail_layout {
         ActivityRailLayout::None => BodyRegionContainerLayout::Direct,
@@ -325,8 +344,8 @@ fn should_render_block_bar(agent_active: bool, alt_screen: bool) -> bool {
     !terminal_app_owns_viewport(agent_active, alt_screen)
 }
 
-fn scroll_wheel_drives_terminal_app(agent_active: bool, alt_screen: bool) -> bool {
-    terminal_app_owns_viewport(agent_active, alt_screen)
+fn scroll_wheel_drives_terminal_app(_agent_active: bool, alt_screen: bool) -> bool {
+    alt_screen
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -475,6 +494,12 @@ pub struct TerminalView {
     // Screen-space bounds of the text content, captured each paint by a canvas
     // so mouse handlers can map pixels -> cells and resize fits the pane.
     content_bounds: Rc<RefCell<Bounds<Pixels>>>,
+    // Screen-space width of the whole pane, captured each paint. Stable w.r.t. the
+    // activity rail's presence (the pane is full-width inside a flex-col, so showing
+    // or hiding the rail never changes it), so the rail's窄面板自适应折叠 can gate on
+    // it without oscillating frame-to-frame. Default `f32::MAX` = "unmeasured →
+    // keep the rail" so the first frame never flashes the body full-width.
+    pane_width: Rc<RefCell<f32>>,
     // Warp-style command blocks, built from the shell-integration bypass.
     blocks: Arc<Mutex<BlockModel>>,
     // The last CWD sent to the workspace/explorer tree (to filter redundant updates).
@@ -996,6 +1021,7 @@ impl TerminalView {
             line_height,
             title,
             content_bounds: Rc::new(RefCell::new(Bounds::default())),
+            pane_width: Rc::new(RefCell::new(f32::MAX)),
             blocks,
             last_cwd: None,
             palette,
@@ -2598,6 +2624,10 @@ impl Render for TerminalView {
             self.dup_last_cursor = (cur_row, cur_col);
         }
         let bounds_cell = self.content_bounds.clone();
+        // Stable pane-width probe (drives 窄面板自适应折叠 of the activity rail next
+        // frame). Captured on the pane outer below — full-width in the flex-col, so it
+        // never moves when the rail shows/hides.
+        let pane_width_cell = self.pane_width.clone();
         // Captured into the canvas paint closure to register the IME input handler
         // (text input / 中文 composition) for this frame — see the `EntityInputHandler`
         // impl + `handle_input` below.
@@ -2609,10 +2639,16 @@ impl Render for TerminalView {
         // handle to THIS pane to cycle usage_mode at event time, so pass a weak
         // ref (cheap; the pane outlives its own render).
         let header = self.render_pane_header(cx.entity().downgrade());
-        let rail_layout = activity_rail_layout(
-            self.agent.is_some(),
-            self.agent_from_shell,
-            self.agent_caps.git_diff,
+        // 窄面板自适应:正文(agent 主内容)永远优先。pane 太窄就收起活动栏,把整宽
+        // 让给正文,避免 248px rail 把正文挤到不可用 / 视觉上遮挡。门限基于上一帧测到的
+        // 稳定 pane 宽度(与 rail 是否显示无关 → 不抖动);拉宽后自动恢复并排。
+        let rail_layout = rail_layout_for_width(
+            activity_rail_layout(
+                self.agent.is_some(),
+                self.agent_from_shell,
+                self.agent_caps.git_diff,
+            ),
+            *self.pane_width.borrow(),
         );
 
         // Cursor (positioned over the grid, which starts at the term-area origin).
@@ -3020,6 +3056,7 @@ impl Render for TerminalView {
                     .flex()
                     .flex_col()
                     .w(px(460.)) // SHEET 06/07 SSH 卡:浮层家族 460 宽
+                    .max_w(relative(0.92))
                     .rounded(px(crate::style::R_PANEL))
                     .overflow_hidden()
                     .border_1()
@@ -3056,15 +3093,20 @@ impl Render for TerminalView {
                 .child(crate::style::icon(icon_name, 14., accent))
                 .child(
                     div()
+                        .flex_none()
                         .text_size(px(12.5))
                         .font_weight(FontWeight(600.))
                         .text_color(col(self.ui_fg))
                         .child(SharedString::from(title.to_string())),
                 )
-                .child(div().flex_1())
+                .child(div().flex_1().min_w(px(0.)))
                 .child(
                     // 右侧身份 chip(`.chip`):accent 边 + soft 底 + accent 字,mono 10
                     div()
+                        .max_w(px(250.))
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .px(px(8.))
                         .py(px(2.))
                         .rounded(px(crate::style::R_CHIP))
@@ -3092,22 +3134,11 @@ impl Render for TerminalView {
                 (tn_pty::SshPhase::Authenticating, "认证"),
                 (tn_pty::SshPhase::OpeningShell, "打开 shell"),
             ];
-            // SHEET 07 板 C `.steps`:横排三步 — dotn(18 圆:done ✓ ok 边 / busy ●
-            // 磷光填充 / pending ○) + label,步间 .stlink 连接线(左步已过 = ok·50)。
-            let mut steps_row = div().flex().flex_row().items_center();
-            for (idx, (p, label)) in steps.into_iter().enumerate() {
+            // B1 progress: three equal columns so long hosts never push the card
+            // wider than the SSH float panel.
+            let mut steps_row = div().flex().flex_row().items_start().gap(px(8.));
+            for (p, label) in steps {
                 let o = p.ordinal();
-                if idx > 0 {
-                    // .stlink:54×1 · h1;左侧步已完成 → 点亮 ok·50
-                    let lit = (idx - 1) < cur;
-                    steps_row = steps_row.child(div().w(px(54.)).h(px(1.)).mx(px(10.)).flex_none().bg(
-                        if lit {
-                            cola(self.ui_green, 0.5)
-                        } else {
-                            rgba(crate::style::H1)
-                        },
-                    ));
-                }
                 // .dotn:18×18 圆 · 1px 边 · mono 10 字形
                 let dotn = div()
                     .w(px(18.))
@@ -3140,20 +3171,37 @@ impl Render for TerminalView {
                 let detail_owned = detail.clone();
                 steps_row = steps_row.child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.))
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(8.))
+                        .flex_col()
+                        .gap(px(5.))
                         .font_family(self.font_family.clone())
                         .text_size(px(11.))
                         .text_color(col(label_color))
-                        .child(dotn)
-                        .child(SharedString::from(label.to_string()))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(7.))
+                                .child(dotn)
+                                .child(
+                                    div()
+                                        .min_w(px(0.))
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .child(SharedString::from(label.to_string())),
+                                ),
+                        )
                         .when(o == cur && !detail_owned.is_empty(), |d| {
                             d.child(
                                 div()
+                                    .min_w(px(0.))
+                                    .overflow_hidden()
+                                    .text_ellipsis()
                                     .text_color(col(self.ui_muted))
-                                    .child(SharedString::from(format!("· {detail_owned}"))),
+                                    .child(SharedString::from(detail_owned)),
                             )
                         }),
                 );
@@ -3170,8 +3218,10 @@ impl Render for TerminalView {
                         .font_family(self.font_family.clone())
                         .text_size(px(10.))
                         .text_color(gpui::rgb(crate::style::T2))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .child(SharedString::from(
-                            "id_ed25519 → agent → password 顺序尝试;密码框支持显隐 / 记住本会话 / 重试",
+                            "id_ed25519 → agent → password; 密码框支持显隐 / 记住本会话 / 重试",
                         )),
                 );
             let cancel = div()
@@ -3223,17 +3273,37 @@ impl Render for TerminalView {
             .flatten()
             .map(|info| {
                 let is_auth = info.kind == tn_pty::SshErrorKind::Auth;
-                let title = if is_auth { "认证失败" } else { "主机密钥已更改" };
-                let body_text = if is_auth {
-                    if info.offered.is_empty() || info.offered == "(未知)" {
-                        "密钥被拒或密码错误。".to_string()
-                    } else {
-                        format!("密钥被拒或密码错误。服务器开放的方式:{}。", info.offered)
+                let can_retry = matches!(
+                    info.kind,
+                    tn_pty::SshErrorKind::Network | tn_pty::SshErrorKind::Auth
+                );
+                let title = match info.kind {
+                    tn_pty::SshErrorKind::Network => "连接失败",
+                    tn_pty::SshErrorKind::Auth => "认证失败",
+                    tn_pty::SshErrorKind::HostKeyMismatch => "主机密钥已更改",
+                };
+                let body_text = match info.kind {
+                    tn_pty::SshErrorKind::Network => {
+                        if info.detail.is_empty() {
+                            "无法连接到目标主机,已停止自动重试。".to_string()
+                        } else {
+                            info.detail.clone()
+                        }
                     }
-                } else if info.detail.is_empty() {
-                    "服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。".to_string()
-                } else {
-                    format!("服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。\n服务器本次指纹:{}", info.detail)
+                    tn_pty::SshErrorKind::Auth => {
+                        if info.offered.is_empty() || info.offered == "(未知)" {
+                            "密钥被拒或密码错误。".to_string()
+                        } else {
+                            format!("密钥被拒或密码错误。服务器开放的方式:{}。", info.offered)
+                        }
+                    }
+                    tn_pty::SshErrorKind::HostKeyMismatch => {
+                        if info.detail.is_empty() {
+                            "服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。".to_string()
+                        } else {
+                            format!("服务器指纹与 ~/.ssh/known_hosts 记录不符 —— 可能是服务器重装,也可能是中间人攻击。已中止连接。\n服务器本次指纹:{}", info.detail)
+                        }
+                    }
                 };
                 // Yellow hint box (auth only): the backend's server-config hint, or a generic one.
                 let hint = if is_auth {
@@ -3264,9 +3334,9 @@ impl Render for TerminalView {
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
                         cx.stop_propagation();
                         cx.emit(SshCloseRequested);
-                    }));
+                }));
                 let mut btnrow = div().flex().flex_row().gap(px(8.)).justify_end().p(px(11.));
-                if is_auth {
+                if can_retry {
                     btnrow = btnrow.child(retry);
                 }
                 btnrow = btnrow.child(close);
@@ -3274,7 +3344,12 @@ impl Render for TerminalView {
                     div()
                         .child(card_header("alert", self.ui_red, title, &self.ssh_target))
                         .child(
-                            div().px(px(14.)).pt(px(11.)).text_size(px(12.5)).text_color(col(self.ui_fg))
+                            div()
+                                .px(px(14.))
+                                .pt(px(11.))
+                                .text_size(px(12.5))
+                                .text_color(col(self.ui_fg))
+                                .overflow_hidden()
                                 .child(SharedString::from(body_text)),
                         )
                         .when_some(hint, |d, h| {
@@ -3569,6 +3644,9 @@ impl Render for TerminalView {
                 .child(
                     div()
                         .flex_1()
+                        .min_w(px(0.))
+                        .overflow_hidden()
+                        .text_ellipsis()
                         .text_size(px(11.5))
                         .text_color(col(self.ui_yellow))
                         .child(SharedString::from(msg)),
@@ -3703,10 +3781,24 @@ impl Render for TerminalView {
             .on_key_down(
                 cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_key(ev, window, cx)),
             )
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .overflow_hidden()
+            // Back-most, out-of-flow probe: records the pane's own width so next
+            // frame's rail gate (窄面板自适应折叠) reads a measurement that the rail
+            // itself can't perturb. No paint, no hit-testing — pure measurement.
+            .child(
+                canvas(
+                    move |bounds, _window, _cx| {
+                        *pane_width_cell.borrow_mut() = f32::from(bounds.size.width)
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .rounded(px(crate::style::R_PANEL - 1.)) // match the plate's inner radius
             .bg(rgba(0x00000000)) // 透明:终端默认底透出 render_node 的 L1 板面(磷光)
             .text_color(col(fg))
@@ -4070,14 +4162,14 @@ mod tests {
     }
 
     #[test]
-    fn agent_and_alt_screen_scroll_wheel_drives_terminal_app() {
+    fn agent_main_screen_scroll_wheel_uses_scrollback_alt_screen_drives_app() {
         assert!(
             !scroll_wheel_drives_terminal_app(false, false),
             "plain shell panes use the mouse wheel for terminal scrollback"
         );
         assert!(
-            scroll_wheel_drives_terminal_app(true, false),
-            "main-screen agent panes own their viewport even when they do not enter alt-screen"
+            !scroll_wheel_drives_terminal_app(true, false),
+            "main-screen agent panes must scroll terminal history, not send arrow keys into the agent input"
         );
         assert!(
             scroll_wheel_drives_terminal_app(false, true),
@@ -4137,6 +4229,21 @@ mod tests {
             BodyRegionContainerLayout::FlexRow,
             "launch-intent agents keep the side-by-side body/rail flex row"
         );
+    }
+
+    #[test]
+    fn rail_collapses_on_narrow_pane_and_restores() {
+        use ActivityRailLayout::*;
+        // Wide enough → keep whatever the base layout decided (并排 / overlay).
+        assert_eq!(rail_layout_for_width(Flex, RAIL_MIN_PANE_W + 1.0), Flex);
+        assert_eq!(rail_layout_for_width(Overlay, RAIL_MIN_PANE_W + 1.0), Overlay);
+        // Too narrow → drop the rail so the agent body keeps the full pane width.
+        assert_eq!(rail_layout_for_width(Flex, RAIL_MIN_PANE_W - 1.0), None);
+        assert_eq!(rail_layout_for_width(Overlay, RAIL_MIN_PANE_W - 1.0), None);
+        // Already railless stays railless regardless of width.
+        assert_eq!(rail_layout_for_width(None, 10.0), None);
+        // Unmeasured first frame (f32::MAX default) keeps the rail — no flash.
+        assert_eq!(rail_layout_for_width(Flex, f32::MAX), Flex);
     }
 
     #[test]

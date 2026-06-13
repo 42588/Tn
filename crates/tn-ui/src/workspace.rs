@@ -28,7 +28,8 @@ use crate::explorer::{
 };
 use crate::layout::{LayoutNode, LayoutPane, Layouts, SLOTS};
 use crate::local_dir_picker::{
-    read_local_dirs, LocalDirAction, LocalDirFocus, LocalDirPicker, WorkdirRecents,
+    read_local_dirs, windows_virtual_root, LocalDirAction, LocalDirFocus, LocalDirPicker,
+    WorkdirRecents,
 };
 use crate::perf::PerfStats;
 use crate::quick_look::{QuickLook, QuickLookEvent};
@@ -44,6 +45,10 @@ use tn_agent::AgentId;
 use tn_pty::remote_fs::{RemoteFileService, RemotePath, SftpFileService};
 
 pub(crate) type PaneId = u64;
+
+const AGENT_DIR_PANEL_H: f32 = 500.0;
+const AGENT_DIR_RECENTS_H: f32 = 158.0;
+const AGENT_DIR_LIST_H: f32 = 176.0;
 
 // 磷光 Phosphor tokens + helpers(col/cola/plate/float_panel/focus_brackets/icon)
 // live in `crate::style` — single source of truth(规范 docs/设计/磷光设计语言.md)。
@@ -425,6 +430,31 @@ fn workspace_overlay_freezes_pane_focus(
         || agent_form_open
         || remote_dir_picker_open
         || agent_dir_picker_open
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemoteDirKeyAction {
+    Cancel,
+    MoveUp,
+    MoveDown,
+    Parent,
+    EnterDirectory,
+    Confirm,
+    Reload,
+    Ignore,
+}
+
+fn remote_dir_key_action(key: &str, control: bool, platform: bool) -> RemoteDirKeyAction {
+    match key {
+        "escape" => RemoteDirKeyAction::Cancel,
+        "up" => RemoteDirKeyAction::MoveUp,
+        "down" => RemoteDirKeyAction::MoveDown,
+        "left" => RemoteDirKeyAction::Parent,
+        "right" => RemoteDirKeyAction::EnterDirectory,
+        "enter" => RemoteDirKeyAction::Confirm,
+        "r" if control || platform => RemoteDirKeyAction::Reload,
+        _ => RemoteDirKeyAction::Ignore,
+    }
 }
 
 /// A root at the filesystem root `/` for an SSH/WSL pane, used when the pane's
@@ -1388,7 +1418,7 @@ impl Workspace {
         let initial = seed
             .or_else(|| recents.first().map(|r| r.path.clone()))
             .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\"));
+            .unwrap_or_else(windows_virtual_root);
         let mut picker = LocalDirPicker::new(index, profile.name.clone(), initial, recents);
         self.load_agent_dir_picker_dirs(&mut picker);
         self.agent_dir_picker = Some(picker);
@@ -1452,6 +1482,7 @@ impl Workspace {
                             picker.current = path.clone();
                             picker.selected = path;
                             picker.focus = LocalDirFocus::Directories;
+                            picker.dir_sel = 0;
                             ws.load_agent_dir_picker_dirs(&mut picker);
                             ws.agent_dir_picker = Some(picker);
                             cx.notify();
@@ -1495,7 +1526,7 @@ impl Workspace {
                 if self
                     .agent_dir_picker
                     .as_mut()
-                    .and_then(|picker| picker.go_parent())
+                    .and_then(LocalDirPicker::go_focused_parent)
                     .is_some()
                 {
                     self.refresh_agent_dir_picker(cx);
@@ -1505,7 +1536,7 @@ impl Workspace {
                 let action = self
                     .agent_dir_picker
                     .as_mut()
-                    .and_then(LocalDirPicker::open_selected);
+                    .and_then(LocalDirPicker::open_focused_for_navigation);
                 match action {
                     Some(LocalDirAction::Open(_)) => self.refresh_agent_dir_picker(cx),
                     Some(LocalDirAction::Browse) => self.browse_agent_dir_picker(cx),
@@ -3103,9 +3134,13 @@ impl Workspace {
     ) {
         cx.stop_propagation();
         let key = ev.keystroke.key.as_str();
-        match key {
-            "escape" => self.cancel_remote_dir_picker(window, cx),
-            "up" => {
+        match remote_dir_key_action(
+            key,
+            ev.keystroke.modifiers.control,
+            ev.keystroke.modifiers.platform,
+        ) {
+            RemoteDirKeyAction::Cancel => self.cancel_remote_dir_picker(window, cx),
+            RemoteDirKeyAction::MoveUp => {
                 if let Some(picker) = self.remote_dir_picker.as_mut() {
                     picker.move_selection(-1);
                     let sel = picker.selected;
@@ -3114,7 +3149,7 @@ impl Workspace {
                     cx.notify();
                 }
             }
-            "down" => {
+            RemoteDirKeyAction::MoveDown => {
                 if let Some(picker) = self.remote_dir_picker.as_mut() {
                     picker.move_selection(1);
                     let sel = picker.selected;
@@ -3123,7 +3158,7 @@ impl Workspace {
                     cx.notify();
                 }
             }
-            "left" | "backspace" => {
+            RemoteDirKeyAction::Parent => {
                 if self
                     .remote_dir_picker
                     .as_mut()
@@ -3132,10 +3167,7 @@ impl Workspace {
                     self.load_remote_dir_picker(cx);
                 }
             }
-            "enter" if ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform => {
-                self.confirm_remote_dir_picker(cx);
-            }
-            "enter" | "right" => {
+            RemoteDirKeyAction::EnterDirectory => {
                 if self
                     .remote_dir_picker
                     .as_mut()
@@ -3144,10 +3176,9 @@ impl Workspace {
                     self.load_remote_dir_picker(cx);
                 }
             }
-            "r" if ev.keystroke.modifiers.control || ev.keystroke.modifiers.platform => {
-                self.load_remote_dir_picker(cx);
-            }
-            _ => {}
+            RemoteDirKeyAction::Confirm => self.confirm_remote_dir_picker(cx),
+            RemoteDirKeyAction::Reload => self.load_remote_dir_picker(cx),
+            RemoteDirKeyAction::Ignore => {}
         }
     }
 
@@ -3365,10 +3396,14 @@ impl Workspace {
                         .font_family(mono.clone())
                         .text_size(px(10.))
                         .text_color(rgb(T2))
-                        .child(crate::style::kbd("↵", mono.clone()))
-                        .child(div().child("进入"))
-                        .child(crate::style::kbd("⌫", mono.clone()))
+                        .child(crate::style::kbd("↑↓", mono.clone()))
+                        .child(div().child("选择"))
+                        .child(crate::style::kbd("←", mono.clone()))
                         .child(div().child("上级"))
+                        .child(crate::style::kbd("→", mono.clone()))
+                        .child(div().child("进入"))
+                        .child(crate::style::kbd("Enter", mono.clone()))
+                        .child(div().child("确认"))
                         .child(div().flex_1())
                         .child(crate::style::btn("取消").on_mouse_down(
                             MouseButton::Left,
@@ -3376,7 +3411,7 @@ impl Workspace {
                                 this.cancel_remote_dir_picker(w, cx);
                             }),
                         ))
-                        .child(crate::style::btn_primary("确认 (Ctrl+↵)").on_mouse_down(
+                        .child(crate::style::btn_primary("确认").on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this, _e, _w, cx| {
                                 this.confirm_remote_dir_picker(cx);
@@ -4268,7 +4303,7 @@ impl Workspace {
         let mono = SharedString::from(self.config.font().family.clone());
         let focused = picker.focus;
         let selected = picker.launch_cwd().display().to_string();
-        let current = picker.current.display().to_string();
+        let current = picker.current_label();
 
         let section_label = |label: &'static str, active: bool| {
             div()
@@ -4293,7 +4328,8 @@ impl Workspace {
             div()
                 .flex()
                 .items_center()
-                .h(px(44.))
+                .h(px(AGENT_DIR_RECENTS_H))
+                .overflow_hidden()
                 .px(px(11.))
                 .text_size(px(12.))
                 .text_color(rgb(T2))
@@ -4313,6 +4349,7 @@ impl Workspace {
                 let sub = item.path.display().to_string();
                 list = list.child(
                     div()
+                        .relative()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -4368,10 +4405,15 @@ impl Workspace {
                         ),
                 );
             }
-            list
+            list.h(px(AGENT_DIR_RECENTS_H)).overflow_hidden()
         };
 
-        let mut dir_rows = div().flex().flex_col().gap(px(3.));
+        let mut dir_rows = div()
+            .h(px(AGENT_DIR_LIST_H))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .gap(px(3.));
         if picker.dirs.is_empty() {
             dir_rows = dir_rows.child(
                 div()
@@ -4398,6 +4440,7 @@ impl Workspace {
                 let is_drive = item.is_drive;
                 dir_rows = dir_rows.child(
                     div()
+                        .relative()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -4518,6 +4561,7 @@ impl Workspace {
                 .flex()
                 .flex_col()
                 .w(px(680.))
+                .h(px(AGENT_DIR_PANEL_H))
                 .max_w(relative(0.92))
                 .rounded(px(R_PANEL))
                 .overflow_hidden()
@@ -4564,6 +4608,7 @@ impl Workspace {
                         .flex()
                         .flex_col()
                         .gap(px(10.))
+                        .h(px(428.))
                         .child(
                             div()
                                 .px(px(11.))
@@ -7821,6 +7866,30 @@ mod tests {
         assert!(!workspace_overlay_freezes_pane_focus(
             false, false, false, false, false, false, false, false
         ));
+    }
+
+    #[test]
+    fn remote_dir_picker_keymap_uses_arrows_for_navigation_and_enter_for_confirm() {
+        assert_eq!(
+            remote_dir_key_action("left", false, false),
+            RemoteDirKeyAction::Parent
+        );
+        assert_eq!(
+            remote_dir_key_action("right", false, false),
+            RemoteDirKeyAction::EnterDirectory
+        );
+        assert_eq!(
+            remote_dir_key_action("enter", false, false),
+            RemoteDirKeyAction::Confirm
+        );
+        assert_eq!(
+            remote_dir_key_action("enter", true, false),
+            RemoteDirKeyAction::Confirm
+        );
+        assert_eq!(
+            remote_dir_key_action("backspace", false, false),
+            RemoteDirKeyAction::Ignore
+        );
     }
 
     #[test]

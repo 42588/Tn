@@ -19,7 +19,8 @@
 清单:
 
 - [x] 增加 `LocalDirPicker`、`LocalDirFocus`、`LocalDirAction`、`WorkdirRecents` 和 `read_local_dirs`。
-- [x] 覆盖 `Tab` 焦点循环、当前区域 `↑↓` 移动、`←/→` 导航、最近目录排序/seed、git 目录标记、Windows 盘符入口、当前高亮目录启动 cwd。
+- [x] 覆盖 `Tab` 焦点循环、当前区域 `↑↓` 移动、`←/→` 导航、最近目录排序/seed、git 目录标记、Windows `This PC` 虚拟根盘符入口、当前高亮目录启动 cwd。
+- [x] 最近工作目录最多保留 5 条,连续记录时按单调 tick 保持最近顺序稳定。
 - [x] 增加 `LaunchSpec::with_cwd` 和回归测试。
 
 ## 任务 2:幽灵终端接入
@@ -34,6 +35,7 @@
 - [x] 拦截 Agent `PickerItem::Launch`,打开本地目录选择器而不是直接启动。
 - [x] 在目录选择器打开时路由 `Tab`、`↑↓`、`←`、`→`、`Enter` 和 `Esc`。
 - [x] 渲染 Ghost 卡片内工作目录面板,包含最近目录、子目录、系统目录选择器和启动按钮。
+- [x] 工作目录面板使用固定高度,列表只移动可见窗口,不随目录数量撑高 Ghost 窗口。
 - [x] 使用 `LaunchSpec::from_profile_ephemeral(...).with_cwd(...)` 启动 Agent,并记录最近目录。
 
 ## 任务 3:欢迎页 overlay 接入
@@ -47,6 +49,7 @@
 - [x] 拦截欢迎页 Agent `LaunchRequested`,打开 Workspace 级 `agent_dir_picker`。
 - [x] 以 Explorer 当前 Host root 作为最近目录 seed。
 - [x] 渲染临时 modal overlay,不移动欢迎页原布局。
+- [x] modal 使用固定高度,最近目录与当前目录列表不随条目数量撑高。
 - [x] 复用幽灵终端相同键位规则,并在导航 overlay 中关闭 IME。
 - [x] 使用 `LaunchSpec::from_profile(...).with_cwd(...)` 启动 Agent,并记录最近目录。
 
@@ -64,6 +67,7 @@
 
 - [x] `cargo fmt`
 - [x] `cargo test -p tn-ui local_dir_picker::tests`
+- [x] `cargo test -p tn-ui remote_dir_picker_keymap_uses_arrows_for_navigation_and_enter_for_confirm`
 - [x] `cargo test -p tn-ui with_cwd_sets_spawn_directory`
 - [x] `cargo test -p tn-ui quick_look_open_counts_as_focus_freezing_overlay`
 - [x] `cargo test -p tn-ui --lib`

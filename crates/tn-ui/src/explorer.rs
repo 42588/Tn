@@ -985,8 +985,11 @@ impl ExplorerView {
                         let (tx, rx) = futures::channel::oneshot::channel();
                         std::thread::spawn(move || {
                             let service = SshCommandService::shared();
-                            let _ =
-                                tx.send(Self::compute_remote_git_status(&*service, &cfg, &remote_path));
+                            let _ = tx.send(Self::compute_remote_git_status(
+                                &*service,
+                                &cfg,
+                                &remote_path,
+                            ));
                         });
                         rx.await.unwrap_or_default()
                     })

@@ -45,6 +45,12 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use crate::{Killer, PtyBackend, PtySize};
 
+const MAX_INITIAL_CONNECT_RETRIES: u32 = 3;
+
+fn should_retry_initial_connect(attempt: u32, connected_once: bool) -> bool {
+    connected_once || attempt <= MAX_INITIAL_CONNECT_RETRIES
+}
+
 /// Where + how to connect. Built from a `tn_config` SSH profile (host/user) in
 /// the UI layer; `port` defaults to 22, the key is auto-discovered under
 /// `~/.ssh` unless given explicitly.
@@ -421,8 +427,14 @@ async fn run_session(
     // status messages so the buffer stays frozen at the last session's output.
     // All status is still shown via PtyEvent overlays (B1/B4 cards).
     let mut connected_once = false;
+    let mut connect_attempt = 0u32;
 
     loop {
+        connect_attempt = if connected_once {
+            1
+        } else {
+            connect_attempt.saturating_add(1)
+        };
         let key_rejected = Arc::new(AtomicBool::new(false));
         let handler = ClientHandler {
             host: cfg.host.clone(),
@@ -468,8 +480,32 @@ async fn run_session(
                     // danger card, or a quiet TOFU rejection) — just stop.
                     return Err(anyhow!("host key rejected"));
                 }
+                let err = anyhow!(e);
+                if !should_retry_initial_connect(connect_attempt, connected_once) {
+                    let msg = format!(
+                        "\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {} (已重试 {} 次)\r\n",
+                        err, MAX_INITIAL_CONNECT_RETRIES
+                    );
+                    let _ = in_tx.send(msg.into_bytes());
+                    emit_event(
+                        &event_tx,
+                        &waker,
+                        crate::PtyEvent::SshFailed {
+                            kind: crate::SshErrorKind::Network,
+                            offered: String::new(),
+                            detail: format!(
+                                "连接失败,已重试 {} 次: {}",
+                                MAX_INITIAL_CONNECT_RETRIES, err
+                            ),
+                        },
+                    );
+                    return Err(err);
+                }
                 if !connected_once {
-                    let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", e);
+                    let msg = format!(
+                        "\r\n\x1b[31m[SSH]\x1b[0m 连接失败: {}\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... ({}/{}, Ctrl+D 取消)\r\n",
+                        err, connect_attempt, MAX_INITIAL_CONNECT_RETRIES
+                    );
                     let _ = in_tx.send(msg.into_bytes());
                 }
                 tokio::select! {
@@ -478,8 +514,32 @@ async fn run_session(
                 }
             }
             Err(_) => {
+                let err = anyhow!("connection timeout ({}:{}, 15s)", cfg.host, cfg.port);
+                if !should_retry_initial_connect(connect_attempt, connected_once) {
+                    let msg = format!(
+                        "\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s, 已重试 {} 次)\r\n",
+                        cfg.host, cfg.port, MAX_INITIAL_CONNECT_RETRIES
+                    );
+                    let _ = in_tx.send(msg.into_bytes());
+                    emit_event(
+                        &event_tx,
+                        &waker,
+                        crate::PtyEvent::SshFailed {
+                            kind: crate::SshErrorKind::Network,
+                            offered: String::new(),
+                            detail: format!(
+                                "连接超时,已重试 {} 次: {}:{}",
+                                MAX_INITIAL_CONNECT_RETRIES, cfg.host, cfg.port
+                            ),
+                        },
+                    );
+                    return Err(err);
+                }
                 if !connected_once {
-                    let msg = format!("\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s)\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... (Ctrl+D 取消)\r\n", cfg.host, cfg.port);
+                    let msg = format!(
+                        "\r\n\x1b[31m[SSH]\x1b[0m 连接超时 ({}:{}, 15s)\r\n\x1b[33m[SSH]\x1b[0m 正在 5 秒后重试... ({}/{}, Ctrl+D 取消)\r\n",
+                        cfg.host, cfg.port, connect_attempt, MAX_INITIAL_CONNECT_RETRIES
+                    );
                     let _ = in_tx.send(msg.into_bytes());
                 }
                 tokio::select! {
@@ -506,6 +566,7 @@ async fn run_session(
                     .to_vec(),
             );
         }
+        connect_attempt = 0;
         emit_event(
             &event_tx,
             &waker,
@@ -1315,6 +1376,15 @@ Host alma
     fn quiet_client_handler_disables_ui_host_key_prompt() {
         let handler = ClientHandler::quiet("example.com".into(), 22);
         assert!(!handler.allow_host_key_prompt);
+    }
+
+    #[test]
+    fn initial_connect_retry_stops_after_three_retries() {
+        assert!(should_retry_initial_connect(1, false));
+        assert!(should_retry_initial_connect(2, false));
+        assert!(should_retry_initial_connect(3, false));
+        assert!(!should_retry_initial_connect(4, false));
+        assert!(should_retry_initial_connect(30, true));
     }
 
     #[test]

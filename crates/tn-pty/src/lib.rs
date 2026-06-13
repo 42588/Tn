@@ -133,6 +133,8 @@ impl SshPhase {
 /// Why an SSH connection failed — drives the actionable error card (C1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SshErrorKind {
+    /// The TCP/SSH transport could not connect after the bounded retry budget.
+    Network,
     /// All offered auth methods were rejected (keys + password).
     Auth,
     /// The server's host key didn't match `~/.ssh/known_hosts` (possible MITM).
