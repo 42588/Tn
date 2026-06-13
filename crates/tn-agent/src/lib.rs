@@ -23,7 +23,6 @@ mod external;
 mod id;
 pub mod pricing;
 mod registry;
-mod transcript;
 mod usage;
 
 pub use adapter::{AgentAdapter, GenericAdapter, SessionRef};
@@ -36,9 +35,6 @@ pub use external::{ExternalEventAdapter, ExternalProcessAdapter};
 pub use id::AgentId;
 pub use pricing::{pricing_for, Pricing};
 pub use registry::AgentRegistry;
-pub use transcript::{
-    preview, push_collapsed, TranscriptEntry, TranscriptKind, TranscriptRole,
-};
 pub use usage::AiUsage;
 
 #[cfg(test)]

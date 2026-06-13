@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-use crate::{AgentDescriptor, AgentEvent, AiUsage, TranscriptEntry};
+use crate::{AgentDescriptor, AgentEvent, AiUsage};
 
 /// A resolved session log: where it is and when last touched. The owning agent
 /// is known from the adapter that produced it. Pane ownership (pane id + runtime
@@ -44,15 +44,6 @@ pub trait AgentAdapter: Send + Sync {
     fn parse_usage(&self, text: &str) -> Option<AiUsage> {
         let _ = text;
         None
-    }
-
-    /// Parse session-log text into render-ready transcript entries, in order.
-    /// Each log line is self-contained, so this works equally on a full file or
-    /// on a freshly-appended delta (the incremental tail step) — callers pass
-    /// whichever they have. Default: no transcript (telemetry-free adapters).
-    fn parse_transcript(&self, text: &str) -> Vec<TranscriptEntry> {
-        let _ = text;
-        Vec::new()
     }
 
     /// Fold newly-appended log text into prior usage (incremental poll step).

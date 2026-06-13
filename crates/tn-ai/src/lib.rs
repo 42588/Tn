@@ -27,7 +27,4 @@ pub use detect::{adapter_session_mtimes, resolve_pane_session};
 // agent-agnostic contract). Re-exported so `tn_ai::{AiUsage, Pricing,
 // pricing_for, pricing}` keep working — `claude.rs`/`codex.rs` reference
 // `crate::pricing` / `crate::AiUsage`.
-pub use tn_agent::{
-    preview, pricing, pricing_for, push_collapsed, AiUsage, Pricing, TranscriptEntry,
-    TranscriptKind, TranscriptRole,
-};
+pub use tn_agent::{pricing, pricing_for, AiUsage, Pricing};

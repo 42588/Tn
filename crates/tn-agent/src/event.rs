@@ -4,7 +4,7 @@
 //! agent log files directly. Payloads are intentionally lean for now; the richer
 //! transcript / tool-call / permission shapes are fleshed out in P4.
 
-use crate::{AiUsage, TranscriptEntry};
+use crate::AiUsage;
 use serde::{Deserialize, Serialize};
 
 /// Coarse run state of an agent session, surfaced **honestly** — derived from
@@ -37,19 +37,9 @@ pub enum AgentEvent {
     UsageUpdated(AiUsage),
     /// Run-state transition.
     StatusChanged(AgentStatus),
-    /// New transcript text observed — a short tail preview for the header
-    /// (sidecar/realtime adapters). Distinct from [`Self::TranscriptEntries`],
-    /// which carries the full structured history for Tn's scrollable surface.
+    /// New transcript text observed (P4: structured turns) — a short tail preview
+    /// for the header (sidecar/realtime adapters).
     TranscriptAppended(String),
-    /// A batch of structured transcript entries parsed from the agent's session
-    /// log, for Tn's **own** scrollable history surface (TUI agents never put the
-    /// full conversation in terminal scrollback). `replace` = true means this is a
-    /// fresh full snapshot (first bind / file rewrite) that supersedes any prior
-    /// entries; false means append this delta in order.
-    TranscriptEntries {
-        entries: Vec<TranscriptEntry>,
-        replace: bool,
-    },
     /// The agent's working tree changed; the pane should refresh its git diff.
     DiffChanged,
     /// The agent is asking the user to approve an action (P4).

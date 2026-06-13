@@ -29,14 +29,11 @@ fn pty_runtimes() -> Vec<AgentRuntimeKind> {
     ]
 }
 
-/// Terminal + usage + transcript + cwd sync + git-diff rail — the full built-in
-/// agent surface. `transcript` unlocks Tn's own scrollable history (parsed from
-/// the session log) since these TUI agents never fill terminal scrollback.
+/// Terminal + usage + cwd sync + git-diff rail — the full built-in agent surface.
 fn full_capabilities() -> AgentCapabilities {
     AgentCapabilities {
         terminal: true,
         usage: true,
-        transcript: true,
         cwd_sync: true,
         git_diff: true,
         ..AgentCapabilities::default()
@@ -140,10 +137,6 @@ impl AgentAdapter for ClaudeAdapter {
         claude::update_claude_session(text, prev)
     }
 
-    fn parse_transcript(&self, text: &str) -> Vec<tn_agent::TranscriptEntry> {
-        claude::parse_claude_transcript(text)
-    }
-
     fn is_subscription(&self) -> bool {
         detect::claude_is_subscription()
     }
@@ -195,10 +188,6 @@ impl AgentAdapter for CodexAdapter {
         codex::update_codex_session(text, prev)
     }
 
-    fn parse_transcript(&self, text: &str) -> Vec<tn_agent::TranscriptEntry> {
-        codex::parse_codex_transcript(text)
-    }
-
     fn is_subscription(&self) -> bool {
         detect::codex_is_subscription()
     }
@@ -233,15 +222,12 @@ pub fn builtin_adapter_for_manifest(m: &tn_config::AgentManifest) -> Option<Arc<
     let seed = builtin_registry();
     let id = probes.iter().find_map(|p| seed.match_command(p))?;
     let seed_descriptor = seed.get(&id)?;
-    // Keep the user's descriptor (color/label/Ink) but force `usage` + `transcript`
-    // on, since the built-in parser supplies both (usage ring + Tn's own scrollable
-    // history). Without forcing `transcript`, a config-declared Claude/Codex would
-    // never start the transcript poller → the history overlay stays empty.
+    // Keep the user's descriptor (color/label/Ink) but force `usage` on, since the
+    // built-in parser supplies it.
     let mut descriptor = AgentDescriptor::from_manifest(m);
     descriptor.default_args = seed_descriptor.default_args.clone();
     descriptor.default_env = seed_descriptor.default_env.clone();
     descriptor.capabilities.usage = true;
-    descriptor.capabilities.transcript = true;
     match id.as_str() {
         "claude" => Some(Arc::new(ClaudeAdapter::with_descriptor(descriptor))),
         "codex" => Some(Arc::new(CodexAdapter::with_descriptor(descriptor))),
@@ -338,7 +324,6 @@ mod tests {
             "manifest-backed Claude inherits the built-in's (now empty) launch env"
         );
         assert!(d.capabilities.usage); // built-in supplies usage → ring unlocked
-        assert!(d.capabilities.transcript); // built-in supplies history → overlay unlocked
         assert!(d.supports_runtime(AgentRuntimeKind::LocalPty)); // still PTY-launchable
                                                                  // And it actually parses Claude logs (built-in behavior, not generic).
         assert_eq!(

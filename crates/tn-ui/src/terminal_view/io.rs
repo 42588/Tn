@@ -29,19 +29,6 @@ use super::{
     UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
 };
 
-/// Decide where to start reading a tailed session log and whether the parsed
-/// result replaces the prior transcript. Incremental from `prev_offset` while it
-/// is a valid position inside the file; otherwise a full re-read that replaces
-/// (the first read, or the file shrank = a rewrite/rotation). Pure so the
-/// offset/replace logic is unit-testable without touching the filesystem.
-fn transcript_read_window(prev_offset: u64, len: u64) -> (u64, bool) {
-    if prev_offset > 0 && prev_offset <= len {
-        (prev_offset, false)
-    } else {
-        (0, true)
-    }
-}
-
 fn command_line_runs_agent(command: &str, registry: &AgentRegistry) -> bool {
     command
         .split_whitespace()
@@ -592,119 +579,6 @@ impl TerminalView {
         .detach();
     }
 
-    /// Poll this pane's agent **transcript** off the main thread, for Tn's own
-    /// scrollable history (TUI agents never put the full conversation in terminal
-    /// scrollback). Binds to the same session the usage poller does — created
-    /// fresh OR resumed after `launched_at`, never a concurrent dev session (see
-    /// [`tn_ai::resolve_pane_session`]) — then **pins** it and follows the file by
-    /// byte offset. The first read parses the whole backlog (`replace`); later
-    /// reads parse only the appended delta (append). Re-parses only when the
-    /// pinned file's mtime changes (idle agent = one cheap `stat`). Each log line
-    /// is self-contained, so a delta parses correctly on its own.
-    pub(super) fn spawn_transcript_poller(
-        cx: &mut Context<Self>,
-        adapter: std::sync::Arc<dyn tn_agent::AgentAdapter>,
-        launched_at: SystemTime,
-    ) {
-        let exec = cx.background_executor().clone();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
-            // Baseline mtimes at launch: any session already fresh now is someone
-            // else's; ours flips stale→fresh later (mirrors the usage poller).
-            let adapter_b = adapter.clone();
-            let baseline = std::sync::Arc::new(
-                exec.spawn(async move {
-                    let (tx, rx) = futures::channel::oneshot::channel();
-                    std::thread::spawn(move || {
-                        let _ = tx.send(tn_ai::adapter_session_mtimes(&*adapter_b));
-                    });
-                    rx.await.unwrap_or_default()
-                })
-                .await,
-            );
-            let mut pinned: Option<PathBuf> = None;
-            let mut last_mtime: Option<SystemTime> = None;
-            let mut file_offset = 0u64;
-            loop {
-                // Stop once the agent identity is gone (exited → plain shell) or
-                // the view dropped.
-                if this.update(cx, |v, _| v.agent().is_none()).unwrap_or(true) {
-                    break;
-                }
-                let pinned2 = pinned.clone();
-                let prev = last_mtime;
-                let baseline2 = baseline.clone();
-                let prev_offset = file_offset;
-                let adapter_i = adapter.clone();
-                let res = exec
-                    .spawn(async move {
-                        let (tx, rx) = futures::channel::oneshot::channel();
-                        std::thread::spawn(move || {
-                            let result = (|| {
-                                let path = match pinned2 {
-                                    Some(p) => p,
-                                    None => {
-                                        tn_ai::resolve_pane_session(
-                                            &*adapter_i,
-                                            launched_at,
-                                            &baseline2,
-                                        )?
-                                        .path
-                                    }
-                                };
-                                let mtime = std::fs::metadata(&path).ok()?.modified().ok()?;
-                                if prev == Some(mtime) {
-                                    return Some((path, mtime, Vec::new(), false, prev_offset));
-                                    // pinned, unchanged
-                                }
-                                let mut f = std::fs::File::open(&path).ok()?;
-                                let len = f.metadata().ok()?.len();
-                                use std::io::{Read, Seek, SeekFrom};
-                                // Incremental from the last offset; a full re-read
-                                // (first time, or the file shrank = rewrite) replaces.
-                                let (start, replace) = transcript_read_window(prev_offset, len);
-                                f.seek(SeekFrom::Start(start)).ok()?;
-                                let mut chunk = String::new();
-                                f.read_to_string(&mut chunk).ok()?;
-                                // Consume only up to the last complete line (the tail
-                                // line may be mid-write).
-                                let valid_bytes = chunk.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                                let valid = &chunk[..valid_bytes];
-                                let new_offset = start + valid_bytes as u64;
-                                let entries = adapter_i.parse_transcript(valid);
-                                Some((path, mtime, entries, replace, new_offset))
-                            })();
-                            let _ = tx.send(result);
-                        });
-                        rx.await.unwrap_or(None)
-                    })
-                    .await;
-                if let Some((path, mtime, entries, replace, next_offset)) = res {
-                    pinned = Some(path);
-                    last_mtime = Some(mtime);
-                    file_offset = next_offset;
-                    // A `replace` with no entries still matters (file rewritten to
-                    // empty) — but the common idle tick is "unchanged" (replace
-                    // false, empty), which we skip to avoid needless notifies.
-                    if !entries.is_empty() || replace {
-                        if this
-                            .update(cx, |v, cx| {
-                                v.reduce_agent_event(
-                                    tn_agent::AgentEvent::TranscriptEntries { entries, replace },
-                                    cx,
-                                );
-                            })
-                            .is_err()
-                        {
-                            break; // view dropped
-                        }
-                    }
-                }
-                exec.timer(Duration::from_secs(2)).await;
-            }
-        })
-        .detach();
-    }
-
     /// Poll a realtime-capable adapter's internal event queue and reduce those
     /// events through the same [`AgentEvent`](tn_agent::AgentEvent) funnel as
     /// usage updates. This is intentionally opt-in via
@@ -848,18 +722,6 @@ mod tests {
         let reg = registry();
         assert!(command_line_runs_agent("codex --resume", &reg));
         assert!(!command_line_runs_agent("cat codex.md", &reg));
-    }
-
-    #[test]
-    fn transcript_read_window_incremental_vs_full() {
-        // First read (no prior offset) → from 0, replace the (empty) transcript.
-        assert_eq!(transcript_read_window(0, 5000), (0, true));
-        // Steady state: file grew, prior offset valid → incremental delta, append.
-        assert_eq!(transcript_read_window(1200, 5000), (1200, false));
-        // Offset exactly at EOF (no new bytes yet) → still incremental (reads nothing).
-        assert_eq!(transcript_read_window(5000, 5000), (5000, false));
-        // File shrank below the prior offset (rewrite/rotation) → full re-read, replace.
-        assert_eq!(transcript_read_window(8000, 5000), (0, true));
     }
 }
 
