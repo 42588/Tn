@@ -24,3 +24,27 @@ mimalloc = { version = "0.1", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_UI_Shell"] }
+
+# cargo-packager: builds the Windows installer (NSIS). Usage:
+#   cargo install cargo-packager --locked
+#   cargo build --release -p tn-app   (build.rs stages the sidecars beside tn.exe)
+#   cargo packager --release -p tn-app
+# Bundles tn.exe + the native sidecars (conpty.dll / OpenConsole.exe / pdfium.dll)
+# into the install dir. Embedded assets (fonts/icon/config) are already in the exe.
+[package.metadata.packager]
+product-name = "Tn"
+identifier = "io.github.42588.tn"
+authors = ["xqq"]
+publisher = "xqq"
+description = "Tn terminal — native Windows GPUI terminal with agent hosting"
+icons = ["../tn-ui/assets/tn.ico"]
+formats = ["nsis"]
+resources = [
+    { src = "vendor/conpty/x64/conpty.dll", target = "conpty.dll" },
+    { src = "vendor/conpty/x64/OpenConsole.exe", target = "OpenConsole.exe" },
+    { src = "vendor/pdfium/x64/pdfium.dll", target = "pdfium.dll" },
+]
+
+# Per-user install: no admin/UAC prompt, lands in %LOCALAPPDATA%\Programs\Tn.
+[package.metadata.packager.nsis]
+installMode = "currentUser"

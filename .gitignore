@@ -23,6 +23,9 @@ Thumbs.db
 # Release artifact
 tn.zip
 
+# Installer output (cargo-packager) — lands in crates/tn-app/dist/
+dist/
+
 # Loose downloaded redistributable archives + the dev-time loose pdfium.dll at
 # repo root (the real copy is vendored under crates/tn-app/vendor/pdfium/, so
 # these anchored patterns must NOT match that tracked one).

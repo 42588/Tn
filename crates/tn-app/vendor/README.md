@@ -43,7 +43,23 @@ Tn 的捆绑资源分两类,机制完全不同:
 ## 安装器(可安装)
 
 发行单元 = 安装器,把 `tn.exe` + 上述 B 类 sidecar 装进同一安装目录(B 类就近被找到,A 类已在 exe 内)。
-安装器工具链与布局见 [打包与安装任务文档](../../../docs/任务/) 对应条目(待定)。
+
+用 **cargo-packager**(NSIS)产出 per-user 安装器:
+
+```sh
+cargo install cargo-packager --locked          # 一次性
+cargo build --release -p tn-app                 # build.rs 把 sidecar 拷到 target/release/
+cargo packager --release -p tn-app --out-dir dist -f nsis
+# → crates/tn-app/dist/tn_<版本>_x64-setup.exe
+```
+
+- 配置在 [`crates/tn-app/Cargo.toml`](../Cargo.toml) 的 `[package.metadata.packager]`:`resources`
+  把三个 sidecar 一并打进安装目录,`installMode = "currentUser"`(免 UAC,装到
+  `%LOCALAPPDATA%\Programs\Tn`),图标用 `tn.ico`。
+- 安装器自带 `uninstall.exe`,并登记到「添加/删除程序」。
+- 实测验证:静默装到临时目录后,安装目录内 `tn.exe + conpty.dll + OpenConsole.exe + pdfium.dll`
+  四件齐全,布局正确;静默卸载干净无残留。
+- 安装包版本号取自 workspace `version`(当前 `0.0.0`);正式发布前在根 `Cargo.toml` 调版本即可。
 
 ## 注记
 
