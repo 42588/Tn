@@ -1,22 +1,22 @@
-//! Sideload a modern ConPTY next to the `tn` executable (Windows only).
+//! Stage the bundled native sidecar binaries next to the `tn` executable
+//! (Windows only).
 //!
-//! Why: the system `conhost.exe` on Windows 10 (build 19041) runs ConPTY in its
-//! legacy rendering mode, which **strips** a child's alternate-screen and mouse
-//! DECSETs (1049/1000/1002/1003/1006/1007) instead of forwarding them to the host
-//! pipe. A full-screen agent TUI such as codex (ratatui/crossterm) therefore looks
-//! to our terminal engine like a plain main-screen app with no mouse capture:
-//! `alt_screen=false mouse_report=false`, no scrollback, and the wheel has nothing
-//! to drive — so codex can't be scrolled, even though Windows Terminal (which
-//! bundles its own newer ConPTY) scrolls it fine.
+//! Some capabilities need real DLLs / helper exes on disk at runtime — they
+//! cannot be executed from inside `tn.exe`:
 //!
-//! `portable-pty` already prefers a `conpty.dll` sideloaded next to the app over
-//! the kernel32 export (see its `load_conpty`). The modern redistributable
-//! (Microsoft.Windows.Console.ConPTY, vendored under `vendor/conpty/`) runs in
-//! passthrough mode and forwards the child's modes verbatim, so our existing
-//! wheel→mouse-report routing forwards the wheel to codex and it scrolls natively.
+//! * **conpty.dll + OpenConsole.exe** — a modern ConPTY. The system conhost on
+//!   Windows 10 (build 19041) strips a child's alternate-screen/mouse DECSETs, so
+//!   a full-screen agent TUI (codex) can't be scrolled. `portable-pty` prefers a
+//!   `conpty.dll` sideloaded next to the app; conpty.dll launches OpenConsole.exe
+//!   from its own dir, so both must sit beside `tn.exe`.
+//! * **pdfium.dll** — the PDF rendering engine used by Quick Look (pdfium-render
+//!   binds to it via `LoadLibrary`).
 //!
-//! `conpty.dll` launches `OpenConsole.exe` from its own directory, so both must
-//! land beside `tn.exe`. We copy them into the Cargo output dir (`target/<profile>`).
+//! All bundled sidecars live under `vendor/<name>/<arch>/`. This script copies the
+//! files for the current target arch into the Cargo output dir (`target/<profile>`)
+//! where `tn.exe` is written, so `cargo run` and packaged builds both find them.
+//! Embedded assets (fonts, icon, config) are NOT here — they are already compiled
+//! into the exe via `include_bytes!`/`include_str!`.
 
 use std::path::{Path, PathBuf};
 
@@ -32,36 +32,45 @@ fn main() {
         "aarch64" => "arm64",
         "x86" => "x86",
         other => {
-            println!("cargo:warning=tn-app: no vendored ConPTY for target arch `{other}`; using system conhost (agent scrollback may be limited)");
+            println!("cargo:warning=tn-app: no vendored sidecars for target arch `{other}`; ConPTY/PDF features may be limited");
             return;
         }
     };
 
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let vendor = manifest_dir.join("vendor").join("conpty").join(sub);
-    let files = ["conpty.dll", "OpenConsole.exe"];
+    let vendor = manifest_dir.join("vendor");
+    println!("cargo:rerun-if-changed={}", vendor.display());
 
     // Output dir holding the exe: OUT_DIR is `<target>/<profile>/build/<pkg>/out`,
     // so three parents up is `<target>/<profile>` where `tn.exe` is written.
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let Some(exe_dir) = out_dir.ancestors().nth(3) else {
-        println!("cargo:warning=tn-app: could not derive target dir from OUT_DIR; ConPTY not sideloaded");
+    let Some(exe_dir) = out_dir.ancestors().nth(3).map(Path::to_path_buf) else {
+        println!("cargo:warning=tn-app: could not derive target dir from OUT_DIR; sidecars not staged");
         return;
     };
 
-    for f in files {
-        let src = vendor.join(f);
-        println!("cargo:rerun-if-changed={}", src.display());
-        if !src.exists() {
-            println!(
-                "cargo:warning=tn-app: vendored ConPTY file missing: {} (agent scrollback may be limited)",
-                src.display()
-            );
-            continue;
+    // Each `vendor/<name>/<arch>/` directory contributes its files beside the exe.
+    let entries = match std::fs::read_dir(&vendor) {
+        Ok(e) => e,
+        Err(e) => {
+            println!("cargo:warning=tn-app: cannot read vendor dir {}: {e}", vendor.display());
+            return;
         }
-        let dst = exe_dir.join(f);
-        if let Err(e) = copy_if_changed(&src, &dst) {
-            println!("cargo:warning=tn-app: failed to copy {} -> {}: {e}", src.display(), dst.display());
+    };
+    for entry in entries.flatten() {
+        let arch_dir = entry.path().join(sub);
+        let Ok(files) = std::fs::read_dir(&arch_dir) else {
+            continue; // this sidecar has no build for the current arch
+        };
+        for f in files.flatten() {
+            let src = f.path();
+            if !src.is_file() {
+                continue;
+            }
+            let dst = exe_dir.join(f.file_name());
+            if let Err(e) = copy_if_changed(&src, &dst) {
+                println!("cargo:warning=tn-app: failed to copy {} -> {}: {e}", src.display(), dst.display());
+            }
         }
     }
 }

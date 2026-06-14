@@ -23,6 +23,12 @@ Thumbs.db
 # Release artifact
 tn.zip
 
+# Loose downloaded redistributable archives + the dev-time loose pdfium.dll at
+# repo root (the real copy is vendored under crates/tn-app/vendor/pdfium/, so
+# these anchored patterns must NOT match that tracked one).
+*.tgz
+/pdfium.dll
+
 # Reference repos cloned locally for design study (not part of this project)
 /_refs/
 .playwright-cli/

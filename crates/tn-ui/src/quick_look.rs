@@ -1754,17 +1754,18 @@ impl QuickLook {
                     use pdfium_render::prelude::*;
                     static PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
                     let pdfium_lock = PDFIUM.get_or_init(|| {
-                        let exe_dir = std::env::current_exe().unwrap();
-                        let workspace_dir = exe_dir
-                            .parent()
-                            .unwrap()
-                            .parent()
-                            .unwrap()
-                            .parent()
-                            .unwrap();
-                        let pdfium_dll = workspace_dir.join("pdfium.dll");
-                        let bind_result = Pdfium::bind_to_system_library()
-                            .or_else(|_| Pdfium::bind_to_library(&pdfium_dll));
+                        // pdfium.dll is staged beside the exe by tn-app's build.rs
+                        // (dev: target/<profile>; installed: the install dir). Prefer
+                        // the bundled copy — its ABI is matched to pdfium-render — and
+                        // fall back to a system-installed pdfium only if that's absent.
+                        let beside_exe = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.join("pdfium.dll")));
+                        let bind_result = match &beside_exe {
+                            Some(dll) => Pdfium::bind_to_library(dll)
+                                .or_else(|_| Pdfium::bind_to_system_library()),
+                            None => Pdfium::bind_to_system_library(),
+                        };
                         bind_result.ok().map(|bind| Pdfium::new(bind))
                     });
 
