@@ -19,14 +19,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, Bounds, Context, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Window,
+    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, Bounds, Context, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Window,
 };
 use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
 
 use crate::style::{
-    col, ERR, H1, H2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, STATUSBAR_H, T0, T1, T2, T3,
+    col, ERR, H0, H1, H2, L0, L1, L2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, SCRIM, STATUSBAR_H, T0,
+    T1, T2, T3,
 };
 
 // ═══════════════════════════ 终端上下文信号(进程级) ═══════════════════════
@@ -41,11 +42,111 @@ static LAST_EXIT_MS: AtomicU64 = AtomicU64::new(0);
 /// 编码:0 = 无;1 = exit 0(success);2 = exit ≠0(error)。
 static LAST_EXIT_KIND: AtomicU64 = AtomicU64::new(0);
 
+// ── 规则 E 工作共情(结构化事件派生,零文本扫描)──
+/// 连续 exit 0 计数(翻盘/三连胜判定)。
+static SUCCESS_STREAK: AtomicU64 = AtomicU64::new(0);
+/// 连续 exit ≠0 计数(连败陪伴判定 ≥3)。
+static FAIL_STREAK: AtomicU64 = AtomicU64::new(0);
+/// 一次性共情事件槽:0 无 / 1 三连胜 / 2 大功告成 / 3 翻盘 / 4 提交时刻。
+/// pet tick 读后据此装点 Success 演出(双爱心/连跳/单爱心),并施加共享冷却。
+static EMPATHY_KIND: AtomicU64 = AtomicU64::new(0);
+static EMPATHY_MS: AtomicU64 = AtomicU64::new(0);
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 本地时间(年/月/日/时)。每日见面、时段问候和羁绊档案都按**本地自然日**,
+/// 故走 OS 本地时区(Windows: `GetLocalTime`),不用 UTC —— 否则 UTC+8 用户的
+/// 「新的一天」会卡在早上 8 点。
+struct LocalTime {
+    year: u16,
+    month: u8,
+    day: u8,
+    hour: u8,
+}
+
+impl LocalTime {
+    /// `YYYY-MM-DD`(自然日键,用于 days_together / last_seen 比对)。
+    fn date_key(&self) -> String {
+        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
+    }
+}
+
+#[cfg(windows)]
+fn local_now() -> LocalTime {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let st = unsafe { GetLocalTime() };
+    LocalTime {
+        year: st.wYear,
+        month: st.wMonth as u8,
+        day: st.wDay as u8,
+        hour: st.wHour as u8,
+    }
+}
+
+#[cfg(not(windows))]
+fn local_now() -> LocalTime {
+    // 兜底(本项目仅 Windows 运行;此分支只为非 Windows 可编译/跑测试)。UTC。
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let hour = ((secs % 86_400) / 3600) as u8;
+    // civil_from_days(Howard Hinnant):天数 → 年月日。
+    let z = (secs / 86_400) as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+    let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u8;
+    LocalTime {
+        year: (y + i64::from(m <= 2)) as u16,
+        month: m,
+        day: d,
+        hour,
+    }
+}
+
+/// 时段(规则 A 问候词表):清晨 5-9 / 白天 9-18 / 傍晚 18-23 / 深夜 23-5。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DayPart {
+    Dawn,
+    Day,
+    Dusk,
+    Night,
+}
+
+impl DayPart {
+    fn from_hour(h: u8) -> Self {
+        match h {
+            5..=8 => DayPart::Dawn,
+            9..=17 => DayPart::Day,
+            18..=22 => DayPart::Dusk,
+            _ => DayPart::Night,
+        }
+    }
+    fn now() -> Self {
+        Self::from_hour(local_now().hour)
+    }
+    /// 见面问候(词表封闭,≤6 字铁律)。
+    fn greeting(self) -> &'static str {
+        match self {
+            DayPart::Dawn => "早!",
+            DayPart::Day => "来啦!",
+            DayPart::Dusk => "晚上好",
+            DayPart::Night => "夜深了…",
+        }
+    }
+    fn is_night(self) -> bool {
+        self == DayPart::Night
+    }
 }
 
 /// 终端键入(KeyPress)→ Typing 上下文。从 terminal_view 的按键路径调用。
@@ -60,10 +161,12 @@ fn signal_command_start() {
     }
 }
 
-/// OSC 133 `D`(CommandFinished):命令结束 + 退出码。
-fn signal_command_end(exit: Option<i32>) {
+/// OSC 133 `D`(CommandFinished):命令结束 + 退出码。`cmd` 来自 OSC 633 `E`
+/// 结构化命令行(只读字段,不扫描输出),`run_ms` 为本命令运行时长。
+fn signal_command_end(exit: Option<i32>, cmd: &str, run_ms: u64) {
     signal_run_released();
-    LAST_EXIT_MS.store(now_ms(), Ordering::Relaxed);
+    let now = now_ms();
+    LAST_EXIT_MS.store(now, Ordering::Relaxed);
     LAST_EXIT_KIND.store(
         match exit {
             Some(0) => 1,
@@ -72,6 +175,41 @@ fn signal_command_end(exit: Option<i32>) {
         },
         Ordering::Relaxed,
     );
+    // ── 规则 E 共情分类(零文本扫描:仅 exit / 时长 / 结构化命令行首词)──
+    match exit {
+        Some(0) => {
+            let prev_fail = FAIL_STREAK.swap(0, Ordering::Relaxed);
+            let streak = SUCCESS_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+            // 优先级:提交时刻 > 大功告成 > 翻盘 > 三连胜(更具体者优先)。
+            let kind = if cmd_is_commit(cmd) {
+                4
+            } else if run_ms > 60_000 {
+                2
+            } else if prev_fail > 0 {
+                3
+            } else if streak >= 3 {
+                1
+            } else {
+                0
+            };
+            if kind != 0 {
+                EMPATHY_KIND.store(kind, Ordering::Relaxed);
+                EMPATHY_MS.store(now, Ordering::Relaxed);
+            }
+        }
+        Some(_) => {
+            SUCCESS_STREAK.store(0, Ordering::Relaxed);
+            FAIL_STREAK.fetch_add(1, Ordering::Relaxed);
+        }
+        None => {}
+    }
+}
+
+/// 命令行首词是否 `git commit` / `git push`(规则 E 提交时刻;结构化字段,
+/// 不扫描输出)。
+fn cmd_is_commit(cmd: &str) -> bool {
+    let mut it = cmd.split_whitespace();
+    it.next() == Some("git") && matches!(it.next(), Some("commit") | Some("push"))
 }
 
 /// 只归还 Running 计数,不触发任何演出(会话中途关闭的欠账核销用)。
@@ -86,28 +224,47 @@ fn signal_run_released() {
 /// 关」的命令数;会话中途关闭(reader 退出)时把欠账还清。否则全局
 /// [`RUN_COUNT`] 永久泄漏 —— 真机曾出现 NO SESSION 下宠物仍 RUNNING
 /// (二轮差异总结 §8 状态泄漏)。
-pub(crate) struct SessionRunGuard(u32);
+pub(crate) struct SessionRunGuard {
+    /// 本会话「开了还没关」的命令数。
+    open: u32,
+    /// 最近一条结构化命令行(OSC 633 E;供共情提交判定)。
+    last_cmd: String,
+    /// 当前命令开始时刻(共情时长判定;命令在 pane 内顺序执行)。
+    start_ms: u64,
+}
 
 impl SessionRunGuard {
     pub(crate) fn new() -> Self {
-        Self(0)
+        Self {
+            open: 0,
+            last_cmd: String::new(),
+            start_ms: 0,
+        }
+    }
+
+    /// OSC 633 `E`:记录将要执行的命令行(只读结构化字段)。
+    pub(crate) fn command_line(&mut self, cmd: &str) {
+        self.last_cmd = cmd.to_string();
     }
 
     pub(crate) fn command_start(&mut self) {
-        self.0 += 1;
+        self.open += 1;
+        self.start_ms = now_ms();
         signal_command_start();
     }
 
     pub(crate) fn command_end(&mut self, exit: Option<i32>) {
-        self.0 = self.0.saturating_sub(1);
-        signal_command_end(exit);
+        self.open = self.open.saturating_sub(1);
+        let run_ms = now_ms().saturating_sub(self.start_ms);
+        signal_command_end(exit, &self.last_cmd, run_ms);
+        self.last_cmd.clear();
     }
 }
 
 impl Drop for SessionRunGuard {
     fn drop(&mut self) {
         // 只清计数:不碰 LAST_EXIT_*,免得吞掉别的会话刚发生的 Success/Error 演出。
-        for _ in 0..self.0 {
+        for _ in 0..self.open {
             signal_run_released();
         }
     }
@@ -439,16 +596,6 @@ impl Breed {
         ALL_BREEDS[n % ALL_BREEDS.len()]
     }
 
-    /// 随机但不与当前重复(手动刷新时换一只的体感更好;单池随机仍是规则允许的)。
-    fn random_other(self) -> Breed {
-        let mut b = Breed::random();
-        if b == self {
-            let i = ALL_BREEDS.iter().position(|x| *x == self).unwrap_or(0);
-            b = ALL_BREEDS[(i + 1) % ALL_BREEDS.len()];
-        }
-        b
-    }
-
     /// 性格参数(规则 D · SHEET 05 板 C/D)。表即实现 —— 只调参数与权重,
     /// 无品种私有代码路径。
     fn personality(self) -> &'static Personality {
@@ -484,6 +631,9 @@ struct Personality {
     /// (① 抓痒 ② 舔爪 ③ 追尾 ④ 竖耳 ⑤ 望屏外 ⑥ 伸懒腰);
     /// 0 = 该品种不做(如垂耳犬的竖耳听声),避免触发不可见动作。
     micro_weights: [u8; 6],
+    /// 每日见面入场四式权重,顺序同 [`ENTRANCE_ALL`]
+    /// (探头 / 小跑 / 天降 / 它先到了;规则 A 按性格加权,连续两次不重样)。
+    entrance_weights: [u8; 4],
 }
 
 // 数值取自规则.md / SHEET 05 板 C 的「性格参数表」。
@@ -494,6 +644,7 @@ const P_WESTIE: Personality = Personality {
     sleep_after_ms: 120_000,
     bark: "汪!",
     micro_weights: [1, 1, 1, 3, 3, 1], // 竖耳听声 · 望屏外
+    entrance_weights: [3, 1, 1, 1], // 探头(精神好奇,爱冒头)
 };
 const P_GOLDEN: Personality = Personality {
     blink_min_ms: 5_000,
@@ -502,6 +653,7 @@ const P_GOLDEN: Personality = Personality {
     sleep_after_ms: 90_000,
     bark: "汪~",
     micro_weights: [1, 3, 1, 0, 1, 3], // 伸懒腰 · 舔爪(垂耳:不竖耳)
+    entrance_weights: [1, 3, 1, 1], // 小跑(温和可靠,跑来迎你)
 };
 const P_SHEPHERD: Personality = Personality {
     blink_min_ms: 6_000,
@@ -510,6 +662,7 @@ const P_SHEPHERD: Personality = Personality {
     sleep_after_ms: 180_000,
     bark: "", // 不出声,点头 1 格
     micro_weights: [1, 1, 1, 4, 1, 1], // 竖耳听声(高频)
+    entrance_weights: [2, 2, 1, 1], // 探头 / 小跑(站岗稳重)
 };
 const P_BICHON: Personality = Personality {
     blink_min_ms: 4_000,
@@ -518,6 +671,7 @@ const P_BICHON: Personality = Personality {
     sleep_after_ms: 90_000,
     bark: "汪汪!",
     micro_weights: [1, 1, 4, 0, 1, 1], // 追尾转圈(高频)
+    entrance_weights: [1, 1, 3, 1], // 天降(开心活泼,蹦出来)
 };
 const P_MALTESE: Personality = Personality {
     blink_min_ms: 5_000,
@@ -526,6 +680,7 @@ const P_MALTESE: Personality = Personality {
     sleep_after_ms: 60_000,
     bark: "…汪",
     micro_weights: [1, 3, 1, 0, 1, 3], // 舔爪 · 伸懒腰
+    entrance_weights: [1, 1, 1, 3], // 它先到了(乖巧爱打盹)
 };
 const P_SHIHTZU: Personality = Personality {
     blink_min_ms: 6_000,
@@ -534,6 +689,7 @@ const P_SHIHTZU: Personality = Personality {
     sleep_after_ms: 45_000,
     bark: "呼…",
     micro_weights: [1, 2, 1, 0, 1, 4], // 伸懒腰(高频) · 舔爪
+    entrance_weights: [1, 1, 1, 3], // 它先到了(慵懒最爱睡)
 };
 const P_POODLE: Personality = Personality {
     blink_min_ms: 4_000,
@@ -542,6 +698,7 @@ const P_POODLE: Personality = Personality {
     sleep_after_ms: 120_000,
     bark: "汪!汪!",
     micro_weights: [3, 1, 3, 0, 1, 1], // 追尾转圈 · 抓痒
+    entrance_weights: [1, 1, 3, 1], // 天降(俏皮,爱表演)
 };
 
 /// 活物引擎 idle 微动作池(规则 C)。顺序固定,与 [`Personality::micro_weights`]
@@ -564,6 +721,32 @@ const MICRO_ALL: [Micro; 6] = [
     Micro::LookAway,
     Micro::Stretch,
 ];
+
+/// 每日见面入场池(规则 A · SHEET 05 板 F)。四式按性格加权随机,连续两次不
+/// 重样;日常显隐只用轻量二式(探头 / 小跑)。全部由 body_dy/dx 时间线驱动,
+/// 复用既有像素网格(它先到了 = 趴姿→起身),无新网格。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Entrance {
+    Peek,        // 式一:岗台线后升起(既有 peek 通道)
+    Run,         // 式二:从右缘小跑入窝(gait + dx 滑入,到位刹车)
+    Drop,        // 式三:从容器顶落下,落地三帧律回弹
+    AlreadyHere, // 式四:现身即趴睡 → 察觉 → 哈欠 → 起身摇尾
+}
+
+const ENTRANCE_ALL: [Entrance; 4] =
+    [Entrance::Peek, Entrance::Run, Entrance::Drop, Entrance::AlreadyHere];
+
+impl Entrance {
+    /// 入场单式总时长(ms):探头 500 / 小跑 600 / 天降 520 / 它先到 1200。
+    fn duration_ms(self) -> u64 {
+        match self {
+            Entrance::Peek => PEEK_MS,
+            Entrance::Run => 600,
+            Entrance::Drop => 520,
+            Entrance::AlreadyHere => 1200,
+        }
+    }
+}
 
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
@@ -614,9 +797,28 @@ const MICRO_GAP_SPAN_MS: u64 = 40_000;
 /// `pet_state.json`(同 ssh_recents/layout 的 `%APPDATA%\Tn` 模式)。
 #[derive(Clone, Serialize, Deserialize)]
 struct PetState {
-    /// 用户固定的品种;`None` = 每次初始化随机。
+    /// 主宠品种(规则 0:领养时定;`None` = 尚未领养,初始化时随机占位)。
     #[serde(default)]
     fixed_breed: Option<Breed>,
+    /// 是否已完成领养仪式(规则 0)。`false` → 首次启用时弹领养卡。
+    #[serde(default)]
+    adopted: bool,
+    /// 主宠名字(规则 0;`None` = 用品种名)。≤8 显示字。
+    #[serde(default)]
+    name: Option<String>,
+    /// 羁绊档案(规则 F;仅此三项,永不扩成数值系统)。
+    /// 首见自然日 `YYYY-MM-DD`。
+    #[serde(default)]
+    first_met: Option<String>,
+    /// 见面自然日计数(在一起第 N 天)。
+    #[serde(default)]
+    days_together: u32,
+    /// 最近一次见面的本地自然日(每日见面 / days_together 递增判定)。
+    #[serde(default)]
+    last_seen_date: Option<String>,
+    /// 累计喂过的小饼干(规则 F;P3 投喂时 +1)。
+    #[serde(default)]
+    treats_fed: u32,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_true")]
@@ -644,6 +846,12 @@ impl Default for PetState {
     fn default() -> Self {
         Self {
             fixed_breed: None,
+            adopted: false,
+            name: None,
+            first_met: None,
+            days_together: 0,
+            last_seen_date: None,
+            treats_fed: 0,
             enabled: true,
             visible: true,
             welcome_only: false,
@@ -731,6 +939,38 @@ pub struct PetView {
     menu_open: bool,
     /// 当前 tab 是否欢迎页(welcome_only 模式用;由 workspace 每帧喂入)。
     on_welcome: bool,
+    // ── 每日见面(规则 A)──
+    /// 当前入场演出 + 起始时刻(None = 已落定);entrance 期间走专用时间线。
+    entrance: Option<Entrance>,
+    entrance_start_ms: u64,
+    /// 上一次入场式(连续两次不重样)。
+    last_entrance: Option<Entrance>,
+    /// 状态栏「第 N 天」短显终点(里程碑/每日见面落定后 5s)。
+    day_badge_until_ms: u64,
+    /// 哈欠窗口终点(规则 A 深夜问候 / 规则 B 深夜投喂;张口 600 + 半闭 250)。
+    yawn_until_ms: u64,
+    // ── 工作共情(规则 E)──
+    /// 最近若干次主动庆祝时刻(共享冷却 ≤2 次/10 分钟)。
+    celebrate_times: [u64; 2],
+    /// 连败陪伴(规则 E:≥3 连败 → 就近趴下陪着,不演委屈)。
+    companion_lie: bool,
+    /// 连败陪伴「呜…」是否已出过(同一段连败只一次)。
+    moaned: bool,
+    /// 上次读到的共情事件时刻(去重,避免同一事件反复演出)。
+    last_empathy_ms: u64,
+    /// 当前生效的共情装点类型(0 无 / 1 三连胜 / 2 大功告成 / 3 翻盘 / 4 提交)。
+    empathy_kind: u64,
+    // ── 领养与命名(规则 0)──
+    /// 领养卡是否打开(首次启用宠物;一次性)。
+    adopt_open: bool,
+    /// 领养卡内暂选品种(未落定)。
+    adopt_breed: Breed,
+    /// 改名 / 领养命名输入缓冲(None = 不在改名)。
+    name_editing: Option<String>,
+    /// 文本输入焦点(领养卡 / 改名;track_focus + on_key_down 累积)。
+    focus: gpui::FocusHandle,
+    /// 下一帧需要抓取焦点(浮层刚打开)。
+    grab_focus: bool,
 }
 
 impl PetView {
@@ -768,7 +1008,31 @@ impl PetView {
             drag: None,
             menu_open: false,
             on_welcome: false,
+            entrance: None,
+            entrance_start_ms: 0,
+            last_entrance: None,
+            day_badge_until_ms: 0,
+            yawn_until_ms: 0,
+            celebrate_times: [0, 0],
+            companion_lie: false,
+            moaned: false,
+            last_empathy_ms: 0,
+            empathy_kind: 0,
+            adopt_open: false,
+            adopt_breed: breed,
+            name_editing: None,
+            focus: cx.focus_handle(),
+            grab_focus: false,
         };
+        let mut view = view;
+        // 首次启用宠物 → 一次性领养卡(规则 0)。老用户(adopted=false 但已有
+        // fixed_breed/历史)同样走领养卡:预选当前品种 + 默认名,一键领养。
+        if view.state.enabled && view.state.visible && !view.state.adopted {
+            view.adopt_open = true;
+            view.adopt_breed = breed;
+            view.name_editing = Some(breed.name_cn().to_string()); // 默认 = 品种名
+            view.grab_focus = true;
+        }
         // 动画/上下文 tick:240ms。变化才 notify(空闲时零重绘)。
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this, cx| loop {
@@ -779,9 +1043,11 @@ impl PetView {
             }
         })
         .detach();
-        // 初次现身的探头入场(reduced motion → 直接落定)。
-        let mut view = view;
+        // 初次现身:已领养老用户走每日见面入场;未领养则等领养落定后再入场。
         if view.motion_on() {
+            if view.state.adopted {
+                view.begin_daily_meeting(cx);
+            }
             Self::spawn_peek_driver(cx);
         } else {
             view.peek_until_ms = 0;
@@ -794,28 +1060,106 @@ impl PetView {
         self.cfg.config.editor.animations != tn_config::EditorAnimations::Off
     }
 
+    /// 当前可见帧的指纹:任何影响绘制的状态变化都改变它(空闲时恒定 → 零重绘)。
+    /// 用单 u64 折叠所有窗口/相位,避免超过元组 PartialEq 的 12 元上限。
+    fn frame_fingerprint(&self, now: u64) -> u64 {
+        let b = |x: bool| x as u64;
+        let mut h = self.ctx as u64;
+        h = h * 2 + b(self.phase);
+        h = h * 2 + b(self.breath);
+        h = h * 2 + b(self.blink_until_ms > now);
+        h = h * 2 + b(self.bubble.is_some());
+        h = h * 2 + b(self.tilt_until_ms > now);
+        h = h * 2 + b(self.peek_until_ms > now);
+        h = h * 8 + self.micro.map(|m| m as u64 + 1).unwrap_or(0);
+        h = h * 2 + b(self.nod_until_ms > now);
+        h = h * 8 + self.entrance.map(|e| e as u64 + 1).unwrap_or(0);
+        h = h * 2 + b(self.yawn_until_ms > now);
+        h = h * 8 + self.empathy_kind;
+        h = h * 2 + b(self.day_badge_until_ms > now);
+        h = h * 2 + b(self.companion_lie);
+        h
+    }
+
+    /// 共情共享冷却(规则 E:主动庆祝 ≤2 次/10 分钟,超出静默 —— 惊喜稀释自保护)。
+    fn celebrate_budget_ok(&self, now: u64) -> bool {
+        self.celebrate_times
+            .iter()
+            .filter(|t| now.saturating_sub(**t) < 600_000)
+            .count()
+            < 2
+    }
+
+    /// 工作共情(规则 E):消费一次性事件槽,按类型装点演出;受共享冷却限制。
+    /// 1 三连胜(双爱心)/ 2 大功告成(连跳+双爱心+口癖)/ 3 翻盘(Success+「!」)
+    /// / 4 提交时刻(小庆祝+单爱心)。永不评判:连败陪伴不走这里(只趴下)。
+    fn poll_empathy(&mut self, now: u64, _cx: &mut Context<Self>) {
+        let ek = EMPATHY_KIND.load(Ordering::Relaxed);
+        if ek == 0 {
+            return;
+        }
+        let em = EMPATHY_MS.load(Ordering::Relaxed);
+        EMPATHY_KIND.store(0, Ordering::Relaxed); // 一次性消费
+        if em == self.last_empathy_ms {
+            return;
+        }
+        self.last_empathy_ms = em;
+        if !self.celebrate_budget_ok(now) {
+            return; // 超额静默
+        }
+        self.celebrate_times = [self.celebrate_times[1], now];
+        self.empathy_kind = ek;
+        self.idle_since_ms = now;
+        let bark = self.breed.personality().bark;
+        let motion = self.motion_on();
+        match ek {
+            // 三连胜:Success 跳升级双爱心(复用 Play 的双爱心蹦跳,不冒泡)。
+            1 if motion => {
+                self.play_until_ms = now + PLAY_MS;
+            }
+            2 => {
+                // 大功告成:连跳两次 + 双爱心 + 口癖。
+                if motion {
+                    self.play_until_ms = now + PLAY_MS;
+                }
+                if !bark.is_empty() {
+                    self.bubble = Some((bark.into(), now + 1600));
+                }
+            }
+            3 => {
+                // 翻盘:普通 Success(exit 0 已触发)+ 气泡「!」(它也松了口气)。
+                self.bubble = Some(("!".into(), now + 2000));
+            }
+            // 4 提交时刻:单爱心由 frame_cells 据 empathy_kind 在 Success 窗口渲染。
+            _ => {}
+        }
+    }
+
     /// 每 tick:从进程级信号推导上下文 + 推进动画相位;有变化才重绘。
     fn tick(&mut self, cx: &mut Context<Self>) {
         if !self.state.enabled || !self.state.visible {
             return;
         }
         let now = now_ms();
-        let old = (
-            self.ctx,
-            self.phase,
-            self.breath,
-            self.blink_until_ms > now,
-            self.bubble.is_some(),
-            self.tilt_until_ms > now,
-            self.peek_until_ms > now,
-            self.micro,
-            self.nod_until_ms > now,
-        );
+        let old = self.frame_fingerprint(now);
+
+        // 工作共情事件轮询(规则 E):庆祝/翻盘/提交;施加共享冷却。
+        self.poll_empathy(now, cx);
 
         // ── 上下文推导(优先级 Drag > Play > Error/Success > Running > Typing >
         //    Hover > Sleep > Idle;Sleep = 长空闲打盹,任何活动即唤醒)──
         let exit_kind = LAST_EXIT_KIND.load(Ordering::Relaxed);
         let exit_age = now.saturating_sub(LAST_EXIT_MS.load(Ordering::Relaxed));
+        // 连败陪伴(规则 E):≥3 连败 → 就近趴下陪着,不演委屈;下个成功自然起身。
+        self.companion_lie = FAIL_STREAK.load(Ordering::Relaxed) >= 3;
+        if self.companion_lie {
+            if !self.moaned {
+                self.bubble = Some(("呜…".into(), now + 2000)); // 仅一次(规则 E)
+                self.moaned = true;
+            }
+        } else {
+            self.moaned = false;
+        }
         let running = RUN_COUNT.load(Ordering::Relaxed) > 0
             && now.saturating_sub(RUN_START_MS.load(Ordering::Relaxed)) > 1000; // >1s 才算(规则)
         let typing = now.saturating_sub(LAST_KEY_MS.load(Ordering::Relaxed)) < 1200;
@@ -823,8 +1167,8 @@ impl PetView {
             PetContext::Drag
         } else if self.play_until_ms > now {
             PetContext::Play // 双击逗弄:蹦跳 + 爱心(设计.md `play`)
-        } else if exit_kind == 2 && exit_age < 3000 {
-            PetContext::Error // 委屈 3s 复原(规则)
+        } else if exit_kind == 2 && exit_age < 3000 && !self.companion_lie {
+            PetContext::Error // 委屈 3s 复原(规则);连败陪伴时不演委屈
         } else if exit_kind == 1 && exit_age < 900 {
             PetContext::Success // 一次性蹦跳后回真实上下文
         } else if running {
@@ -833,6 +1177,8 @@ impl PetView {
             PetContext::Typing
         } else if self.hover {
             PetContext::Hover
+        } else if self.companion_lie {
+            PetContext::Idle // 趴下由 companion_lie 渲染(无 zZ),状态机仍算清醒
         } else if now.saturating_sub(self.idle_since_ms)
             > self.breed.personality().sleep_after_ms
         {
@@ -840,6 +1186,10 @@ impl PetView {
         } else {
             PetContext::Idle
         };
+        // 共情装点只在 Success/Play 演出窗口内有效,过后清除。
+        if !matches!(self.ctx, PetContext::Success | PetContext::Play) {
+            self.empathy_kind = 0;
+        }
         // 任何非纯空闲状态都刷新活动时刻(醒着就不计入打盹倒计时)。
         if !matches!(self.ctx, PetContext::Idle | PetContext::Sleep) {
             self.idle_since_ms = now;
@@ -898,17 +1248,7 @@ impl PetView {
             }
         }
 
-        let new = (
-            self.ctx,
-            self.phase,
-            self.breath,
-            self.blink_until_ms > now,
-            self.bubble.is_some(),
-            self.tilt_until_ms > now,
-            self.peek_until_ms > now,
-            self.micro,
-            self.nod_until_ms > now,
-        );
+        let new = self.frame_fingerprint(now);
         if new != old {
             cx.notify();
         }
@@ -934,17 +1274,34 @@ impl PetView {
         }
         if !self.state.visible {
             return Some(PetSegment {
-                label: format!("{} · 隐", self.breed.tag()),
+                label: format!("{} · 隐", self.display_name()),
                 live: false,
             });
         }
+        // 每日见面落定后 5s 短显「第 N 天」(规则 A),随后回常态读数。
+        if self.day_badge_until_ms > now_ms() {
+            return Some(PetSegment {
+                label: format!("{} · 第 {} 天", self.display_name(), self.state.days_together),
+                live: true,
+            });
+        }
+        // 名字替代品种名上屏(规则 0:「豆豆 · IDLE」)。
         Some(PetSegment {
-            label: format!("{} · {}", self.breed.tag(), self.ctx.tag()),
+            label: format!("{} · {}", self.display_name(), self.ctx.tag()),
             live: !matches!(
                 self.ctx,
                 PetContext::Idle | PetContext::Hover | PetContext::Sleep
             ),
         })
+    }
+
+    /// 主宠显示名(规则 0:名字优先,缺省用品种名;≤8 显示字由输入侧保证)。
+    fn display_name(&self) -> String {
+        self.state
+            .name
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| self.breed.name_cn().to_string())
     }
 
     /// 命令面板「宠物设置」入口:确保宠物可见并打开设置菜单(键盘可达性规则;
@@ -968,11 +1325,141 @@ impl PetView {
             self.state.visible = !self.state.visible;
         }
         if self.state.visible {
-            self.peek(cx); // 现身 = 探头入场
+            // 现身 = 每日见面入场(新的一天走重型演出,否则轻量探头/小跑)。
+            self.begin_daily_meeting(cx);
         }
         self.menu_open = false;
         self.state.save();
         cx.notify();
+    }
+
+    // ── 每日见面 · 羁绊档案(规则 A / F)──────────────────────────────────
+
+    /// 里程碑词(规则 F:第 7/30/100/365 天;其余 None)。
+    fn milestone_word(days: u32) -> Option<&'static str> {
+        match days {
+            7 => Some("第 7 天!"),
+            30 => Some("第 30 天!"),
+            100 => Some("100 天啦!"),
+            365 => Some("一周年!"),
+            _ => None,
+        }
+    }
+
+    /// 每日见面(规则 A):当日首次现身 → 档案递增 + 入场池 + 时段问候 + 第N天。
+    /// 同一自然日只递增一次;reduced motion 只出问候气泡(静音路径)。
+    fn begin_daily_meeting(&mut self, cx: &mut Context<Self>) {
+        let today = local_now().date_key();
+        let new_day = self.state.last_seen_date.as_deref() != Some(today.as_str());
+        if new_day {
+            // 羁绊档案(规则 F:仅 first_met / days_together,永不扩成数值系统)。
+            if self.state.first_met.is_none() {
+                self.state.first_met = Some(today.clone());
+            }
+            self.state.days_together = self.state.days_together.saturating_add(1);
+            self.state.last_seen_date = Some(today);
+            self.state.save();
+        }
+        if !self.motion_on() {
+            self.greet(new_day); // 静音路径:只出问候气泡
+            return;
+        }
+        // 入场式:新的一天用四式池(性格加权、不重样);日常显隐用轻量二式。
+        let ent = self.pick_entrance(new_day);
+        self.start_entrance(ent, cx);
+        self.greet(new_day);
+    }
+
+    /// 问候气泡 + 第N天短显 + 深夜哈欠(规则 A 时段词表 / 规则 F 里程碑)。
+    fn greet(&mut self, new_day: bool) {
+        let now = now_ms();
+        let part = DayPart::now();
+        let text: SharedString = match new_day.then(|| Self::milestone_word(self.state.days_together)).flatten() {
+            Some(m) => m.into(),
+            None => part.greeting().into(),
+        };
+        self.bubble = Some((text, now + 2000));
+        if new_day {
+            self.day_badge_until_ms = now + 5000;
+        }
+        // 深夜问候补一个哈欠帧(规则 A:一个哈欠就是全部提醒,不说教)。
+        if part.is_night() && self.motion_on() {
+            self.yawn_until_ms = now + 850; // 张口 600 + 半闭 250
+        }
+    }
+
+    /// 入场式选取(规则 A:性格加权、连续两次不重样)。`full_pool=false` 时
+    /// 只在轻量二式(探头 / 小跑)中选,用于日常显隐。
+    fn pick_entrance(&mut self, full_pool: bool) -> Entrance {
+        let base = self.breed.personality().entrance_weights;
+        let mut weights = if full_pool {
+            base
+        } else {
+            [base[0].max(1), base[1].max(1), 0, 0] // 轻量二式
+        };
+        if let Some(last) = self.last_entrance {
+            let i = last as usize;
+            let others: u32 = weights
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, w)| *w as u32)
+                .sum();
+            if others > 0 {
+                weights[i] = 0;
+            }
+        }
+        let total: u32 = weights.iter().map(|w| *w as u32).sum();
+        if total == 0 {
+            return Entrance::Peek;
+        }
+        let mut r = (self.next_rand() % total as u64) as u32;
+        for (i, w) in weights.iter().enumerate() {
+            let w = *w as u32;
+            if r < w {
+                return ENTRANCE_ALL[i];
+            }
+            r -= w;
+        }
+        Entrance::Peek
+    }
+
+    /// 启动入场演出(探头复用既有线下裁切通道;其余走 30ms 入场驱动)。
+    fn start_entrance(&mut self, ent: Entrance, cx: &mut Context<Self>) {
+        let now = now_ms();
+        self.entrance = Some(ent);
+        self.entrance_start_ms = now;
+        self.last_entrance = Some(ent);
+        self.idle_since_ms = now;
+        if ent == Entrance::Peek {
+            self.peek_until_ms = now + PEEK_MS;
+            Self::spawn_peek_driver(cx);
+        }
+        Self::spawn_entrance_driver(cx);
+    }
+
+    /// 入场动画驱动:30ms 重绘直到该式时长结束,然后落定(自停)。
+    fn spawn_entrance_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+            let alive = this
+                .update(cx, |pet, cx| {
+                    if let Some(ent) = pet.entrance {
+                        if now_ms().saturating_sub(pet.entrance_start_ms) >= ent.duration_ms() {
+                            pet.entrance = None; // 落定
+                        }
+                    }
+                    cx.notify();
+                    pet.entrance.is_some()
+                })
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+        })
+        .detach();
     }
 
     // ── 互动 ────────────────────────────────────────────────────────────
@@ -1108,15 +1595,8 @@ impl PetView {
         .detach();
     }
 
-    fn refresh_random(&mut self, cx: &mut Context<Self>) {
-        // 手动刷新走随机策略,不固定轮换(规则);不写 fixed_breed。
-        self.breed = self.breed.random_other();
-        self.menu_open = false;
-        self.peek(cx); // 新狗探头入场
-        self.bubble = Some((SharedString::from(self.breed.name_cn()), now_ms() + 2000));
-        cx.notify();
-    }
-
+    /// 换个形象(规则 0):品种架直选,只改外观 —— 名字、档案、窝位全部延续,
+    /// 零失去焦虑、无送别弹窗。
     fn pick_breed(&mut self, b: Breed, cx: &mut Context<Self>) {
         self.breed = b;
         self.state.fixed_breed = Some(b); // 显式选择 = 固定品种(入用户配置)
@@ -1124,6 +1604,378 @@ impl PetView {
         self.peek(cx); // 新狗探头入场
         self.menu_open = false;
         cx.notify();
+    }
+
+    /// 改名(规则 0:随时可改,档案不动 —— 改名是亲昵,不是重置)。
+    fn begin_rename(&mut self, cx: &mut Context<Self>) {
+        self.name_editing = Some(self.display_name());
+        self.menu_open = false;
+        self.grab_focus = true;
+        cx.notify();
+    }
+
+    /// 提交名字(领养命名 / 改名共用):≤8 显示字,空 = 用品种名。
+    fn commit_name(&mut self, raw: &str, cx: &mut Context<Self>) {
+        let name: String = raw.trim().chars().take(8).collect();
+        self.state.name = (!name.is_empty()).then_some(name);
+        self.state.save();
+        cx.notify();
+    }
+
+    /// 完成领养(规则 0):落定品种 + 名字,写档案首见日,关卡并入场。
+    fn adopt(&mut self, cx: &mut Context<Self>) {
+        self.breed = self.adopt_breed;
+        self.state.fixed_breed = Some(self.adopt_breed);
+        if let Some(raw) = self.name_editing.take() {
+            let name: String = raw.trim().chars().take(8).collect();
+            self.state.name = (!name.is_empty()).then_some(name);
+        }
+        self.state.adopted = true;
+        self.adopt_open = false;
+        self.state.save();
+        // 领养即第一次见面(规则 A / F:first_met / 第 1 天)。
+        if self.motion_on() {
+            self.begin_daily_meeting(cx);
+        }
+        cx.notify();
+    }
+
+    /// 领养卡内选品种:名字字段若仍是默认(空 / 等于旧品种名)则跟随更新。
+    fn adopt_pick(&mut self, b: Breed, cx: &mut Context<Self>) {
+        let was_default = self
+            .name_editing
+            .as_deref()
+            .map(|s| {
+                let t = s.trim();
+                t.is_empty() || t == self.adopt_breed.name_cn()
+            })
+            .unwrap_or(true);
+        self.adopt_breed = b;
+        if was_default {
+            self.name_editing = Some(b.name_cn().to_string());
+        }
+        cx.notify();
+    }
+
+    /// 跳过领养(规则 0:Esc → 缘分狗 + 默认名)。
+    fn skip_adopt(&mut self, cx: &mut Context<Self>) {
+        self.adopt_breed = Breed::random();
+        self.name_editing = None;
+        self.adopt(cx);
+    }
+
+    /// 领养卡 / 改名输入键(沿命令面板同款:打字累积、Backspace 删、Enter 确认、
+    /// Esc 取消;Tab 在领养卡里换下一只品种)。CJK 走 key_char。
+    fn on_name_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
+        cx.stop_propagation();
+        let m = &ev.keystroke.modifiers;
+        let key = ev.keystroke.key.as_str();
+        match key {
+            "escape" => {
+                if self.adopt_open {
+                    self.skip_adopt(cx);
+                } else {
+                    self.name_editing = None;
+                    cx.notify();
+                }
+            }
+            "enter" => {
+                if self.adopt_open {
+                    self.adopt(cx);
+                } else if let Some(raw) = self.name_editing.take() {
+                    self.commit_name(&raw, cx);
+                }
+            }
+            "tab" if self.adopt_open => {
+                let i = ALL_BREEDS
+                    .iter()
+                    .position(|b| *b == self.adopt_breed)
+                    .unwrap_or(0);
+                let next = ALL_BREEDS[(i + 1) % ALL_BREEDS.len()];
+                self.adopt_pick(next, cx);
+            }
+            "backspace" => {
+                if let Some(buf) = self.name_editing.as_mut() {
+                    buf.pop();
+                    cx.notify();
+                }
+            }
+            "space" if !m.control && !m.alt => {
+                if let Some(buf) = self.name_editing.as_mut() {
+                    buf.push(' ');
+                    cx.notify();
+                }
+            }
+            k if k.chars().count() == 1 && !m.control && !m.alt => {
+                let ch = ev
+                    .keystroke
+                    .key_char
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(k);
+                if let Some(buf) = self.name_editing.as_mut() {
+                    // ≤8 显示字(超出忽略;命令面板同款即时反馈)。
+                    if buf.chars().count() < 8 {
+                        buf.push_str(ch);
+                        cx.notify();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 输入栏(领养卡 / 改名共用):「名字 <buf>▌」+ ≤8 字提示。
+    fn name_field(&self) -> impl IntoElement {
+        let buf = self.name_editing.clone().unwrap_or_default();
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.))
+            .mt(px(12.))
+            .px(px(12.))
+            .py(px(8.))
+            .rounded(px(R_CARD))
+            .bg(rgb(L0))
+            .border_1()
+            .border_color(rgba(H1))
+            .font_family(SharedString::from(self.cfg.font().family.clone()))
+            .child(div().text_size(px(11.)).text_color(rgb(T2)).child("名字"))
+            .child(div().text_size(px(13.)).text_color(rgb(T0)).child(SharedString::from(buf)))
+            .child(div().text_size(px(13.)).text_color(rgb(PH)).child("▌"))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(rgb(T3))
+                    .child("中文可用 · ≤8 字"),
+            )
+    }
+
+    /// 浮层按钮(主/次):主 = 磷光描边强调。
+    fn pill(
+        label: &'static str,
+        primary: bool,
+        cb: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .px(px(16.))
+            .py(px(5.))
+            .rounded(px(R_CHIP))
+            .text_size(px(11.))
+            .border_1()
+            .border_color(rgba(if primary { PH_DIM } else { H1 }))
+            .text_color(rgb(if primary { T0 } else { T1 }))
+            .bg(rgb(if primary { L2 } else { L1 }))
+            .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
+            .child(label)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |p, _e, _w, cx| {
+                    cx.stop_propagation();
+                    cb(p, cx);
+                }),
+            )
+    }
+
+    /// 领养卡(规则 0:浮层家族 L3 + h2 边 + 投影 + 纯色 scrim)。
+    fn render_adopt_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let family = SharedString::from(self.cfg.font().family.clone());
+        let mut grid = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(6.))
+            .mt(px(10.));
+        for b in ALL_BREEDS {
+            let on = b == self.adopt_breed;
+            grid = grid.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .justify_center()
+                    .gap(px(3.))
+                    .w(px(78.))
+                    .py(px(8.))
+                    .rounded(px(R_CARD))
+                    .border_1()
+                    .border_color(rgba(if on { PH_DIM } else { H0 }))
+                    .bg(rgb(if on { L2 } else { L1 }))
+                    .when(!on, |d| d.hover(|s| s.bg(rgb(L2))))
+                    .text_size(px(11.))
+                    .text_color(rgb(if on { T0 } else { T1 }))
+                    .child(SharedString::from(b.name_cn()))
+                    .child(
+                        div()
+                            .text_size(px(8.))
+                            .text_color(rgb(if on { PH } else { T3 }))
+                            .child(SharedString::from(b.tag())),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |p, _e, _w, cx| {
+                            cx.stop_propagation();
+                            p.adopt_pick(b, cx);
+                        }),
+                    ),
+            );
+        }
+        let card = div()
+            .w(px(560.))
+            .p(px(16.))
+            .rounded(px(crate::style::R_PANEL))
+            .border_1()
+            .border_color(rgba(H2))
+            .bg(col(self.cfg.theme.ui.palette_bg))
+            .shadow(crate::style::shadow_float())
+            .font_family(family)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().text_color(rgb(PH)).child("⌂"))
+                    .child(div().text_size(px(13.)).text_color(rgb(T0)).child("领养你的搭档"))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(PH))
+                            .child("初次见面"),
+                    ),
+            )
+            .child(
+                div()
+                    .mt(px(8.))
+                    .text_size(px(11.))
+                    .text_color(rgb(T2))
+                    .child("挑一只,或交给缘分 —— 它会一直陪你写码。"),
+            )
+            .child(grid)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .mt(px(10.))
+                    .child(Self::pill(
+                        "🎲 交给缘分",
+                        false,
+                        |p, cx| {
+                            let b = Breed::random();
+                            p.adopt_pick(b, cx);
+                        },
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(T3))
+                            .child("随机只此一次 — 日常不再有随机入口"),
+                    ),
+            )
+            .child(self.name_field())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(12.))
+                    .mt(px(14.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(T3))
+                            .child("Esc 跳过(缘分狗 + 默认名)"),
+                    )
+                    .child(div().flex_1())
+                    .child(Self::pill("领养", true, |p, cx| p.adopt(cx), cx)),
+            );
+        div()
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(SCRIM))
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|p, ev: &KeyDownEvent, _w, cx| p.on_name_key(ev, cx)))
+            .on_scroll_wheel(
+                cx.listener(|_p, _e: &gpui::ScrollWheelEvent, _w, cx| cx.stop_propagation()),
+            )
+            .child(card)
+    }
+
+    /// 改名浮层(规则 0:小件,只换名字)。
+    fn render_rename_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = div()
+            .w(px(360.))
+            .p(px(16.))
+            .rounded(px(crate::style::R_PANEL))
+            .border_1()
+            .border_color(rgba(H2))
+            .bg(col(self.cfg.theme.ui.palette_bg))
+            .shadow(crate::style::shadow_float())
+            .font_family(SharedString::from(self.cfg.font().family.clone()))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(div().text_color(rgb(T2)).child("✎"))
+                    .child(div().text_size(px(12.)).text_color(rgb(T0)).child("给它改个名字")),
+            )
+            .child(self.name_field())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .mt(px(14.))
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(T3))
+                            .child("Enter 确定 · Esc 取消"),
+                    )
+                    .child(div().flex_1())
+                    .child(Self::pill(
+                        "确定",
+                        true,
+                        |p, cx| {
+                            if let Some(raw) = p.name_editing.take() {
+                                p.commit_name(&raw, cx);
+                            }
+                        },
+                        cx,
+                    )),
+            );
+        div()
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(SCRIM))
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|p, ev: &KeyDownEvent, _w, cx| p.on_name_key(ev, cx)))
+            .on_scroll_wheel(
+                cx.listener(|_p, _e: &gpui::ScrollWheelEvent, _w, cx| cx.stop_propagation()),
+            )
+            .child(card)
     }
 
     // ── 帧合成:状态变形 → quad 列表 ─────────────────────────────────────
@@ -1140,14 +1992,23 @@ impl PetView {
         let now = now_ms();
         let motion = self.motion_on();
         let sleeping = self.ctx == PetContext::Sleep;
+        // 入场时间线(规则 A 入场池):它先到了 = 现身即趴睡 → 哈欠 → 起身。
+        let ent_el = now.saturating_sub(self.entrance_start_ms);
+        let already = self.entrance == Some(Entrance::AlreadyHere);
+        let already_dur = Entrance::AlreadyHere.duration_ms();
+        let already_lie = already && ent_el < already_dur * 55 / 100;
+        let already_yawn =
+            already && ent_el >= already_dur * 55 / 100 && ent_el < already_dur * 78 / 100;
+        // 趴下姿态来源:打盹(zZ)/ 连败陪伴(无 zZ)/ 它先到了的趴睡段。
+        let lie = sleeping || self.companion_lie || already_lie;
         // 闭眼 = SHEET 05-E **方案 A(审核定稿)**:毛色衬底铺满整格 + 眼色 2px
         // 横缝贴下缘 —— 不再让眼格露出透明洞(上一版"没生效"的根因)。
-        // reduced motion 下眨眼/摸摸不触发,但 Sleep 是姿态而非动画,仍闭眼。
+        // reduced motion 下眨眼/摸摸不触发,但趴姿是姿态而非动画,仍闭眼。
         let squint =
-            (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover)) || sleeping;
+            (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover)) || lie;
         let tilt = motion && self.tilt_until_ms > now;
-        // 打盹用趴姿网格(姿态变形,SHEET 05-E):腿收起、肚皮贴岗台、头压低。
-        let (rows, eyes): (&[&'static str; 9], &[(i32, i32); 2]) = if sleeping {
+        // 趴姿网格(姿态变形,SHEET 05-E):腿收起、肚皮贴岗台、头压低。
+        let (rows, eyes): (&[&'static str; 9], &[(i32, i32); 2]) = if lie {
             (&sp.lie_rows, &sp.lie_eyes)
         } else {
             (&sp.rows, &sp.eyes)
@@ -1169,9 +2030,10 @@ impl PetView {
             PetContext::Error => 2.0,  // 垂头丧气
             _ => 0.0,
         };
-        if motion && self.ctx == PetContext::Idle && self.breath {
+        if motion && self.ctx == PetContext::Idle && !lie && self.breath {
             body_dy += 1.0; // 呼吸 1px 沉浮
         }
+        let mut body_dx = 0.0_f32;
         // 探头入场(SHEET 05-E 审核定稿):从岗台线**后面**升起 —— 全高(9 格)
         // 下沉起步、缓出上浮,线下部分由 painter 裁切;不是可见状态下的位移。
         if self.peek_until_ms > now {
@@ -1179,9 +2041,31 @@ impl PetView {
             let ease = 1.0 - (1.0 - p).powi(3);
             body_dy += (1.0 - ease) * 9.0 * CELL;
         }
+        // 入场池其余两式(规则 A):小跑从右缘滑入、天降从顶落下接回弹。
+        // (探头走上面 peek 通道;它先到了走 lie/yawn 姿态段。)
+        match self.entrance {
+            Some(Entrance::Run) => {
+                let p = (ent_el as f32 / 600.0).min(1.0);
+                let ease = 1.0 - (1.0 - p).powi(3);
+                body_dx += (1.0 - ease) * 44.0; // 起步在右 44px → 滑入到位
+            }
+            Some(Entrance::Drop) => {
+                let dur = Entrance::Drop.duration_ms() as f32;
+                let p = (ent_el as f32 / dur).min(1.0);
+                if p < 0.78 {
+                    let q = p / 0.78;
+                    let ease = 1.0 - (1.0 - q).powi(3);
+                    body_dy += (1.0 - ease) * -60.0; // 从高处落下
+                } else {
+                    let q = (p - 0.78) / 0.22; // 落地三帧律:压 1.5px → 回正
+                    body_dy += 1.5 * (1.0 - q);
+                }
+            }
+            _ => {}
+        }
         // 趴姿呼吸:背部隆起 1px —— 上半身(行 ≤6)上移,行 7 拉高 1px 补缝,
         // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
-        let inhale = sleeping && motion && self.breath;
+        let inhale = lie && motion && self.breath;
 
         for (y, row) in rows.iter().enumerate() {
             let y = y as i32;
@@ -1190,14 +2074,14 @@ impl PetView {
                 let Some(color) = pixel_color(ch) else {
                     continue;
                 };
-                let mut dx = 0.0_f32;
+                let mut dx = body_dx;
                 let mut dy = body_dy;
                 let ws = 1.0_f32;
                 let mut hs = 1.0_f32;
                 let is_eye = eyes.contains(&(x, y));
-                let is_ear = !sleeping && sp.ears.contains(&(x, y));
-                let is_tail = !sleeping && sp.tail.contains(&(x, y));
-                let is_leg = !sleeping && y == 8;
+                let is_ear = !lie && sp.ears.contains(&(x, y));
+                let is_tail = !lie && sp.tail.contains(&(x, y));
+                let is_leg = !lie && y == 8;
 
                 if inhale {
                     if y <= 6 {
@@ -1296,26 +2180,42 @@ impl PetView {
                 out.push((x, y, color, dx, dy, ws, hs));
             }
         }
-        // Success:头顶冒像素小心(ok 色 ~5×5,SHEET 05 `.updot`)。
+        const HEART: u32 = 0xF08C98; // 像素爱心粉(宠物专属调色,非语义色)
+        // Success:头顶冒像素小心;提交时刻(共情 4)改冒单爱心(规则 E)。
         if self.ctx == PetContext::Success {
-            out.push((9, -1, OK, 2.0, body_dy, 0.8, 0.8));
+            let c = if self.empathy_kind == 4 { HEART } else { OK };
+            out.push((9, -1, c, 2.0 + body_dx, body_dy, 0.8, 0.8));
         }
         // 玩耍(定稿):头顶双爱心 #F08C98,随相位交替闪(reduced motion 双亮静帧)。
         if self.ctx == PetContext::Play {
-            const HEART: u32 = 0xF08C98; // 像素爱心粉(宠物专属调色,非语义色)
             if !motion || self.phase {
-                out.push((9, -1, HEART, 2.0, body_dy, 0.8, 0.8));
+                out.push((9, -1, HEART, 2.0 + body_dx, body_dy, 0.8, 0.8));
             }
             if !motion || !self.phase {
-                out.push((11, -2, HEART, 1.0, body_dy, 0.65, 0.65));
+                out.push((11, -2, HEART, 1.0 + body_dx, body_dy, 0.65, 0.65));
             }
         }
-        // 打盹:头顶 zZ(t2 弱灰小方,3px/4px,随呼吸相位上浮 — 审核稿)。
+        // 打盹:头顶 zZ(t2 弱灰小方);连败陪伴/它先到了的趴睡不出 zZ。
         if sleeping {
             const ZZ: u32 = 0x69748E; // t2 弱文灰
             let lift = if motion && self.breath { -2.0 } else { 0.0 };
             out.push((11, 3, ZZ, 0.0, 2.0 + lift, 0.5, 0.5));
             out.push((12, 1, ZZ, 3.0, 4.0 + lift * 1.5, 0.65, 0.65));
+        }
+        // 哈欠(规则 A 深夜问候 / 它先到了察觉段):鼻下张口 → 半闭,接闭眼方案 A。
+        let yawn_open = if already_yawn {
+            Some(0.7)
+        } else if motion && self.yawn_until_ms > now {
+            // 总 850ms:张口 600(剩余 >250)→ 半闭 250(剩余 ≤250)。
+            Some(if self.yawn_until_ms - now > 250 { 0.7 } else { 0.3 })
+        } else {
+            None
+        };
+        if let Some(o) = yawn_open {
+            let my = (eyes[0].1 + 1).min(7); // 鼻下一行
+            let dy = body_dy + if lie { 0.0 } else { 1.0 };
+            out.push((6, my, 0x323F49, body_dx, dy, 0.8, o));
+            out.push((7, my, 0x323F49, body_dx + CELL * 0.2, dy, 0.8, o));
         }
         // ③ 追尾转圈(规则 C):整身水平镜像 —— 翻转即「转身」,零新网格。
         // 用慢子相位在 1.5s 内翻 ~2 次;镜像 x 与 dx 同时取反。
@@ -1460,7 +2360,7 @@ impl Render for PetView {
                 .text_color(rgb(T3))
                 .child(SharedString::from(format!(
                     "{} · {}",
-                    self.breed.tag(),
+                    self.display_name(),
                     self.ctx.tag()
                 )))
         });
@@ -1560,11 +2460,27 @@ impl Render for PetView {
                     )
             };
             let sep = || div().h(px(1.)).mx(px(6.)).my(px(4.)).bg(rgba(H1));
+            let grp = |label: &'static str| {
+                div()
+                    .px(px(10.))
+                    .pt(px(4.))
+                    .pb(px(2.))
+                    .text_size(px(9.))
+                    .text_color(rgb(T3))
+                    .child(label)
+            };
+            // 档案只读行(规则 F:名字 · 品种 · 在一起第 N 天;平时不展示、不提醒)。
+            let archive = format!(
+                "{} · {} · 在一起第 {} 天",
+                self.display_name(),
+                self.breed.name_cn(),
+                self.state.days_together.max(1),
+            );
             let mut menu = div()
                 .absolute()
                 .right(px(right + box_w - 10.))
                 .bottom(px(bottom + 6.))
-                .w(px(190.))
+                .w(px(200.))
                 .p(px(5.))
                 .rounded(px(crate::style::R_PANEL))
                 .border_1()
@@ -1575,15 +2491,31 @@ impl Render for PetView {
                     MouseButton::Left,
                     cx.listener(|_p, _e, _w, cx| cx.stop_propagation()),
                 )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.))
+                        .h(px(26.))
+                        .px(px(10.))
+                        .text_size(px(11.))
+                        .text_color(rgb(T2))
+                        .child(div().text_color(rgb(PH)).child("⌂"))
+                        .child(SharedString::from(archive)),
+                )
+                .child(sep())
                 .child(mi(
-                    "随机刷新",
-                    "↻",
-                    PH,
-                    Box::new(|p, cx| p.refresh_random(cx)),
+                    "改名…",
+                    "✎",
+                    T2,
+                    Box::new(|p, cx| p.begin_rename(cx)),
                     cx,
                 ))
-                .child(sep());
-            // 品种架内联(七犬直选;当前 = 磷光标)。
+                .child(sep())
+                .child(grp("换个形象"));
+            // 品种架内联(七犬直选;当前 = 磷光标)。换个形象只改外观,名字与
+            // 档案延续(规则 0);「随机刷新」已废除(持续性老虎机瓦解身份感)。
             for b in ALL_BREEDS {
                 let on = b == self.breed;
                 menu = menu.child(
@@ -1666,9 +2598,23 @@ impl Render for PetView {
             menu
         });
 
+        // 浮层刚打开 → 下一帧抓焦点(领养卡 / 改名输入键盘可达)。
+        if self.grab_focus {
+            window.focus(&self.focus);
+            self.grab_focus = false;
+        }
+
+        // ── 领养卡(规则 0:首次启用宠物的一次性领养仪式;浮层家族)──
+        let adopt_card = self.adopt_open.then(|| self.render_adopt_card(cx));
+        // ── 改名浮层(规则 0:随时可改,档案不动)──
+        let rename_card = (!self.adopt_open && self.name_editing.is_some())
+            .then(|| self.render_rename_card(cx));
+
         // 拖拽中:根容器接管 move/up(离开本体也能继续拖);否则根保持穿透。
         root.child(pet_box)
             .when_some(menu, |d, m| d.child(m))
+            .when_some(adopt_card, |d, c| d.child(c))
+            .when_some(rename_card, |d, c| d.child(c))
             .when(dragging, |d| {
                 d.occlude()
                     .on_mouse_move(cx.listener(move |pet, ev: &MouseMoveEvent, _w, cx| {
@@ -1763,6 +2709,48 @@ mod tests {
                 b
             );
         }
+    }
+
+    /// 每日见面入场池(规则 A):每犬入场权重非空,保证总能选出一式。
+    #[test]
+    fn entrance_weights_nonempty() {
+        for b in ALL_BREEDS {
+            assert!(
+                b.personality().entrance_weights.iter().any(|w| *w > 0),
+                "{:?} must have at least one entrance style",
+                b
+            );
+        }
+    }
+
+    /// 时段问候(规则 A 词表)按本地小时分段。
+    #[test]
+    fn day_part_buckets() {
+        assert_eq!(DayPart::from_hour(7).greeting(), "早!");
+        assert_eq!(DayPart::from_hour(12).greeting(), "来啦!");
+        assert_eq!(DayPart::from_hour(20).greeting(), "晚上好");
+        assert_eq!(DayPart::from_hour(2).greeting(), "夜深了…");
+        assert!(DayPart::from_hour(23).is_night());
+        assert!(!DayPart::from_hour(9).is_night());
+    }
+
+    /// 里程碑词(规则 F):只在 7/30/100/365 触发,其余无。
+    #[test]
+    fn milestones_only_on_anniversaries() {
+        assert_eq!(PetView::milestone_word(7), Some("第 7 天!"));
+        assert_eq!(PetView::milestone_word(365), Some("一周年!"));
+        assert_eq!(PetView::milestone_word(8), None);
+        assert_eq!(PetView::milestone_word(1), None);
+    }
+
+    /// 提交时刻(规则 E):仅 `git commit` / `git push` 开头(结构化首词)。
+    #[test]
+    fn commit_detection_is_first_two_tokens() {
+        assert!(cmd_is_commit("git commit -m \"x\""));
+        assert!(cmd_is_commit("git push origin main"));
+        assert!(!cmd_is_commit("git status"));
+        assert!(!cmd_is_commit("cargo test"));
+        assert!(!cmd_is_commit("echo git commit"));
     }
 
     /// 垂耳犬不得对「竖耳听声」赋权(规则 C:0 = 不做该动作),否则会触发

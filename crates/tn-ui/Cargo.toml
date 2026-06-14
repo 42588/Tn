@@ -48,4 +48,5 @@ windows = { workspace = true, features = [
     "Win32_System_Diagnostics_Debug", # MessageBeep (audio bell)
     "Win32_System_LibraryLoader",     # GetModuleHandleW (tray window class registration)
     "Win32_UI_Input_Ime",             # ImmAssociateContextEx — disable IME for SSH prompt
+    "Win32_System_SystemInformation", # GetLocalTime — 宠物每日见面 / 时段问候 / 羁绊档案(本地自然日)
 ] }

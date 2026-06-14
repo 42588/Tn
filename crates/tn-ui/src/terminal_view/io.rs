@@ -179,6 +179,10 @@ impl TerminalView {
                                 // 宠物上下文信号:结构化 OSC 133 命令生命周期
                                 // (Running/Success/Error 演出;只读,不反向影响)。
                                 match &ev {
+                                    tn_shell::BlockEvent::CommandLine(cmd) => {
+                                        // 共情提交判定用结构化命令行(规则 E);只读。
+                                        pet_run.command_line(cmd);
+                                    }
                                     tn_shell::BlockEvent::OutputStart => {
                                         pet_run.command_start();
                                     }
