@@ -26,6 +26,14 @@ fn main() {
         return;
     }
 
+    // Embed the app icon as a Win32 resource so tn.exe — and therefore the
+    // taskbar button, Explorer, Alt-Tab, and the title bar — shows the Tn brand
+    // mark instead of the generic default. The runtime WM_SETICON (platform.rs)
+    // only dresses a live window; the exe resource covers every surface and is
+    // the canonical fix. Arch-independent, so it runs before the arch logic.
+    #[cfg(windows)]
+    embed_app_icon();
+
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let sub = match arch.as_str() {
         "x86_64" => "x64",
@@ -72,6 +80,19 @@ fn main() {
                 println!("cargo:warning=tn-app: failed to copy {} -> {}: {e}", src.display(), dst.display());
             }
         }
+    }
+}
+
+/// Compile the Tn icon into tn.exe as the default application icon resource.
+#[cfg(windows)]
+fn embed_app_icon() {
+    let icon = "../tn-ui/assets/tn.ico";
+    println!("cargo:rerun-if-changed={icon}");
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(icon);
+    if let Err(e) = res.compile() {
+        // Non-fatal: a missing icon is cosmetic. Surface it so it isn't silent.
+        println!("cargo:warning=tn-app: failed to embed app icon resource: {e}");
     }
 }
 

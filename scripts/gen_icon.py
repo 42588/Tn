@@ -1,179 +1,151 @@
-"""Generate tn.ico — Tn application icon.
+"""Generate tn.ico — the Tn application icon (磷光 Phosphor language).
 
-Replicates the title-bar brand mark: a rounded square with a 145° gradient
-(accent #7AA2F7 → accent_alt #BB9AF7) and the "term" line-icon (>_ prompt) in
-chrome_bg (#0E0F19) on top.
+Design (replaces the old Tokyo-Night blue→purple gradient):
+  • Chassis: an opaque, rounded-square instrument plate. Depth comes from a
+    subtle vertical elevation (L1 #141926 → L0 #0B0E16) plus a 1px cool hairline
+    edge — structure, not light pollution. No glow, no flashy gradient.
+  • Mark: the single phosphor life color #5BE7C4 (cursor/run/focus) as a terminal
+    prompt — a `>` chevron followed by a solid block cursor. The block cursor is
+    literally the "live thing" the phosphor color is reserved for.
 
-Output sizes: 16, 32, 48, 256 px — BMP/DIB entries (traditional ICO format,
-guaranteed to work with CreateIconFromResourceEx regardless of Windows version).
+Output sizes: 16/24/32/48/64/128/256 px, BMP/DIB entries (traditional ICO,
+works with LoadImageW and as an embedded Win32 resource on every Windows
+version). Run: python scripts/gen_icon.py
 """
 
-import math
 import struct
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-
-# ── theme colours (Tn Dark) ──
-ACCENT = (0x7A, 0xA2, 0xF7)       # #7AA2F7  blue
-ACCENT_ALT = (0xBB, 0x9A, 0xF7)   # #BB9AF7  purple
-CHROME_BG = (0x0E, 0x0F, 0x19)    # dark silhouette for the prompt glyph
-CORNER_RADIUS_RATIO = 7.0 / 21.0   # 7px on a 21×21 block
-GRADIENT_ANGLE = 145.0             # clockwise from 3-oʼclock
-
-
-# ── helpers ──
-
-def draw_brand(r: int) -> Image.Image:
-    """Return an RGBA `r×r` image of the rounded gradient square."""
-    img = Image.new("RGBA", (r, r), (0, 0, 0, 0))
-    # Anti-aliased rounded-rect mask
-    mask = Image.new("L", (r * 4, r * 4), 0)
-    mask_draw = ImageDraw.Draw(mask)
-    rad = int(CORNER_RADIUS_RATIO * r * 4)
-    mask_draw.rounded_rectangle([0, 0, r * 4 - 1, r * 4 - 1], radius=rad, fill=255)
-    mask = mask.resize((r, r), Image.LANCZOS)
-
-    # Gradient layer (linear, 145°)
-    grad = Image.new("RGBA", (r, r))
-    angle_rad = math.radians(GRADIENT_ANGLE)
-    dx, dy = math.cos(angle_rad), math.sin(angle_rad)
-    proj_len = r * abs(dx) + r * abs(dy)
-
-    for y in range(r):
-        for x in range(r):
-            t = ((x + 0.5) * dx + (y + 0.5) * dy) / max(proj_len, 1.0)
-            t = max(0.0, min(1.0, t + 0.5))
-            cr = int(ACCENT[0] + (ACCENT_ALT[0] - ACCENT[0]) * t)
-            cg = int(ACCENT[1] + (ACCENT_ALT[1] - ACCENT[1]) * t)
-            cb = int(ACCENT[2] + (ACCENT_ALT[2] - ACCENT[2]) * t)
-            grad.putpixel((x, y), (cr, cg, cb, 255))
-
-    img.paste(grad, (0, 0), mask)
-    return img
+# ── 磷光 palette (design/phosphor.css :root) ──
+PHOSPHOR = (0x5B, 0xE7, 0xC4)      # #5BE7C4  the single life color (cursor)
+PLATE_TOP = (0x16, 0x1B, 0x29)     # slightly lifted L1 — top of the chassis
+PLATE_BOT = (0x0B, 0x0E, 0x16)     # #0B0E16  L0 chassis floor — bottom
+HAIRLINE = (0x34, 0x3E, 0x52)      # cool seam edge (h1-ish), opaque-ish
+CORNER_RADIUS_RATIO = 0.235        # rounded-square chassis
+SS = 4                             # supersampling for anti-aliasing
 
 
-def draw_term_icon(size: int) -> Image.Image:
-    """Return an RGBA `size×size` image of the terminal prompt glyph.
+def _lerp(a, b, t):
+    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
-    The SVG (viewBox 0 0 24 24):
-      - chevron `<`:  M5 7.5 L 9.5 12 L 5 16.5
-      - prompt line:  M12.5 16.5 h6.5
-    """
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
 
-    def sx(x24: float) -> float:
-        return x24 / 24.0 * size
+def render(size: int) -> Image.Image:
+    """Render the icon at `size`×`size` (RGBA), supersampled then downscaled."""
+    s = size * SS
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
 
-    def sy(y24: float) -> float:
-        return y24 / 24.0 * size
-
-    sw = max(1.0, 2.2 / 24.0 * size)
-    color = CHROME_BG + (255,)
-
-    chev = [(sx(5.0), sy(7.5)), (sx(9.5), sy(12.0)), (sx(5.0), sy(16.5))]
-    draw.line(chev, fill=color, width=max(1, round(sw)), joint="curve")
-
-    draw.line(
-        [(sx(12.5), sy(16.5)), (sx(19.0), sy(16.5))],
-        fill=color, width=max(1, round(sw)),
+    # Rounded-rect chassis mask.
+    mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(mask).rounded_rectangle(
+        [0, 0, s - 1, s - 1], radius=int(CORNER_RADIUS_RATIO * s), fill=255
     )
-    return img
+
+    # Vertical elevation fill (opaque, dark — depth, not glow).
+    grad = Image.new("RGBA", (s, s))
+    gpx = grad.load()
+    for y in range(s):
+        r, g, b = _lerp(PLATE_TOP, PLATE_BOT, y / (s - 1))
+        for x in range(s):
+            gpx[x, y] = (r, g, b, 255)
+    img.paste(grad, (0, 0), mask)
+
+    # 1px cool hairline edge (precision-instrument seam).
+    border = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(border).rounded_rectangle(
+        [SS // 2, SS // 2, s - 1 - SS // 2, s - 1 - SS // 2],
+        radius=int(CORNER_RADIUS_RATIO * s) - SS // 2,
+        outline=HAIRLINE + (235,),
+        width=SS,
+    )
+    img = Image.alpha_composite(img, border)
+
+    # Phosphor mark: `>` chevron + block cursor.
+    mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    md = ImageDraw.Draw(mark)
+    ph = PHOSPHOR + (255,)
+
+    def p(fx, fy):
+        return (fx * s, fy * s)
+
+    # Chevron `>` — polyline with a rounded inner join + round outer caps.
+    w_chev = 0.082 * s
+    top, tip, bot = p(0.300, 0.345), p(0.480, 0.505), p(0.300, 0.665)
+    md.line([top, tip, bot], fill=ph, width=max(1, round(w_chev)), joint="curve")
+    rcap = w_chev / 2.0
+    for cx, cy in (top, bot):
+        md.ellipse([cx - rcap, cy - rcap, cx + rcap, cy + rcap], fill=ph)
+
+    # Solid block cursor after the prompt — the live element.
+    bl, bt, br, bb = p(0.560, 0.450), 0, p(0.730, 0.665), 0
+    rad = 0.03 * s
+    md.rounded_rectangle(
+        [bl[0], 0.450 * s, br[0], 0.665 * s], radius=rad, fill=ph
+    )
+
+    img = Image.alpha_composite(img, mark)
+    return img.resize((size, size), Image.LANCZOS)
 
 
-# ── ICO packing (BMP / DIB entries) ──
+# ── ICO packing (BMP / DIB entries — the traditional, maximally compatible form) ──
 
 def write_ico(images: dict[int, Image.Image], dest: Path):
-    """Write a .ico file with BMP/DIB entries — the traditional format.
-    Each entry = BITMAPINFOHEADER (40 bytes) + XOR bitmap (BGRA, bottom-up)
-    + AND mask (all zeros — we use 32-bit alpha transparency)."""
-
-    entries = []       # ICONDIRENTRY structs (16 bytes each)
-    image_data = []    # raw DIB per entry
-
+    entries, image_data = [], []
     for sz, img in sorted(images.items()):
         w, h = img.size
-        pixels = list(img.getdata())  # list of (R, G, B, A)
-
-        # XOR bitmap: BGRA, bottom-up
+        px = list(img.getdata())
         xor = bytearray()
         for y in range(h - 1, -1, -1):
             for x in range(w):
-                r, g, b, a = pixels[y * w + x]
+                r, g, b, a = px[y * w + x]
                 xor.extend([b, g, r, a])
-
-        # AND mask: each row is ((w + 31) // 32) * 4 bytes, all zeros
-        and_row = ((w + 31) // 32) * 4
-        and_mask = bytearray(and_row * h)
-
-        # BITMAPINFOHEADER (biHeight = h * 2 = XOR + AND combined)
+        and_mask = bytearray(((w + 31) // 32) * 4 * h)
         bih = struct.pack(
-            "<IiiHHIIiiII",
-            40,       # biSize
-            w,        # biWidth
-            h * 2,    # biHeight (XOR rows + AND rows)
-            1,        # biPlanes
-            32,       # biBitCount (BGRA)
-            0,        # biCompression (BI_RGB)
-            0,        # biSizeImage (ok to be 0 for BI_RGB)
-            0, 0,     # biXPelsPerMeter / biYPelsPerMeter
-            0, 0,     # biClrUsed / biClrImportant
+            "<IiiHHIIiiII", 40, w, h * 2, 1, 32, 0, 0, 0, 0, 0, 0
         )
         dib = bytes(bih) + bytes(xor) + bytes(and_mask)
         image_data.append(dib)
-
         entries.append(struct.pack(
             "<BBBBHHII",
-            sz if sz < 256 else 0,   # bWidth  (0 = 256)
-            sz if sz < 256 else 0,   # bHeight
-            0,                        # bColorCount
-            0,                        # bReserved
-            1,                        # wPlanes
-            32,                       # wBitCount
-            len(dib),                 # dwBytesInRes
-            0,                        # dwImageOffset (patched below)
+            sz if sz < 256 else 0, sz if sz < 256 else 0, 0, 0, 1, 32, len(dib), 0,
         ))
 
-    # ICO header: reserved (2) + type=ICO (2) + count (2)
     header = struct.pack("<HHH", 0, 1, len(entries))
-
-    dir_size = 6 + 16 * len(entries)
-    offset = dir_size
-    final_entries = b""
+    offset = 6 + 16 * len(entries)
+    final = b""
     for i, entry in enumerate(entries):
         bw, bh, bc, br, wp, wbc, sz, _ = struct.unpack("<BBBBHHII", entry)
-        final_entries += struct.pack("<BBBBHHII", bw, bh, bc, br, wp, wbc, sz, offset)
+        final += struct.pack("<BBBBHHII", bw, bh, bc, br, wp, wbc, sz, offset)
         offset += len(image_data[i])
 
     with open(dest, "wb") as f:
         f.write(header)
-        f.write(final_entries)
+        f.write(final)
         for dib in image_data:
             f.write(dib)
+    print(f"  wrote {dest} — {offset} bytes, sizes {sorted(images)}")
 
-    total = offset
-    print(f"  wrote {dest} — {total} bytes, {len(entries)} BMP entries: {sorted(images.keys())}")
-
-
-# ── main ──
 
 def main():
     root = Path(__file__).resolve().parent.parent
     dest = root / "crates" / "tn-ui" / "assets" / "tn.ico"
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    sizes = [16, 32, 48, 256]
-    images: dict[int, Image.Image] = {}
-
+    sizes = [16, 24, 32, 48, 64, 128, 256]
+    images = {sz: render(sz) for sz in sizes}
     for sz in sizes:
-        bg = draw_brand(sz)
-        fg = draw_term_icon(sz)
-        img = Image.alpha_composite(bg, fg)
-        images[sz] = img
         print(f"  rendered {sz}×{sz}")
-
     write_ico(images, dest)
+
+    # Preview: the 256 icon + the actual 16px pixels (nearest-scaled ×8) so small-
+    # size legibility can be eyeballed. Written to a temp PNG, not shipped.
+    prev = Image.new("RGBA", (256 + 16 * 8 + 24, 256), (24, 28, 38, 255))
+    prev.alpha_composite(images[256], (0, 0))
+    prev.alpha_composite(images[16].resize((128, 128), Image.NEAREST), (256 + 24, 64))
+    import tempfile
+    preview_path = Path(tempfile.gettempdir()) / "tn_icon_preview.png"
+    prev.convert("RGB").save(preview_path)
+    print("  preview →", preview_path)
     print("done →", dest)
 
 
