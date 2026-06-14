@@ -11,7 +11,7 @@ members = [
     "crates/tn-ai",
     "crates/tn-cli",
     "crates/tn-ui",
-    "crates/tn-app", "test_load",
+    "crates/tn-app",
 ]
 
 [workspace.package]
