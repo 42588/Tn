@@ -448,7 +448,122 @@ impl Breed {
         }
         b
     }
+
+    /// 性格参数(规则 D · SHEET 05 板 C/D)。表即实现 —— 只调参数与权重,
+    /// 无品种私有代码路径。
+    fn personality(self) -> &'static Personality {
+        match self {
+            Breed::Westie => &P_WESTIE,
+            Breed::Golden => &P_GOLDEN,
+            Breed::Shepherd => &P_SHEPHERD,
+            Breed::Bichon => &P_BICHON,
+            Breed::Maltese => &P_MALTESE,
+            Breed::ShihTzu => &P_SHIHTZU,
+            Breed::Poodle => &P_POODLE,
+        }
+    }
 }
+
+// ═══════════════════════════ 性格系统(规则 D) ════════════════════════════
+//
+// 参数化性格让「换一只狗」=「换一种陪伴感」。性格只调演出参数与权重,绝不做
+// 数值差异(没有「更好的狗」)。常量表 = 实现,新增品种只加一行。
+
+/// 一只狗的性格参数(规则 D SPEC 表逐列)。
+struct Personality {
+    /// 眨眼间隔区间(ms;Idle 下伪随机取值)。
+    blink_min_ms: u64,
+    blink_max_ms: u64,
+    /// Idle 尾摆基础幅度(px);Running/Play 另有更大固定幅度。
+    tail_amp: f32,
+    /// 打盹阈值(ms):长空闲超过即趴下(西施最爱睡 45s,德牧站岗 180s)。
+    sleep_after_ms: u64,
+    /// 口癖气泡(规则 D);空串 = 不出声(德牧:以点头 1 格代替)。
+    bark: &'static str,
+    /// 六个 idle 微动作权重,顺序同 [`MICRO_ALL`]
+    /// (① 抓痒 ② 舔爪 ③ 追尾 ④ 竖耳 ⑤ 望屏外 ⑥ 伸懒腰);
+    /// 0 = 该品种不做(如垂耳犬的竖耳听声),避免触发不可见动作。
+    micro_weights: [u8; 6],
+}
+
+// 数值取自规则.md / SHEET 05 板 C 的「性格参数表」。
+const P_WESTIE: Personality = Personality {
+    blink_min_ms: 4_000,
+    blink_max_ms: 6_000,
+    tail_amp: 1.0,
+    sleep_after_ms: 120_000,
+    bark: "汪!",
+    micro_weights: [1, 1, 1, 3, 3, 1], // 竖耳听声 · 望屏外
+};
+const P_GOLDEN: Personality = Personality {
+    blink_min_ms: 5_000,
+    blink_max_ms: 8_000,
+    tail_amp: 2.0,
+    sleep_after_ms: 90_000,
+    bark: "汪~",
+    micro_weights: [1, 3, 1, 0, 1, 3], // 伸懒腰 · 舔爪(垂耳:不竖耳)
+};
+const P_SHEPHERD: Personality = Personality {
+    blink_min_ms: 6_000,
+    blink_max_ms: 9_000,
+    tail_amp: 1.0,
+    sleep_after_ms: 180_000,
+    bark: "", // 不出声,点头 1 格
+    micro_weights: [1, 1, 1, 4, 1, 1], // 竖耳听声(高频)
+};
+const P_BICHON: Personality = Personality {
+    blink_min_ms: 4_000,
+    blink_max_ms: 7_000,
+    tail_amp: 2.0,
+    sleep_after_ms: 90_000,
+    bark: "汪汪!",
+    micro_weights: [1, 1, 4, 0, 1, 1], // 追尾转圈(高频)
+};
+const P_MALTESE: Personality = Personality {
+    blink_min_ms: 5_000,
+    blink_max_ms: 8_000,
+    tail_amp: 1.0,
+    sleep_after_ms: 60_000,
+    bark: "…汪",
+    micro_weights: [1, 3, 1, 0, 1, 3], // 舔爪 · 伸懒腰
+};
+const P_SHIHTZU: Personality = Personality {
+    blink_min_ms: 6_000,
+    blink_max_ms: 10_000,
+    tail_amp: 1.0,
+    sleep_after_ms: 45_000,
+    bark: "呼…",
+    micro_weights: [1, 2, 1, 0, 1, 4], // 伸懒腰(高频) · 舔爪
+};
+const P_POODLE: Personality = Personality {
+    blink_min_ms: 4_000,
+    blink_max_ms: 6_000,
+    tail_amp: 3.0,
+    sleep_after_ms: 120_000,
+    bark: "汪!汪!",
+    micro_weights: [3, 1, 3, 0, 1, 1], // 追尾转圈 · 抓痒
+};
+
+/// 活物引擎 idle 微动作池(规则 C)。顺序固定,与 [`Personality::micro_weights`]
+/// 一一对应。全部由既有 dx/dy/镜像 变换实现,无新网格。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Micro {
+    Scratch,  // ① 抓痒:后腿格上抬快抖
+    Lick,     // ② 舔爪:头低 1 格 + 前爪上抬
+    Spin,     // ③ 追尾转圈:整身水平镜像(翻转即转身,零新网格)
+    EarPerk,  // ④ 竖耳听声:双耳 +1 格保持
+    LookAway, // ⑤ 望屏外:头部右移 1 格
+    Stretch,  // ⑥ 伸懒腰:前低后高(头 +1px / 尾 −1px)
+}
+
+const MICRO_ALL: [Micro; 6] = [
+    Micro::Scratch,
+    Micro::Lick,
+    Micro::Spin,
+    Micro::EarPerk,
+    Micro::LookAway,
+    Micro::Stretch,
+];
 
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
@@ -484,12 +599,15 @@ impl PetContext {
     }
 }
 
-/// 长空闲(无键入/无运行/无互动)超过此时长 → Sleep 打盹(设计.md `sleep`)。
-const SLEEP_AFTER_MS: u64 = 90_000;
 /// 双击逗弄的玩耍窗口(设计.md `play`:蹦跳 + 爱心)。
 const PLAY_MS: u64 = 1400;
 /// 探头入场窗口(SHEET 05-E:从岗台线后升起,全高裁切,~500ms 缓出)。
 const PEEK_MS: u64 = 500;
+/// idle 微动作单次时长(规则 C:做完 ≤1.5s 回 idle)。
+const MICRO_MS: u64 = 1500;
+/// 微动作随机触发间隔下限 / 抖动跨度(规则 C:20–60s 随机一个)。
+const MICRO_GAP_MIN_MS: u64 = 20_000;
+const MICRO_GAP_SPAN_MS: u64 = 40_000;
 
 // ═══════════════════════════ 持久化(用户状态,不入项目配置) ═══════════════
 
@@ -591,7 +709,20 @@ pub struct PetView {
     play_until_ms: u64,
     /// 探头入场窗口终点(现身/换品种/欢迎切换;规则「探头」)。
     peek_until_ms: u64,
-    /// 最近一次「有事发生」(键入/运行/互动)的时刻;超 [`SLEEP_AFTER_MS`] → Sleep。
+    /// 点头(德牧单击代替「汪」;规则 D「不出声,点头 1 格」)窗口终点。
+    nod_until_ms: u64,
+    /// 活物引擎(规则 C):当前 idle 微动作 + 其窗口终点。
+    micro: Option<Micro>,
+    micro_until_ms: u64,
+    /// 上一个微动作(避免连续两次同一动作;规则 C)。
+    last_micro: Option<Micro>,
+    /// 下一次微动作的最早触发时刻(20–60s 随机节拍)。
+    next_micro_ms: u64,
+    /// 最近两次微动作时刻(打扰预算:≤2 次/分钟)。
+    micro_times: [u64; 2],
+    /// 性格/微动作/眨眼用的伪随机种子(无外部 rng 依赖)。
+    rng: u64,
+    /// 最近一次「有事发生」(键入/运行/互动)的时刻;超品种打盹阈值 → Sleep。
     idle_since_ms: u64,
     /// 气泡:文本 + 消散时刻(2s 规则)。
     bubble: Option<(SharedString, u64)>,
@@ -620,6 +751,17 @@ impl PetView {
             tilt_until_ms: 0,
             play_until_ms: 0,
             peek_until_ms: now + PEEK_MS, // 初次现身也探头
+            nod_until_ms: 0,
+            micro: None,
+            micro_until_ms: 0,
+            last_micro: None,
+            next_micro_ms: now + MICRO_GAP_MIN_MS,
+            micro_times: [0, 0],
+            rng: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(1)
+                | 1,
             idle_since_ms: now,
             bubble: None,
             hover: false,
@@ -666,6 +808,8 @@ impl PetView {
             self.bubble.is_some(),
             self.tilt_until_ms > now,
             self.peek_until_ms > now,
+            self.micro,
+            self.nod_until_ms > now,
         );
 
         // ── 上下文推导(优先级 Drag > Play > Error/Success > Running > Typing >
@@ -689,14 +833,21 @@ impl PetView {
             PetContext::Typing
         } else if self.hover {
             PetContext::Hover
-        } else if now.saturating_sub(self.idle_since_ms) > SLEEP_AFTER_MS {
-            PetContext::Sleep // 趴下打盹 + zZ(设计.md `sleep`)
+        } else if now.saturating_sub(self.idle_since_ms)
+            > self.breed.personality().sleep_after_ms
+        {
+            PetContext::Sleep // 趴下打盹 + zZ(设计.md `sleep`;阈值按品种 — 规则 D)
         } else {
             PetContext::Idle
         };
         // 任何非纯空闲状态都刷新活动时刻(醒着就不计入打盹倒计时)。
         if !matches!(self.ctx, PetContext::Idle | PetContext::Sleep) {
             self.idle_since_ms = now;
+        }
+        // 专注保护(规则 C):离开 Idle 立即弃帧 —— 微动作不在 Typing/Running/
+        // Hover/Sleep 期间残留。
+        if self.ctx != PetContext::Idle {
+            self.micro = None;
         }
 
         if self.motion_on() {
@@ -708,11 +859,37 @@ impl PetView {
             }
             // 呼吸:~2s 沉浮(Sleep 复用为 zZ 喘息相位)。
             self.breath = (now / 1920) % 2 == 0;
-            // 眨眼:4–8s 随机间隔,130ms 一帧(规则)。
+            // 眨眼:间隔按品种(规则 D 眨眼间隔列),160ms 一帧。
             if self.ctx == PetContext::Idle && now >= self.next_blink_ms {
                 self.blink_until_ms = now + 160;
-                self.next_blink_ms = now + 4000 + (now % 4000); // 4–8s 伪随机
+                let p = self.breed.personality();
+                let span = (p.blink_max_ms - p.blink_min_ms).max(1);
+                self.next_blink_ms = now + p.blink_min_ms + self.next_rand() % span;
             }
+            // 活物引擎(规则 C):Idle 下 20–60s 随机触发一个微动作。
+            // 专注保护:只在纯 Idle、无探头、无气泡时;打扰预算 ≤2 次/分钟。
+            if self.ctx == PetContext::Idle
+                && self.micro.is_none()
+                && self.peek_until_ms <= now
+                && self.bubble.is_none()
+                && now >= self.next_micro_ms
+            {
+                if self.micro_budget_ok(now) {
+                    if let Some(m) = self.pick_micro() {
+                        self.micro = Some(m);
+                        self.micro_until_ms = now + MICRO_MS;
+                        self.last_micro = Some(m);
+                        self.micro_times = [self.micro_times[1], now];
+                        Self::spawn_micro_driver(cx);
+                    }
+                }
+                // 无论是否成功触发,都排下一拍(避免每 tick 重试)。
+                self.next_micro_ms = now + MICRO_GAP_MIN_MS + self.next_rand() % MICRO_GAP_SPAN_MS;
+            }
+        }
+        // 微动作到点收尾,回 idle(driver 也会清,这里兜底)。
+        if self.micro.is_some() && now >= self.micro_until_ms {
+            self.micro = None;
         }
         // 气泡 2s 消散(规则)。
         if let Some((_, until)) = &self.bubble {
@@ -729,6 +906,8 @@ impl PetView {
             self.bubble.is_some(),
             self.tilt_until_ms > now,
             self.peek_until_ms > now,
+            self.micro,
+            self.nod_until_ms > now,
         );
         if new != old {
             cx.notify();
@@ -800,10 +979,18 @@ impl PetView {
 
     fn bark(&mut self, cx: &mut Context<Self>) {
         let now = now_ms();
-        if self.motion_on() {
-            self.tilt_until_ms = now + 600; // 歪头杀
+        let p = self.breed.personality();
+        if p.bark.is_empty() {
+            // 德牧:不出声,点头 1 格代替(规则 D)。
+            if self.motion_on() {
+                self.nod_until_ms = now + 500;
+            }
+        } else {
+            if self.motion_on() {
+                self.tilt_until_ms = now + 600; // 歪头杀
+            }
+            self.bubble = Some((p.bark.into(), now + 2000));
         }
-        self.bubble = Some(("汪!".into(), now + 2000));
         cx.notify();
     }
 
@@ -813,7 +1000,9 @@ impl PetView {
         let now = now_ms();
         self.play_until_ms = now + PLAY_MS;
         self.idle_since_ms = now;
-        self.bubble = Some(("汪汪!".into(), now + 1600));
+        // Play 反应走品种口癖(规则 D);德牧无声则只演出不冒泡。
+        let bark = self.breed.personality().bark;
+        self.bubble = (!bark.is_empty()).then(|| (bark.into(), now + 1600));
         cx.notify();
     }
 
@@ -838,6 +1027,78 @@ impl PetView {
                 .update(cx, |pet, cx| {
                     cx.notify();
                     pet.peek_until_ms > now_ms()
+                })
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+        })
+        .detach();
+    }
+
+    /// 伪随机(LCG;眨眼间隔 / 微动作选取用,无外部依赖)。
+    fn next_rand(&mut self) -> u64 {
+        self.rng = self
+            .rng
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        self.rng >> 33
+    }
+
+    /// 打扰预算(规则 C / 节律预算):微动作 ≤2 次/分钟。
+    fn micro_budget_ok(&self, now: u64) -> bool {
+        self.micro_times
+            .iter()
+            .filter(|t| now.saturating_sub(**t) < 60_000)
+            .count()
+            < 2
+    }
+
+    /// 按品种性格加权选一个微动作,排除上一个(规则 C:同一动作不连续两次)。
+    fn pick_micro(&mut self) -> Option<Micro> {
+        let mut weights = self.breed.personality().micro_weights;
+        // 排除上次:仅当排除后仍有可选项(避免唯一动作被永久禁掉)。
+        if let Some(last) = self.last_micro {
+            let i = last as usize;
+            let others: u32 = weights
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, w)| *w as u32)
+                .sum();
+            if others > 0 {
+                weights[i] = 0;
+            }
+        }
+        let total: u32 = weights.iter().map(|w| *w as u32).sum();
+        if total == 0 {
+            return None;
+        }
+        let mut r = (self.next_rand() % total as u64) as u32;
+        for (i, w) in weights.iter().enumerate() {
+            let w = *w as u32;
+            if r < w {
+                return Some(MICRO_ALL[i]);
+            }
+            r -= w;
+        }
+        None
+    }
+
+    /// 微动作动画驱动:80ms 重绘(抓痒抖动 / 追尾镜像需快于 240ms 主 tick),
+    /// 到点清帧自停(reduced motion 不会进到这里)。
+    fn spawn_micro_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(80))
+                .await;
+            let alive = this
+                .update(cx, |pet, cx| {
+                    if pet.micro_until_ms <= now_ms() {
+                        pet.micro = None;
+                    }
+                    cx.notify();
+                    pet.micro.is_some()
                 })
                 .unwrap_or(false);
             if !alive {
@@ -947,6 +1208,47 @@ impl PetView {
                     }
                 }
 
+                // 点头(德牧单击:头部行下沉半格 0.5s — 规则 D「不出声,点头 1 格」)。
+                if motion && self.nod_until_ms > now && y <= 5 {
+                    dy += CELL * 0.5;
+                }
+
+                // 活物引擎(规则 C):idle 微动作,全部用既有 dx/dy 变换(追尾的
+                // 水平镜像在 out 构建后统一处理)。sub = 快速子相位(抖动/交替)。
+                if let Some(m) = self.micro {
+                    let sub = (now / 110) % 2 == 0;
+                    match m {
+                        // ① 抓痒:后腿(右侧腿格)上抬并快速抖动。
+                        Micro::Scratch if is_leg && x >= 7 => {
+                            dy -= 3.0;
+                            dx += if sub { 1.0 } else { -1.0 };
+                        }
+                        // ② 舔爪:头低 1 格 + 前爪(左侧腿格)上抬。
+                        Micro::Lick => {
+                            if y <= 5 {
+                                dy += CELL;
+                            }
+                            if is_leg && x < 7 {
+                                dy -= 2.0;
+                            }
+                        }
+                        // ④ 竖耳听声:双耳 +1 格(垂耳犬权重为 0,不会进到这里)。
+                        Micro::EarPerk if is_ear => dy -= CELL,
+                        // ⑤ 望屏外:头部右移 1 格。
+                        Micro::LookAway if y <= 5 => dx += CELL,
+                        // ⑥ 伸懒腰:前低后高 —— 头顶行 +1px 下压,尾巴 −1px 上扬。
+                        Micro::Stretch => {
+                            if y <= 2 {
+                                dy += 1.0;
+                            }
+                            if is_tail {
+                                dy -= 1.0;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
                 // 闭眼(方案 A):先铺毛色衬底整格,再叠眼色 2px 下缘横缝。
                 if is_eye && squint && self.ctx != PetContext::Error {
                     out.push((x, y, sp.fur, dx, dy, 1.0, 1.0)); // 衬底
@@ -967,12 +1269,13 @@ impl PetView {
                 if is_ear && self.ctx == PetContext::Error {
                     dy += CELL * 0.6;
                 }
-                // 尾摆:idle 慢摆 1px,running 快摆 2px,玩耍 3px 最欢;趴姿不摆。
+                // 尾摆:running 快摆 2px,玩耍 3px 最欢;其余按品种基础幅度
+                // (规则 D 尾摆幅度列:1/2/3px);趴姿不摆。
                 if is_tail && motion {
                     let amp = match self.ctx {
                         PetContext::Play => 3.0,
                         PetContext::Running => 2.0,
-                        _ => 1.0,
+                        _ => self.breed.personality().tail_amp,
                     };
                     dy += if self.phase { -amp } else { amp };
                 }
@@ -1013,6 +1316,14 @@ impl PetView {
             let lift = if motion && self.breath { -2.0 } else { 0.0 };
             out.push((11, 3, ZZ, 0.0, 2.0 + lift, 0.5, 0.5));
             out.push((12, 1, ZZ, 3.0, 4.0 + lift * 1.5, 0.65, 0.65));
+        }
+        // ③ 追尾转圈(规则 C):整身水平镜像 —— 翻转即「转身」,零新网格。
+        // 用慢子相位在 1.5s 内翻 ~2 次;镜像 x 与 dx 同时取反。
+        if motion && self.micro == Some(Micro::Spin) && (now / 360) % 2 == 1 {
+            for c in out.iter_mut() {
+                c.0 = 13 - c.0;
+                c.3 = -c.3;
+            }
         }
         out
     }
@@ -1425,6 +1736,48 @@ mod tests {
                     let ch = rows[*ey as usize].chars().nth(*ex as usize).unwrap();
                     assert_eq!(ch, 'K', "{:?} {label} eye at ({ex},{ey}) must be K", b);
                 }
+            }
+        }
+    }
+
+    /// 性格表(规则 D)逐犬完整且自洽:眨眼区间有效、打盹阈值在审核范围内、
+    /// 微动作权重非空。表即实现 —— 守卫常量表不被改飞。
+    #[test]
+    fn personality_table_is_sane() {
+        for b in ALL_BREEDS {
+            let p = b.personality();
+            assert!(
+                p.blink_min_ms < p.blink_max_ms,
+                "{:?} blink interval must be a valid range",
+                b
+            );
+            assert!(
+                (45_000..=180_000).contains(&p.sleep_after_ms),
+                "{:?} sleep threshold {} out of審核 range",
+                b,
+                p.sleep_after_ms
+            );
+            assert!(
+                p.micro_weights.iter().any(|w| *w > 0),
+                "{:?} must have at least one idle micro-action",
+                b
+            );
+        }
+    }
+
+    /// 垂耳犬不得对「竖耳听声」赋权(规则 C:0 = 不做该动作),否则会触发
+    /// 不可见微动作(无耳格可抬)。EarPerk = [`MICRO_ALL`] 第 4 项(索引 3)。
+    #[test]
+    fn earless_breeds_dont_perk_ears() {
+        assert_eq!(MICRO_ALL[3], Micro::EarPerk);
+        for b in ALL_BREEDS {
+            if b.sprite().ears.is_empty() {
+                assert_eq!(
+                    b.personality().micro_weights[3],
+                    0,
+                    "{:?} has no ears yet weights EarPerk",
+                    b
+                );
             }
         }
     }
