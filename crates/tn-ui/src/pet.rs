@@ -114,6 +114,35 @@ fn local_now() -> LocalTime {
     }
 }
 
+/// 自然日序号(Howard Hinnant days_from_civil)。用于「久别亲近」日期差。
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// `YYYY-MM-DD` → 自然日序号(失败 = None)。
+fn date_to_days(key: &str) -> Option<i64> {
+    let mut it = key.split('-');
+    let y: i64 = it.next()?.parse().ok()?;
+    let m: i64 = it.next()?.parse().ok()?;
+    let d: i64 = it.next()?.parse().ok()?;
+    Some(days_from_civil(y, m, d))
+}
+
+/// 常用窝象限标签(规则 I 词表)。0 左下 / 1 右下 / 2 左上 / 3 右上。
+fn perch_label(q: u8) -> &'static str {
+    match q {
+        0 => "左下角小窝",
+        1 => "右下角小窝",
+        2 => "左上角小窝",
+        _ => "右上角小窝",
+    }
+}
+
 /// 时段(规则 A 问候词表):清晨 5-9 / 白天 9-18 / 傍晚 18-23 / 深夜 23-5。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DayPart {
@@ -748,6 +777,35 @@ impl Entrance {
     }
 }
 
+/// 岗台摆设(规则 G:布置不是经济系统 —— 无货币、无稀有度、无收集)。
+/// 暖色非磷光,同一时间最多一个,可随时收起。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum Toy {
+    Ball,
+    Bone,
+    Blanket,
+}
+
+impl Toy {
+    /// 记忆透明短标签(规则 I 词表)。
+    fn label(self) -> &'static str {
+        match self {
+            Toy::Ball => "小球",
+            Toy::Bone => "骨头",
+            Toy::Blanket => "小毯子",
+        }
+    }
+}
+
+/// 用户主动亲密互动类型(规则 G/H:喂养 favorite_interaction 计数)。
+#[derive(Clone, Copy)]
+enum Affection {
+    Pat,
+    Feed,
+    Play,
+    Call,
+}
+
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
 /// 终端上下文(优先级降序;见 docs/宠物/宠物系统规则.md + 小狗家族设计.md
@@ -828,6 +886,29 @@ struct PetState {
     /// 今日已投喂的自然日(规则 B:每日 1 块,== 今天则今日已喂)。
     #[serde(default)]
     last_treat_date: Option<String>,
+    // ── 互动记忆(规则 H:偏好不是画像;小型衰减计数,长期上限固定)──
+    /// 摸头 / 投喂 / 逗弄 / 叫名 的衰减计数(favorite_interaction)。
+    #[serde(default)]
+    fav_pat: u32,
+    #[serde(default)]
+    fav_feed: u32,
+    #[serde(default)]
+    fav_play: u32,
+    #[serde(default)]
+    fav_call: u32,
+    /// 常用窝(favorite_perch):屏幕四象限粗分,只记区域不记精确历史。
+    /// 0 = 左下 / 1 = 右下 / 2 = 左上 / 3 = 右上。
+    #[serde(default)]
+    favorite_perch: Option<u8>,
+    /// 当前摆设(toy_choice;同一时间最多一个,可随时收起)。
+    #[serde(default)]
+    toy: Option<Toy>,
+    /// 深夜首见 / 深夜投喂的低精度计数(quiet_hours_seen)。
+    #[serde(default)]
+    quiet_hours_seen: u32,
+    /// 最近一次亲密互动的本地日期(last_affection_at;判定久别亲近)。
+    #[serde(default)]
+    last_affection_at: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_true")]
@@ -862,6 +943,14 @@ impl Default for PetState {
             last_seen_date: None,
             treats_fed: 0,
             last_treat_date: None,
+            fav_pat: 0,
+            fav_feed: 0,
+            fav_play: 0,
+            fav_call: 0,
+            favorite_perch: None,
+            toy: None,
+            quiet_hours_seen: 0,
+            last_affection_at: None,
             enabled: true,
             visible: true,
             welcome_only: false,
@@ -905,6 +994,8 @@ struct PetDrag {
     start_mouse: (f32, f32),
     start_pos: (f32, f32), // (right, bottom)
     moved: bool,
+    /// 长按已触发摸头(规则 G):松手不再当单击「汪」。
+    patted: bool,
 }
 
 /// 像素小狗 overlay。挂在 workspace root 上(inset 0 的穿透容器,只有小狗
@@ -965,6 +1056,19 @@ pub struct PetView {
     feed_until_ms: u64,
     /// 本次投喂是否深夜彩蛋(吃完接哈欠 → 主动趴下)。
     feed_night: bool,
+    // ── 主动互动(规则 G)──
+    /// 摸头(长按)窗口终点:头低眯眼 + 尾摆 + 爱心。
+    pat_until_ms: u64,
+    /// 叫名字演出窗口终点 + 上次叫名时刻(10s 冷却)。
+    call_until_ms: u64,
+    last_call_ms: u64,
+    /// 换窝安顿窗口终点(落地回弹 + 嗅地)。
+    settle_until_ms: u64,
+    /// 久别亲近的额外爱心窗口终点(规则 G:常规演出 + 多一颗心)。
+    extra_heart_until_ms: u64,
+    /// 玩具子菜单展开;重置互动记忆二次确认浮层。
+    toy_menu_open: bool,
+    confirm_reset: bool,
     // ── 工作共情(规则 E)──
     /// 最近若干次主动庆祝时刻(共享冷却 ≤2 次/10 分钟)。
     celebrate_times: [u64; 2],
@@ -1032,6 +1136,13 @@ impl PetView {
             feed_start_ms: 0,
             feed_until_ms: 0,
             feed_night: false,
+            pat_until_ms: 0,
+            call_until_ms: 0,
+            last_call_ms: 0,
+            settle_until_ms: 0,
+            extra_heart_until_ms: 0,
+            toy_menu_open: false,
+            confirm_reset: false,
             celebrate_times: [0, 0],
             companion_lie: false,
             moaned: false,
@@ -1098,6 +1209,10 @@ impl PetView {
         h = h * 2 + b(self.day_badge_until_ms > now);
         h = h * 2 + b(self.companion_lie);
         h = h * 2 + b(self.feed_until_ms > now);
+        h = h * 2 + b(self.pat_until_ms > now);
+        h = h * 2 + b(self.call_until_ms > now);
+        h = h * 2 + b(self.settle_until_ms > now);
+        h = h * 2 + b(self.extra_heart_until_ms > now);
         h
     }
 
@@ -1183,8 +1298,10 @@ impl PetView {
         let running = RUN_COUNT.load(Ordering::Relaxed) > 0
             && now.saturating_sub(RUN_START_MS.load(Ordering::Relaxed)) > 1000; // >1s 才算(规则)
         let typing = now.saturating_sub(LAST_KEY_MS.load(Ordering::Relaxed)) < 1200;
-        self.ctx = if self.drag.is_some() {
-            PetContext::Drag
+        self.ctx = if self.drag.as_ref().is_some_and(|d| d.moved) {
+            PetContext::Drag // 仅真正拖动才拎起;静止长按留给摸头(规则 G)
+        } else if self.pat_until_ms > now {
+            PetContext::Idle // 摸头是 Idle 上的姿态修饰(头低眯眼),不抢上下文
         } else if self.feed_until_ms > now {
             PetContext::Feed // 投喂:抛接 + 咀嚼 + 爱心(规则 B)
         } else if self.play_until_ms > now {
@@ -1403,6 +1520,11 @@ impl PetView {
         self.bubble = Some((text, now + 2000));
         if new_day {
             self.day_badge_until_ms = now + 5000;
+            // 深夜首见低精度计数(规则 H quiet_hours_seen)。
+            if part.is_night() {
+                self.state.quiet_hours_seen = self.state.quiet_hours_seen.saturating_add(1);
+                self.state.save();
+            }
         }
         // 深夜问候补一个哈欠帧(规则 A:一个哈欠就是全部提醒,不说教)。
         if part.is_night() && self.motion_on() {
@@ -1426,16 +1548,23 @@ impl PetView {
         // 档案 + 当日消耗(规则 F / B)。
         self.state.treats_fed = self.state.treats_fed.saturating_add(1);
         self.state.last_treat_date = Some(local_now().date_key());
+        let night = DayPart::now().is_night();
+        if night {
+            self.state.quiet_hours_seen = self.state.quiet_hours_seen.saturating_add(1); // 规则 H
+        }
         self.state.save();
         self.idle_since_ms = now;
+        // 投喂也是亲密互动(规则 H favorite_interaction;久别亲近多一颗心)。
+        let miss = self.note_affection(Affection::Feed);
         if !self.motion_on() {
             // reduced motion:无演出,只记账(可访问性)。
             cx.notify();
             return;
         }
+        self.maybe_extra_heart(miss);
         self.feed_start_ms = now;
         self.feed_until_ms = now + FEED_MS;
-        self.feed_night = DayPart::now().is_night();
+        self.feed_night = night;
         // 抛接 / 咀嚼需快于 240ms 主 tick → 复用 30ms 入场驱动节拍。
         Self::spawn_feed_driver(cx);
         cx.notify();
@@ -1468,6 +1597,130 @@ impl PetView {
             }
         })
         .detach();
+    }
+
+    /// 记一次亲密互动(规则 H favorite_interaction:小型衰减计数,长期上限固定)。
+    /// 返回是否「久别亲近」(距上次亲密 ≥3 自然日;规则 G)。
+    fn note_affection(&mut self, kind: Affection) -> bool {
+        const CAP: u32 = 40;
+        let today = local_now().date_key();
+        let miss = self
+            .state
+            .last_affection_at
+            .as_deref()
+            .and_then(date_to_days)
+            .zip(date_to_days(&today))
+            .map(|(prev, now)| now - prev >= 3)
+            .unwrap_or(false);
+        // 其余 −1(地板 0),选中 +6(净 +5,封顶):recency-weighted 偏好。
+        self.state.fav_pat = self.state.fav_pat.saturating_sub(1);
+        self.state.fav_feed = self.state.fav_feed.saturating_sub(1);
+        self.state.fav_play = self.state.fav_play.saturating_sub(1);
+        self.state.fav_call = self.state.fav_call.saturating_sub(1);
+        let slot = match kind {
+            Affection::Pat => &mut self.state.fav_pat,
+            Affection::Feed => &mut self.state.fav_feed,
+            Affection::Play => &mut self.state.fav_play,
+            Affection::Call => &mut self.state.fav_call,
+        };
+        *slot = (*slot + 6).min(CAP);
+        self.state.last_affection_at = Some(today);
+        self.state.save();
+        miss
+    }
+
+    /// 记忆透明短标签(规则 I:最多 3 个;无数据 → 调用方显示「还在认识你」)。
+    fn memory_labels(&self) -> Vec<&'static str> {
+        let mut v: Vec<&'static str> = Vec::new();
+        let favs = [
+            (self.state.fav_pat, "爱摸头"),
+            (self.state.fav_feed, "爱饼干"),
+            (self.state.fav_play, "爱逗弄"),
+            (self.state.fav_call, "爱叫名"),
+        ];
+        if let Some((_, l)) = favs.iter().filter(|(c, _)| *c >= 6).max_by_key(|(c, _)| *c) {
+            v.push(l);
+        }
+        if let Some(t) = self.state.toy {
+            v.push(t.label());
+        }
+        if let Some(q) = self.state.favorite_perch {
+            v.push(perch_label(q));
+        }
+        v.truncate(3);
+        v
+    }
+
+    /// 久别亲近额外爱心(规则 G:常规演出后多一颗心,不出愧疚文案)。
+    fn maybe_extra_heart(&mut self, miss: bool) {
+        if miss && self.motion_on() {
+            self.extra_heart_until_ms = now_ms() + 1300;
+        }
+    }
+
+    /// 摸头(规则 G:长按 350ms 触发)。头低眯眼 + 尾摆 + 单爱心;2s 内重复
+    /// 只延长开心、不叠气泡(词表:无字)。
+    fn pat(&mut self, cx: &mut Context<Self>) {
+        let now = now_ms();
+        let extend = self.pat_until_ms > now;
+        self.pat_until_ms = now + 1200;
+        self.idle_since_ms = now;
+        if !extend {
+            let miss = self.note_affection(Affection::Pat);
+            self.maybe_extra_heart(miss);
+        }
+        cx.notify();
+    }
+
+    /// 叫名字(规则 G:菜单触发,10s 冷却)。竖耳抬头 → 小跑回应(无长句气泡)。
+    fn call_name(&mut self, cx: &mut Context<Self>) {
+        let now = now_ms();
+        self.menu_open = false;
+        if now.saturating_sub(self.last_call_ms) < 10_000 {
+            cx.notify();
+            return; // 10s 冷却,避免刷成噪音
+        }
+        self.last_call_ms = now;
+        self.call_until_ms = now + 900;
+        self.idle_since_ms = now;
+        let miss = self.note_affection(Affection::Call);
+        self.maybe_extra_heart(miss);
+        cx.notify();
+    }
+
+    /// 换窝安顿(规则 G:拖拽松手且移动超阈值)。落地回弹 + 嗅地;记常用窝象限。
+    fn settle(&mut self, quadrant: u8, cx: &mut Context<Self>) {
+        let now = now_ms();
+        self.settle_until_ms = now + 700;
+        self.state.favorite_perch = Some(quadrant); // favorite_perch(规则 H,只记区域)
+        self.idle_since_ms = now;
+        self.state.save();
+        cx.notify();
+    }
+
+    /// 摆个玩具 / 收起(规则 G:布置不是经济系统;同一时间最多一个)。
+    fn set_toy(&mut self, toy: Option<Toy>, cx: &mut Context<Self>) {
+        self.state.toy = toy; // toy_choice(规则 H)
+        self.state.save();
+        self.toy_menu_open = false;
+        self.menu_open = false;
+        cx.notify();
+    }
+
+    /// 重置互动记忆(规则 I:二次确认后清五项偏好;不清名字/品种/档案/窝坐标/开关)。
+    fn reset_memory(&mut self, cx: &mut Context<Self>) {
+        self.state.fav_pat = 0;
+        self.state.fav_feed = 0;
+        self.state.fav_play = 0;
+        self.state.fav_call = 0;
+        self.state.favorite_perch = None;
+        self.state.toy = None;
+        self.state.quiet_hours_seen = 0;
+        self.state.last_affection_at = None;
+        self.state.save();
+        self.confirm_reset = false;
+        self.menu_open = false;
+        cx.notify();
     }
 
     /// 入场式选取(规则 A:性格加权、连续两次不重样)。`full_pool=false` 时
@@ -1569,6 +1822,9 @@ impl PetView {
         let now = now_ms();
         self.play_until_ms = now + PLAY_MS;
         self.idle_since_ms = now;
+        // 逗弄是亲密互动(规则 H favorite_interaction;久别亲近多一颗心)。
+        let miss = self.note_affection(Affection::Play);
+        self.maybe_extra_heart(miss);
         // Play 反应走品种口癖(规则 D);德牧无声则只演出不冒泡。
         let bark = self.breed.personality().bark;
         self.bubble = (!bark.is_empty()).then(|| (bark.into(), now + 1600));
@@ -2060,6 +2316,71 @@ impl PetView {
             .child(card)
     }
 
+    /// 重置互动记忆二次确认(规则 I:清五项偏好,不清名字/品种/档案/窝/开关)。
+    fn render_reset_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let card = div()
+            .w(px(340.))
+            .p(px(16.))
+            .rounded(px(crate::style::R_PANEL))
+            .border_1()
+            .border_color(rgba(H2))
+            .bg(col(self.cfg.theme.ui.palette_bg))
+            .shadow(crate::style::shadow_float())
+            .font_family(SharedString::from(self.cfg.font().family.clone()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_p, _e, _w, cx| cx.stop_propagation()),
+            )
+            .child(div().text_size(px(12.)).text_color(rgb(T0)).child("重置互动记忆?"))
+            .child(
+                div()
+                    .mt(px(8.))
+                    .text_size(px(11.))
+                    .text_color(rgb(T2))
+                    .child("清空它记得的偏好(摸头 / 玩具 / 小窝等)。名字、品种、在一起的天数都不动。"),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(10.))
+                    .mt(px(14.))
+                    .child(div().flex_1())
+                    .child(Self::pill(
+                        "取消",
+                        false,
+                        |p, cx| {
+                            p.confirm_reset = false;
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(Self::pill("清空", true, |p, cx| p.reset_memory(cx), cx)),
+            );
+        div()
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(SCRIM))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|p, _e, _w, cx| {
+                    p.confirm_reset = false; // 点 scrim = 取消
+                    cx.notify();
+                }),
+            )
+            .on_scroll_wheel(
+                cx.listener(|_p, _e: &gpui::ScrollWheelEvent, _w, cx| cx.stop_propagation()),
+            )
+            .child(card)
+    }
+
     // ── 帧合成:状态变形 → quad 列表 ─────────────────────────────────────
 
     /// 探头是否进行中(painter 据此在岗台线下裁切)。
@@ -2089,8 +2410,10 @@ impl PetView {
         // 闭眼 = SHEET 05-E **方案 A(审核定稿)**:毛色衬底铺满整格 + 眼色 2px
         // 横缝贴下缘 —— 不再让眼格露出透明洞(上一版"没生效"的根因)。
         // reduced motion 下眨眼/摸摸不触发,但趴姿是姿态而非动画,仍闭眼。
-        let squint =
-            (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover)) || lie;
+        // 摸头眯眼是姿态(reduced motion 仍切眯眼终帧;规则 G)。
+        let squint = (motion && (self.blink_until_ms > now || self.ctx == PetContext::Hover))
+            || lie
+            || self.pat_until_ms > now;
         let tilt = motion && self.tilt_until_ms > now;
         // 趴姿网格(姿态变形,SHEET 05-E):腿收起、肚皮贴岗台、头压低。
         let (rows, eyes): (&[&'static str; 9], &[(i32, i32); 2]) = if lie {
@@ -2163,6 +2486,25 @@ impl PetView {
             }
             _ => {}
         }
+        // 换窝安顿落地回弹(规则 G:松手 → 弹一下 → 嗅地 → 坐好)。
+        if motion && self.settle_until_ms > now {
+            let sf = 700u64.saturating_sub(self.settle_until_ms - now);
+            if sf < 160 {
+                body_dy += 2.0 * (1.0 - sf as f32 / 160.0);
+            }
+        }
+        // 叫名字小跑(规则 G:朝用户方向迈 1 格再回窝)。
+        if motion && self.call_until_ms > now {
+            let cf = 900u64.saturating_sub(self.call_until_ms - now);
+            let off = if cf < 300 {
+                cf as f32 / 300.0 * CELL
+            } else if cf < 600 {
+                CELL
+            } else {
+                (1.0 - (cf - 600) as f32 / 300.0) * CELL
+            };
+            body_dx -= off; // 朝左(用户)
+        }
         // 趴姿呼吸:背部隆起 1px —— 上半身(行 ≤6)上移,行 7 拉高 1px 补缝,
         // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
         let inhale = lie && motion && self.breath;
@@ -2199,6 +2541,25 @@ impl PetView {
                 // 投喂仰头(规则 B 帧 1:狗仰头盯着抛来的饼干)。
                 if feeding && feed_ef < 300 && y <= 5 {
                     dy -= 2.0;
+                }
+                // 摸头(规则 G):头低 1 格(眯眼已在 squint 处理)。
+                if motion && self.pat_until_ms > now && y <= 5 {
+                    dy += CELL;
+                }
+                // 叫名字(规则 G):竖耳 + 抬头朝向用户。
+                if motion && self.call_until_ms > now {
+                    if is_ear {
+                        dy -= CELL;
+                    } else if y <= 5 {
+                        dy -= 1.0;
+                    }
+                }
+                // 换窝安顿嗅地(规则 G:回弹后低头嗅嗅地面)。
+                if motion && self.settle_until_ms > now {
+                    let sf = 700u64.saturating_sub(self.settle_until_ms - now);
+                    if sf >= 200 && y <= 5 {
+                        dy += CELL * 0.7;
+                    }
                 }
 
                 // 活物引擎(规则 C):idle 微动作,全部用既有 dx/dy 变换(追尾的
@@ -2330,6 +2691,14 @@ impl PetView {
                 out.push((9, -1, HEART, 2.0 + body_dx, body_dy, 0.8, 0.8));
             }
         }
+        // 摸头(规则 G):头顶单爱心(词表无字,爱心就是回应)。
+        if motion && self.pat_until_ms > now {
+            out.push((9, -1, HEART, 2.0 + body_dx, body_dy, 0.8, 0.8));
+        }
+        // 久别亲近(规则 G):常规演出之外多一颗心(不出愧疚文案)。
+        if motion && self.extra_heart_until_ms > now {
+            out.push((11, -2, HEART, 1.0 + body_dx, body_dy, 0.7, 0.7));
+        }
         // 打盹:头顶 zZ(t2 弱灰小方);连败陪伴/它先到了的趴睡不出 zZ。
         if sleeping {
             const ZZ: u32 = 0x69748E; // t2 弱文灰
@@ -2359,6 +2728,21 @@ impl PetView {
                 c.0 = 13 - c.0;
                 c.3 = -c.3;
             }
+        }
+        // 岗台摆设(规则 G:暖色非磷光,贴地不随身体动;放在镜像之后免得追尾时跳位)。
+        match self.state.toy {
+            Some(Toy::Ball) => out.push((12, 8, 0xE36B6B, 0.0, -1.0, 0.9, 0.9)),
+            Some(Toy::Bone) => {
+                out.push((11, 8, 0xEDE6D6, 1.0, 1.0, 0.45, 0.45));
+                out.push((12, 8, 0xEDE6D6, 0.0, 1.0, 0.9, 0.45));
+                out.push((12, 8, 0xEDE6D6, 4.0, 1.0, 0.45, 0.45));
+            }
+            Some(Toy::Blanket) => {
+                for x in 1..5 {
+                    out.push((x, 8, 0x6A7A95, 0.0, 3.0, 1.0, 0.5));
+                }
+            }
+            None => {}
         }
         out
     }
@@ -2553,7 +2937,27 @@ impl Render for PetView {
                         start_mouse: (f32::from(ev.position.x), f32::from(ev.position.y)),
                         start_pos: (pet.state.right, pet.state.bottom),
                         moved: false,
+                        patted: false,
                     });
+                    // 长按 350ms 未移动 → 摸头(规则 G);移动则转为拖拽换窝。
+                    cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(350))
+                            .await;
+                        let _ = this.update(cx, |pet, cx| {
+                            let do_pat = pet
+                                .drag
+                                .as_ref()
+                                .is_some_and(|d| !d.moved && !d.patted);
+                            if do_pat {
+                                if let Some(d) = pet.drag.as_mut() {
+                                    d.patted = true;
+                                }
+                                pet.pat(cx);
+                            }
+                        });
+                    })
+                    .detach();
                     cx.notify();
                 }),
             )
@@ -2675,6 +3079,78 @@ impl Render for PetView {
                         .child(div().text_color(rgb(PH)).child("⌂"))
                         .child(SharedString::from(archive)),
                 )
+                // 记忆透明(规则 I):「它记得:…」最多 3 标签;无数据 → 还在认识你。
+                .child({
+                    let labels = self.memory_labels();
+                    let text = if labels.is_empty() {
+                        "还在认识你".to_string()
+                    } else {
+                        format!("它记得:{}", labels.join(" · "))
+                    };
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.))
+                        .h(px(22.))
+                        .px(px(10.))
+                        .text_size(px(10.))
+                        .text_color(rgb(T2))
+                        .child(div().text_color(rgb(PH)).child("✦"))
+                        .child(SharedString::from(text))
+                })
+                .child(sep())
+                .child(mi(
+                    "叫名字",
+                    "♪",
+                    T2,
+                    Box::new(|p, cx| p.call_name(cx)),
+                    cx,
+                ))
+                .child(grp("摆个玩具"));
+            // 玩具四选(规则 G:球 / 骨头 / 毯子 / 收起;无货币、无稀有度、无收集)。
+            {
+                let opts: [(Option<Toy>, &'static str); 4] = [
+                    (Some(Toy::Ball), "球"),
+                    (Some(Toy::Bone), "骨头"),
+                    (Some(Toy::Blanket), "毯子"),
+                    (None, "收起"),
+                ];
+                let mut row = div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(5.))
+                    .px(px(10.))
+                    .pb(px(4.));
+                for (toy, label) in opts {
+                    let on = self.state.toy == toy;
+                    row = row.child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .h(px(24.))
+                            .rounded(px(R_CHIP))
+                            .text_size(px(10.))
+                            .border_1()
+                            .border_color(rgba(if on { PH_DIM } else { H1 }))
+                            .text_color(rgb(if on { T0 } else { T1 }))
+                            .when(on, |d| d.bg(rgb(L4)))
+                            .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
+                            .child(label)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |p, _e, _w, cx| {
+                                    cx.stop_propagation();
+                                    p.set_toy(toy, cx);
+                                }),
+                            ),
+                    );
+                }
+                menu = menu.child(row);
+            }
+            menu = menu
                 .child(sep())
                 .child(mi(
                     "改名…",
@@ -2725,6 +3201,18 @@ impl Render for PetView {
                 );
             }
             menu = menu
+                .child(sep())
+                .child(mi(
+                    "重置互动记忆…",
+                    "↺",
+                    ERR,
+                    Box::new(|p, cx| {
+                        p.confirm_reset = true; // 二次确认(规则 I)
+                        p.menu_open = false;
+                        cx.notify();
+                    }),
+                    cx,
+                ))
                 .child(sep())
                 .child(mi(
                     if self.state.welcome_only {
@@ -2780,10 +3268,13 @@ impl Render for PetView {
         // ── 改名浮层(规则 0:随时可改,档案不动)──
         let rename_card = (!self.adopt_open && self.name_editing.is_some())
             .then(|| self.render_rename_card(cx));
+        // ── 重置互动记忆二次确认(规则 I)──
+        let reset_card = self.confirm_reset.then(|| self.render_reset_card(cx));
 
         // 拖拽中:根容器接管 move/up(离开本体也能继续拖);否则根保持穿透。
         root.child(pet_box)
             .when_some(menu, |d, m| d.child(m))
+            .when_some(reset_card, |d, c| d.child(c))
             .when_some(adopt_card, |d, c| d.child(c))
             .when_some(rename_card, |d, c| d.child(c))
             .when(dragging, |d| {
@@ -2811,10 +3302,22 @@ impl Render for PetView {
                     }))
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(|pet, _ev: &MouseUpEvent, _w, cx| {
+                        cx.listener(move |pet, _ev: &MouseUpEvent, _w, cx| {
                             if let Some(drag) = pet.drag.take() {
                                 if drag.moved {
-                                    pet.state.save(); // 落点入用户配置(规则)
+                                    // 换窝安顿(规则 G):记常用窝象限 + 落地回弹演出。
+                                    let s = if pet.on_welcome { 2.0 } else { 1.0 };
+                                    let cxl = vw - pet.state.right - BOX_W * s * 0.5;
+                                    let cyt = vh - pet.state.bottom - BOX_H * s * 0.5;
+                                    let q = match (cxl < vw * 0.5, cyt < vh * 0.5) {
+                                        (true, false) => 0,  // 左下
+                                        (false, false) => 1, // 右下
+                                        (true, true) => 2,   // 左上
+                                        (false, true) => 3,  // 右上
+                                    };
+                                    pet.settle(q, cx); // settle 内含 state.save()
+                                } else if drag.patted {
+                                    // 摸头已在长按时处理,松手不再当单击。
                                 } else {
                                     pet.bark(cx); // 原地松手 = 单击互动
                                 }
@@ -2912,6 +3415,28 @@ mod tests {
         assert_eq!(PetView::milestone_word(365), Some("一周年!"));
         assert_eq!(PetView::milestone_word(8), None);
         assert_eq!(PetView::milestone_word(1), None);
+    }
+
+    /// 久别亲近(规则 G):自然日差按 days_from_civil 计算,跨月正确。
+    #[test]
+    fn date_diff_counts_natural_days() {
+        let a = date_to_days("2026-06-10").unwrap();
+        let b = date_to_days("2026-06-13").unwrap();
+        assert_eq!(b - a, 3); // ≥3 → 久别
+        assert_eq!(
+            date_to_days("2026-03-01").unwrap() - date_to_days("2026-02-28").unwrap(),
+            1
+        );
+        assert!(date_to_days("not-a-date").is_none());
+    }
+
+    /// 常用窝象限标签(规则 I 词表)覆盖四角。
+    #[test]
+    fn perch_labels_cover_quadrants() {
+        assert_eq!(perch_label(0), "左下角小窝");
+        assert_eq!(perch_label(1), "右下角小窝");
+        assert_eq!(perch_label(2), "左上角小窝");
+        assert_eq!(perch_label(3), "右上角小窝");
     }
 
     /// 提交时刻(规则 E):仅 `git commit` / `git push` 开头(结构化首词)。
