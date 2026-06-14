@@ -4,9 +4,10 @@ Design (replaces the old Tokyo-Night blue→purple gradient):
   • Chassis: an opaque, rounded-square instrument plate. Depth comes from a
     subtle vertical elevation (L1 #141926 → L0 #0B0E16) plus a 1px cool hairline
     edge — structure, not light pollution. No glow, no flashy gradient.
-  • Mark: the single phosphor life color #5BE7C4 (cursor/run/focus) as a terminal
-    prompt — a `>` chevron followed by a solid block cursor. The block cursor is
-    literally the "live thing" the phosphor color is reserved for.
+  • Mark: a viewfinder — four phosphor corner brackets (the 磷光 design system's
+    signature "focus = 取景器角标" motif) framing a solid block cursor, all in the
+    single life color #5BE7C4. The brackets give Tn an instrument identity; the
+    block cursor is the live thing the phosphor color is reserved for.
 
 Output sizes: 16/24/32/48/64/128/256 px, BMP/DIB entries (traditional ICO,
 works with LoadImageW and as an embedded Win32 resource on every Windows
@@ -60,27 +61,31 @@ def render(size: int) -> Image.Image:
     )
     img = Image.alpha_composite(img, border)
 
-    # Phosphor mark: `>` chevron + block cursor.
+    # Phosphor mark: a viewfinder — four corner brackets (the 磷光 focus motif)
+    # framing a block cursor (the live element).
     mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     md = ImageDraw.Draw(mark)
     ph = PHOSPHOR + (255,)
 
-    def p(fx, fy):
-        return (fx * s, fy * s)
+    w = max(1, round(0.060 * s))      # bracket stroke
+    inset, arm = 0.190 * s, 0.160 * s  # corner distance from edge, arm length
+    cap = w / 2.0
+    corners = [
+        (inset, inset, 1, 1),
+        (s - inset, inset, -1, 1),
+        (inset, s - inset, 1, -1),
+        (s - inset, s - inset, -1, -1),
+    ]
+    for cx, cy, sx, sy in corners:
+        md.line([(cx, cy), (cx + sx * arm, cy)], fill=ph, width=w)
+        md.line([(cx, cy), (cx, cy + sy * arm)], fill=ph, width=w)
+        # round the exposed ends (outer corner + the two arm tips)
+        for ex, ey in ((cx, cy), (cx + sx * arm, cy), (cx, cy + sy * arm)):
+            md.ellipse([ex - cap, ey - cap, ex + cap, ey + cap], fill=ph)
 
-    # Chevron `>` — polyline with a rounded inner join + round outer caps.
-    w_chev = 0.082 * s
-    top, tip, bot = p(0.300, 0.345), p(0.480, 0.505), p(0.300, 0.665)
-    md.line([top, tip, bot], fill=ph, width=max(1, round(w_chev)), joint="curve")
-    rcap = w_chev / 2.0
-    for cx, cy in (top, bot):
-        md.ellipse([cx - rcap, cy - rcap, cx + rcap, cy + rcap], fill=ph)
-
-    # Solid block cursor after the prompt — the live element.
-    bl, bt, br, bb = p(0.560, 0.450), 0, p(0.730, 0.665), 0
-    rad = 0.03 * s
+    # Center block cursor — the single live element being framed.
     md.rounded_rectangle(
-        [bl[0], 0.450 * s, br[0], 0.665 * s], radius=rad, fill=ph
+        [0.430 * s, 0.410 * s, 0.570 * s, 0.590 * s], radius=0.028 * s, fill=ph
     )
 
     img = Image.alpha_composite(img, mark)
