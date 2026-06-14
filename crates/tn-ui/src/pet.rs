@@ -756,6 +756,7 @@ impl Entrance {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PetContext {
     Drag,
+    Feed,
     Play,
     Error,
     Success,
@@ -770,6 +771,7 @@ impl PetContext {
     fn tag(self) -> &'static str {
         match self {
             PetContext::Drag => "DRAG",
+            PetContext::Feed => "FEED",
             PetContext::Play => "PLAY",
             PetContext::Error => "ERROR",
             PetContext::Success => "SUCCESS",
@@ -791,6 +793,10 @@ const MICRO_MS: u64 = 1500;
 /// 微动作随机触发间隔下限 / 抖动跨度(规则 C:20–60s 随机一个)。
 const MICRO_GAP_MIN_MS: u64 = 20_000;
 const MICRO_GAP_SPAN_MS: u64 = 40_000;
+/// 投喂演出总时长(规则 B 板 F:抛接 → 咀嚼 → 爱心 + 摆尾收尾)。
+const FEED_MS: u64 = 2200;
+/// 饼干像素色(暖棕,非磷光;SHEET 05 板 F #C99052)。
+const BISCUIT: u32 = 0xC99052;
 
 // ═══════════════════════════ 持久化(用户状态,不入项目配置) ═══════════════
 
@@ -816,9 +822,12 @@ struct PetState {
     /// 最近一次见面的本地自然日(每日见面 / days_together 递增判定)。
     #[serde(default)]
     last_seen_date: Option<String>,
-    /// 累计喂过的小饼干(规则 F;P3 投喂时 +1)。
+    /// 累计喂过的小饼干(规则 F)。
     #[serde(default)]
     treats_fed: u32,
+    /// 今日已投喂的自然日(规则 B:每日 1 块,== 今天则今日已喂)。
+    #[serde(default)]
+    last_treat_date: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
     #[serde(default = "default_true")]
@@ -852,6 +861,7 @@ impl Default for PetState {
             days_together: 0,
             last_seen_date: None,
             treats_fed: 0,
+            last_treat_date: None,
             enabled: true,
             visible: true,
             welcome_only: false,
@@ -949,6 +959,12 @@ pub struct PetView {
     day_badge_until_ms: u64,
     /// 哈欠窗口终点(规则 A 深夜问候 / 规则 B 深夜投喂;张口 600 + 半闭 250)。
     yawn_until_ms: u64,
+    // ── 小饼干(规则 B)──
+    /// 投喂演出窗口起点 / 终点(抛接→咀嚼→爱心);0 = 不在投喂。
+    feed_start_ms: u64,
+    feed_until_ms: u64,
+    /// 本次投喂是否深夜彩蛋(吃完接哈欠 → 主动趴下)。
+    feed_night: bool,
     // ── 工作共情(规则 E)──
     /// 最近若干次主动庆祝时刻(共享冷却 ≤2 次/10 分钟)。
     celebrate_times: [u64; 2],
@@ -1013,6 +1029,9 @@ impl PetView {
             last_entrance: None,
             day_badge_until_ms: 0,
             yawn_until_ms: 0,
+            feed_start_ms: 0,
+            feed_until_ms: 0,
+            feed_night: false,
             celebrate_times: [0, 0],
             companion_lie: false,
             moaned: false,
@@ -1078,6 +1097,7 @@ impl PetView {
         h = h * 8 + self.empathy_kind;
         h = h * 2 + b(self.day_badge_until_ms > now);
         h = h * 2 + b(self.companion_lie);
+        h = h * 2 + b(self.feed_until_ms > now);
         h
     }
 
@@ -1165,6 +1185,8 @@ impl PetView {
         let typing = now.saturating_sub(LAST_KEY_MS.load(Ordering::Relaxed)) < 1200;
         self.ctx = if self.drag.is_some() {
             PetContext::Drag
+        } else if self.feed_until_ms > now {
+            PetContext::Feed // 投喂:抛接 + 咀嚼 + 爱心(规则 B)
         } else if self.play_until_ms > now {
             PetContext::Play // 双击逗弄:蹦跳 + 爱心(设计.md `play`)
         } else if exit_kind == 2 && exit_age < 3000 && !self.companion_lie {
@@ -1386,6 +1408,66 @@ impl PetView {
         if part.is_night() && self.motion_on() {
             self.yawn_until_ms = now + 850; // 张口 600 + 半闭 250
         }
+    }
+
+    /// 今日是否还有小饼干(规则 B:每自然日 1 块,不囤积、不补偿)。
+    fn can_feed_today(&self) -> bool {
+        self.state.last_treat_date.as_deref() != Some(local_now().date_key().as_str())
+    }
+
+    /// 投喂(规则 B):每日一块。抛接 → 咀嚼 → 爱心;深夜彩蛋吃完接哈欠趴下。
+    /// 无数值、不囤积;忘了就忘了,明天照常有。
+    fn feed_treat(&mut self, cx: &mut Context<Self>) {
+        self.menu_open = false;
+        if !self.can_feed_today() {
+            return; // 今天吃过啦
+        }
+        let now = now_ms();
+        // 档案 + 当日消耗(规则 F / B)。
+        self.state.treats_fed = self.state.treats_fed.saturating_add(1);
+        self.state.last_treat_date = Some(local_now().date_key());
+        self.state.save();
+        self.idle_since_ms = now;
+        if !self.motion_on() {
+            // reduced motion:无演出,只记账(可访问性)。
+            cx.notify();
+            return;
+        }
+        self.feed_start_ms = now;
+        self.feed_until_ms = now + FEED_MS;
+        self.feed_night = DayPart::now().is_night();
+        // 抛接 / 咀嚼需快于 240ms 主 tick → 复用 30ms 入场驱动节拍。
+        Self::spawn_feed_driver(cx);
+        cx.notify();
+    }
+
+    /// 投喂动画驱动:30ms 重绘直到收尾;深夜彩蛋在收尾时接哈欠 + 主动趴下。
+    fn spawn_feed_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+            let alive = this
+                .update(cx, |pet, cx| {
+                    let now = now_ms();
+                    if pet.feed_until_ms != 0 && now >= pet.feed_until_ms {
+                        pet.feed_until_ms = 0;
+                        // 深夜彩蛋(规则 B):吃完哈欠 → 主动趴下(它陪你,但它困了)。
+                        if pet.feed_night {
+                            pet.yawn_until_ms = now + 850;
+                            pet.idle_since_ms =
+                                now.saturating_sub(pet.breed.personality().sleep_after_ms + 1);
+                        }
+                    }
+                    cx.notify();
+                    pet.feed_until_ms != 0
+                })
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// 入场式选取(规则 A:性格加权、连续两次不重样)。`full_pool=false` 时
@@ -2001,6 +2083,9 @@ impl PetView {
             already && ent_el >= already_dur * 55 / 100 && ent_el < already_dur * 78 / 100;
         // 趴下姿态来源:打盹(zZ)/ 连败陪伴(无 zZ)/ 它先到了的趴睡段。
         let lie = sleeping || self.companion_lie || already_lie;
+        // 投喂时间线(规则 B 板 F:抛接 300 → 起跳 ~180 → 咀嚼 420 → 爱心收尾)。
+        let feeding = self.ctx == PetContext::Feed;
+        let feed_ef = now.saturating_sub(self.feed_start_ms);
         // 闭眼 = SHEET 05-E **方案 A(审核定稿)**:毛色衬底铺满整格 + 眼色 2px
         // 横缝贴下缘 —— 不再让眼格露出透明洞(上一版"没生效"的根因)。
         // reduced motion 下眨眼/摸摸不触发,但趴姿是姿态而非动画,仍闭眼。
@@ -2028,6 +2113,21 @@ impl PetView {
             }
             PetContext::Drag => -10.0, // 拎起悬空
             PetContext::Error => 2.0,  // 垂头丧气
+            // 投喂接物三帧律:仰头 → 预备蹲 → 起跳(ease-out)→ 落地回弹。
+            PetContext::Feed => {
+                if !motion || feed_ef < 300 {
+                    0.0
+                } else if feed_ef < 340 {
+                    1.5
+                } else if feed_ef < 440 {
+                    let q = (feed_ef - 340) as f32 / 100.0;
+                    -4.0 * (1.0 - (1.0 - q).powi(2))
+                } else if feed_ef < 480 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
             _ => 0.0,
         };
         if motion && self.ctx == PetContext::Idle && !lie && self.breath {
@@ -2096,6 +2196,10 @@ impl PetView {
                 if motion && self.nod_until_ms > now && y <= 5 {
                     dy += CELL * 0.5;
                 }
+                // 投喂仰头(规则 B 帧 1:狗仰头盯着抛来的饼干)。
+                if feeding && feed_ef < 300 && y <= 5 {
+                    dy -= 2.0;
+                }
 
                 // 活物引擎(规则 C):idle 微动作,全部用既有 dx/dy 变换(追尾的
                 // 水平镜像在 out 构建后统一处理)。sub = 快速子相位(抖动/交替)。
@@ -2158,6 +2262,7 @@ impl PetView {
                 if is_tail && motion {
                     let amp = match self.ctx {
                         PetContext::Play => 3.0,
+                        PetContext::Feed if feed_ef >= 480 => 3.0, // 吃到了,快摆收尾
                         PetContext::Running => 2.0,
                         _ => self.breed.personality().tail_amp,
                     };
@@ -2193,6 +2298,36 @@ impl PetView {
             }
             if !motion || !self.phase {
                 out.push((11, -2, HEART, 1.0 + body_dx, body_dy, 0.65, 0.65));
+            }
+        }
+        // 投喂(规则 B 板 F:抛接 → 咀嚼 → 爱心)。
+        if feeding && motion {
+            let my = (eyes[0].1 + 1).min(7);
+            if feed_ef < 440 {
+                // 饼干从右上(菜单方向)抛物线落向嘴边。
+                let p = (feed_ef as f32 / 440.0).min(1.0);
+                let (sx, sy) = (13.0_f32, -3.0_f32);
+                let (mx, myf) = (7.0_f32, my as f32);
+                let xf = sx + (mx - sx) * p;
+                let yf = sy + (myf - sy) * p - 4.0 * p * (1.0 - p); // 上凸抛物线
+                let xc = xf.floor() as i32;
+                let yc = yf.floor() as i32;
+                out.push((
+                    xc,
+                    yc,
+                    BISCUIT,
+                    (xf - xc as f32) * CELL + body_dx,
+                    (yf - yc as f32) * CELL + body_dy,
+                    0.7,
+                    0.7,
+                ));
+            } else if feed_ef < 900 {
+                // 咀嚼:左右腮交替鼓起 1 格(毛色凸出),每拍 ~210ms。
+                let cxc = if (feed_ef / 210) % 2 == 0 { 4 } else { 9 };
+                out.push((cxc, my, sp.fur, body_dx, body_dy, 0.7, 0.7));
+            } else {
+                // 收尾:冒一颗爱心(尾巴快摆已在 tail 分支)。
+                out.push((9, -1, HEART, 2.0 + body_dx, body_dy, 0.8, 0.8));
             }
         }
         // 打盹:头顶 zZ(t2 弱灰小方);连败陪伴/它先到了的趴睡不出 zZ。
@@ -2491,6 +2626,42 @@ impl Render for PetView {
                     MouseButton::Left,
                     cx.listener(|_p, _e, _w, cx| cx.stop_propagation()),
                 )
+                // 给小饼干(规则 B 首组):今日还有则可点,喂过置灰「今天吃过啦」。
+                .child({
+                    let can = self.can_feed_today();
+                    let mut row = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.))
+                        .h(px(28.))
+                        .px(px(10.))
+                        .rounded(px(R_CHIP))
+                        .text_size(px(11.))
+                        .text_color(rgb(if can { T1 } else { T3 }))
+                        .child(div().text_color(rgb(if can { BISCUIT } else { T3 })).child("●"))
+                        .child(if can { "给小饼干" } else { "今天吃过啦" });
+                    if can {
+                        row = row
+                            .child(div().flex_1())
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(PH))
+                                    .child("今日还有 1 块"),
+                            )
+                            .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|p, _e, _w, cx| {
+                                    cx.stop_propagation();
+                                    p.feed_treat(cx);
+                                }),
+                            );
+                    }
+                    row
+                })
+                .child(sep())
                 .child(
                     div()
                         .flex()
