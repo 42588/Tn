@@ -1154,11 +1154,19 @@ impl Workspace {
         // for it (open() also flags the overlay to grab focus on its next render).
         cx.subscribe(&explorer, |ws, _explorer, ev: &OpenFile, cx| {
             ws.ql_rail_pane = None; // navigator returns to explorer scope
+            let was_open = ws.quick_look_open;
             ws.quick_look.update(cx, |v, cx| match ev.0.clone() {
                 ExplorerFile::Local(path) => v.open(path, cx),
                 ExplorerFile::Remote { cfg, id, size } => v.open_remote(cfg, id, size, cx),
             });
             ws.quick_look_open = true;
+            // 磷光通道(规则 J):已开 = 切换文件(只闪光点);否则 = 叼光点展开面板。
+            let cue = if was_open {
+                crate::pet::PetSpatialCue::QuickLookSwitch
+            } else {
+                crate::pet::PetSpatialCue::QuickLookOpen
+            };
+            ws.pet.update(cx, |p, cx| p.spatial_cue(cue, cx));
             cx.notify();
         })
         .detach();
@@ -1196,6 +1204,10 @@ impl Workspace {
                                     v.open_remote(cfg, id, size, cx)
                                 }
                             });
+                            // 磷光通道(规则 J):嗅光点/换向,内容切换不重推面板。
+                            ws.pet.update(cx, |p, cx| {
+                                p.spatial_cue(crate::pet::PetSpatialCue::QuickLookSwitch, cx)
+                            });
                         }
                     }
                 }
@@ -1205,6 +1217,10 @@ impl Workspace {
                         ws.quick_look_open = false;
                         ws.ql_rail_pane = None; // reset on close
                         ws.ql_refocus_pane = true; // refocus the pane in next render
+                        // 磷光通道(规则 J):拉光点收束面板,宠物换岗回主岗台。
+                        ws.pet.update(cx, |p, cx| {
+                            p.spatial_cue(crate::pet::PetSpatialCue::QuickLookClose, cx)
+                        });
                     }
                     cx.notify();
                 }
@@ -1379,6 +1395,10 @@ impl Workspace {
             tab.focused = id;
             tab.welcome = false;
         }
+        // 磷光通道(规则 J):欢迎页 2× 宠物跃入地面裂缝 → 工作区岗台探头。
+        self.pet.update(cx, |p, cx| {
+            p.spatial_cue(crate::pet::PetSpatialCue::WelcomeToWorkspace, cx)
+        });
     }
 
     fn launch_in_active_tab_with_cwd(
@@ -1400,6 +1420,10 @@ impl Workspace {
             tab.focused = id;
             tab.welcome = false;
         }
+        // 磷光通道(规则 J):欢迎页 → 工作区换岗。
+        self.pet.update(cx, |p, cx| {
+            p.spatial_cue(crate::pet::PetSpatialCue::WelcomeToWorkspace, cx)
+        });
     }
 
     fn welcome_workdir_seed(&self, cx: &Context<Self>) -> Option<std::path::PathBuf> {
@@ -1810,6 +1834,10 @@ impl Workspace {
         cx.subscribe(&view, move |ws, _view, _ev: &SshRetryRequested, cx| {
             if let Some(spec) = ws.pane_specs.get(&id).cloned() {
                 ws.install_pane(id, spec, cx);
+                // 磷光通道(规则 J):重连时宠物守在通道口,从远端 pane 边缘带回光点。
+                ws.pet.update(cx, |p, cx| {
+                    p.spatial_cue(crate::pet::PetSpatialCue::RemoteReconnect, cx)
+                });
                 cx.notify();
             }
         })
@@ -2004,6 +2032,10 @@ impl Workspace {
             self.palette_sel = 0;
             self.palette_wsl = false;
             self.palette_needs_focus = true; // focus in render (see field doc)
+            // 磷光通道(规则 J):命令面板浮层打开 → 岗台探头 + 光点升起。
+            self.pet.update(cx, |p, cx| {
+                p.spatial_cue(crate::pet::PetSpatialCue::OverlayOpen, cx)
+            });
         } else {
             self.refocus_active(window, cx);
         }
@@ -2034,9 +2066,18 @@ impl Workspace {
             let closed = self.quick_look.update(cx, |v, cx| v.request_close(cx));
             if closed {
                 self.refocus_after_quick_look(window, cx);
+                // 磷光通道(规则 J):宠物拉光点 → 面板收束 → 换岗回主岗台。
+                self.pet.update(cx, |p, cx| {
+                    p.spatial_cue(crate::pet::PetSpatialCue::QuickLookClose, cx)
+                });
             } else {
                 self.quick_look_open = true;
             }
+        } else {
+            // 磷光通道(规则 J):叼光点 → 面板贴边展开。
+            self.pet.update(cx, |p, cx| {
+                p.spatial_cue(crate::pet::PetSpatialCue::QuickLookOpen, cx)
+            });
         }
         cx.notify();
     }
@@ -2288,6 +2329,9 @@ impl Workspace {
         let target = self.tabs[active].focused;
         self.tabs[active].root.split(target, new_id, axis, false);
         self.focus_pane(new_id, window, cx);
+        // 磷光通道(规则 J):宠物沿新分隔线小跑,新 pane 像被划开。
+        self.pet
+            .update(cx, |p, cx| p.spatial_cue(crate::pet::PetSpatialCue::SplitCreate, cx));
     }
 
     /// `新会话` split direction (app menu). Maps to a (`Axis`, before?) split.

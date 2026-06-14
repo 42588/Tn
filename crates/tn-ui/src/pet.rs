@@ -806,6 +806,46 @@ enum Affection {
     Call,
 }
 
+/// 磷光通道转场提示(规则 J · v2.3)。**不是上下文状态**,而是 UI 控制层在关键
+/// 转场时显式发出的一次性 cue —— 只含转场语义,不读终端内容、不携带文件/输出/
+/// 路径。宠物据此在岗台接缝点亮磷光裂缝 + 光点(开门类裂缝亮起变长,召回类收束
+/// 熄灭),把「宠物 = Tn 空间的钥匙」演出来。UI 本体立即响应,绝不等待此动画。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PetSpatialCue {
+    /// 幽灵终端进出。**待接线**:幽灵终端是独立顶层窗口(`quick_terminal.rs`),
+    /// 与主窗宠物 overlay 不同窗,需后续跨窗方案(板 H 远期)。
+    #[allow(dead_code)]
+    GhostEnter,
+    #[allow(dead_code)]
+    GhostExit,
+    QuickLookOpen,
+    QuickLookClose,
+    QuickLookSwitch,
+    OverlayOpen,
+    SplitCreate,
+    WelcomeToWorkspace,
+    RemoteReconnect,
+}
+
+impl PetSpatialCue {
+    /// 开门类(裂缝亮起、变长)= true;召回/收束/切换类 = false。
+    fn is_open(self) -> bool {
+        matches!(
+            self,
+            PetSpatialCue::GhostEnter
+                | PetSpatialCue::QuickLookOpen
+                | PetSpatialCue::OverlayOpen
+                | PetSpatialCue::SplitCreate
+                | PetSpatialCue::WelcomeToWorkspace
+                | PetSpatialCue::RemoteReconnect
+        )
+    }
+    /// 切换类(只闪光点、不开合裂缝;规则 J2 Quick Look 切换文件)。
+    fn is_switch(self) -> bool {
+        matches!(self, PetSpatialCue::QuickLookSwitch)
+    }
+}
+
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
 /// 终端上下文(优先级降序;见 docs/宠物/宠物系统规则.md + 小狗家族设计.md
@@ -1069,6 +1109,13 @@ pub struct PetView {
     /// 玩具子菜单展开;重置互动记忆二次确认浮层。
     toy_menu_open: bool,
     confirm_reset: bool,
+    // ── 磷光通道(规则 J)──
+    /// 当前空间 cue + 演出窗口起点/终点(同一时刻只允许一个;新替旧)。
+    cue: Option<PetSpatialCue>,
+    cue_start_ms: u64,
+    cue_until_ms: u64,
+    /// 上次完整共演时刻(规则 J4:≥30s 才给完整版,否则短版/静默)。
+    last_cue_ms: u64,
     // ── 工作共情(规则 E)──
     /// 最近若干次主动庆祝时刻(共享冷却 ≤2 次/10 分钟)。
     celebrate_times: [u64; 2],
@@ -1143,6 +1190,10 @@ impl PetView {
             extra_heart_until_ms: 0,
             toy_menu_open: false,
             confirm_reset: false,
+            cue: None,
+            cue_start_ms: 0,
+            cue_until_ms: 0,
+            last_cue_ms: 0,
             celebrate_times: [0, 0],
             companion_lie: false,
             moaned: false,
@@ -1213,6 +1264,7 @@ impl PetView {
         h = h * 2 + b(self.call_until_ms > now);
         h = h * 2 + b(self.settle_until_ms > now);
         h = h * 2 + b(self.extra_heart_until_ms > now);
+        h = h * 16 + self.cue.map(|c| c as u64 + 1).unwrap_or(0);
         h
     }
 
@@ -1400,6 +1452,75 @@ impl PetView {
             self.on_welcome = on;
             self.peek(cx);
         }
+    }
+
+    /// 磷光通道(规则 J):UI 控制层在关键转场时调用。宠物在岗台接缝点亮磷光裂缝
+    /// + 光点(开门类亮起变长,召回类收束);**绝不阻塞 UI** —— 调用方发完即继续。
+    ///
+    /// 节律(规则 J4):同一时刻只一个 cue(新替旧);≥30s 给完整共演,10–30s 内
+    /// 重复降级短版;直接互动(拖拽/摸头/投喂/逗弄)优先,期间通道静默不抢戏;
+    /// reduced motion 只 1px 磷光点闪一下(静态换岗)。
+    pub(crate) fn spatial_cue(&mut self, cue: PetSpatialCue, cx: &mut Context<Self>) {
+        if !self.state.enabled || !self.state.visible || self.state.welcome_only && !self.on_welcome
+        {
+            return;
+        }
+        let now = now_ms();
+        // 直接互动优先(规则 J 优先级表):拖拽/摸头/投喂/逗弄期间通道排队或降级 →
+        // 这里直接放弃本次演出(UI 已自行响应,不欠动画)。
+        if self.drag.is_some()
+            || self.feed_until_ms > now
+            || self.pat_until_ms > now
+            || self.play_until_ms > now
+        {
+            return;
+        }
+        if !self.motion_on() {
+            // reduced motion:静态换岗 + 1px 磷光点闪烁(规则 J 可访问性)。
+            self.cue = Some(cue);
+            self.cue_start_ms = now;
+            self.cue_until_ms = now + 200;
+            cx.notify();
+            return;
+        }
+        // 完整共演 ≥30s 间隔;否则短版(只光点 + 探头,≤350ms)。
+        let full = now.saturating_sub(self.last_cue_ms) >= 30_000;
+        let dur = if cue.is_switch() {
+            260 // 切换类:只闪光点
+        } else if full {
+            900
+        } else {
+            320
+        };
+        self.last_cue_ms = now;
+        self.cue = Some(cue);
+        self.cue_start_ms = now;
+        self.cue_until_ms = now + dur;
+        self.idle_since_ms = now;
+        Self::spawn_cue_driver(cx);
+        cx.notify();
+    }
+
+    /// 磷光通道动画驱动:30ms 重绘直到收束,自停。
+    fn spawn_cue_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(30))
+                .await;
+            let alive = this
+                .update(cx, |pet, cx| {
+                    if pet.cue.is_some() && now_ms() >= pet.cue_until_ms {
+                        pet.cue = None;
+                    }
+                    cx.notify();
+                    pet.cue.is_some()
+                })
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// 状态栏席位:`Some(("WESTIE · IDLE", live))`;关闭系统时显示 PET · OFF
@@ -2505,6 +2626,17 @@ impl PetView {
             };
             body_dx -= off; // 朝左(用户)
         }
+        // 磷光通道蓄力(规则 J「开门」:宠物蹲下蓄力后钻入/跃入)。开门类 cue
+        // 前 45% 压身 1.5px;召回类不压(它在召回空间)。
+        if motion {
+            if let Some(cue) = self.cue {
+                let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
+                let cp = (now.saturating_sub(self.cue_start_ms)) as f32 / dur as f32;
+                if cue.is_open() && !cue.is_switch() && cp < 0.45 {
+                    body_dy += 1.5 * (1.0 - cp / 0.45);
+                }
+            }
+        }
         // 趴姿呼吸:背部隆起 1px —— 上半身(行 ≤6)上移,行 7 拉高 1px 补缝,
         // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
         let inhale = lie && motion && self.breath;
@@ -2743,6 +2875,43 @@ impl PetView {
                 }
             }
             None => {}
+        }
+        // 磷光通道(规则 J):岗台接缝撕开磷光锯齿裂缝 + 光点。开门亮起变长,召回
+        // 收束熄灭,切换只闪光点。颜色只用 ph 体系(PH_DIM 含 alpha 不能直接 rgb,
+        // 故愈合端用实心暗磷光);峰值 ≤召唤线,绝不外发光。放在镜像之后免得追尾跳位。
+        if let Some(cue) = self.cue {
+            const PH_FADE: u32 = 0x357A68; // 愈合端:暗磷光(实心)
+            let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
+            let cp = (now.saturating_sub(self.cue_start_ms) as f32 / dur as f32).clamp(0.0, 1.0);
+            if cue.is_switch() {
+                // 切换:只在头侧闪一颗光点(不开合裂缝)。
+                if (now / 130) % 2 == 0 {
+                    out.push((9, -1, PH, 1.0 + body_dx, body_dy, 0.45, 0.45));
+                }
+            } else {
+                let open = cue.is_open();
+                let grown = if open { (cp / 0.6).min(1.0) } else { 1.0 - cp };
+                // 裂缝逐段(像素阶梯走向):中段 ph 最亮,顶端 ph 暗向透明愈合。
+                let jit = [0.0_f32, 1.5, -1.0];
+                let segs = (grown * 3.0).ceil() as i32;
+                for i in 0..segs.min(3) {
+                    let c = if i == 0 { PH } else { PH_FADE };
+                    out.push((7, -1 - i, c, body_dx + jit[i as usize], body_dy, 0.22, 1.0));
+                }
+                // 光点(全场最亮焦点):开门向上爬,召回向下收。
+                let lead = if open { grown } else { 1.0 - grown };
+                let dot = -1.0 - lead * 2.6; // y ∈ [-1, -3.6]
+                let yc = dot.floor().max(-3.0) as i32;
+                out.push((
+                    7,
+                    yc,
+                    PH,
+                    body_dx + 1.0,
+                    body_dy + (dot - yc as f32) * CELL,
+                    0.45,
+                    0.45,
+                ));
+            }
         }
         out
     }
