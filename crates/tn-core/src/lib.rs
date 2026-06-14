@@ -989,6 +989,22 @@ impl Terminal {
             let cell = indexed.cell;
             let mut fg = self.palette.resolve(cell.fg, colors);
             let mut bg = self.palette.resolve(cell.bg, colors);
+            // Legacy conhost (ConPTY) expresses the console's *default* background
+            // as an explicit ANSI black (`ESC[40m`); blank or just-deleted PSReadLine
+            // input cells then carry it. When the theme's black differs from the
+            // terminal background, those cells render as a stray light band (用户报
+            // 「输入一行再删除后的浅白色遮罩」). Treat a *black background* as the
+            // default background — the near-universal `color0 ≈ background`
+            // convention — so it blends and the renderer's "skip default bg" path
+            // drops it. Black as a *foreground* is untouched (dark text still draws).
+            let bg_is_black = match cell.bg {
+                Color::Named(n) => n as usize == 0, // NamedColor::Black
+                Color::Indexed(0) => true,
+                _ => false,
+            };
+            if bg_is_black {
+                bg = self.palette.bg;
+            }
             if cell.flags.contains(Flags::INVERSE) {
                 std::mem::swap(&mut fg, &mut bg);
             }
@@ -1040,6 +1056,34 @@ mod tests {
         assert_eq!(snap.rows, 5);
         assert_eq!(snap.cols, 20);
         assert!(snap.to_text().contains("hello world"));
+    }
+
+    #[test]
+    fn black_background_blends_with_default_so_no_band() {
+        // Legacy conhost paints deleted/blank PSReadLine input with `ESC[40m`
+        // (ANSI black bg). Those cells must carry the DEFAULT bg, not a distinct
+        // black, or they render as a stray band whenever the theme's black ≠ the
+        // terminal background (用户报「删除一行后的浅白色遮罩」). Precondition: the
+        // default palette's black really does differ from its background.
+        let t0 = Terminal::new(GridSize::new(1, 4));
+        assert_ne!(
+            t0.palette.ansi[0], t0.palette.bg,
+            "test premise: palette black must differ from bg"
+        );
+
+        let mut t = Terminal::new(GridSize::new(3, 10));
+        t.advance(b"\x1b[40m    \x1b[0m"); // black bg, four spaces, reset
+        let snap = t.snapshot();
+        let band: Vec<_> = snap.cells.iter().filter(|c| c.row == 0 && c.col < 4).collect();
+        assert_eq!(band.len(), 4);
+        for c in band {
+            assert_eq!(
+                (c.bg.r, c.bg.g, c.bg.b),
+                (snap.bg.r, snap.bg.g, snap.bg.b),
+                "ESC[40m space at col {} should blend with the default bg, not band",
+                c.col
+            );
+        }
     }
 
     #[test]
