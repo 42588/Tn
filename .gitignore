@@ -16,8 +16,9 @@ Thumbs.db
 # MCP tool caches (local, not shared)
 .web-rooter/
 
-# Local vendoring
-vendor/
+# Local vendoring (root-level `cargo vendor` output only; anchored so the
+# committed ConPTY redistributable under crates/tn-app/vendor/ is NOT ignored).
+/vendor/
 
 # Release artifact
 tn.zip

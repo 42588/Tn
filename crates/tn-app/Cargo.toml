@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# Sideloads the bundled modern ConPTY (conpty.dll + OpenConsole.exe) next to the
+# output exe so agent TUIs (codex) report their real alt-screen/mouse modes.
+build = "build.rs"
 
 [[bin]]
 name = "tn"
