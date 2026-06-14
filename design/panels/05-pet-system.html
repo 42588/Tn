@@ -67,8 +67,7 @@
   .scn .qpanel{ position:absolute; background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-card); box-shadow:var(--shadow-float); }
   .scn .scrim{ position:absolute; inset:0; background:var(--scrim); }
   .scn .floatm{ position:absolute; background:var(--l3); border:1px solid var(--h2); border-radius:var(--r-card); box-shadow:var(--shadow-float); }
-  .crack{ position:absolute; width:1px; background:var(--ph); }
-  .crack.h{ width:auto; height:1px; }
+  .crk{ position:absolute; pointer-events:none; }   /* 磷光裂缝容器:由 JS 逐段画 quad */
   .dot{ position:absolute; width:4px; height:4px; background:var(--ph); border-radius:1px; }
   .dot.dim{ background:var(--ph-dim); }
   .shelfm{ position:absolute; height:1px; background:var(--h1); }
@@ -678,9 +677,32 @@
 
     <div class="tag ph" style="margin-bottom:10px">J1 · 三个空间动词 — 一切通道演出由这三个动词组合而成</div>
     <div class="verbs">
-      <div class="vc"><div class="vh">开门</div><div class="vb">宠物打开隐藏空间:真实 UI 接缝(岗台线/屏顶召唤线/QuickLook 边缘/pane 分隔线)亮起 <em>1px 磷光裂缝</em>,宠物蹲下蓄力后钻入或跃入。<br/>边界:只服务关键转场,不绑普通 hover/button。</div></div>
+      <div class="vc"><div class="vh">开门</div><div class="vb">宠物打开隐藏空间:真实 UI 接缝(岗台线/屏顶召唤线/QuickLook 边缘/pane 分隔线)撕开一道 <em>磷光锯齿裂缝</em>(走向见 J1b),宠物蹲下蓄力后钻入或跃入。<br/>边界:只服务关键转场,不绑普通 hover/button。</div></div>
       <div class="vc"><div class="vh">穿梭</div><div class="vb">宠物在 UI 空间之间迁移:主终端消失 → 目标 UI 边缘探头/落地,<em>保留同一只主宠身份</em>。<br/>边界:不复制宠物;同一时刻只有一个主宠位置。</div></div>
       <div class="vc"><div class="vh">召回</div><div class="vb">UI 收起,宠物带着空间闭合:回头叼/拉一个 <em>磷光光点</em>,面板或幽灵窗收束,从原岗台探头回来。<br/>边界:UI 收起不等待动画完成,动画可追随收尾。</div></div>
+    </div>
+
+    <!-- J1b · 裂缝解剖:直接回答「裂缝长什么样」 -->
+    <div class="tag ph" style="margin:24px 0 10px">J1b · 裂缝长什么样 — 不是一条线,是沿真实接缝撕开的磷光锯齿</div>
+    <div style="display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap">
+      <div class="scn" style="width:300px; height:200px; flex:none">
+        <div class="shelfm" style="left:24px; right:24px; top:96px"></div>
+        <div class="crk" id="crk-anatomy" style="left:140px; top:34px"></div>
+        <div class="flabel" style="left:156px; top:34px"><b style="color:var(--ph)">①</b> 像素阶梯走向(非直线)</div>
+        <div class="flabel" style="left:158px; top:90px"><b style="color:var(--ph)">②</b> 中段 ph 最亮 + 光点</div>
+        <div class="flabel" style="left:150px; top:174px"><b style="color:var(--ph)">③</b> 两端 ph-dim 愈合</div>
+        <div class="flabel" style="left:8px; top:112px"><b style="color:var(--ph)">④</b> 分叉细缝</div>
+        <div class="flabel" style="left:8px; top:80px">接缝 · 平时 1px 发丝</div>
+      </div>
+      <div class="note" style="flex:1; min-width:360px; margin-top:0">
+        <b>裂缝</b>是「开门」动词的视觉本体 —— 宠物在一条真实 UI 接缝(岗台线 / 屏顶召唤线 / QuickLook 边缘 / pane 分隔线)上把空间撕开的一道磷光缝,而不是一条平涂直线:<br/>
+        ① <b>像素阶梯走向</b>:逐段 1px 左右错位 —— 直线是「接缝」,锯齿才是「裂开」;<br/>
+        ② 从中心 <b>ph 最亮</b> 向两端 <b>ph-dim → 透明</b> 愈合,像从一点撕开;<br/>
+        ③ 最宽处漏出 1–2 颗 <b>2px 光点</b>(全场最亮焦点,呼应「光点」语汇);<br/>
+        ④ 偶带一条更短的 <b>分叉细缝</b>(ph-dim);<br/>
+        ⑤ 缝宽 1px、峰值 ≤ 召唤线,<b>绝不外发光</b>。<br/>
+        <b>开门</b> = 裂缝沿接缝亮起并变长;<b>召回</b> = 裂缝收束熄灭。实现 = 一串轴对齐矩形 quad(GPUI path/quad 逐段还原),无渐变、无 glow、无模糊,故 Rust 可精准还原。
+      </div>
     </div>
 
     <div class="tag ph" style="margin:24px 0 10px">J2 · 四个标志性场景(必须先出审核稿)— 完整共演 700–1200ms,但 UI 本体立即响应或在 80–160ms 预备后响应</div>
@@ -694,9 +716,10 @@
           <div class="gw" style="left:90px; right:90px; height:96px">
             <div style="padding:10px 12px; font:10px var(--mono); color:var(--t2)">GHOST<span style="color:var(--ph)">_</span> · 幽灵终端</div>
           </div>
-          <!-- 主岗台(右下) -->
+          <!-- 主岗台(右下)+ 跃入裂缝 -->
           <div class="shelfm" style="left:300px; right:24px; bottom:22px"></div>
-          <div class="flabel" style="right:26px; bottom:8px">主终端岗台</div>
+          <div class="crk" id="crk-ghost" style="right:58px; bottom:26px"></div>
+          <div class="flabel" style="right:26px; bottom:8px">主终端岗台 · 跃入裂缝</div>
           <!-- 光点轨迹:主岗台 → 屏顶召唤线 -->
           <div class="dot" style="right:64px; bottom:30px"></div>
           <div class="dot dim" style="right:120px; bottom:70px"></div>
@@ -717,8 +740,8 @@
         <div class="scn" style="height:188px">
           <div class="pane" style="left:14px; top:16px; width:300px; bottom:16px"></div>
           <div style="position:absolute; left:30px; top:30px; font:10px var(--mono); color:var(--t3)">❯ pwsh</div>
-          <!-- 边缘裂缝 -->
-          <div class="crack" style="left:322px; top:16px; bottom:16px"></div>
+          <!-- 边缘裂缝(沿 QuickLook 入场边撕开) -->
+          <div class="crk" id="crk-ql" style="left:319px; top:16px"></div>
           <!-- QuickLook 面板从裂缝展开 -->
           <div class="qpanel" style="left:330px; right:14px; top:16px; bottom:16px">
             <div style="padding:8px 10px; font:10px var(--mono); color:var(--t2); border-bottom:1px solid var(--h1)">element.rs · QUICK LOOK</div>
@@ -742,8 +765,9 @@
             <div style="padding:8px 12px; font:11px var(--mono); color:var(--t0); border-bottom:1px solid var(--h1)">❯ <span style="color:var(--ph)">ssh</span></div>
             <div style="padding:8px 12px; font:10px var(--mono); color:var(--t2)">prod-01 · staging · 宠物设置…</div>
           </div>
-          <!-- 岗台 + 探头 + 光点升起 -->
+          <!-- 岗台 + 探头 + 开门裂缝 + 光点升起 -->
           <div class="shelfm" style="left:150px; width:120px; bottom:30px"></div>
+          <div class="crk" id="crk-overlay" style="left:192px; bottom:34px"></div>
           <div class="clipbox" style="left:152px; bottom:31px; width:46px; height:24px">
             <img class="pdog" src="../../docs/宠物/原型/01-westie.svg" width="42" height="36" style="position:absolute; left:0; top:0"/>
           </div>
@@ -761,8 +785,8 @@
         <div class="scn" style="height:188px">
           <div class="pane" style="left:14px; top:16px; width:300px; bottom:16px"></div>
           <div class="pane" style="left:330px; right:14px; top:16px; bottom:16px"></div>
-          <!-- 发光分隔线 -->
-          <div class="crack" style="left:322px; top:16px; bottom:16px"></div>
+          <!-- 分隔线裂缝(新 pane 被划开) -->
+          <div class="crk" id="crk-split" style="left:319px; top:16px"></div>
           <div style="position:absolute; left:30px; top:30px; font:10px var(--mono); color:var(--t3)">pane A</div>
           <div style="position:absolute; left:346px; top:30px; font:10px var(--mono); color:var(--t3)">pane B(新)</div>
           <!-- 宠物沿分隔线小跑 -->
@@ -1047,6 +1071,54 @@
   draw("pose-g-bone",    { extra:bone(11*C, SHELF_Y-6) });
   draw("pose-g-blanket", { rows:LIE, eyes:LIE_EYES, ears:LIE_EARS, tail:LIE_TAIL, eye:"slit", extra:blanket(0, SHELF_Y-6) });
   draw("pose-g-none",    {});
+
+  // ── 板 H · 磷光裂缝(规则 J「开门」)──
+  // 一道沿真实接缝撕开的磷光锯齿:像素阶梯走向、中段 ph 最亮向两端 ph-dim 愈合、
+  // 最宽处漏 2px 光点、偶带一条分叉细缝。全部轴对齐矩形 quad —— GPUI path/quad 可逐段还原。
+  function crack(id, o){
+    o = o || {};
+    const el = document.getElementById(id); if(!el) return;
+    const PH="#5BE7C4", DIM="rgba(91,231,196,.55)", FAINT="rgba(91,231,196,.26)";
+    const len=o.len||140, amp=o.amp||3, axis=o.axis||"v", W=amp*2+3;
+    el.style.position="absolute";
+    el.style.width  = (axis==="v"?W:len)+"px";
+    el.style.height = (axis==="v"?len:W)+"px";
+    let s=(o.seed||7)>>>0;
+    const rnd=()=>{ s=(s*1103515245+12345)&0x7fffffff; return s/0x7fffffff; };
+    // a = 沿主轴位置, b = 相对缝心的横向偏移
+    const put=(a,b,w,h,c)=>{
+      const x=(axis==="v")?(amp+b):a, y=(axis==="v")?a:(amp+b);
+      const ww=(axis==="v")?w:h, hh=(axis==="v")?h:w;
+      const d=document.createElement("i");
+      d.style.cssText="position:absolute;left:"+x+"px;top:"+y+"px;width:"+ww+"px;height:"+hh+"px;background:"+c+";display:block";
+      el.appendChild(d); };
+    let pos=0, off=0, dir=(rnd()<0.5?1:-1);
+    while(pos<len){
+      const seg=3+Math.floor(rnd()*4);                 // 段长 3–6px
+      const t=(pos+seg/2)/len;                          // 归一化位置
+      const c=(t>0.30&&t<0.70)?PH:((t>0.15&&t<0.85)?DIM:FAINT);  // 中亮端隐
+      const h=Math.min(seg,len-pos);
+      put(pos, off, 1, h, c);                           // 主缝竖段(1px)
+      let noff=off+dir*(rnd()<0.25?2:1);                // 横向阶梯跳变
+      if(noff>amp){ noff=amp; dir=-1; } if(noff<-amp){ noff=-amp; dir=1; }
+      if(rnd()<0.30) dir=-dir;                          // 偶尔提前折返 → 更碎
+      put(pos+h-1, Math.min(off,noff), Math.abs(noff-off)+1, 1, c);  // 台阶横连(补缺口)
+      off=noff; pos+=seg;
+    }
+    put(Math.round(len*0.42),  0, 2,2, PH);             // 缝内光点(全场最亮焦点)
+    put(Math.round(len*0.58), -1, 2,2, PH);
+    if(o.branch){                                       // 分叉细缝
+      const dB=o.branchDir||1; let bp=0, bo=1;
+      const yb=Math.round(len*0.46), bl=Math.round(len*0.30);
+      while(bp<bl){ const seg=2+Math.floor(rnd()*3); const c=(bp/bl<0.55)?DIM:FAINT;
+        put(yb+bp, dB*bo, 1, Math.min(seg,bl-bp), c); bo+=1; bp+=seg; }
+    }
+  }
+  crack("crk-anatomy", { len:150, amp:4, seed:11, branch:true, branchDir:-1 });
+  crack("crk-ghost",   { len:62,  amp:3, seed:7 });
+  crack("crk-ql",      { len:156, amp:3, seed:23 });
+  crack("crk-overlay", { len:26,  amp:2, seed:13 });
+  crack("crk-split",   { len:156, amp:3, seed:41, branch:true, branchDir:1 });
 })();
 </script>
 
