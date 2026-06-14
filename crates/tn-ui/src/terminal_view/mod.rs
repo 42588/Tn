@@ -2579,14 +2579,32 @@ impl TerminalView {
         let route = scroll_wheel_route(mode);
         cx.stop_propagation();
 
-        // Diagnostic (BUG③ "agent 滚不动"): one line per wheel tick so a real-machine
-        // test reveals which branch runs and whether there's scrollback to scroll.
-        // Filter with `tn::scroll`.
+        // ConPTY workaround: on Windows, ConPTY intercepts DECSET 1049 (alt screen)
+        // and DECSET 1000/1003 (mouse capture) internally and does NOT forward them
+        // to the host pipe. So alacritty never sees the mode switch and reports
+        // alt_screen=false, mouse_report=false — even though the child (e.g. codex/
+        // ratatui) is in full-screen alt-screen mode with mouse capture enabled.
+        // Detect this: agent pane + no mouse_report + no scrollback (history=0) +
+        // agent uses the terminal cursor (not Ink-style self-drawn). In that case
+        // override to MouseReport with SGR encoding — the mouse reports we write to
+        // the PTY input pipe reach the child directly (ConPTY passes input through).
+        let conpty_override = self.agent.is_some()
+            && !self.agent_manages_cursor
+            && !mode.mouse_report
+            && history == 0;
+
+        let route = if conpty_override {
+            ScrollWheelRoute::MouseReport
+        } else {
+            route
+        };
+
         {
-            let branch = match route {
-                ScrollWheelRoute::MouseReport => "mouse_report",
-                ScrollWheelRoute::AppArrows => "arrows",
-                ScrollWheelRoute::Scrollback => "scrollback",
+            let branch = match (route, conpty_override) {
+                (ScrollWheelRoute::MouseReport, true) => "mouse_report(conpty_override)",
+                (ScrollWheelRoute::MouseReport, false) => "mouse_report",
+                (ScrollWheelRoute::AppArrows, _) => "arrows",
+                (ScrollWheelRoute::Scrollback, _) => "scrollback",
             };
             tracing::info!(
                 target: "tn::scroll",
@@ -2602,20 +2620,19 @@ impl TerminalView {
             );
         }
 
-        // (1) App-driven mouse: forward a wheel report at the pointer's cell. Takes
-        // precedence over the alt-screen arrow-key path — a TUI that captures the
-        // mouse expects button reports, not synthetic arrows.
+        // (1) App-driven mouse (or ConPTY override): forward a wheel report at the
+        // pointer's cell. When ConPTY ate the DECSET, we force SGR encoding — modern
+        // TUIs (crossterm/ratatui) always enable SGR mouse (DECSET 1006).
         if route == ScrollWheelRoute::MouseReport {
             if self.ssh_input_blocked() {
                 return;
             }
-            // cell_at gives 0-based (row, col); mouse protocol coords are 1-based.
-            // Fall back to the top-left cell when the pointer is outside the grid.
             let (row, col) = self
                 .cell_at(event.position)
                 .map(|(r, c)| (r + 1, c + 1))
                 .unwrap_or((1, 1));
-            let bytes = encode_wheel_report(up, col, row, mode.sgr_mouse, n);
+            let sgr = if conpty_override { true } else { mode.sgr_mouse };
+            let bytes = encode_wheel_report(up, col, row, sgr, n);
             let mut w = self.writer.lock().unwrap();
             let _ = w.write_all(&bytes);
             let _ = w.flush();
