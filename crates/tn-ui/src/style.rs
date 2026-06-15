@@ -83,9 +83,12 @@ pub(crate) const UI_DISPLAY: &str = "Space Grotesk";
 /// 实际等宽以 `config.font().family` 为准(用户可覆盖),故此常量当前仅作文档基准。
 #[allow(dead_code)]
 pub(crate) const UI_MONO: &str = "JetBrainsMono Nerd Font";
-/// 中文回退族(思源黑体 SC):通过 [`with_cjk`] / 根节点 `font_fallbacks` 串接到任意
-/// 主字族之后 —— 西文走 Inter/JBM/Space Grotesk,遇到 CJK 字形自动落到思源黑体。
-pub(crate) const CJK_FALLBACK: &str = "Source Han Sans SC";
+/// 中文回退族:通过 [`with_cjk`] / 根节点 `font_fallbacks` 串到主字族之后 —— 西文走
+/// Inter/JBM/Space Grotesk,遇 CJK 字形落到此族。**必须是系统已装字体**:gpui 0.2.2
+/// 的回退构建只在系统字体集里查族名(direct_write.rs:333),打包的内存字体当不了回退。
+/// 用「微软雅黑 UI」(Win10/11 必装,匹配得上、无 ERROR 刷屏);装了更现代的 CJK
+/// (如 MiSans / HarmonyOS Sans SC)可在此前置以自动升级。
+pub(crate) const CJK_FALLBACK: &str = "Microsoft YaHei UI";
 
 // ── 命名字号层级(磷光 type scale) ────────────────────────────────────────
 // 单源字号,杜绝散落魔法数字;最小档从旧 10px 抬到 11px(密集小字更易读)。

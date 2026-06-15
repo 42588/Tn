@@ -130,7 +130,9 @@ pub fn run() {
             //   · JetBrainsMono Nerd Font —— 终端/编辑器/代码等宽(含 Nerd 图标字形)
             //   · Inter —— UI 正文无衬线(Regular/Medium/SemiBold)
             //   · Space Grotesk —— 标题/词标展示字(Medium/Bold,几何科技感)
-            //   · Source Han Sans SC —— 中文回退(思源黑体,OFL),由 font_fallbacks 串接
+            // 中文不打包:gpui 0.2.2 的 font_fallbacks 只在「系统字体集」里查族名
+            // (direct_write.rs:333),add_fonts 注册的内存字体永远匹配不上做回退 —— 故
+            // 中文走系统回退(见 style::CJK_FALLBACK)。打包字体只能当**主字族**用。
             macro_rules! embed {
                 ($p:literal) => {
                     std::borrow::Cow::Owned(include_bytes!(concat!("../assets/fonts/", $p)).to_vec())
@@ -150,8 +152,6 @@ pub fn run() {
                     // 展示字(Space Grotesk)
                     embed!("SpaceGrotesk-Medium.ttf"),
                     embed!("SpaceGrotesk-Bold.ttf"),
-                    // 中文回退(思源黑体 SC,OTF/CFF — Windows DirectWrite 原生支持)
-                    embed!("SourceHanSansSC-Regular.otf"),
                 ])
                 .expect("Failed to load embedded Phosphor font system");
             // ──────────────────────────────────────────────────────────────────
