@@ -2,164 +2,112 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<title>Tn 磷光 · 08 应用图标设计 (v2)</title>
+<title>Tn 磷光 · 08 应用图标设计 (设计师提案)</title>
 <link rel="stylesheet" href="../phosphor.css" />
 <style>
   /* 页面特有布局 */
-  .icon-layout {
+  .design-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 32px;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 24px;
     max-width: 1480px;
-    margin: 0 auto 56px;
-    align-items: start;
+    margin: 0 auto 52px;
   }
   
-  .control-panel {
+  .concept-card {
     background: var(--l1);
     border: 1px solid var(--h1);
     border-radius: var(--r-plate);
     padding: 24px;
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
+    position: relative;
+    transition: all 0.25s ease;
+  }
+  
+  .concept-card:hover {
+    border-color: var(--ph-dim);
   }
 
-  .showcase-area {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 24px;
+  .showcase-box {
     background: #05070a;
     border: 1px solid var(--h0);
-    border-radius: var(--r-plate);
-    padding: 48px;
-    position: relative;
-    overflow: hidden;
-  }
-
-  /* 动态测试背景 */
-  .bg-select {
+    border-radius: var(--r-card);
+    padding: 32px;
     display: flex;
-    gap: 8px;
-  }
-  .bg-btn {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    border: 1.5px solid var(--h2);
-    cursor: pointer;
-  }
-  .bg-btn:hover {
-    transform: scale(1.1);
-  }
-
-  /* ───────────────── 纯 SVG 磷光图标组件 ───────────────── */
-  .icon-instance {
-    --sz: 256px;
-    width: var(--sz);
-    height: var(--sz);
-    position: relative;
-    border-radius: 20%;
-    /* 对角金属感底座渐变 */
-    background: linear-gradient(135deg, #22263f, #0e0f16);
-    /* 外轮廓发光霓虹线（双通道发光） */
-    border: 1px solid rgba(91, 231, 196, 0.7);
-    box-shadow: 
-      0 0 calc(var(--sz) * 0.05) rgba(91, 231, 196, 0.25),
-      inset 0 0 calc(var(--sz) * 0.02) rgba(91, 231, 196, 0.1);
-    display: flex;
-    align-items: center;
     justify-content: center;
-    box-sizing: border-box;
-    transition: all 0.3s ease;
+    align-items: center;
+    height: 280px;
+    position: relative;
   }
 
-  /* 凹陷显示屏幕 */
-  .icon-screen {
-    position: absolute;
-    top: 6%;
-    left: 6%;
-    right: 6%;
-    bottom: 6%;
-    border-radius: 14%;
-    /* 动感深蓝到深紫对角渐变 */
-    background: linear-gradient(135deg, #121625, #080a10);
-    border: 1px solid rgba(27, 35, 52, 0.8);
-    box-shadow: inset 0 0 calc(var(--sz) * 0.05) rgba(0, 0, 0, 0.85);
-    overflow: hidden;
-  }
-
+  /* ───────────────── SVG 样式与定义 ───────────────── */
   .icon-svg {
-    width: 100%;
-    height: 100%;
+    width: 200px;
+    height: 200px;
     display: block;
   }
-
-  /* 霓虹发光样式 */
+  
   .glow-path {
-    opacity: 0.45;
-    filter: blur(2px);
+    opacity: 0.4;
+    filter: drop-shadow(0 0 6px #5BE7C4);
   }
   
   .sharp-path {
     stroke: var(--ph);
   }
 
-  /* 极小尺寸下的适配与优化 */
-  .icon-instance.sz-16 { --sz: 16px; border-radius: 3px; }
-  .icon-instance.sz-24 { --sz: 24px; border-radius: 5px; }
-  .icon-instance.sz-32 { --sz: 32px; border-radius: 6px; }
-  .icon-instance.sz-48 { --sz: 48px; border-radius: 10px; }
-  .icon-instance.sz-64 { --sz: 64px; border-radius: 12px; }
-  .icon-instance.sz-128 { --sz: 128px; border-radius: 26px; }
-  
-  /* 在极小尺寸下，隐藏微小细节 */
-  .sz-16 .hud-detail, .sz-24 .hud-detail, .sz-32 .hud-detail {
-    display: none;
-  }
-  .sz-16 .sharp-path {
-    stroke-width: 4px;
-  }
-  .sz-16 .glow-path {
-    display: none;
-  }
-
-  /* 多尺寸网格 */
-  .sizes-grid {
+  /* 极小尺寸预览排 */
+  .downscale-row {
     display: flex;
-    flex-wrap: wrap;
-    gap: 20px;
+    gap: 16px;
     align-items: flex-end;
-    margin-top: 14px;
-    background: var(--l1);
-    padding: 24px;
-    border-radius: var(--r-plate);
-    border: 1px solid var(--h1);
+    background: var(--l2);
+    padding: 12px;
+    border-radius: var(--r-card);
   }
-  .size-cell {
+  
+  .downscale-item {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
-  .size-label {
-    font: 10px var(--mono);
+  
+  .downscale-item span {
+    font: 9px var(--mono);
     color: var(--t2);
   }
 
-  /* 开关 */
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
+  .downscale-svg {
+    display: block;
+    background: transparent;
   }
-  .glow-off .icon-instance {
-    border-color: rgba(91, 231, 196, 0.4);
-    box-shadow: none;
+
+  /* 概念徽章 */
+  .concept-badge {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    background: var(--ph-soft);
+    color: var(--ph);
+    border: 1px solid var(--ph-dim);
+    border-radius: var(--r-chip);
+    font: 600 9px var(--mono);
+    padding: 2px 8px;
   }
-  .glow-off .glow-path {
-    display: none;
+  
+  .concept-title {
+    font: 600 16px var(--sans);
+    color: var(--t0);
+    margin-top: 4px;
+  }
+  
+  .concept-desc {
+    font: 12px/1.8 var(--sans);
+    color: var(--t1);
+    flex: 1;
   }
 </style>
 </head>
@@ -167,258 +115,314 @@
 
 <div class="sheet-head">
   <div class="no">TN · PHOSPHOR — SHEET 08 / 08</div>
-  <h1>应用图标设计 (v2) <em>APPLICATION ICON — 高密度精密仪器界面 · 独家 Monogram 标志</em></h1>
-  <div class="refs">生成脚本 <b>scripts/gen_icon.py</b> · 契约: 使用高密度雷达标尺、双通道发光的 “Tn” 专属几何 Monogram 标志</div>
+  <h1>应用图标设计提案 <em>DESIGNER PROPOSALS — 探索真正符合设计美学与品牌调性的图标方案</em></h1>
+  <div class="refs">实现入口 <b>scripts/gen_icon.py · assets/tn.ico</b> · 目标: 摆脱杂乱的无意义指示线，用纯粹且强烈的视觉隐喻打造高端开发工具心智</div>
 </div>
 <div class="sheet-rule"></div>
 
-<div class="icon-layout">
-  <!-- 左侧：展示区 -->
-  <div class="showcase-area" id="canvas">
-    <div class="icon-instance" id="icon" style="--sz: 320px;">
-      <div class="icon-screen">
-        <svg class="icon-svg" viewBox="0 0 256 256">
-          <!-- 1. 雷达测距虚线 (Faint Radar) -->
-          <circle class="hud-detail" cx="128" cy="128" r="80" fill="none" stroke="rgba(91,231,196,0.08)" stroke-width="1" stroke-dasharray="4,4" />
-          <circle class="hud-detail" cx="128" cy="128" r="50" fill="none" stroke="rgba(91,231,196,0.05)" stroke-width="1" />
+<!-- ══════════ 三个设计师概念对比 ══════════ -->
+<div class="design-grid">
+
+  <!-- 概念 A: 等轴测三维控制台 -->
+  <div class="concept-card">
+    <span class="concept-badge">CONCEPT A</span>
+    <div class="concept-title">3D 激光蚀刻舱 (3D Titanium Core)</div>
+    <div class="concept-desc">
+      将底座升级为沉甸甸的 3D 等轴测阳极氧化钛合金机身。侧面切削双通道散热凹槽与 CNC 棱边高光。内部是一块深邃的下沉式屏幕舱，中央悬浮一颗 3D 发光玻璃晶体，并在两侧面以等轴测投影分别激光蚀刻 T 与 n，兼顾物理厚重感与荧光未来感。
+    </div>
+    
+    <div class="showcase-box">
+      <!-- 3D SVG -->
+      <svg class="icon-svg" viewBox="0 0 256 256">
+        <defs>
+          <linearGradient id="chassis-top" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#212536" />
+            <stop offset="100%" stop-color="#0c0e14" />
+          </linearGradient>
+          <linearGradient id="chassis-left" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#2a3045" />
+            <stop offset="100%" stop-color="#0e1017" />
+          </linearGradient>
+          <linearGradient id="chassis-right" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#1b1e2a" />
+            <stop offset="100%" stop-color="#090b10" />
+          </linearGradient>
+          <linearGradient id="screen-basin" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#0f111c" />
+            <stop offset="100%" stop-color="#030406" />
+          </linearGradient>
+          <linearGradient id="crystal-top" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#a3f7df" />
+            <stop offset="100%" stop-color="#3ce2b6" />
+          </linearGradient>
+          <linearGradient id="crystal-left" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#1ea885" />
+            <stop offset="100%" stop-color="#095341" />
+          </linearGradient>
+          <linearGradient id="crystal-right" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#12896b" />
+            <stop offset="100%" stop-color="#053a2d" />
+          </linearGradient>
+          <filter id="glow-heavy" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="8" result="blur1" />
+            <feGaussianBlur stdDeviation="3" result="blur2" />
+            <feMerge>
+              <feMergeNode in="blur1" />
+              <feMergeNode in="blur2" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter id="glow-soft" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="4" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        
+        <g transform="translate(0, 15)">
+          <!-- 1. 底盘投影 -->
+          <path d="M 128,65 L 228,120 L 128,190 L 28,120 Z" fill="rgba(0,0,0,0.85)" filter="url(#glow-heavy)" opacity="0.9" />
+
+          <!-- 2. 金属底座 - 左侧壁 -->
+          <path d="M 36,95 L 128,145 L 128,185 L 36,135 Z" fill="url(#chassis-left)" />
           
-          <!-- 2. 精密中心十字线 (Crosshairs) -->
-          <line class="hud-detail" x1="128" y1="20" x2="128" y2="40" stroke="rgba(91,231,196,0.15)" stroke-width="1" />
-          <line class="hud-detail" x1="128" y1="216" x2="128" y2="236" stroke="rgba(91,231,196,0.15)" stroke-width="1" />
-          <line class="hud-detail" x1="20" y1="128" x2="40" y2="128" stroke="rgba(91,231,196,0.15)" stroke-width="1" />
-          <line class="hud-detail" x1="216" y1="128" x2="236" y2="128" stroke="rgba(91,231,196,0.15)" stroke-width="1" />
-
-          <!-- 3. 中心十字刻度 -->
-          <path class="hud-detail" d="M120 128 L136 128 M128 120 L128 136" stroke="rgba(91,231,196,0.2)" stroke-width="1" />
-
-          <!-- 4. 双通道霓虹发光 Tn Monogram 标志 -->
-          <g>
-            <!-- 底层辉光 (Glow Layer) -->
-            <path class="glow-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="glow-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            
-            <!-- 顶层亮线 (Sharp Layer) -->
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
-          </g>
+          <!-- 3. 金属底座 - 右侧壁 -->
+          <path d="M 128,145 L 220,95 L 220,135 L 128,185 Z" fill="url(#chassis-right)" />
           
-          <!-- 5. 经典取景器角标 (Viewfinder Brackets) -->
-          <g>
-            <!-- 底层辉光 -->
-            <path class="glow-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="glow-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="glow-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="glow-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
-            
-            <!-- 顶层亮线 -->
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" />
+          <!-- 4. 侧面凹槽格栅 -->
+          <path d="M 52,118 L 112,151 L 112,153 L 52,120 Z" fill="#06070a" />
+          <path d="M 52,120 L 112,153" stroke="#373e54" stroke-width="1" fill="none" opacity="0.6" />
+          <path d="M 52,126 L 112,159 L 112,161 L 52,128 Z" fill="#06070a" />
+          <path d="M 52,128 L 112,161" stroke="#373e54" stroke-width="1" fill="none" opacity="0.6" />
+          
+          <path d="M 144,151 L 204,118 L 204,120 L 144,153 Z" fill="#06070a" />
+          <path d="M 144,153 L 204,120" stroke="#262b3a" stroke-width="1" fill="none" opacity="0.6" />
+          <path d="M 144,159 L 204,126 L 204,128 L 144,161 Z" fill="#06070a" />
+          <path d="M 144,161 L 204,128" stroke="#262b3a" stroke-width="1" fill="none" opacity="0.6" />
+
+          <!-- 5. 金属底座 - 顶面 -->
+          <path d="M 128,45 L 220,95 L 128,145 L 36,95 Z" fill="url(#chassis-top)" />
+
+          <!-- 6. CNC 倒角亮线高光 -->
+          <path d="M 36,95 L 128,145 L 220,95" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="1.5" stroke-linecap="round" />
+          <path d="M 128,145 L 128,185" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+
+          <!-- 7. 内凹屏幕舱 -->
+          <path d="M 128,55 L 208,95 L 128,135 L 48,95 Z" fill="url(#screen-basin)" stroke="#1a1d2e" stroke-width="1" />
+          <path d="M 128,55 L 208,95 L 128,135 L 48,95 Z" fill="none" stroke="rgba(91,231,196,0.12)" stroke-width="2.5" filter="url(#glow-soft)" />
+
+          <!-- 8. 晶体在底舱的荧光投影 -->
+          <ellipse cx="128" cy="100" rx="28" ry="14" fill="#5BE7C4" opacity="0.22" filter="url(#glow-heavy)" />
+
+          <!-- 9. 悬浮的 3D 能量晶体 -->
+          <g transform="translate(0, -12)">
+            <!-- 晶体发光晕 -->
+            <path d="M 128,68 L 152,80 L 128,92 L 104,80 Z" fill="#5BE7C4" opacity="0.35" filter="url(#glow-soft)" />
+            <path d="M 104,80 L 128,92 L 128,114 L 104,102 Z" fill="#5BE7C4" opacity="0.25" filter="url(#glow-soft)" />
+            <path d="M 128,92 L 152,80 L 152,102 L 128,114 Z" fill="#5BE7C4" opacity="0.25" filter="url(#glow-soft)" />
+
+            <!-- 晶体面 -->
+            <path d="M 128,70 L 148,80 L 128,90 L 108,80 Z" fill="url(#crystal-top)" stroke="#a3f7df" stroke-width="0.5" />
+            <path d="M 108,80 L 128,90 L 128,110 L 108,100 Z" fill="url(#crystal-left)" />
+            <path d="M 128,90 L 148,80 L 148,100 L 128,110 Z" fill="url(#crystal-right)" />
+
+            <!-- 晶体棱线 -->
+            <path d="M 108,80 L 128,90 L 148,80 M 128,90 L 128,110" fill="none" stroke="#a3f7df" stroke-width="1.2" opacity="0.8" />
+
+            <!-- T 蚀刻 -->
+            <line x1="112" y1="84.5" x2="124" y2="90.5" stroke="#a3f7df" stroke-width="2.5" stroke-linecap="round" filter="url(#glow-soft)" />
+            <line x1="112" y1="84.5" x2="124" y2="90.5" stroke="#ffffff" stroke-width="1" stroke-linecap="round" />
+            <line x1="118" y1="87.5" x2="118" y2="102.5" stroke="#a3f7df" stroke-width="2.5" stroke-linecap="round" filter="url(#glow-soft)" />
+            <line x1="118" y1="87.5" x2="118" y2="102.5" stroke="#ffffff" stroke-width="1" stroke-linecap="round" />
+
+            <!-- n 蚀刻 -->
+            <path d="M 134,105.5 L 134,98.5 C 134,96.5 137.5,94.5 142,96.5 L 142,102.5" fill="none" stroke="#a3f7df" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow-soft)" />
+            <path d="M 134,105.5 L 134,98.5 C 134,96.5 137.5,94.5 142,96.5 L 142,102.5" fill="none" stroke="#ffffff" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" />
           </g>
 
-          <!-- 6. HUD 周边精密读数 (HUD Details) -->
-          <text class="hud-detail" x="32" y="46" font-family="monospace" font-size="8" fill="rgba(91,231,196,0.3)" letter-spacing="1">SYS_ON</text>
-          <text class="hud-detail" x="180" y="46" font-family="monospace" font-size="8" fill="rgba(91,231,196,0.3)" letter-spacing="1">CH.01</text>
-          <text class="hud-detail" x="32" y="218" font-family="monospace" font-size="8" fill="rgba(91,231,196,0.3)" letter-spacing="1">LNK: OK</text>
-          <text class="hud-detail" x="176" y="218" font-family="monospace" font-size="8" fill="rgba(91,231,196,0.3)" letter-spacing="1">v2.0.7</text>
+          <!-- 10. 定位角标 -->
+          <path d="M 103,62 L 118,55 L 123,57.5" fill="none" stroke="#5BE7C4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" filter="url(#glow-soft)" />
+          <path d="M 153,62 L 138,55 L 133,57.5" fill="none" stroke="#5BE7C4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" filter="url(#glow-soft)" />
+          <path d="M 103,128 L 118,135 L 123,132.5" fill="none" stroke="#5BE7C4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" filter="url(#glow-soft)" />
+          <path d="M 153,128 L 138,135 L 133,132.5" fill="none" stroke="#5BE7C4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.8" filter="url(#glow-soft)" />
+          
+          <!-- 11. 科技粒子 -->
+          <circle cx="80" cy="95" r="1.5" fill="#5BE7C4" opacity="0.6" />
+          <circle cx="176" cy="95" r="1.5" fill="#5BE7C4" opacity="0.6" />
+          <circle cx="128" cy="155" r="1.2" fill="#5BE7C4" opacity="0.4" />
+        </g>
+      </svg>
+    </div>
+    
+    <!-- 缩放测试 -->
+    <div class="downscale-row">
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="32" height="32" viewBox="0 0 256 256">
+          <g transform="translate(0, 15)">
+            <path d="M 36,95 L 128,145 L 128,185 L 36,135 Z" fill="url(#chassis-left)" />
+            <path d="M 128,145 L 220,95 L 220,135 L 128,185 Z" fill="url(#chassis-right)" />
+            <path d="M 128,45 L 220,95 L 128,145 L 36,95 Z" fill="url(#chassis-top)" stroke="rgba(255,255,255,0.15)" stroke-width="4" />
+            <path d="M 128,55 L 208,95 L 128,135 L 48,95 Z" fill="url(#screen-basin)" />
+            <g transform="translate(0, -12)">
+              <path d="M 128,70 L 148,80 L 128,90 L 108,80 Z" fill="#5BE7C4" stroke="#ffffff" stroke-width="2" />
+              <path d="M 108,80 L 128,90 L 128,110 L 108,100 Z" fill="#1ea885" />
+              <path d="M 128,90 L 148,80 L 148,100 L 128,110 Z" fill="#12896b" />
+            </g>
+            <path d="M 103,62 L 118,55 L 123,57.5 M 153,62 L 138,55 L 133,57.5 M 103,128 L 118,135 L 123,132.5 M 153,128 L 138,135 L 133,132.5" fill="none" stroke="#5BE7C4" stroke-width="6" />
+          </g>
         </svg>
+        <span>32 × 32</span>
+      </div>
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="16" height="16" viewBox="0 0 256 256">
+          <g transform="translate(0, 15)">
+            <path d="M 36,95 L 128,145 L 128,185 L 36,135 Z" fill="#1b1e2a" />
+            <path d="M 128,145 L 220,95 L 220,135 L 128,185 Z" fill="#090b10" />
+            <path d="M 128,45 L 220,95 L 128,145 L 36,95 Z" fill="#212536" stroke="#5BE7C4" stroke-width="8" />
+            <g transform="translate(0, -12)">
+              <path d="M 128,70 L 148,80 L 128,90 L 108,80 Z" fill="#5BE7C4" stroke="#ffffff" stroke-width="4" />
+              <path d="M 108,80 L 128,90 L 128,110 L 108,100 Z" fill="#1ea885" />
+              <path d="M 128,90 L 148,80 L 148,100 L 128,110 Z" fill="#12896b" />
+            </g>
+          </g>
+        </svg>
+        <span>16 × 16</span>
       </div>
     </div>
-    <div class="note">当前预览尺寸：<b>320px × 320px</b></div>
   </div>
 
-  <!-- 右侧：控制面板 -->
-  <div class="control-panel">
-    <div class="board-cap" style="margin-bottom:0">
-      <span class="idx">◈</span>
-      <span class="t">交互式设计微调 (V2)</span>
+  <!-- 概念 B: 负空间 Monogram 玻璃标 -->
+  <div class="concept-card">
+    <span class="concept-badge">CONCEPT B</span>
+    <div class="concept-title">负空间玻璃 Monogram (Minimal Glass)</div>
+    <div class="concept-desc">
+      经典的扁平现代品牌设计。将底盘做成深邃的微光圆角矩形，在中心绘制纯粹的 `Tn` Typographic Monogram，四周以极其纤细的取景器角标围合。表层覆盖一道优雅的对角玻璃镜面反射，显得晶莹现代。
     </div>
     
-    <!-- 壁纸背景测试 -->
-    <div class="toggle-row">
-      <span class="tag">背景壁纸测试</span>
-      <div class="bg-select">
-        <div class="bg-btn" style="background:#05070a;" onclick="setBg('#05070a')"></div>
-        <div class="bg-btn" style="background:#1a1b26;" onclick="setBg('#1a1b26')"></div>
-        <div class="bg-btn" style="background:#232433;" onclick="setBg('#232433')"></div>
-        <div class="bg-btn" style="background:#3b4261;" onclick="setBg('#3b4261')"></div>
-        <div class="bg-btn" style="background:#7aa2f7;" onclick="setBg('#7aa2f7')"></div>
-      </div>
-    </div>
+    <div class="showcase-box">
+      <!-- flat reflection SVG -->
+      <svg class="icon-svg" viewBox="0 0 256 256">
+        <defs>
+          <radialGradient id="c-bg-glow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stop-color="#1a1d36" />
+            <stop offset="100%" stop-color="#080a10" />
+          </radialGradient>
+          <linearGradient id="c-reflection" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="rgba(255,255,255,0.12)" />
+            <stop offset="42%" stop-color="rgba(255,255,255,0.02)" />
+            <stop offset="42.1%" stop-color="rgba(255,255,255,0)" />
+            <stop offset="100%" stop-color="rgba(255,255,255,0)" />
+          </linearGradient>
+          <clipPath id="ch-clip">
+            <rect x="25" y="25" width="206" height="206" rx="42" ry="42" />
+          </clipPath>
+        </defs>
 
-    <!-- 辉光开关 -->
-    <div class="toggle-row">
-      <span class="tag">发光/霓虹质感</span>
-      <button class="btn primary" id="glowBtn" onclick="toggleGlow()" style="padding: 3px 12px; font-size:11px;">已启用</button>
-    </div>
+        <rect x="25" y="25" width="206" height="206" rx="42" ry="42" fill="url(#c-bg-glow)" stroke="rgba(91,231,196,0.35)" stroke-width="1.5" />
+        
+        <g transform="translate(10, 0)">
+          <path class="glow-path" d="M 75,100 L 115,100 M 95,100 L 95,150" fill="none" stroke="#5BE7C4" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+          <path class="glow-path" d="M 125,150 L 125,115 C 125,105 145,105 145,115 L 145,150" fill="none" stroke="#5BE7C4" stroke-width="6" stroke-linecap="round" stroke-linejoin="round" />
+          <path class="sharp-path" d="M 75,100 L 115,100 M 95,100 L 95,150" fill="none" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path class="sharp-path" d="M 125,150 L 125,115 C 125,105 145,105 145,115 L 145,150" fill="none" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" />
+        </g>
+        
+        <path class="sharp-path" d="M 55,75 L 55,55 L 75,55" fill="none" stroke-width="2" stroke-linecap="round" />
+        <path class="sharp-path" d="M 181,55 L 201,55 L 201,75" fill="none" stroke-width="2" stroke-linecap="round" />
+        <path class="sharp-path" d="M 55,181 L 55,201 L 75,201" fill="none" stroke-width="2" stroke-linecap="round" />
+        <path class="sharp-path" d="M 181,201 L 201,201 L 201,181" fill="none" stroke-width="2" stroke-linecap="round" />
 
-    <!-- 尺寸选择 -->
-    <div class="toggle-row">
-      <span class="tag">预览尺寸调节</span>
-      <input type="range" min="128" max="420" value="320" id="sizeRange" oninput="changeSize(this.value)" style="width: 160px; accent-color: var(--ph);">
-    </div>
-
-    <div class="note">
-      <b>设计升级亮点：</b><br>
-      • <b>首创 Tn Monogram 标志</b>：打破了之前的单一几何方块，将 `T` 与 `n` 融合成一个极富现代感的科技几何符号，显著提升了品牌调性与“设计感”。<br>
-      • <b>精密测距雷达</b>：引入雷达刻度盘、精密十字丝与系统读数（如 `SYS_ON`, `CH.01`），使整个屏幕丰满且极具细节，营造高级仪表面板氛围。<br>
-      • <b>极致的 Downscale 表现</b>：在 16px - 32px 极小尺寸下，微小的 HUD 信息会自动隐藏，并且线条宽度自动加粗（如 16px 下），保证图标在状态栏依然清晰锐利。
-    </div>
-  </div>
-</div>
-
-<!-- ══════════ B · 多尺寸渲染对比 ══════════ -->
-<div class="board">
-  <div class="board-cap">
-    <span class="idx">B</span>
-    <span class="t">多尺寸表现验收 (V2)</span>
-    <span class="d">16x16 到 128x128 像素级的清晰度与高对比度核验</span>
-  </div>
-  
-  <div class="sizes-grid">
-    <!-- 128 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-128">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="glow-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" />
-            <path class="glow-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke="#5BE7C4" stroke-width="8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="3.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="3.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="3.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="3.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="3.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="3.2" stroke-linecap="round" />
-          </svg>
-        </div>
-      </div>
-      <div class="size-label">128 × 128</div>
+        <rect x="25" y="25" width="206" height="206" fill="url(#c-reflection)" clip-path="url(#ch-clip)" pointer-events="none" />
+      </svg>
     </div>
     
-    <!-- 64 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-64">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="3.5" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="3.5" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="3.5" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="3.5" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="3.5" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="3.5" stroke-linecap="round" />
-          </svg>
-        </div>
+    <!-- 缩放测试 -->
+    <div class="downscale-row">
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="32" height="32" viewBox="0 0 256 256">
+          <rect x="25" y="25" width="206" height="206" rx="42" ry="42" fill="url(#c-bg-glow)" stroke="#5BE7C4" stroke-width="6" />
+          <g transform="translate(10, 0)">
+            <path d="M 75,100 L 115,100 M 95,100 L 95,150" fill="none" stroke="#5BE7C4" stroke-width="12" stroke-linecap="round" />
+            <path d="M 125,150 L 125,115 C 125,105 145,105 145,115 L 145,150" fill="none" stroke="#5BE7C4" stroke-width="12" stroke-linecap="round" />
+          </g>
+        </svg>
+        <span>32 × 32</span>
       </div>
-      <div class="size-label">64 × 64</div>
-    </div>
-
-    <!-- 48 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-48">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="3.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="3.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="3.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="3.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="3.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="3.8" stroke-linecap="round" />
-          </svg>
-        </div>
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="16" height="16" viewBox="0 0 256 256">
+          <rect x="25" y="25" width="206" height="206" rx="42" ry="42" fill="url(#c-bg-glow)" stroke="#5BE7C4" stroke-width="12" />
+          <g transform="translate(10, 0)">
+            <path d="M 75,100 L 115,100 M 95,100 L 95,150" fill="none" stroke="#5BE7C4" stroke-width="18" stroke-linecap="round" />
+            <path d="M 125,150 L 125,115 C 125,105 145,105 145,115 L 145,150" fill="none" stroke="#5BE7C4" stroke-width="18" stroke-linecap="round" />
+          </g>
+        </svg>
+        <span>16 × 16</span>
       </div>
-      <div class="size-label">48 × 48</div>
-    </div>
-
-    <!-- 32 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-32">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="4.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="4.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="4.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="4.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="4.2" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="4.2" stroke-linecap="round" />
-          </svg>
-        </div>
-      </div>
-      <div class="size-label">32 × 32</div>
-    </div>
-
-    <!-- 24 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-24">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="4.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="4.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="4.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="4.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="4.8" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="4.8" stroke-linecap="round" />
-          </svg>
-        </div>
-      </div>
-      <div class="size-label">24 × 24</div>
-    </div>
-
-    <!-- 16 -->
-    <div class="size-cell">
-      <div class="icon-instance sz-16">
-        <div class="icon-screen">
-          <svg class="icon-svg" viewBox="0 0 256 256">
-            <path class="sharp-path" d="M 85,105 L 125,105 M 105,105 L 105,155" fill="none" stroke-width="6" stroke-linecap="round" />
-            <path class="sharp-path" d="M 135,155 L 135,120 C 135,110 155,110 155,120 L 155,155" fill="none" stroke-width="6" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,80 L 60,60 L 80,60" fill="none" stroke-width="6" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,60 L 196,60 L 196,80" fill="none" stroke-width="6" stroke-linecap="round" />
-            <path class="sharp-path" d="M 60,176 L 60,196 L 80,196" fill="none" stroke-width="6" stroke-linecap="round" />
-            <path class="sharp-path" d="M 176,196 L 196,196 L 196,176" fill="none" stroke-width="6" stroke-linecap="round" />
-          </svg>
-        </div>
-      </div>
-      <div class="size-label">16 × 16</div>
     </div>
   </div>
+
+  <!-- 概念 C: 抽象几何光斑视口 -->
+  <div class="concept-card">
+    <span class="concept-badge">CONCEPT C</span>
+    <div class="concept-title">三维旋转几何视口 (Abstract Viewport)</div>
+    <div class="concept-desc">
+      打破常规的四角定位，设计一个带斜向 3D 透视感的圆环视口。内部悬浮一个旋转 45 度的菱形光标，配合一道横贯中轴的浅绿色荧光粒子光束。抽象的几何形体更具艺术性与视觉张力，适合创意级终端定位。
+    </div>
+    
+    <div class="showcase-box">
+      <!-- abstract SVG -->
+      <svg class="icon-svg" viewBox="0 0 256 256">
+        <circle cx="128" cy="128" r="100" fill="url(#iso-top-grad)" stroke="rgba(91,231,196,0.35)" stroke-width="1.5" />
+        
+        <!-- Oval sheared viewport -->
+        <ellipse cx="128" cy="128" rx="80" ry="60" fill="none" stroke="#5BE7C4" stroke-width="3.5" stroke-dasharray="75,25" transform="rotate(-15, 128, 128)" />
+        
+        <!-- Middle laser scanner line -->
+        <line x1="28" y1="128" x2="228" y2="128" stroke="rgba(91,231,196,0.2)" stroke-width="1" />
+        <line x1="28" y1="128" x2="228" y2="128" stroke="#5BE7C4" stroke-width="0.7" opacity="0.7" />
+
+        <!-- Center Rotated Diamond Cursor -->
+        <rect class="glow-path" x="114" y="114" width="28" height="28" rx="2" fill="#5BE7C4" transform="rotate(45, 128, 128)" />
+        <rect x="115" y="115" width="26" height="26" rx="2" fill="#5BE7C4" transform="rotate(45, 128, 128)" stroke="#06281F" stroke-width="0.5" />
+      </svg>
+    </div>
+    
+    <!-- 缩放测试 -->
+    <div class="downscale-row">
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="32" height="32" viewBox="0 0 256 256">
+          <circle cx="128" cy="128" r="100" fill="url(#iso-top-grad)" stroke="#5BE7C4" stroke-width="8" />
+          <ellipse cx="128" cy="128" rx="80" ry="60" fill="none" stroke="#5BE7C4" stroke-width="10" stroke-dasharray="75,25" transform="rotate(-15, 128, 128)" />
+          <rect x="114" y="114" width="28" height="28" rx="2" fill="#5BE7C4" transform="rotate(45, 128, 128)" />
+        </svg>
+        <span>32 × 32</span>
+      </div>
+      <div class="downscale-item">
+        <svg class="downscale-svg" width="16" height="16" viewBox="0 0 256 256">
+          <circle cx="128" cy="128" r="100" fill="url(#iso-top-grad)" stroke="#5BE7C4" stroke-width="12" />
+          <ellipse cx="128" cy="128" rx="80" ry="60" fill="none" stroke="#5BE7C4" stroke-width="14" stroke-dasharray="75,25" transform="rotate(-15, 128, 128)" />
+          <rect x="114" y="114" width="28" height="28" rx="2" fill="#5BE7C4" transform="rotate(45, 128, 128)" />
+        </svg>
+        <span>16 × 16</span>
+      </div>
+    </div>
+  </div>
+
 </div>
 
-<!-- 规格参数表 -->
-<div class="board">
-  <table class="spec">
-    <caption>SPEC · 应用图标物理规格 (V2)</caption>
-    <tr><th>部位</th><th>CSS / SVG 表现</th><th>数学比例 (相对于 256px 坐标)</th><th>色彩 token / 质感</th></tr>
-    <tr><td class="k">机舱底座 (Chassis)</td><td>border-radius: 20%</td><td>sz (256px)</td><td>#22263F → #0E0F16 对角渐变 + 荧光边缘</td></tr>
-    <tr><td class="k">雷达测距仪 (Radar HUD)</td><td>&lt;circle&gt; &lt;line&gt;</td><td>r = 80 / 50</td><td>rgba(91,231,196, 0.08) 极微弱背景标尺</td></tr>
-    <tr><td class="k">Tn Monogram 标志</td><td>&lt;path&gt; M85,105... / C135,110...</td><td>w = 70px / h = 50px</td><td>#5BE7C4 双通道发光 custom 几何标</td></tr>
-    <tr><td class="k">取景器折角 (Viewfinder)</td><td>&lt;path&gt; M60,80...</td><td>w = 20px / 距离边框 60px</td><td>#5BE7C4 双通道发光角标</td></tr>
-    <tr><td class="k">系统读数 (HUD Text)</td><td>&lt;text&gt; SYS_ON / CH.01 / LNK:OK</td><td>x=32, y=46 / x=180, y=46</td><td>rgba(91,231,196, 0.3) 极细致数据指示</td></tr>
-  </table>
+<!-- 决策反馈指导 -->
+<div class="board" style="background:var(--l1); border:1px solid var(--h1); border-radius:var(--r-plate); padding:24px;">
+  <div class="board-cap" style="margin-bottom:8px">
+    <span class="idx">◈</span>
+    <span class="t">设计师观点总结</span>
+  </div>
+  <div class="note" style="margin-top:0; color:var(--t1); line-height: 1.8;">
+    • <b>从“科技堆砌”到“品牌符号”</b>：之前的版本过分关注在局部的网格、SYS_ON 文本等“科幻电影道具元素”，使得整体视觉非常散乱、零碎，不符合专业软件标志的洗练心智。<br>
+    • <b>Concept A（推荐）</b> 能够极好地配合 Tn 的“仪器舱体”设计契约。用三维倒角将图标做成一个扎实的桌面控制台开关，在光影和体积上达到 WOW 的高级感。<br>
+    • <b>Concept B</b> 则是最经典的扁平玻璃盖板方向。通过精雕细琢的 `T` 与 `n` 字母咬合线条和通透的玻璃反射，极具现代时尚设计公司的标志水准。
+  </div>
 </div>
-
-<script>
-  function setBg(color) {
-    document.getElementById('canvas').style.background = color;
-  }
-  
-  function changeSize(val) {
-    document.getElementById('icon').style.setProperty('--sz', val + 'px');
-    document.querySelector('.showcase-area .note b').innerText = val + 'px × ' + val + 'px';
-  }
-  
-  function toggleGlow() {
-    const body = document.body;
-    const btn = document.getElementById('glowBtn');
-    if (body.classList.contains('glow-off')) {
-      body.classList.remove('glow-off');
-      btn.innerText = '已启用';
-      btn.className = 'btn primary';
-    } else {
-      body.classList.add('glow-off');
-      btn.innerText = '已禁用';
-      btn.className = 'btn';
-    }
-  }
-</script>
 </body>
 </html>
