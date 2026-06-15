@@ -74,9 +74,44 @@ pub(crate) const PLATE_HEAD_H: f32 = 34.0;
 pub(crate) const AGENT_HEAD_H: f32 = 38.0;
 pub(crate) const SEAM: f32 = 2.0; // 平铺接缝:露出 L0 底盘
 
-/// UI sans-serif for chrome (tabs / headers / status); paired with the mono
-/// terminal/code font. Ships on Windows 10/11.
-pub(crate) const UI_SANS: &str = "Segoe UI";
+// ── 磷光字体系统(全部打包进 exe,见 lib.rs add_fonts) ─────────────────────
+/// UI 正文无衬线(Inter):标签、正文、面板、菜单 —— 现代、极可读、几何中性。
+pub(crate) const UI_SANS: &str = "Inter";
+/// 展示字(Space Grotesk):词标 `TN_`、欢迎页 hero、大区块标题 —— 几何科技感。
+pub(crate) const UI_DISPLAY: &str = "Space Grotesk";
+/// 等宽(JetBrainsMono Nerd Font)默认族名,供需要内联 mono 字面量的场合;运行时
+/// 实际等宽以 `config.font().family` 为准(用户可覆盖),故此常量当前仅作文档基准。
+#[allow(dead_code)]
+pub(crate) const UI_MONO: &str = "JetBrainsMono Nerd Font";
+/// 中文回退族(思源黑体 SC):通过 [`with_cjk`] / 根节点 `font_fallbacks` 串接到任意
+/// 主字族之后 —— 西文走 Inter/JBM/Space Grotesk,遇到 CJK 字形自动落到思源黑体。
+pub(crate) const CJK_FALLBACK: &str = "Source Han Sans SC";
+
+// ── 命名字号层级(磷光 type scale) ────────────────────────────────────────
+// 单源字号,杜绝散落魔法数字;最小档从旧 10px 抬到 11px(密集小字更易读)。
+/// 11 — 最小档:状态栏、芯片、kbd、次级标注。
+pub(crate) const FS_MICRO: f32 = 11.0;
+/// 12 — 说明档:footer 提示、小标签、元信息。
+pub(crate) const FS_CAPTION: f32 = 12.0;
+/// 13 — 正文档:菜单项、列表、Markdown 正文。
+pub(crate) const FS_BODY: f32 = 13.0;
+/// 14 — 强调档:卡片标题、tab、按钮。
+pub(crate) const FS_LABEL: f32 = 14.0;
+/// 18 — 标题档:区块标题、面板大标题(canonical 档位,待逐步采用)。
+#[allow(dead_code)]
+pub(crate) const FS_TITLE: f32 = 18.0;
+/// 26 — hero 档:欢迎页词标。
+pub(crate) const FS_HERO: f32 = 26.0;
+
+/// 给一个主字族构造带中文回退的 [`gpui::Font`]。西文用 `family`,CJK 字形自动落到
+/// 思源黑体 SC(DirectWrite 把该回退排在系统回退之前)。用于终端/编辑器/Markdown
+/// 这些直接构造整 `Font` 的场合;普通 Div 文本由根节点继承 `font_fallbacks`,只需
+/// `.font_family(...)` 即可。
+pub(crate) fn with_cjk(family: &str) -> gpui::Font {
+    let mut f = gpui::font(gpui::SharedString::from(family.to_owned()));
+    f.fallbacks = Some(gpui::FontFallbacks::from_fonts(vec![CJK_FALLBACK.to_string()]));
+    f
+}
 
 /// 8-bit RGB, implemented by both the config/theme color and the terminal-cell
 /// color so [`col`]/[`cola`] work with either.
@@ -208,7 +243,7 @@ pub(crate) fn btn(label: impl Into<gpui::SharedString>) -> Div {
         .border_1()
         .border_color(rgba(H1))
         .bg(rgb(L2))
-        .text_size(px(12.))
+        .text_size(px(FS_CAPTION))
         .text_color(rgb(T1))
         .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
         .child(label.into())
@@ -227,7 +262,7 @@ pub(crate) fn btn_primary(label: impl Into<gpui::SharedString>) -> Div {
         .border_1()
         .border_color(rgb(PH))
         .bg(rgb(PH))
-        .text_size(px(12.))
+        .text_size(px(FS_CAPTION))
         .font_weight(gpui::FontWeight(600.))
         .text_color(rgb(PH_INK))
         .child(label.into())
@@ -246,7 +281,7 @@ pub(crate) fn btn_danger(label: impl Into<gpui::SharedString>) -> Div {
         .border_1()
         .border_color(rgba(0xE8707E59)) // err ·35
         .bg(rgba(ERR_SOFT))
-        .text_size(px(12.))
+        .text_size(px(FS_CAPTION))
         .text_color(rgb(ERR))
         .child(label.into())
 }
@@ -255,7 +290,7 @@ pub(crate) fn btn_danger(label: impl Into<gpui::SharedString>) -> Div {
 pub(crate) fn kbd(label: impl Into<gpui::SharedString>, mono: gpui::SharedString) -> Div {
     div()
         .font_family(mono)
-        .text_size(px(10.))
+        .text_size(px(FS_MICRO))
         .text_color(rgb(T1))
         .px(px(6.))
         .py(px(1.))

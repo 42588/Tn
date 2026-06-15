@@ -380,7 +380,7 @@ mod tests {
         assert!(dir.join("config.toml").exists());
         assert!(dir.join("themes").join("tn-dark.toml").exists());
         assert_eq!(loaded.theme.name, "Tn Dark");
-        assert_eq!(loaded.config.font.family, "CaskaydiaCove Nerd Font");
+        assert_eq!(loaded.config.font.family, "JetBrainsMono Nerd Font");
         assert!(loaded.themes.contains_key("Tn Dark"));
 
         let _ = fs::remove_dir_all(&dir);
@@ -394,7 +394,7 @@ mod tests {
 
         let loaded = load_from(&dir, true);
         assert_eq!(loaded.config.font.size, 20.0); // user value kept
-        assert_eq!(loaded.config.font.family, "CaskaydiaCove Nerd Font"); // inherited default
+        assert_eq!(loaded.config.font.family, "JetBrainsMono Nerd Font"); // inherited default
 
         let _ = fs::remove_dir_all(&dir);
     }

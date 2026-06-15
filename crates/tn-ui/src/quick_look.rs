@@ -3183,7 +3183,7 @@ impl QuickLook {
                         .py(px(1.))
                         .rounded(px(6.))
                         .flex_none()
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .font_weight(gpui::FontWeight(640.))
                         .text_color(if hunk_busy { col(th.ui.muted) } else { col(c) })
                         .bg(if hunk_busy {
@@ -4529,7 +4529,7 @@ fn code_row(no: String, mark: &'static str, mark_col: Rgba, spans: Vec<gpui::Div
                 .flex_none()
                 .mr(px(14.))
                 .text_right()
-                .text_size(px(11.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(gpui::rgb(crate::style::T3)) // faint(无主题 token,字面量)
                 .child(SharedString::from(no)),
         )
@@ -4836,7 +4836,7 @@ fn paint_file_preview(
         .unwrap_or_default();
     let fs = px(CODE_FS);
     let line_h = px(ROW_H);
-    let font = gpui::font(&config.font().family);
+    let font = crate::style::with_cjk(&config.font().family);
     let ui = &config.theme.ui;
     let gutter_color: Hsla = col(ui.muted).into();
     let sel_bg: Hsla = cola(ui.accent, 0.22).into();
@@ -5153,7 +5153,7 @@ fn paint_diff_preview(
     let pre = prepaint_readonly(&lines, vw, vh, scroll_y, hscroll, m);
     let fs = px(CODE_FS);
     let line_h = px(ROW_H);
-    let font = gpui::font(&config.font().family);
+    let font = crate::style::with_cjk(&config.font().family);
     let th = &config.theme;
     let gutter_color: Hsla = gpui::rgb(crate::style::T3).into();
     let sel_bg: Hsla = cola(th.ui.accent, 0.22).into();
@@ -5585,7 +5585,7 @@ impl Render for QuickLook {
                 .py(px(2.))
                 .rounded(px(3.))
                 .font_family(SharedString::from(self.config.font().family.clone()))
-                .text_size(px(11.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(if on {
                     gpui::rgb(crate::style::PH)
                 } else {
@@ -5629,7 +5629,7 @@ impl Render for QuickLook {
                 .border_1()
                 .border_color(rgba(crate::style::H1))
                 .font_family(SharedString::from(self.config.font().family.clone()))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(gpui::rgb(crate::style::T1))
                 .child(SharedString::from(text))
         };
@@ -5705,7 +5705,7 @@ impl Render for QuickLook {
                         .border_color(rgba(crate::style::PH_DIM))
                         .bg(rgba(crate::style::PH_SOFT))
                         .font_family(SharedString::from(self.config.font().family.clone()))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(crate::style::PH))
                         .child("EDIT"),
                 )
@@ -5736,7 +5736,7 @@ impl Render for QuickLook {
                         .border_color(cola(color, 0.30))
                         .bg(cola(color, 0.12))
                         .font_family(SharedString::from(self.config.font().family.clone()))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(color))
                         .child(SharedString::from(text))
                 };
@@ -5774,7 +5774,7 @@ impl Render for QuickLook {
                                 .border_color(cola(color, 0.30))
                                 .bg(cola(color, 0.12))
                                 .font_family(SharedString::from(self.config.font().family.clone()))
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(col(color))
                                 .child(label),
                         )
@@ -5870,11 +5870,11 @@ impl Render for QuickLook {
                     .justify_center()
                     .text_color(col(ui.muted))
                     .child(icon("file", 48., ui.muted))
-                    .child(div().mt_4().text_size(px(14.)).child("无法预览此文件"))
+                    .child(div().mt_4().text_size(px(crate::style::FS_LABEL)).child("无法预览此文件"))
                     .child(
                         div()
                             .mt_2()
-                            .text_size(px(12.))
+                            .text_size(px(crate::style::FS_CAPTION))
                             .child(format!("二进制文件或超过大小限制 ({size_str})")),
                     ),
             );
@@ -6180,7 +6180,7 @@ impl Render for QuickLook {
                                         .py(px(1.))
                                         .rounded(px(6.))
                                         .flex_none()
-                                        .text_size(px(10.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .font_weight(gpui::FontWeight(640.))
                                         .text_color(if hunk_busy {
                                             col(th.ui.muted)
@@ -6386,7 +6386,7 @@ impl Render for QuickLook {
             .px(px(14.))
             .flex_none()
             .font_family(SharedString::from(self.config.font().family.clone()))
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(gpui::rgb(crate::style::T2))
             .border_t_1()
             .border_color(rgba(crate::style::H1));
@@ -6395,7 +6395,7 @@ impl Render for QuickLook {
         let rail_tag = self.rail_pos.map(|(i, n)| {
             div()
                 .font_family(SharedString::from(self.config.font().family.clone()))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .font_weight(gpui::FontWeight(600.))
                 .text_color(gpui::rgb(crate::style::T2))
                 .child(SharedString::from(format!("RAIL · {}/{}", i + 1, n)))
@@ -6421,7 +6421,7 @@ impl Render for QuickLook {
                 .child(
                     div()
                         .font_family(SharedString::from(self.config.font().family.clone()))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .font_weight(gpui::FontWeight(600.))
                         .text_color(gpui::rgb(crate::style::PH))
                         .child(SharedString::from(format!(
@@ -6487,7 +6487,7 @@ impl Render for QuickLook {
                     .gap(px(6.))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(col(ui.muted))
                             .child(label),
                     )
@@ -6506,7 +6506,7 @@ impl Render for QuickLook {
                                 rgba(crate::style::H1)
                             })
                             .font_family(mono.clone())
-                            .text_size(px(11.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(col(ui.foreground))
                             // show a thin caret stand-in when the active field is empty
                             .child(SharedString::from(if text.is_empty() {
@@ -6563,21 +6563,21 @@ impl Render for QuickLook {
                 .child(div().flex_1())
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(ui.muted))
                         .child(SharedString::from(format!("{n} 项"))),
                 )
                 .child(kcap("Enter"))
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(ui.muted))
                         .child("下一个"),
                 )
                 .when(self.replacing, |d| {
                     d.child(kcap("Ctrl+↵")).child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(col(ui.muted))
                             .child("全部替换"),
                     )
@@ -6585,7 +6585,7 @@ impl Render for QuickLook {
                 .child(kcap("Esc"))
                 .child(
                     div()
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(ui.muted))
                         .child("关闭"),
                 )
@@ -6600,7 +6600,7 @@ impl Render for QuickLook {
                         .px(px(9.))
                         .py(px(2.))
                         .rounded(px(crate::style::R_CHIP))
-                        .text_size(px(10.5))
+                        .text_size(px(crate::style::FS_MICRO))
                         .font_weight(gpui::FontWeight(620.))
                         .text_color(col(if danger { ansi.red } else { ui.foreground }))
                         .bg(if danger {
@@ -6625,7 +6625,7 @@ impl Render for QuickLook {
                     .py(px(7.))
                     .flex_none()
                     .font_family(UI_SANS)
-                    .text_size(px(10.5))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .bg(cola(ansi.red, 0.06))
                     .border_t_1()
@@ -6661,7 +6661,7 @@ impl Render for QuickLook {
                         .py(px(7.))
                         .flex_none()
                         .font_family(UI_SANS)
-                        .text_size(px(10.5))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(ui.muted))
                         .bg(cola(ansi.red, 0.06))
                         .border_t_1()
@@ -6678,7 +6678,7 @@ impl Render for QuickLook {
                                 .px(px(9.))
                                 .py(px(2.))
                                 .rounded(px(crate::style::R_CHIP))
-                                .text_size(px(10.5))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .font_weight(gpui::FontWeight(620.))
                                 .text_color(col(ui.foreground))
                                 .bg(gpui::rgb(crate::style::L2))
@@ -6711,7 +6711,7 @@ impl Render for QuickLook {
                     .py(px(5.))
                     .rounded(px(crate::style::R_CARD))
                     .font_family(UI_SANS)
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(gpui::rgb(crate::style::T1))
                     .bg(gpui::rgb(crate::style::L2))
                     .border_1()
@@ -6744,7 +6744,7 @@ impl Render for QuickLook {
                         .border_b(px(1.))
                         .border_color(rgba(crate::style::H1))
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .child(div().text_color(col(ansi.yellow)).child("⚠"))
                         .child(
                             div()
@@ -6759,7 +6759,7 @@ impl Render for QuickLook {
                                 .rounded(px(crate::style::R_CHIP))
                                 .border_1()
                                 .border_color(rgba(crate::style::H1))
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(gpui::rgb(crate::style::T1))
                                 .max_w(px(180.))
                                 .overflow_hidden()
@@ -6771,7 +6771,7 @@ impl Render for QuickLook {
                         .px(px(16.))
                         .py(px(14.))
                         .font_family(UI_SANS)
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(gpui::rgb(crate::style::T1))
                         .child(SharedString::from(pending.prompt())),
                 )
@@ -6852,7 +6852,7 @@ impl Render for QuickLook {
                 .py(px(7.))
                 .flex_none()
                 .font_family(UI_SANS)
-                .text_size(px(10.5))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(col(ui.muted))
                 .bg(cola(ansi.red, 0.06))
                 .border_t_1()
@@ -6869,7 +6869,7 @@ impl Render for QuickLook {
                         .px(px(9.))
                         .py(px(2.))
                         .rounded(px(crate::style::R_CHIP))
-                        .text_size(px(10.5))
+                        .text_size(px(crate::style::FS_MICRO))
                         .font_weight(gpui::FontWeight(620.))
                         .text_color(col(ui.foreground))
                         .bg(gpui::rgb(crate::style::L2))
@@ -7343,7 +7343,7 @@ fn md_code_block(lines: &[String], ctx: &MdCtx) -> gpui::Div {
             s.color = tint_color(ctx.config, tint).into();
             inl.push(&txt, s, &ctx.fonts);
         }
-        let mut row = div().text_size(px(12.0)).line_height(px(18.0));
+        let mut row = div().text_size(px(crate::style::FS_CAPTION)).line_height(px(18.0));
         if let Some(t) = inl.into_text() {
             row = row.child(t);
         }
@@ -7441,7 +7441,7 @@ fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> 
                 .min_w(px(0.))
                 .px(px(9.))
                 .py(px(5.))
-                .text_size(px(13.))
+                .text_size(px(crate::style::FS_BODY))
                 .line_height(px(18.))
                 .text_color(ctx.body);
             if is_head {
@@ -7490,8 +7490,8 @@ fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
     let ctx = MdCtx {
         config,
         fonts: MdFonts {
-            sans: gpui::font(UI_SANS),
-            mono: gpui::font(&config.font().family),
+            sans: crate::style::with_cjk(UI_SANS),
+            mono: crate::style::with_cjk(&config.font().family),
         },
         body: gpui::rgb(crate::style::T0).into(),
         muted: gpui::rgb(crate::style::T2).into(),

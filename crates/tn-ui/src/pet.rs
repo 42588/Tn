@@ -2110,13 +2110,13 @@ impl PetView {
             .border_1()
             .border_color(rgba(H1))
             .font_family(SharedString::from(self.cfg.font().family.clone()))
-            .child(div().text_size(px(11.)).text_color(rgb(T2)).child("名字"))
-            .child(div().text_size(px(13.)).text_color(rgb(T0)).child(SharedString::from(buf)))
-            .child(div().text_size(px(13.)).text_color(rgb(PH)).child("▌"))
+            .child(div().text_size(px(crate::style::FS_MICRO)).text_color(rgb(T2)).child("名字"))
+            .child(div().text_size(px(crate::style::FS_BODY)).text_color(rgb(T0)).child(SharedString::from(buf)))
+            .child(div().text_size(px(crate::style::FS_BODY)).text_color(rgb(PH)).child("▌"))
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T3))
                     .child("中文可用 · ≤8 字"),
             )
@@ -2133,7 +2133,7 @@ impl PetView {
             .px(px(16.))
             .py(px(5.))
             .rounded(px(R_CHIP))
-            .text_size(px(11.))
+            .text_size(px(crate::style::FS_MICRO))
             .border_1()
             .border_color(rgba(if primary { PH_DIM } else { H1 }))
             .text_color(rgb(if primary { T0 } else { T1 }))
@@ -2174,12 +2174,12 @@ impl PetView {
                     .border_color(rgba(if on { PH_DIM } else { H0 }))
                     .bg(rgb(if on { L2 } else { L1 }))
                     .when(!on, |d| d.hover(|s| s.bg(rgb(L2))))
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(if on { T0 } else { T1 }))
                     .child(SharedString::from(b.name_cn()))
                     .child(
                         div()
-                            .text_size(px(8.))
+                            .text_size(px(9.5))
                             .text_color(rgb(if on { PH } else { T3 }))
                             .child(SharedString::from(b.tag())),
                     )
@@ -2208,11 +2208,11 @@ impl PetView {
                     .items_center()
                     .gap(px(8.))
                     .child(div().text_color(rgb(PH)).child("⌂"))
-                    .child(div().text_size(px(13.)).text_color(rgb(T0)).child("领养你的搭档"))
+                    .child(div().text_size(px(crate::style::FS_BODY)).text_color(rgb(T0)).child("领养你的搭档"))
                     .child(div().flex_1())
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(PH))
                             .child("初次见面"),
                     ),
@@ -2220,7 +2220,7 @@ impl PetView {
             .child(
                 div()
                     .mt(px(8.))
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T2))
                     .child("挑一只,或交给缘分 —— 它会一直陪你写码。"),
             )
@@ -2243,7 +2243,7 @@ impl PetView {
                     ))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T3))
                             .child("随机只此一次 — 日常不再有随机入口"),
                     ),
@@ -2258,7 +2258,7 @@ impl PetView {
                     .mt(px(14.))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T3))
                             .child("Esc 跳过(缘分狗 + 默认名)"),
                     )
@@ -2301,7 +2301,7 @@ impl PetView {
                     .items_center()
                     .gap(px(8.))
                     .child(div().text_color(rgb(T2)).child("✎"))
-                    .child(div().text_size(px(12.)).text_color(rgb(T0)).child("给它改个名字")),
+                    .child(div().text_size(px(crate::style::FS_CAPTION)).text_color(rgb(T0)).child("给它改个名字")),
             )
             .child(self.name_field())
             .child(
@@ -2313,7 +2313,7 @@ impl PetView {
                     .mt(px(14.))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T3))
                             .child("Enter 确定 · Esc 取消"),
                     )
@@ -2362,11 +2362,11 @@ impl PetView {
                 MouseButton::Left,
                 cx.listener(|_p, _e, _w, cx| cx.stop_propagation()),
             )
-            .child(div().text_size(px(12.)).text_color(rgb(T0)).child("重置互动记忆?"))
+            .child(div().text_size(px(crate::style::FS_CAPTION)).text_color(rgb(T0)).child("重置互动记忆?"))
             .child(
                 div()
                     .mt(px(8.))
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T2))
                     .child("清空它记得的偏好(摸头 / 玩具 / 小窝等)。名字、品种、在一起的天数都不动。"),
             )
@@ -2986,7 +2986,7 @@ impl Render for PetView {
                 .flex()
                 .justify_center()
                 .font_family(SharedString::from(self.cfg.font().family.clone()))
-                .text_size(px(9.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(rgb(T3))
                 .child(SharedString::from(format!(
                     "{} · {}",
@@ -3008,7 +3008,7 @@ impl Render for PetView {
                 .border_1()
                 .border_color(rgba(H2))
                 .font_family(SharedString::from(self.cfg.font().family.clone()))
-                .text_size(px(11.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(rgb(T0))
                 .child(text.clone())
         });
@@ -3096,7 +3096,7 @@ impl Render for PetView {
                     .h(px(28.))
                     .px(px(10.))
                     .rounded(px(R_CHIP))
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T1))
                     .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
                     .child(div().text_color(rgb(glyph_color)).child(glyph))
@@ -3115,7 +3115,7 @@ impl Render for PetView {
                     .px(px(10.))
                     .pt(px(4.))
                     .pb(px(2.))
-                    .text_size(px(9.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T3))
                     .child(label)
             };
@@ -3157,17 +3157,17 @@ impl Render for PetView {
                                 .flex_row()
                                 .items_center()
                                 .gap(px(6.))
-                                .child(div().text_color(rgb(PH)).text_size(px(11.)).child("⌂"))
+                                .child(div().text_color(rgb(PH)).text_size(px(crate::style::FS_MICRO)).child("⌂"))
                                 .child(
                                     div()
-                                        .text_size(px(13.))
+                                        .text_size(px(crate::style::FS_BODY))
                                         .text_color(rgb(T0))
                                         .child(SharedString::from(self.display_name())),
                                 ),
                         )
                         .child(
                             div()
-                                .text_size(px(9.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(rgb(T3))
                                 .child(SharedString::from(format!(
                                     "{} · 在一起第 {} 天",
@@ -3188,7 +3188,7 @@ impl Render for PetView {
                         .h(px(28.))
                         .px(px(10.))
                         .rounded(px(R_CHIP))
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(if can { T1 } else { T3 }))
                         .child(div().text_color(rgb(if can { BISCUIT } else { T3 })).child("●"))
                         .child(if can { "给小饼干" } else { "今天吃过啦" });
@@ -3197,7 +3197,7 @@ impl Render for PetView {
                             .child(div().flex_1())
                             .child(
                                 div()
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(rgb(PH))
                                     .child("今日还有 1 块"),
                             )
@@ -3227,7 +3227,7 @@ impl Render for PetView {
                         .gap(px(9.))
                         .h(px(22.))
                         .px(px(10.))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .child(div().text_color(rgb(PH)).child("✦"))
                         .child(SharedString::from(text))
@@ -3265,7 +3265,7 @@ impl Render for PetView {
                             .justify_center()
                             .h(px(24.))
                             .rounded(px(R_CHIP))
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .border_1()
                             .border_color(rgba(if on { PH_DIM } else { H1 }))
                             .text_color(rgb(if on { T0 } else { T1 }))
@@ -3307,7 +3307,7 @@ impl Render for PetView {
                         .h(px(26.))
                         .px(px(10.))
                         .rounded(px(R_CHIP))
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(if on { rgb(T0) } else { rgb(T1) })
                         .when(on, |d| d.bg(rgb(L4)))
                         .hover(|s| s.bg(rgb(L4)).text_color(rgb(T0)))
@@ -3320,7 +3320,7 @@ impl Render for PetView {
                         .child(div().flex_1())
                         .child(
                             div()
-                                .text_size(px(9.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(rgb(T2))
                                 .child(SharedString::from(b.tag())),
                         )

@@ -15,10 +15,10 @@ billing_mode     = "auto"     # 用量药丸的「初始」显示维度。每个
 #   注:$ 需模型在内置价目表;自定义/代理模型(如 moonbridge)无价 → 显示 $0.00。
 
 [font]
-family      = "CaskaydiaCove Nerd Font"  # 等宽 Nerd Font(含图标/特殊字符/emoji;需系统已安装,缺失则 DirectWrite 回退)
+family      = "JetBrainsMono Nerd Font"  # 终端/编辑器等宽(已打包进 exe,含 Nerd 图标字形)
 size        = 14.0            # 磅值
 line_height = 1.3             # 行高 = size × 此倍数
-fallback    = []             # CJK / emoji 回退字体族(schema 已留,暂未启用)
+fallback    = []             # 额外回退族(留空 = 用内置磷光回退链:思源黑体 SC → 系统)
 
 [appearance]
 theme = "Tn Dark"             # 主题名 = %APPDATA%\Tn\themes\*.toml 里的 name 字段

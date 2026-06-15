@@ -27,7 +27,7 @@ use crate::style::{col, icon, plate, H0, PH, R_CHIP, R_PANEL, T1, T2};
 fn git_tag(letter: char, c: tn_config::Color) -> gpui::Div {
     div()
         .flex_none()
-        .text_size(px(10.))
+        .text_size(px(crate::style::FS_MICRO))
         .font_weight(gpui::FontWeight(600.))
         .text_color(col(c))
         .child(SharedString::from(letter.to_string()))
@@ -215,7 +215,7 @@ impl gpui::Render for FileDragChip {
             .border_1()
             .border_color(rgba(PH))
             .bg(rgb(crate::style::L3))
-            .text_size(px(11.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(rgb(T1))
             .child(self.label.clone())
     }
@@ -511,7 +511,7 @@ fn tree_row(
         .pr_2()
         .pl(px(indent))
         .rounded(px(R_CHIP))
-        .text_size(px(12.))
+        .text_size(px(crate::style::FS_CAPTION))
         .when(is_sel, |d| {
             d.bg(raised).border_1().border_color(rgba(H0)).child(
                 div()
@@ -1287,7 +1287,7 @@ impl Render for ExplorerView {
             .border_b(px(1.))
             .border_color(rgba(H0))
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .font_weight(gpui::FontWeight(600.))
             .text_color(rgb(T2))
             .child(div().child("EXPLORER"))
@@ -1334,7 +1334,7 @@ impl Render for ExplorerView {
                 .flex_1()
                 .min_h(px(0.))
                 .p(px(12.))
-                .text_size(px(12.))
+                .text_size(px(crate::style::FS_CAPTION))
                 .text_color(col(ui.muted))
                 .child(SharedString::from(text))
                 .into_any_element()

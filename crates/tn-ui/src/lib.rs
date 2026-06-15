@@ -124,25 +124,36 @@ pub fn run() {
         .run(move |cx: &mut App| {
             workspace::bind_keys(cx, &config);
 
-            // ── 嵌入 CaskaydiaCove Nerd Font ──────────────────────────────────
-            // include_bytes! 在编译期将字体硬编码进二进制，运行时不再依赖系统安装。
-            // GPUI 解析 .ttf 提取 Family Name → 与 config.toml 的 family 字段匹配。
-            let font_regular =
-                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Regular.ttf").to_vec();
-            let font_bold =
-                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Bold.ttf").to_vec();
-            let font_italic =
-                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-Italic.ttf").to_vec();
-            let font_bold_italic =
-                include_bytes!("../assets/fonts/CaskaydiaCoveNerdFont-BoldItalic.ttf").to_vec();
+            // ── 嵌入磷光字体系统(全部 include_bytes! 进 exe,运行时零系统依赖) ──
+            // GPUI/DirectWrite 解析字体 name 表提取 family → 与 config / style 里的
+            // family 字符串匹配。四类字族:
+            //   · JetBrainsMono Nerd Font —— 终端/编辑器/代码等宽(含 Nerd 图标字形)
+            //   · Inter —— UI 正文无衬线(Regular/Medium/SemiBold)
+            //   · Space Grotesk —— 标题/词标展示字(Medium/Bold,几何科技感)
+            //   · Source Han Sans SC —— 中文回退(思源黑体,OFL),由 font_fallbacks 串接
+            macro_rules! embed {
+                ($p:literal) => {
+                    std::borrow::Cow::Owned(include_bytes!(concat!("../assets/fonts/", $p)).to_vec())
+                };
+            }
             cx.text_system()
                 .add_fonts(vec![
-                    std::borrow::Cow::Owned(font_regular),
-                    std::borrow::Cow::Owned(font_bold),
-                    std::borrow::Cow::Owned(font_italic),
-                    std::borrow::Cow::Owned(font_bold_italic),
+                    // 等宽(JetBrainsMono Nerd Font)
+                    embed!("JetBrainsMonoNerdFont-Regular.ttf"),
+                    embed!("JetBrainsMonoNerdFont-Bold.ttf"),
+                    embed!("JetBrainsMonoNerdFont-Italic.ttf"),
+                    embed!("JetBrainsMonoNerdFont-BoldItalic.ttf"),
+                    // UI 无衬线(Inter)
+                    embed!("Inter-Regular.ttf"),
+                    embed!("Inter-Medium.ttf"),
+                    embed!("Inter-SemiBold.ttf"),
+                    // 展示字(Space Grotesk)
+                    embed!("SpaceGrotesk-Medium.ttf"),
+                    embed!("SpaceGrotesk-Bold.ttf"),
+                    // 中文回退(思源黑体 SC,OTF/CFF — Windows DirectWrite 原生支持)
+                    embed!("SourceHanSansSC-Regular.otf"),
                 ])
-                .expect("Failed to load embedded CaskaydiaCove Nerd Font");
+                .expect("Failed to load embedded Phosphor font system");
             // ──────────────────────────────────────────────────────────────────
 
             // Install the app-wide agent registry before any pane is built — the

@@ -366,7 +366,7 @@ pub(crate) fn launch_tile_shape(
         // 身份字形:mono 600 14,身份色
         div()
             .font_family(mono.clone())
-            .text_size(px(14.))
+            .text_size(px(crate::style::FS_LABEL))
             .font_weight(FontWeight(600.))
             .text_color(col(card.accent))
             .child(SharedString::from(glyph_ch)),
@@ -374,7 +374,7 @@ pub(crate) fn launch_tile_shape(
     .child(
         // 名:sans 600 12 t0
         div()
-            .text_size(px(12.))
+            .text_size(px(crate::style::FS_CAPTION))
             .font_weight(FontWeight(600.))
             .text_color(rgb(T0))
             .child(SharedString::from(card.name.clone())),
@@ -383,7 +383,7 @@ pub(crate) fn launch_tile_shape(
         // 副标:mono 10 t2 全大写(微标签节奏,契约 6)
         div()
             .font_family(mono)
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(rgb(T2))
             .child(SharedString::from(card.sub.to_uppercase())),
     )
@@ -506,7 +506,7 @@ impl WelcomeView {
             )
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(FontWeight(500.))
                     .text_color(rgb(T2))
                     .child("添加 Agent"),
@@ -627,7 +627,7 @@ impl WelcomeView {
             .child(
                 div()
                     .font_family(mono)
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T2))
                     .child(SharedString::from(label.to_string())),
             )
@@ -740,8 +740,9 @@ impl Render for WelcomeView {
                         div()
                             .flex()
                             .flex_row()
-                            .font_family(mono.clone())
-                            .text_size(px(26.))
+                            // 词标走展示字(Space Grotesk),几何未来感;`_` 仍 PH 当光标。
+                            .font_family(crate::style::UI_DISPLAY)
+                            .text_size(px(crate::style::FS_HERO))
                             .font_weight(FontWeight(600.))
                             .child(div().text_color(rgb(T0)).child("TN"))
                             .child(div().text_color(rgb(PH)).child("_")),
@@ -749,7 +750,7 @@ impl Render for WelcomeView {
                     .child(
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(11.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T2))
                             .child(if self.wsl_open {
                                 "选择一个 WSL 发行版 — ‹ 返回 回到启动器"

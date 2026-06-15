@@ -89,7 +89,7 @@ impl TerminalView {
             .border_1()
             .border_color(cola(color, 0.3))
             .font_family(self.font_family.clone())
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(col(color))
             .child(SharedString::from(label))
     }
@@ -128,7 +128,7 @@ impl TerminalView {
             .border_1()
             .border_color(cola(accent, 0.35))
             .font_family(self.font_family.clone())
-            .text_size(px(12.))
+            .text_size(px(crate::style::FS_CAPTION))
             .font_weight(FontWeight(600.))
             .text_color(col(accent))
             // 身份字形 ✳/◆/⟡ 与 tab/磁贴同表(差异总结 2-5)。
@@ -153,7 +153,7 @@ impl TerminalView {
             .child(avatar)
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(FontWeight(600.))
                     .text_color(gpui::rgb(T0))
                     .child(name),
@@ -162,7 +162,7 @@ impl TerminalView {
             head = head.child(
                 div()
                     .font_family(self.font_family.clone())
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(T2))
                     .child(SharedString::from(m)),
             );
@@ -223,7 +223,7 @@ impl TerminalView {
                     .child(
                         div()
                             .font_family(self.font_family.clone())
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(gpui::rgb(T2))
                             .child(SharedString::from(format!(
                                 "{} / {}",
@@ -321,7 +321,7 @@ impl TerminalView {
                 .child(
                     div()
                         .pl(px(48.))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(T3))
                         .child(SharedString::from(fmt_reset(q.reset_5h))),
                 )
@@ -330,7 +330,7 @@ impl TerminalView {
                 .child(div().h(px(1.)).bg(rgba(H1)).my(px(6.)))
                 .child(
                     div()
-                        .text_size(px(10.5))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(T3))
                         .child(SharedString::from("官方配额 · 暂未接入")),
                 )
@@ -363,7 +363,7 @@ impl TerminalView {
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(T3))
                     .child(SharedString::from("本地实算")),
             );
@@ -382,7 +382,7 @@ impl TerminalView {
                 .border_color(rgba(crate::style::H2))
                 .bg(gpui::rgb(crate::style::L3))
                 .font_family(self.font_family.clone())
-                .text_size(px(11.))
+                .text_size(px(crate::style::FS_MICRO))
                 // Clicks inside the popover stay inside (don't toggle it shut).
                 .on_mouse_down(MouseButton::Left, |_e, _w, cx| cx.stop_propagation())
                 .child(head)
@@ -408,7 +408,7 @@ impl TerminalView {
             .border_b(px(1.))
             .border_color(rgba(H0))
             .font_family(self.font_family.clone())
-            .text_size(px(11.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(gpui::rgb(T1))
             .child(
                 div()
@@ -462,19 +462,19 @@ impl TerminalView {
                     .child(div().w(px(5.)).h(px(5.)).rounded_full().bg(col(color)))
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(col(color))
                             .child(SharedString::from(status)),
                     )
                     .child(
                         div()
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(gpui::rgb(T1))
                             .child(SharedString::from(target)),
                     )
                     .child(
                         div()
-                            .text_size(px(9.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(gpui::rgb(T2))
                             .child(SharedString::from(method)),
                     ),
@@ -489,7 +489,7 @@ impl TerminalView {
                 .rounded(px(R_CHIP))
                 .border_1()
                 .border_color(rgba(H1))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(gpui::rgb(T1))
                 .child(SharedString::from(shell)),
         )
@@ -504,7 +504,7 @@ impl TerminalView {
             .flex_row()
             .gap(px(5.))
             .flex_none()
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .font_weight(FontWeight(600.))
             .child(
                 div()
@@ -524,7 +524,7 @@ impl TerminalView {
             .items_center()
             .gap(px(8.))
             .font_family(self.font_family.clone())
-            .text_size(px(11.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(gpui::rgb(T0))
             .child(
                 div()
@@ -581,7 +581,7 @@ impl TerminalView {
                 .border_b(px(1.))
                 .border_color(rgba(H0))
                 .font_family(mono.clone())
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(gpui::rgb(T2))
                 .child(
                     div()
@@ -668,7 +668,7 @@ impl TerminalView {
                         status,
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(gpui::rgb(T3))
                             .pt(px(10.))
                             .px(px(12.))
@@ -720,7 +720,7 @@ impl TerminalView {
                 scrollable = scrollable.child(
                     div()
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(T3))
                         .child(SharedString::from("点击卡片 → QuickLook · Diff")),
                 );

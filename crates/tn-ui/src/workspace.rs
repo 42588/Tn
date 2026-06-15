@@ -2653,7 +2653,7 @@ impl Workspace {
             .border_color(rgba(H0))
             .bg(col(ui.chrome_bg)) // L0:状态栏坐在底盘上
             .font_family(mono) // 仪表读数全等宽(SHEET 01)
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(rgb(T2));
 
         // branch
@@ -2777,7 +2777,7 @@ impl Workspace {
                 .h(px(30.))
                 .px(px(10.))
                 .rounded(px(R_CARD))
-                .text_size(px(12.))
+                .text_size(px(crate::style::FS_CAPTION))
                 .text_color(fg)
                 .hover(move |s| s.bg(crest).text_color(rgb(T0)))
                 .child(icon(
@@ -2795,7 +2795,7 @@ impl Workspace {
                     d.child(
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(crate::style::T3))
                             .child(n),
                     )
@@ -2804,7 +2804,7 @@ impl Workspace {
                     d.child(
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T2))
                             .px(px(6.))
                             .py(px(1.))
@@ -3237,7 +3237,7 @@ impl Workspace {
                 div()
                     .px(px(12.))
                     .py(px(14.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child("正在读取远端目录..."),
             );
@@ -3246,7 +3246,7 @@ impl Workspace {
                 div()
                     .px(px(12.))
                     .py(px(14.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(t.ansi.red))
                     .child(SharedString::from(format!("读取失败: {error}"))),
             );
@@ -3255,7 +3255,7 @@ impl Workspace {
                 div()
                     .px(px(12.))
                     .py(px(14.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child("此目录没有可进入的子目录"),
             );
@@ -3326,7 +3326,7 @@ impl Workspace {
                                             .flex_1()
                                             .overflow_hidden()
                                             .text_ellipsis()
-                                            .text_size(px(12.))
+                                            .text_size(px(crate::style::FS_CAPTION))
                                             .text_color(col(fg))
                                             .child(SharedString::from(name)),
                                     )
@@ -3366,14 +3366,14 @@ impl Workspace {
                         .border_b(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(rgb(T1))
                         .child(icon("folder", 14., ui.accent_alt))
                         .child(div().text_color(rgb(T0)).child("选择远端目录"))
                         .child(div().flex_1())
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(rgb(T2))
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -3394,7 +3394,7 @@ impl Workspace {
                         .border_t(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .child(crate::style::kbd("↑↓", mono.clone()))
                         .child(div().child("选择"))
@@ -3728,7 +3728,7 @@ impl Workspace {
                 .border_1()
                 .border_color(rgba(H1))
                 .font_family(mono.clone())
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .child(
                     div()
                         .text_color(rgb(T2))
@@ -3767,7 +3767,7 @@ impl Workspace {
                 .border_1()
                 .border_color(cola(red, 0.3))
                 .bg(rgba(ERR_SOFT))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .child(icon("alert", 11., red))
                 .child(div().text_color(col(red)).child(SharedString::from(msg)))
         });
@@ -3779,7 +3779,7 @@ impl Workspace {
             .gap(px(10.))
             .px(px(16.))
             .py(px(13.))
-            .text_size(px(14.))
+            .text_size(px(crate::style::FS_LABEL))
             .child(div().child(icon("globe", 16., ui.muted)))
             .child(
                 div()
@@ -3848,7 +3848,7 @@ impl Workspace {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(px(crate::style::FS_MICRO))
                                             .text_color(col(ui.muted))
                                             .child(SharedString::from(sub.to_string())),
                                     ),
@@ -3862,7 +3862,7 @@ impl Workspace {
                         .py(px(15.))
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(px(crate::style::FS_CAPTION))
                                 .text_color(col(ui.muted))
                                 .child(SharedString::from("首次连接 — 三步上手")),
                         )
@@ -3885,7 +3885,7 @@ impl Workspace {
                     div()
                         .px(px(14.))
                         .py(px(13.))
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(col(ui.muted))
                         .child(SharedString::from("无匹配 · 按 Enter 连接所输入的地址"))
                 }
@@ -4031,7 +4031,7 @@ impl Workspace {
                                                 .flex()
                                                 .flex_row()
                                                 .items_center()
-                                                .text_size(px(13.))
+                                                .text_size(px(crate::style::FS_BODY))
                                                 .text_color(if rename_active {
                                                     col(ui.accent)
                                                 } else {
@@ -4056,7 +4056,7 @@ impl Workspace {
                                         .child(
                                             div()
                                                 .font_family(mono.clone())
-                                                .text_size(px(11.))
+                                                .text_size(px(crate::style::FS_MICRO))
                                                 .text_color(col(ui.muted))
                                                 .child(SharedString::from(target.clone())),
                                         ),
@@ -4076,7 +4076,7 @@ impl Workspace {
                                             .child(icon(ic, 11., color))
                                             .child(
                                                 div()
-                                                    .text_size(px(10.))
+                                                    .text_size(px(crate::style::FS_MICRO))
                                                     .text_color(col(color))
                                                     .child(SharedString::from(label.to_string())),
                                             ),
@@ -4087,7 +4087,7 @@ impl Workspace {
                                 .child(
                                     div()
                                         .min_w(px(46.))
-                                        .text_size(px(10.5))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .text_color(rgb(T3))
                                         .child(SharedString::from(when)),
                                 )
@@ -4121,14 +4121,14 @@ impl Workspace {
                                         .min_w(px(0.))
                                         .child(
                                             div()
-                                                .text_size(px(13.))
+                                                .text_size(px(crate::style::FS_BODY))
                                                 .text_color(col(ui.foreground))
                                                 .child(SharedString::from(alias.clone())),
                                         )
                                         .child(
                                             div()
                                                 .font_family(mono.clone())
-                                                .text_size(px(11.))
+                                                .text_size(px(crate::style::FS_MICRO))
                                                 .text_color(col(ui.muted))
                                                 .child(SharedString::from(target.clone())),
                                         ),
@@ -4147,7 +4147,7 @@ impl Workspace {
                                         .child(
                                             div()
                                                 .font_family(mono.clone())
-                                                .text_size(px(10.))
+                                                .text_size(px(crate::style::FS_MICRO))
                                                 .text_color(rgb(T2))
                                                 .child(SharedString::from("ssh-config")),
                                         ),
@@ -4225,7 +4225,7 @@ impl Workspace {
                         .border_t(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .children(footer_hints),
                 )
@@ -4314,7 +4314,7 @@ impl Workspace {
                 .gap(px(7.))
                 .h(px(24.))
                 .font_family(mono.clone())
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .font_weight(gpui::FontWeight(650.))
                 .text_color(if active { rgb(T0) } else { rgb(T2) })
                 .child(div().w(px(5.)).h(px(5.)).rounded(px(1.)).bg(if active {
@@ -4332,7 +4332,7 @@ impl Workspace {
                 .h(px(AGENT_DIR_RECENTS_H))
                 .overflow_hidden()
                 .px(px(11.))
-                .text_size(px(12.))
+                .text_size(px(crate::style::FS_CAPTION))
                 .text_color(rgb(T2))
                 .child("暂无最近工作目录")
         } else {
@@ -4388,7 +4388,7 @@ impl Workspace {
                                 .gap(px(1.))
                                 .child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(px(crate::style::FS_CAPTION))
                                         .font_weight(gpui::FontWeight(620.))
                                         .text_color(col(ui.foreground))
                                         .overflow_hidden()
@@ -4397,7 +4397,7 @@ impl Workspace {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(10.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .text_color(col(ui.muted))
                                         .overflow_hidden()
                                         .text_ellipsis()
@@ -4422,7 +4422,7 @@ impl Workspace {
                     .items_center()
                     .h(px(46.))
                     .px(px(11.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(rgb(T2))
                     .child("没有可进入的子目录"),
             );
@@ -4474,7 +4474,7 @@ impl Workspace {
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
-                                .text_size(px(12.))
+                                .text_size(px(crate::style::FS_CAPTION))
                                 .font_weight(gpui::FontWeight(600.))
                                 .text_color(col(ui.foreground))
                                 .overflow_hidden()
@@ -4489,7 +4489,7 @@ impl Workspace {
                                     .rounded(px(R_CHIP))
                                     .border_1()
                                     .border_color(cola(t.ansi.yellow, 0.35))
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(col(t.ansi.yellow))
                                     .child("git"),
                             )
@@ -4502,7 +4502,7 @@ impl Workspace {
                                     .rounded(px(R_CHIP))
                                     .border_1()
                                     .border_color(cola(ui.accent_alt, 0.35))
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(col(ui.accent_alt))
                                     .child("盘符"),
                             )
@@ -4545,14 +4545,14 @@ impl Workspace {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(gpui::FontWeight(620.))
                     .text_color(col(ui.foreground))
                     .child("浏览本地文件夹"),
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .child("→"),
             );
@@ -4585,7 +4585,7 @@ impl Workspace {
                         .child(icon("folder", 14., ui.accent))
                         .child(
                             div()
-                                .text_size(px(12.))
+                                .text_size(px(crate::style::FS_CAPTION))
                                 .font_weight(gpui::FontWeight(650.))
                                 .text_color(rgb(T0))
                                 .child(SharedString::from(format!(
@@ -4596,7 +4596,7 @@ impl Workspace {
                         .child(div().flex_1())
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(rgb(T2))
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -4623,14 +4623,14 @@ impl Workspace {
                                 .gap(px(3.))
                                 .child(
                                     div()
-                                        .text_size(px(10.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .font_family(mono.clone())
                                         .text_color(rgb(T2))
                                         .child("当前工作目录"),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(px(crate::style::FS_CAPTION))
                                         .text_color(col(ui.foreground))
                                         .overflow_hidden()
                                         .text_ellipsis()
@@ -4668,7 +4668,7 @@ impl Workspace {
                                         ))
                                         .child(
                                             div()
-                                                .text_size(px(10.))
+                                                .text_size(px(crate::style::FS_MICRO))
                                                 .text_color(col(ui.muted))
                                                 .overflow_hidden()
                                                 .text_ellipsis()
@@ -4692,7 +4692,7 @@ impl Workspace {
                         .border_t(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .child(crate::style::kbd("Tab", mono.clone()))
                         .child(div().child("焦点"))
@@ -4815,7 +4815,7 @@ impl Workspace {
             .px(px(16.))
             .flex_none()
             .font_family(mono.clone())
-            .text_size(px(14.))
+            .text_size(px(crate::style::FS_LABEL))
             .border_b(px(1.))
             .border_color(rgba(H1))
             .child(lead)
@@ -4848,7 +4848,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(rgb(T2))
                     .child(SharedString::from(if self.palette_wsl {
                         "WSL"
@@ -4906,7 +4906,7 @@ impl Workspace {
                         .justify_center()
                         .flex_none()
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .font_weight(gpui::FontWeight(600.))
                         .text_color(col(card.accent))
                         .child(SharedString::from(crate::welcome::launch_glyph_ch(
@@ -4915,7 +4915,7 @@ impl Workspace {
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
                         .child(SharedString::from(card.name)),
                 )
@@ -4924,7 +4924,7 @@ impl Workspace {
                 .child(
                     div()
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T3))
                         .child(SharedString::from(meta)),
                 )
@@ -4957,7 +4957,7 @@ impl Workspace {
                         .border_t(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .child(
                             div()
@@ -5213,7 +5213,7 @@ impl Workspace {
                     .child(
                         div()
                             .font_family(mono.clone())
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(rgb(T2))
                             .child(div().child(SharedString::from(format!(
                                 "方向:{}",
@@ -5265,7 +5265,7 @@ impl Workspace {
                         .justify_center()
                         .flex_none()
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .font_weight(gpui::FontWeight(600.))
                         .text_color(col(card.accent))
                         .child(SharedString::from(crate::welcome::launch_glyph_ch(
@@ -5274,7 +5274,7 @@ impl Workspace {
                 )
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(if is_sel { rgb(T0) } else { rgb(T1) })
                         .child(SharedString::from(card.name)),
                 )
@@ -5320,7 +5320,7 @@ impl Workspace {
             .border_t(px(1.))
             .border_color(rgba(H1))
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(rgb(T2));
         let footer = if self.split_wsl {
             footer
@@ -5369,13 +5369,13 @@ impl Workspace {
                         .border_b(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .child(div().text_color(rgb(PH)).child("◫"))
                         .child(div().text_color(rgb(T0)).child(SharedString::from(title)))
                         .child(div().flex_1())
                         .child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(rgb(T2))
                                 .child("当前 PANE"),
                         ),
@@ -5532,7 +5532,7 @@ impl Workspace {
                     .rounded(px(R_CHIP))
                     .border_1()
                     .border_color(bc)
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(fg)
                     .bg(bg)
                     .hover(move |s| s.bg(crest))
@@ -5561,14 +5561,14 @@ impl Workspace {
                 .child(
                     div()
                         .w(px(40.))
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .text_color(rgb(T0))
                         .child(SharedString::from(format!("槽 {}", i + 1))),
                 )
                 .child(
                     div()
                         .w(px(56.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(ui.muted))
                         .child(SharedString::from(status)),
                 )
@@ -5624,7 +5624,7 @@ impl Workspace {
                         .border_b(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono.clone())
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .child(div().text_color(rgb(PH)).child("▤"))
                         .child(div().text_color(rgb(T0)).child("布局 · 7 槽位")),
                 )
@@ -5641,7 +5641,7 @@ impl Workspace {
                         .border_t(px(1.))
                         .border_color(rgba(H1))
                         .font_family(mono)
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(rgb(T2))
                         .child(hint),
                 ),
@@ -6124,7 +6124,7 @@ impl Workspace {
                 div()
                     .w(px(52.))
                     .flex_none()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child(SharedString::from(label.to_string())),
             )
@@ -6219,7 +6219,7 @@ impl Workspace {
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(11.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .child(SharedString::from("配置即数据 · 终端托管")),
             );
@@ -6250,7 +6250,7 @@ impl Workspace {
             ))
             .child(
                 div()
-                    .text_size(px(10.5))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .pl(px(2.))
                     .child(SharedString::from(
@@ -6304,7 +6304,7 @@ impl Workspace {
                 div()
                     .w(px(52.))
                     .flex_none()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child(SharedString::from("颜色")),
             )
@@ -6354,7 +6354,7 @@ impl Workspace {
                             .text_color(col(ui.foreground))
                             .child(SharedString::from("由 Agent 自绘光标(Ink TUI)")),
                     )
-                    .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(
+                    .child(div().text_size(px(crate::style::FS_MICRO)).text_color(col(ui.muted)).child(
                         SharedString::from("Claude/Gemini 等 TUI 自管光标;关掉则终端画块光标"),
                     )),
             );
@@ -6371,7 +6371,7 @@ impl Workspace {
             .child(
                 div().px(px(16.)).pt(px(3.)).child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .font_weight(gpui::FontWeight(600.))
                         .text_color(col(ui.muted))
                         .child(SharedString::from("高级(可选)· 用量遥测 — 不懂就留空")),
@@ -6389,7 +6389,7 @@ impl Workspace {
             .child(
                 div()
                     .px(px(16.))
-                    .text_size(px(10.5))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .child(SharedString::from(
                         "开发者选项:一个会往屏幕输出 JSON 用量数据的伴随程序,Tn 据此显示用量环/状态。\
@@ -6444,7 +6444,7 @@ impl Workspace {
                                         .text_color(col(ui.foreground))
                                         .child(SharedString::from("联网 sidecar(连接前需确认)")),
                                 )
-                                .child(div().text_size(px(10.5)).text_color(col(ui.muted)).child(
+                                .child(div().text_size(px(crate::style::FS_MICRO)).text_color(col(ui.muted)).child(
                                     SharedString::from("默认拒绝;勾选后启动弹确认卡,允许才连"),
                                 )),
                         ),
@@ -6468,7 +6468,7 @@ impl Workspace {
                 div()
                     .w(px(52.))
                     .flex_none()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child(SharedString::from("预览")),
             )
@@ -7101,7 +7101,7 @@ impl Render for Workspace {
                         .h(px(30.)) // 42 − 2×6(`.tab` margin:6px 0)
                         .px(px(14.)) // `.tab` padding 0 14
                         .rounded(px(R_CARD)) // r4
-                        .text_size(px(12.)) // sans 12
+                        .text_size(px(crate::style::FS_CAPTION)) // sans 12
                         // 激活 = L2 抬升 + 1px h1 + 顶部 2px 身份棒(横向小渐变,契约 2)
                         .when(is_active, |d| {
                             d.bg(col(surface_2))
@@ -7132,7 +7132,7 @@ impl Render for Workspace {
                         .child(
                             div()
                                 .font_family(mono_family.clone())
-                                .text_size(px(11.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .font_weight(gpui::FontWeight(600.))
                                 .text_color(if agent_dot.is_some() {
                                     col(bar_c)
@@ -7146,7 +7146,7 @@ impl Render for Workspace {
                             d.child(
                                 div()
                                     .font_family(mono_family.clone())
-                                    .text_size(px(10.0))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(rgb(T3))
                                     .child(format!("⌗{panes}")),
                             )
@@ -7235,13 +7235,13 @@ impl Render for Workspace {
                     .child(div().w(px(8.)).h(px(8.)).rounded(px(1.)).bg(rgb(PH))),
             )
             .child(
-                // `.name`:TN + 磷光下划线光标(mono 600 12)
+                // `.name`:TN + 磷光下划线光标 —— 词标走展示字 Space Grotesk(600 12)
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .font_family(SharedString::from(self.config.font().family.clone()))
-                    .text_size(px(12.))
+                    .font_family(crate::style::UI_DISPLAY)
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(gpui::FontWeight(600.))
                     .child(div().text_color(rgb(T0)).child("TN"))
                     .child(div().text_color(rgb(PH)).child("_")),
@@ -7494,7 +7494,9 @@ impl Render for Workspace {
             // 底盘 — 大面积零渐变零透明,色带从物理上不可能发生。
             .bg(self.window_glass()) // opaque L0(theme backdrop = solid)
             .text_color(col(ui.foreground))
-            .font_family(UI_SANS) // UI sans for chrome; panes set mono themselves
+            // UI sans for chrome (Inter) + 中文回退(思源黑体 SC)在根节点设一次,
+            // 全树继承 font_fallbacks;子元素用 .font_family() 换族不会清掉回退。
+            .font(crate::style::with_cjk(UI_SANS))
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))

@@ -3448,7 +3448,7 @@ impl Render for TerminalView {
                         .border_1()
                         .border_color(cola(accent, 0.3))
                         .bg(cola(accent, 0.10))
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(accent))
                         .child(SharedString::from(chip.to_string())),
                 )
@@ -3484,7 +3484,7 @@ impl Render for TerminalView {
                     .items_center()
                     .justify_center()
                     .border_1()
-                    .text_size(px(10.));
+                    .text_size(px(crate::style::FS_MICRO));
                 let dotn = if o < cur {
                     dotn.border_color(cola(self.ui_green, 0.4))
                         .bg(gpui::rgb(crate::style::L2))
@@ -3512,7 +3512,7 @@ impl Render for TerminalView {
                         .flex_col()
                         .gap(px(5.))
                         .font_family(self.font_family.clone())
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(label_color))
                         .child(
                             div()
@@ -3551,7 +3551,7 @@ impl Render for TerminalView {
                 .child(
                     div()
                         .font_family(self.font_family.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(crate::style::T2))
                         .overflow_hidden()
                         .text_ellipsis()
@@ -3571,7 +3571,7 @@ impl Render for TerminalView {
                 .text_color(col(self.ui_fg))
                 .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(crate::style::icon("close", 13., self.ui_muted))
-                .child(div().text_size(px(12.)).child(SharedString::from("取消")))
+                .child(div().text_size(px(crate::style::FS_CAPTION)).child(SharedString::from("取消")))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|_this, _e, _w, cx| {
@@ -3655,7 +3655,7 @@ impl Render for TerminalView {
                     .bg(cola(self.ui_accent, 0.16)).text_color(col(self.ui_accent))
                     .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
                     .child(crate::style::icon("refresh", 13., self.ui_accent))
-                    .child(div().text_size(px(12.)).child(SharedString::from("重试")))
+                    .child(div().text_size(px(crate::style::FS_CAPTION)).child(SharedString::from("重试")))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
                         cx.stop_propagation();
                         cx.emit(SshRetryRequested);
@@ -3665,7 +3665,7 @@ impl Render for TerminalView {
                     .bg(gpui::rgb(crate::style::L2)).text_color(col(self.ui_fg))
                     .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                     .child(crate::style::icon("close", 13., self.ui_muted))
-                    .child(div().text_size(px(12.)).child(SharedString::from("关闭")))
+                    .child(div().text_size(px(crate::style::FS_CAPTION)).child(SharedString::from("关闭")))
                     .on_mouse_down(gpui::MouseButton::Left, cx.listener(|_this, _e, _w, cx| {
                         cx.stop_propagation();
                         cx.emit(SshCloseRequested);
@@ -3727,7 +3727,7 @@ impl Render for TerminalView {
                         .flex_row()
                         .items_center()
                         .font_family(mono.clone())
-                        .text_size(px(14.))
+                        .text_size(px(crate::style::FS_LABEL))
                         .when(!self.ssh_password_input.is_empty(), |d| {
                             d.child(div().text_color(col(self.ui_fg)).child(shown))
                         })
@@ -3819,7 +3819,7 @@ impl Render for TerminalView {
                 .text_color(col(self.ui_accent))
                 .hover(|s| s.bg(cola(self.ui_accent, 0.24)))
                 .child(crate::style::icon("enter", 13., self.ui_accent))
-                .child(div().text_size(px(12.)).child("连接"))
+                .child(div().text_size(px(crate::style::FS_CAPTION)).child("连接"))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _e, _w, cx| {
@@ -3838,7 +3838,7 @@ impl Render for TerminalView {
                 .bg(gpui::rgb(crate::style::L2))
                 .text_color(col(self.ui_fg))
                 .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
-                .child(div().text_size(px(12.)).child("取消"))
+                .child(div().text_size(px(crate::style::FS_CAPTION)).child("取消"))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _e, _w, cx| {
@@ -3892,13 +3892,13 @@ impl Render for TerminalView {
             let fp_box = div()
                 .mx(px(14.)).mt(px(11.)).p(px(10.)).rounded(px(crate::style::R_CARD))
                 .bg(gpui::rgb(crate::style::L0)).border_1().border_color(rgba(crate::style::H0))
-                .child(div().text_size(px(10.)).text_color(col(self.ui_muted)).child("ED25519 / SHA256 指纹"))
-                .child(div().font_family(self.font_family.clone()).text_size(px(12.)).text_color(gpui::rgb(crate::style::PH)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
+                .child(div().text_size(px(crate::style::FS_MICRO)).text_color(col(self.ui_muted)).child("ED25519 / SHA256 指纹"))
+                .child(div().font_family(self.font_family.clone()).text_size(px(crate::style::FS_CAPTION)).text_color(gpui::rgb(crate::style::PH)).mt(px(3.)).child(SharedString::from(hk.fingerprint.clone())));
             // `.btn` 家族(06-C):普通 = L2 + h1;primary = ph 底 + ph-ink 墨字。
             let btn = |label: &'static str| {
                 div()
                     .px(px(12.)).py(px(5.)).rounded(px(crate::style::R_CARD))
-                    .text_size(px(12.)).text_color(gpui::rgb(crate::style::T1))
+                    .text_size(px(crate::style::FS_CAPTION)).text_color(gpui::rgb(crate::style::T1))
                     .bg(gpui::rgb(crate::style::L2)).border_1().border_color(rgba(crate::style::H1))
                     .hover(|s| s.bg(gpui::rgb(crate::style::L4)).text_color(gpui::rgb(crate::style::T0)))
                     .child(label)
@@ -3936,12 +3936,12 @@ impl Render for TerminalView {
                 div()
                     .child(card_header("exchange", self.ui_yellow, "首次连接", &hk.host))
                     .child(
-                        div().px(px(14.)).pt(px(11.)).text_size(px(12.)).text_color(col(self.ui_muted))
+                        div().px(px(14.)).pt(px(11.)).text_size(px(crate::style::FS_CAPTION)).text_color(col(self.ui_muted))
                             .child("无法验证主机真实性。请确认下方指纹与服务器实际指纹一致,再选择信任。"),
                     )
                     .child(fp_box)
                     .child(
-                        div().px(px(14.)).pt(px(8.)).pb(px(11.)).text_size(px(10.))
+                        div().px(px(14.)).pt(px(8.)).pb(px(11.)).text_size(px(crate::style::FS_MICRO))
                             .font_family(self.font_family.clone())
                             .text_color(col(self.ui_muted))
                             .child("⚠ 指纹不符时将变为 HOST KEY MISMATCH 红边错误卡"),
@@ -3991,7 +3991,7 @@ impl Render for TerminalView {
                         .px(px(9.))
                         .py(px(3.))
                         .rounded(px(7.))
-                        .text_size(px(11.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(col(self.ui_fg))
                         .bg(gpui::rgb(crate::style::L2))
                         .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
@@ -4035,7 +4035,7 @@ impl Render for TerminalView {
                 .child(crate::style::icon("check", 13., self.ui_accent))
                 .child(
                     div()
-                        .text_size(px(12.))
+                        .text_size(px(crate::style::FS_CAPTION))
                         .child(SharedString::from("允许并连接")),
                 )
                 .on_mouse_down(
@@ -4057,7 +4057,7 @@ impl Render for TerminalView {
                 .text_color(col(self.ui_fg))
                 .hover(|s| s.bg(gpui::rgb(crate::style::L4)))
                 .child(crate::style::icon("close", 13., self.ui_muted))
-                .child(div().text_size(px(12.)).child(SharedString::from("拒绝")))
+                .child(div().text_size(px(crate::style::FS_CAPTION)).child(SharedString::from("拒绝")))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(|this, _e, _w, cx| {

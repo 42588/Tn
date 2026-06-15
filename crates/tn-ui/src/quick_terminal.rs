@@ -1251,14 +1251,14 @@ impl QuickTerminal {
                 div()
                     .flex()
                     .flex_row()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(FontWeight(600.))
                     .child(div().text_color(gpui::rgb(crate::style::T0)).child("GHOST"))
                     .child(div().text_color(gpui::rgb(crate::style::PH)).child("_")),
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(crate::style::T2))
                     .when(self.wsl_drill, |d| {
                         d.hover(|s| s.text_color(gpui::rgb(crate::style::T0)))
@@ -1282,7 +1282,7 @@ impl QuickTerminal {
                     .rounded(px(crate::style::R_CHIP))
                     .border_1()
                     .border_color(rgba(crate::style::H1))
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(crate::style::T1))
                     .child("AUTOHIDE · ON"),
             );
@@ -1299,7 +1299,7 @@ impl QuickTerminal {
             .border_t(px(1.))
             .border_color(rgba(crate::style::H1))
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(gpui::rgb(crate::style::T2))
             .child(
                 div()
@@ -1374,7 +1374,7 @@ impl QuickTerminal {
                 .items_center()
                 .gap(px(7.))
                 .h(px(24.))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .font_family(mono.clone())
                 .font_weight(FontWeight(650.))
                 .text_color(if active {
@@ -1397,7 +1397,7 @@ impl QuickTerminal {
                 .h(px(LOCAL_DIR_RECENTS_H))
                 .overflow_hidden()
                 .px(px(11.))
-                .text_size(px(12.))
+                .text_size(px(crate::style::FS_CAPTION))
                 .text_color(gpui::rgb(crate::style::T2))
                 .child("暂无最近工作目录")
         } else {
@@ -1457,7 +1457,7 @@ impl QuickTerminal {
                                 .gap(px(1.))
                                 .child(
                                     div()
-                                        .text_size(px(12.))
+                                        .text_size(px(crate::style::FS_CAPTION))
                                         .font_weight(FontWeight(620.))
                                         .text_color(col(ui.foreground))
                                         .overflow_hidden()
@@ -1466,7 +1466,7 @@ impl QuickTerminal {
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(10.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .text_color(col(ui.muted))
                                         .overflow_hidden()
                                         .text_ellipsis()
@@ -1491,7 +1491,7 @@ impl QuickTerminal {
                     .items_center()
                     .h(px(46.))
                     .px(px(11.))
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(gpui::rgb(crate::style::T2))
                     .child("没有可进入的子目录"),
             );
@@ -1547,7 +1547,7 @@ impl QuickTerminal {
                             div()
                                 .flex_1()
                                 .min_w(px(0.))
-                                .text_size(px(12.))
+                                .text_size(px(crate::style::FS_CAPTION))
                                 .font_weight(FontWeight(600.))
                                 .text_color(col(ui.foreground))
                                 .overflow_hidden()
@@ -1562,7 +1562,7 @@ impl QuickTerminal {
                                     .rounded(px(crate::style::R_CHIP))
                                     .border_1()
                                     .border_color(cola(t.ansi.yellow, 0.35))
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(col(t.ansi.yellow))
                                     .child("git"),
                             )
@@ -1575,7 +1575,7 @@ impl QuickTerminal {
                                     .rounded(px(crate::style::R_CHIP))
                                     .border_1()
                                     .border_color(cola(ui.accent_alt, 0.35))
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(col(ui.accent_alt))
                                     .child("盘符"),
                             )
@@ -1619,14 +1619,14 @@ impl QuickTerminal {
             .child(
                 div()
                     .flex_1()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(FontWeight(620.))
                     .text_color(col(ui.foreground))
                     .child("浏览本地文件夹"),
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.muted))
                     .child("→"),
             );
@@ -1646,7 +1646,7 @@ impl QuickTerminal {
             .child(self.ghost_mark())
             .child(
                 div()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .font_weight(FontWeight(650.))
                     .text_color(gpui::rgb(crate::style::T0))
                     .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
@@ -1658,7 +1658,7 @@ impl QuickTerminal {
             )
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(crate::style::T2))
                     .child(SharedString::from(format!(
                         "{} 工作目录",
@@ -1673,7 +1673,7 @@ impl QuickTerminal {
                     .rounded(px(crate::style::R_CHIP))
                     .border_1()
                     .border_color(cola(ui.accent, 0.35))
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(ui.accent))
                     .child("AGENT"),
             );
@@ -1689,7 +1689,7 @@ impl QuickTerminal {
             .border_t(px(1.))
             .border_color(rgba(crate::style::H1))
             .font_family(mono.clone())
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(gpui::rgb(crate::style::T2))
             .child(crate::style::kbd("Tab", mono.clone()))
             .child(div().child("焦点"))
@@ -1739,14 +1739,14 @@ impl QuickTerminal {
                             .gap(px(3.))
                             .child(
                                 div()
-                                    .text_size(px(10.))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .font_family(mono.clone())
                                     .text_color(gpui::rgb(crate::style::T2))
                                     .child("当前工作目录"),
                             )
                             .child(
                                 div()
-                                    .text_size(px(12.))
+                                    .text_size(px(crate::style::FS_CAPTION))
                                     .text_color(col(ui.foreground))
                                     .overflow_hidden()
                                     .text_ellipsis()
@@ -1784,7 +1784,7 @@ impl QuickTerminal {
                                     ))
                                     .child(
                                         div()
-                                            .text_size(px(10.))
+                                            .text_size(px(crate::style::FS_MICRO))
                                             .text_color(col(ui.muted))
                                             .overflow_hidden()
                                             .text_ellipsis()
@@ -1832,7 +1832,7 @@ impl QuickTerminal {
                 .border_1()
                 .border_color(rgba(crate::style::H1))
                 .font_family(mono.clone())
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .child(
                     div()
                         .text_color(gpui::rgb(crate::style::T2))
@@ -1867,7 +1867,7 @@ impl QuickTerminal {
                 .border_1()
                 .border_color(cola(t.ansi.red, 0.3))
                 .bg(rgba(crate::style::ERR_SOFT))
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .child(icon("alert", 11., t.ansi.red))
                 .child(
                     div()
@@ -1892,7 +1892,7 @@ impl QuickTerminal {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(12.))
+                    .text_size(px(crate::style::FS_CAPTION))
                     .text_color(col(ui.muted))
                     .child(SharedString::from(copy)),
             );
@@ -1959,14 +1959,14 @@ impl QuickTerminal {
                                 .min_w(px(0.))
                                 .child(
                                     div()
-                                        .text_size(px(13.))
+                                        .text_size(px(crate::style::FS_BODY))
                                         .font_weight(FontWeight(640.))
                                         .text_color(col(ui.foreground))
                                         .child(SharedString::from(name.clone())),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .text_color(col(ui.muted))
                                         .child(SharedString::from(resolved.clone())),
                                 ),
@@ -2052,7 +2052,7 @@ impl QuickTerminal {
                                             .flex()
                                             .flex_row()
                                             .items_center()
-                                            .text_size(px(13.))
+                                            .text_size(px(crate::style::FS_BODY))
                                             .font_weight(FontWeight(640.))
                                             .text_color(if rename_active {
                                                 col(ui.accent)
@@ -2077,7 +2077,7 @@ impl QuickTerminal {
                                     )
                                     .child(
                                         div()
-                                            .text_size(px(11.))
+                                            .text_size(px(crate::style::FS_MICRO))
                                             .text_color(col(ui.muted))
                                             .child(SharedString::from(target.clone())),
                                     ),
@@ -2092,7 +2092,7 @@ impl QuickTerminal {
                             .child(
                                 div()
                                     .min_w(px(42.))
-                                    .text_size(px(10.5))
+                                    .text_size(px(crate::style::FS_MICRO))
                                     .text_color(rgba(0x8f96b880))
                                     .child(SharedString::from(crate::ssh_recents::rel_time(
                                         *last_used,
@@ -2109,14 +2109,14 @@ impl QuickTerminal {
                                 .min_w(px(0.))
                                 .child(
                                     div()
-                                        .text_size(px(13.))
+                                        .text_size(px(crate::style::FS_BODY))
                                         .font_weight(FontWeight(640.))
                                         .text_color(col(ui.foreground))
                                         .child(SharedString::from(alias.clone())),
                                 )
                                 .child(
                                     div()
-                                        .text_size(px(11.))
+                                        .text_size(px(crate::style::FS_MICRO))
                                         .text_color(col(ui.muted))
                                         .child(SharedString::from(target.clone())),
                                 ),
@@ -2185,7 +2185,7 @@ impl QuickTerminal {
                     .child(self.ghost_mark())
                     .child(
                         div()
-                            .text_size(px(12.))
+                            .text_size(px(crate::style::FS_CAPTION))
                             .font_weight(FontWeight(600.))
                             .text_color(gpui::rgb(crate::style::T0))
                             .hover(|s| s.text_color(gpui::rgb(crate::style::PH)))
@@ -2203,7 +2203,7 @@ impl QuickTerminal {
                             .rounded(px(crate::style::R_CHIP))
                             .border_1()
                             .border_color(cola(t.ansi.yellow, 0.3))
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(col(t.ansi.yellow))
                             .child("SSH"),
                     ),
@@ -2236,7 +2236,7 @@ impl QuickTerminal {
                             .items_center()
                             .min_w(px(0.))
                             .font_family(mono.clone())
-                            .text_size(px(13.))
+                            .text_size(px(crate::style::FS_BODY))
                             .when(!self.ssh_prompt_input.is_empty(), |d| {
                                 d.child(
                                     div()
@@ -2283,7 +2283,7 @@ impl QuickTerminal {
                     .border_t(px(1.))
                     .border_color(rgba(crate::style::H1))
                     .font_family(mono.clone())
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(gpui::rgb(crate::style::T2))
                     .children(footer_hints),
             )
@@ -2314,7 +2314,7 @@ impl QuickTerminal {
             .rounded(px(crate::style::R_CHIP))
             .border_1()
             .border_color(cola(color, 0.3))
-            .text_size(px(10.))
+            .text_size(px(crate::style::FS_MICRO))
             .text_color(col(color))
             .child(SharedString::from(label))
     }
@@ -2338,7 +2338,7 @@ impl QuickTerminal {
             .child(icon(glyph, 11., color))
             .child(
                 div()
-                    .text_size(px(10.))
+                    .text_size(px(crate::style::FS_MICRO))
                     .text_color(col(color))
                     .child(SharedString::from(label)),
             )
@@ -2575,7 +2575,7 @@ impl Render for QuickTerminal {
                         div()
                             .flex()
                             .flex_row()
-                            .text_size(px(12.))
+                            .text_size(px(crate::style::FS_CAPTION))
                             .font_weight(FontWeight(600.))
                             .child(div().text_color(gpui::rgb(crate::style::T0)).child("GHOST"))
                             .child(div().text_color(gpui::rgb(crate::style::PH)).child("_")),
@@ -2589,7 +2589,7 @@ impl Render for QuickTerminal {
                             .border_1()
                             .border_color(rgba(crate::style::PH_DIM))
                             .bg(rgba(crate::style::PH_SOFT))
-                            .text_size(px(10.))
+                            .text_size(px(crate::style::FS_MICRO))
                             .text_color(gpui::rgb(crate::style::PH))
                             .max_w(px(420.))
                             .overflow_hidden()
@@ -2599,7 +2599,7 @@ impl Render for QuickTerminal {
                     .when(autohide, |d| {
                         d.child(
                             div()
-                                .text_size(px(10.))
+                                .text_size(px(crate::style::FS_MICRO))
                                 .text_color(gpui::rgb(crate::style::T2))
                                 .child("失焦 → 上滑隐匿"),
                         )
@@ -2633,7 +2633,7 @@ impl Render for QuickTerminal {
                         .border_t(px(1.))
                         .border_color(rgba(crate::style::H1))
                         .font_family(mono.clone())
-                        .text_size(px(10.))
+                        .text_size(px(crate::style::FS_MICRO))
                         .text_color(gpui::rgb(crate::style::T2))
                         .child(
                             div()

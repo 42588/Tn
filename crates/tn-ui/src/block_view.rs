@@ -115,7 +115,7 @@ fn exit_chip(data: &BlockBar, pal: &BarPalette) -> Div {
         .py(px(1.))
         .rounded(px(R_CHIP))
         .bg(rgba(soft))
-        .text_size(px(10.))
+        .text_size(px(crate::style::FS_MICRO))
         .font_weight(gpui::FontWeight(600.))
         .text_color(color);
     match (data.state, data.exit) {
@@ -199,7 +199,7 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         .border_l(px(2.)) // 状态脊:块的唯一状态语言
         .border_color(stripe)
         .bg(gpui::rgb(crate::style::L2))
-        .text_size(px(11.))
+        .text_size(px(crate::style::FS_MICRO))
         .child(
             div()
                 .absolute()
@@ -215,7 +215,7 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     if let Some(ms) = data.duration_ms {
         row = row.child(
             div()
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(pal.muted)
                 .child(SharedString::from(fmt_duration(ms))),
         );
@@ -224,7 +224,7 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
     if let Some(cwd) = &data.cwd {
         row = row.child(
             div()
-                .text_size(px(10.))
+                .text_size(px(crate::style::FS_MICRO))
                 .text_color(pal.muted)
                 .child(SharedString::from(short_path(cwd, 22))),
         );
