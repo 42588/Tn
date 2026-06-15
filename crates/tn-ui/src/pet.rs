@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
 
 use crate::style::{
-    col, ERR, H0, H1, H2, L0, L1, L2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, SCRIM, STATUSBAR_H,
-    TITLEBAR_H, T0, T1, T2, T3,
+    col, ERR, H0, H1, H2, L0, L1, L2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, SCRIM, STATUSBAR_H, T0,
+    T1, T2, T3,
 };
 
 // ═══════════════════════════ 终端上下文信号(进程级) ═══════════════════════
@@ -806,46 +806,6 @@ enum Affection {
     Call,
 }
 
-/// 磷光通道转场提示(规则 J · v2.3)。**不是上下文状态**,而是 UI 控制层在关键
-/// 转场时显式发出的一次性 cue —— 只含转场语义,不读终端内容、不携带文件/输出/
-/// 路径。宠物据此在岗台接缝点亮磷光裂缝 + 光点(开门类裂缝亮起变长,召回类收束
-/// 熄灭),把「宠物 = Tn 空间的钥匙」演出来。UI 本体立即响应,绝不等待此动画。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PetSpatialCue {
-    /// 幽灵终端进出。**待接线**:幽灵终端是独立顶层窗口(`quick_terminal.rs`),
-    /// 与主窗宠物 overlay 不同窗,需后续跨窗方案(板 H 远期)。
-    #[allow(dead_code)]
-    GhostEnter,
-    #[allow(dead_code)]
-    GhostExit,
-    QuickLookOpen,
-    QuickLookClose,
-    QuickLookSwitch,
-    OverlayOpen,
-    SplitCreate,
-    WelcomeToWorkspace,
-    RemoteReconnect,
-}
-
-impl PetSpatialCue {
-    /// 开门类(裂缝亮起、变长)= true;召回/收束/切换类 = false。
-    fn is_open(self) -> bool {
-        matches!(
-            self,
-            PetSpatialCue::GhostEnter
-                | PetSpatialCue::QuickLookOpen
-                | PetSpatialCue::OverlayOpen
-                | PetSpatialCue::SplitCreate
-                | PetSpatialCue::WelcomeToWorkspace
-                | PetSpatialCue::RemoteReconnect
-        )
-    }
-    /// 切换类(只闪光点、不开合裂缝;规则 J2 Quick Look 切换文件)。
-    fn is_switch(self) -> bool {
-        matches!(self, PetSpatialCue::QuickLookSwitch)
-    }
-}
-
 // ═══════════════════════════ 上下文状态机 ════════════════════════════════
 
 /// 终端上下文(优先级降序;见 docs/宠物/宠物系统规则.md + 小狗家族设计.md
@@ -1109,13 +1069,6 @@ pub struct PetView {
     /// 玩具子菜单展开;重置互动记忆二次确认浮层。
     toy_menu_open: bool,
     confirm_reset: bool,
-    // ── 磷光通道(规则 J)──
-    /// 当前空间 cue + 演出窗口起点/终点(同一时刻只允许一个;新替旧)。
-    cue: Option<PetSpatialCue>,
-    cue_start_ms: u64,
-    cue_until_ms: u64,
-    /// 上次完整共演时刻(规则 J4:≥30s 才给完整版,否则短版/静默)。
-    last_cue_ms: u64,
     // ── 工作共情(规则 E)──
     /// 最近若干次主动庆祝时刻(共享冷却 ≤2 次/10 分钟)。
     celebrate_times: [u64; 2],
@@ -1190,10 +1143,6 @@ impl PetView {
             extra_heart_until_ms: 0,
             toy_menu_open: false,
             confirm_reset: false,
-            cue: None,
-            cue_start_ms: 0,
-            cue_until_ms: 0,
-            last_cue_ms: 0,
             celebrate_times: [0, 0],
             companion_lie: false,
             moaned: false,
@@ -1264,7 +1213,6 @@ impl PetView {
         h = h * 2 + b(self.call_until_ms > now);
         h = h * 2 + b(self.settle_until_ms > now);
         h = h * 2 + b(self.extra_heart_until_ms > now);
-        h = h * 16 + self.cue.map(|c| c as u64 + 1).unwrap_or(0);
         h
     }
 
@@ -1452,292 +1400,6 @@ impl PetView {
             self.on_welcome = on;
             self.peek(cx);
         }
-    }
-
-    /// 磷光通道(规则 J):UI 控制层在关键转场时调用。宠物在岗台接缝点亮磷光裂缝
-    /// + 光点(开门类亮起变长,召回类收束);**绝不阻塞 UI** —— 调用方发完即继续。
-    ///
-    /// 节律(规则 J4):同一时刻只一个 cue(新替旧);≥30s 给完整共演,10–30s 内
-    /// 重复降级短版;直接互动(拖拽/摸头/投喂/逗弄)优先,期间通道静默不抢戏;
-    /// reduced motion 只 1px 磷光点闪一下(静态换岗)。
-    pub(crate) fn spatial_cue(&mut self, cue: PetSpatialCue, cx: &mut Context<Self>) {
-        if !self.state.enabled || !self.state.visible || self.state.welcome_only && !self.on_welcome
-        {
-            return;
-        }
-        let now = now_ms();
-        // 直接互动优先(规则 J 优先级表):拖拽/摸头/投喂/逗弄期间通道排队或降级 →
-        // 这里直接放弃本次演出(UI 已自行响应,不欠动画)。
-        if self.drag.is_some()
-            || self.feed_until_ms > now
-            || self.pat_until_ms > now
-            || self.play_until_ms > now
-        {
-            return;
-        }
-        if !self.motion_on() {
-            // reduced motion:静态换岗 + 1px 磷光点闪烁(规则 J 可访问性)。
-            self.cue = Some(cue);
-            self.cue_start_ms = now;
-            self.cue_until_ms = now + 200;
-            cx.notify();
-            return;
-        }
-        // 完整共演 ≥30s 间隔走完整飞行;10–30s 内重复降短版(仍要看得见跨屏光点,
-        // 故 ≥600ms,不取 350ms 的极短)。切换类只闪光点。
-        let full = now.saturating_sub(self.last_cue_ms) >= 30_000;
-        let dur = if cue.is_switch() {
-            280 // 切换类:只闪光点
-        } else if full {
-            1100
-        } else {
-            640
-        };
-        self.last_cue_ms = now;
-        self.cue = Some(cue);
-        self.cue_start_ms = now;
-        self.cue_until_ms = now + dur;
-        self.idle_since_ms = now;
-        Self::spawn_cue_driver(cx);
-        cx.notify();
-    }
-
-    /// 磷光通道动画驱动:30ms 重绘直到收束,自停。
-    fn spawn_cue_driver(cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(30))
-                .await;
-            let alive = this
-                .update(cx, |pet, cx| {
-                    if pet.cue.is_some() && now_ms() >= pet.cue_until_ms {
-                        pet.cue = None;
-                    }
-                    cx.notify();
-                    pet.cue.is_some()
-                })
-                .unwrap_or(false);
-            if !alive {
-                break;
-            }
-        })
-        .detach();
-    }
-
-    /// 磷光通道全屏 overlay(规则 J)。宠物根现为 workspace 最顶层,故此 overlay 画
-    /// 在所有浮层 scrim 之上,小狗/裂缝才不会被 Quick Look / 命令面板的 scrim 压暗。
-    ///
-    /// **演出(v2.3 改版二):小狗叼开空间裂隙。** 一只像素小狗从岗台跃出、跨屏奔到
-    /// 该转场的真实 UI 锚点(命令面板顶缘 / Quick Look 侧边 / 分屏中线 / 欢迎区 /
-    /// 远端 pane),落在接缝上 → 蹲身蓄力 → 猛地起身把一道磷光锯齿裂隙**拉开**,关键
-    /// UI 就从这道裂隙里展开。召回类反向:小狗奔到已开的裂隙、把它拉合、再化作磷光
-    /// 残影散去。切换类只在锚点脉冲一下。小狗 = Tn 空间的钥匙,它亲手打开空间。
-    /// 纯绘制、无命中区、无监听 —— 不阻塞 UI,不抢焦点;小狗仍是像素狗(rule J3)。
-    fn channel_overlay(&self, vw: f32, vh: f32) -> Option<gpui::AnyElement> {
-        let cue = self.cue?;
-        if !self.state.enabled || !self.state.visible || (self.state.welcome_only && !self.on_welcome)
-        {
-            return None;
-        }
-        let now = now_ms();
-        let motion = self.motion_on();
-        let s = if self.on_welcome { 2.0 } else { 1.0 };
-        let box_w = BOX_W * s;
-        let box_h = BOX_H * s;
-        // 与 render() 同一钳制(栖位在窗内)。
-        let right = self.state.right.clamp(2.0, (vw - box_w - 2.0).max(2.0));
-        let bottom = self
-            .state
-            .bottom
-            .clamp(STATUSBAR_H + 2.0, (vh - box_h - 44.0).max(STATUSBAR_H + 2.0));
-        let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
-        let cp = (now.saturating_sub(self.cue_start_ms) as f32 / dur as f32).clamp(0.0, 1.0);
-        // 发射点 = 宠物头顶中心(屏幕坐标)。
-        let ex = (vw - right - box_w) + box_w * 0.5;
-        let ey = (vh - bottom - box_h) + SPRITE_Y * s;
-        // 目标锚点 = 该转场真实 UI 接缝(近似自视口:够不到精确几何时按方位)。
-        // Quick Look 居中卡(86% / max 1080)→ 锚到其**左侧边**(规则 J「光点贴住
-        // Quick Look 侧边展开成面板」),裂缝长在接缝上、不盖正文。
-        let ql_left = ((vw - (vw * 0.86).min(1080.0)) * 0.5).max(8.0) + 6.0;
-        let (ax, ay) = match cue {
-            PetSpatialCue::OverlayOpen => (vw * 0.5, TITLEBAR_H + 4.0), // 命令面板顶缘
-            PetSpatialCue::QuickLookOpen
-            | PetSpatialCue::QuickLookClose
-            | PetSpatialCue::QuickLookSwitch => (ql_left, vh * 0.5),
-            PetSpatialCue::SplitCreate => (vw * 0.5, vh * 0.5), // 新分隔线
-            PetSpatialCue::WelcomeToWorkspace => (vw * 0.5, vh * 0.46),
-            PetSpatialCue::RemoteReconnect => (vw * 0.5, vh * 0.30),
-            PetSpatialCue::GhostEnter | PetSpatialCue::GhostExit => (vw * 0.5, 44.0), // 屏顶召唤线
-        };
-        let open = cue.is_open();
-        let switch = cue.is_switch();
-        // 跨屏奔跑的小狗本体:复用本品种静态像素行(磷光通道里不做眨眼/微动作,
-        // 只做奔跑→蹲身→起身拉裂隙这一条主线)。rows 是 &'static str 数组,Copy。
-        let rows: [&'static str; 9] = self.breed.sprite().rows;
-        let el = canvas(
-            |_b, _w, _cx| {},
-            move |_bounds, _state, window, _cx| {
-                let dot = |window: &mut Window, cx: f32, cy: f32, sz: f32, color: gpui::Rgba| {
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: point(px(cx - sz * 0.5), px(cy - sz * 0.5)),
-                            size: size(px(sz), px(sz)),
-                        },
-                        color,
-                    ));
-                };
-                let bright = rgb(PH);
-                let faded = |a: u32| rgba((PH << 8) | a);
-                // 像素小狗投影:以 (cx,cy) 为雪碧图中心,dcell 格距;dip>0 整身下沉,
-                // ghost=Some(a) 时整只画成半透明磷光残影(奔跑拖影 / 收尾消散),
-                // 否则画本体真实毛色(rule J3:仍是像素狗,不是光团)。
-                const DCELL: f32 = 4.0; // 跨屏投影格距(岗台本体为 CELL=6)
-                let paint_dog =
-                    |window: &mut Window, cx: f32, cy: f32, dip: f32, ghost: Option<u32>| {
-                        let ox = cx - 7.0 * DCELL; // 雪碧图 14 列,中心列 7
-                        let oy = cy - 4.5 * DCELL; // 9 行,中心 4.5
-                        for (gy, row) in rows.iter().enumerate() {
-                            for (gx, ch) in row.chars().enumerate() {
-                                let Some(c) = pixel_color(ch) else {
-                                    continue;
-                                };
-                                let mut yy = oy + gy as f32 * DCELL;
-                                if dip != 0.0 {
-                                    yy += dip;
-                                }
-                                let color: gpui::Rgba = match ghost {
-                                    Some(a) => rgba((PH << 8) | a),
-                                    None => rgb(c),
-                                };
-                                window.paint_quad(fill(
-                                    Bounds {
-                                        origin: point(px(ox + gx as f32 * DCELL), px(yy)),
-                                        size: size(px(DCELL), px(DCELL)),
-                                    },
-                                    color,
-                                ));
-                            }
-                        }
-                    };
-                // 磷光锯齿裂隙:从接缝 (ax,ay) 向下撕开,o=张开度 0..1,a=整体不透明。
-                // o 增 → 段数变多、左右抖动加大、握点亮点变大。绝不外发光。
-                let rift = |window: &mut Window, o: f32, a: f32| {
-                    if o <= 0.01 || a <= 0.0 {
-                        return;
-                    }
-                    let core = ((a * 255.0) as u32).clamp(40, 255);
-                    let edge = ((a * 150.0) as u32).clamp(30, 150);
-                    let gap = o * 4.0;
-                    let segs = (3.0 + o * 10.0) as i32; // 张得越开越长
-                    for i in 0..segs {
-                        let yy = ay + i as f32 * 4.0;
-                        let jx = if i % 2 == 0 { gap } else { -gap };
-                        let dim = i == 0 || i == segs - 1;
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(ax - 0.75 + jx), px(yy)),
-                                size: size(px(1.5), px(4.0)),
-                            },
-                            if dim { faded(edge) } else { faded(core) },
-                        ));
-                    }
-                    // 握点亮核(小狗起身把裂隙撑开处)。
-                    dot(window, ax, ay, 4.0 + o * 5.0, faded(core));
-                };
-                // reduced motion:静态换岗 —— 锚点只闪一颗磷光点(可访问性规则,无奔跑)。
-                if !motion {
-                    if (now / 160) % 2 == 0 {
-                        dot(window, ax, ay, 3.0, bright);
-                    }
-                    return;
-                }
-                let ease = |t: f32| 1.0 - (1.0 - t).powi(3);
-                // ── 奔跑段:小狗从岗台头顶 (ex,ey) 抛物线奔到接缝上方落点 ──
-                // 落点 = 接缝正上方,使小狗四脚正好踩在裂隙顶端 (ay)。
-                let base_cy = (ay - 3.5 * DCELL).max(22.0); // gy8(脚)落在 ay
-                let tdur = if switch { 0.30 } else { 0.28 };
-                let tp = (cp / tdur).clamp(0.0, 1.0);
-                let te = ease(tp);
-                let run_x = ex + (ax - ex) * te;
-                let run_y = {
-                    let by = ey + (base_cy - ey) * te;
-                    by - 60.0 * (4.0 * te * (1.0 - te)) // 跨屏弧线
-                };
-                // ── 蹲身蓄力 → 猛起拉开裂隙(到位后才发生)──
-                // body_shift: + 下沉(蹲),− 上提(起身拉裂隙)。
-                let body_shift = if switch || cp < 0.35 {
-                    0.0 // 奔跑/未到位:不蹲不起
-                } else if cp < 0.52 {
-                    5.0 * ((cp - 0.35) / 0.17) // 蹲下 0→+5
-                } else if cp < 0.70 {
-                    5.0 - 16.0 * ((cp - 0.52) / 0.18) // 猛起 +5→−11
-                } else if cp < 0.82 {
-                    -11.0
-                } else {
-                    0.0
-                };
-                // 张开度 o(开门:蓄力后拉开;召回:从开到合;切换:脉冲一下)。
-                let o = if switch {
-                    let p = ((cp - 0.20) / 0.5).clamp(0.0, 1.0);
-                    (p * std::f32::consts::PI).sin() // 0→1→0 脉冲
-                } else if open {
-                    if cp < 0.42 {
-                        0.0
-                    } else if cp < 0.70 {
-                        ease((cp - 0.42) / 0.28)
-                    } else {
-                        1.0
-                    }
-                } else if cp < 0.35 {
-                    1.0
-                } else if cp < 0.66 {
-                    1.0 - ease((cp - 0.35) / 0.31)
-                } else {
-                    0.0
-                };
-                // 裂隙整体不透明:开门末段淡出(UI 已自显,残影散去);召回随 o 走。
-                let rift_a = if switch {
-                    1.0
-                } else if open {
-                    if cp < 0.85 {
-                        1.0
-                    } else {
-                        (1.0 - (cp - 0.85) / 0.15).max(0.0)
-                    }
-                } else {
-                    1.0
-                };
-                // 收尾:小狗化作磷光残影散去(本体从未离开岗台,这里只散投影)。
-                let exit = ((cp - 0.82) / 0.18).clamp(0.0, 1.0);
-                let dog_ghost = if exit > 0.0 {
-                    Some((((1.0 - exit) * 200.0) as u32).max(1))
-                } else {
-                    None
-                };
-                // 先画裂隙(在小狗脚下),再画奔跑拖影,最后画小狗本体(压在最上)。
-                rift(window, o, rift_a);
-                if tp < 1.0 && !switch {
-                    for k in 1..=2 {
-                        let tk = ease((tp - k as f32 * 0.07).max(0.0));
-                        let cxk = ex + (ax - ex) * tk;
-                        let cyk = {
-                            let by = ey + (base_cy - ey) * tk;
-                            by - 60.0 * (4.0 * tk * (1.0 - tk))
-                        };
-                        paint_dog(window, cxk, cyk, 0.0, Some(((100 - k * 35) as u32).max(40)));
-                    }
-                }
-                let dog_cx = if tp < 1.0 { run_x } else { ax };
-                let dog_cy = if tp < 1.0 { run_y } else { base_cy + body_shift };
-                paint_dog(window, dog_cx, dog_cy, 0.0, dog_ghost);
-            },
-        )
-        .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .right(px(0.))
-        .bottom(px(0.));
-        Some(el.into_any_element())
     }
 
     /// 状态栏席位:`Some(("WESTIE · IDLE", live))`;关闭系统时显示 PET · OFF
@@ -2843,17 +2505,6 @@ impl PetView {
             };
             body_dx -= off; // 朝左(用户)
         }
-        // 磷光通道蓄力(规则 J「开门」:宠物蹲下蓄力后钻入/跃入)。开门类 cue
-        // 前 45% 压身 1.5px;召回类不压(它在召回空间)。
-        if motion {
-            if let Some(cue) = self.cue {
-                let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
-                let cp = (now.saturating_sub(self.cue_start_ms)) as f32 / dur as f32;
-                if cue.is_open() && !cue.is_switch() && cp < 0.45 {
-                    body_dy += 1.5 * (1.0 - cp / 0.45);
-                }
-            }
-        }
         // 趴姿呼吸:背部隆起 1px —— 上半身(行 ≤6)上移,行 7 拉高 1px 补缝,
         // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
         let inhale = lie && motion && self.breath;
@@ -3625,13 +3276,8 @@ impl Render for PetView {
         // ── 重置互动记忆二次确认(规则 I)──
         let reset_card = self.confirm_reset.then(|| self.render_reset_card(cx));
 
-        // 磷光通道(规则 J):宠物根现已是 workspace 最顶层,故在此画即可盖过浮层
-        // scrim。光点从宠物头顶飞到真实 UI 锚点开/合裂缝。放最后 = 画在最上。
-        let channel = self.channel_overlay(vw, vh);
-
         // 拖拽中:根容器接管 move/up(离开本体也能继续拖);否则根保持穿透。
         root.child(pet_box)
-            .when_some(channel, |d, c| d.child(c))
             .when_some(menu, |d, m| d.child(m))
             .when_some(reset_card, |d, c| d.child(c))
             .when_some(adopt_card, |d, c| d.child(c))
