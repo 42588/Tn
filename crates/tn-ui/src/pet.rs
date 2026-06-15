@@ -26,8 +26,8 @@ use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
 
 use crate::style::{
-    col, ERR, H0, H1, H2, L0, L1, L2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, SCRIM, STATUSBAR_H, T0,
-    T1, T2, T3,
+    col, ERR, H0, H1, H2, L0, L1, L2, L4, OK, PH, PH_DIM, R_CARD, R_CHIP, SCRIM, STATUSBAR_H,
+    TITLEBAR_H, T0, T1, T2, T3,
 };
 
 // ═══════════════════════════ 终端上下文信号(进程级) ═══════════════════════
@@ -1483,14 +1483,15 @@ impl PetView {
             cx.notify();
             return;
         }
-        // 完整共演 ≥30s 间隔;否则短版(只光点 + 探头,≤350ms)。
+        // 完整共演 ≥30s 间隔走完整飞行;10–30s 内重复降短版(仍要看得见跨屏光点,
+        // 故 ≥600ms,不取 350ms 的极短)。切换类只闪光点。
         let full = now.saturating_sub(self.last_cue_ms) >= 30_000;
         let dur = if cue.is_switch() {
-            260 // 切换类:只闪光点
+            280 // 切换类:只闪光点
         } else if full {
-            900
+            1100
         } else {
-            320
+            640
         };
         self.last_cue_ms = now;
         self.cue = Some(cue);
@@ -1521,6 +1522,134 @@ impl PetView {
             }
         })
         .detach();
+    }
+
+    /// 磷光通道全屏 overlay(规则 J)。宠物根现为 workspace 最顶层,故此 overlay 画
+    /// 在所有浮层 scrim 之上,光点/裂缝才不会被 Quick Look / 命令面板的 scrim 压暗。
+    /// 一颗磷光光点从宠物头顶飞过整屏到达真实 UI 锚点,并在那里撕开磷光锯齿裂缝
+    /// 把空间「打开」;召回类反向收回,切换类只闪光点。宠物 = Tn 空间的钥匙。
+    /// 纯绘制、无命中区、无监听 —— 不阻塞 UI,不抢焦点。
+    fn channel_overlay(&self, vw: f32, vh: f32) -> Option<gpui::AnyElement> {
+        let cue = self.cue?;
+        if !self.state.enabled || !self.state.visible || (self.state.welcome_only && !self.on_welcome)
+        {
+            return None;
+        }
+        let now = now_ms();
+        let motion = self.motion_on();
+        let s = if self.on_welcome { 2.0 } else { 1.0 };
+        let box_w = BOX_W * s;
+        let box_h = BOX_H * s;
+        // 与 render() 同一钳制(栖位在窗内)。
+        let right = self.state.right.clamp(2.0, (vw - box_w - 2.0).max(2.0));
+        let bottom = self
+            .state
+            .bottom
+            .clamp(STATUSBAR_H + 2.0, (vh - box_h - 44.0).max(STATUSBAR_H + 2.0));
+        let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
+        let cp = (now.saturating_sub(self.cue_start_ms) as f32 / dur as f32).clamp(0.0, 1.0);
+        // 发射点 = 宠物头顶中心(屏幕坐标)。
+        let ex = (vw - right - box_w) + box_w * 0.5;
+        let ey = (vh - bottom - box_h) + SPRITE_Y * s;
+        // 目标锚点 = 该转场真实 UI 接缝(近似自视口:够不到精确几何时按方位)。
+        // Quick Look 居中卡(86% / max 1080)→ 锚到其**左侧边**(规则 J「光点贴住
+        // Quick Look 侧边展开成面板」),裂缝长在接缝上、不盖正文。
+        let ql_left = ((vw - (vw * 0.86).min(1080.0)) * 0.5).max(8.0) + 6.0;
+        let (ax, ay) = match cue {
+            PetSpatialCue::OverlayOpen => (vw * 0.5, TITLEBAR_H + 4.0), // 命令面板顶缘
+            PetSpatialCue::QuickLookOpen
+            | PetSpatialCue::QuickLookClose
+            | PetSpatialCue::QuickLookSwitch => (ql_left, vh * 0.5),
+            PetSpatialCue::SplitCreate => (vw * 0.5, vh * 0.5), // 新分隔线
+            PetSpatialCue::WelcomeToWorkspace => (vw * 0.5, vh * 0.46),
+            PetSpatialCue::RemoteReconnect => (vw * 0.5, vh * 0.30),
+            PetSpatialCue::GhostEnter | PetSpatialCue::GhostExit => (vw * 0.5, 44.0), // 屏顶召唤线
+        };
+        let open = cue.is_open();
+        let switch = cue.is_switch();
+        let el = canvas(
+            |_b, _w, _cx| {},
+            move |_bounds, _state, window, _cx| {
+                let dot = |window: &mut Window, cx: f32, cy: f32, sz: f32, color: gpui::Rgba| {
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: point(px(cx - sz * 0.5), px(cy - sz * 0.5)),
+                            size: size(px(sz), px(sz)),
+                        },
+                        color,
+                    ));
+                };
+                let bright = rgb(PH);
+                let faded = |a: u32| rgba((PH << 8) | a);
+                // reduced motion:静态换岗 —— 锚点只闪一颗 1px 磷光点(可访问性规则)。
+                if !motion {
+                    if (now / 160) % 2 == 0 {
+                        dot(window, ax, ay, 3.0, bright);
+                    }
+                    return;
+                }
+                let ease = |t: f32| 1.0 - (1.0 - t).powi(3);
+                // 沿 发射→锚点 的行进分数(0=宠物,1=锚点);开门递增,召回递减。
+                let lead = if switch {
+                    1.0
+                } else if open {
+                    ease(cp)
+                } else {
+                    1.0 - ease(cp)
+                };
+                let dist = ((ax - ex).powi(2) + (ay - ey).powi(2)).sqrt();
+                let arc = (dist * 0.10).min(70.0); // 轨迹微微上拱
+                let at = |u: f32| {
+                    let u = u.clamp(0.0, 1.0);
+                    (
+                        ex + (ax - ex) * u,
+                        ey + (ay - ey) * u - arc * (4.0 * u * (1.0 - u)),
+                    )
+                };
+                // 光点拖尾(残影:沿运动反方向渐隐渐小)。切换式不拖尾。
+                if !switch {
+                    let ddir = if open { 1.0 } else { -1.0 };
+                    for k in 1..6 {
+                        let (tx, ty) = at(lead - ddir * k as f32 * 0.055);
+                        let sz = (5.0 - k as f32 * 0.7).max(1.5);
+                        dot(window, tx, ty, sz, faded((200 - k * 32).max(40)));
+                    }
+                }
+                // 领头光点(全场最亮焦点)。
+                let (lx, ly) = at(lead);
+                dot(window, lx, ly, 5.0, bright);
+                // 目标接缝裂缝:开门(到达后)/召回(离开前)/切换(常闪)时,在锚点
+                // 撕开一道磷光锯齿 + 亮点。绝不外发光,峰值 ≤ 召唤线。
+                let bloom = if switch {
+                    (now / 130) % 2 == 0
+                } else if open {
+                    cp > 0.5
+                } else {
+                    cp < 0.5
+                };
+                if bloom {
+                    for i in -2i32..=2 {
+                        let yy = ay + i as f32 * 4.0;
+                        let jx = if i % 2 == 0 { 0.0 } else { 2.0 };
+                        let col = if i.abs() <= 1 { bright } else { faded(130) };
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(ax - 0.75 + jx), px(yy)),
+                                size: size(px(1.5), px(4.0)),
+                            },
+                            col,
+                        ));
+                    }
+                    dot(window, ax, ay, 6.0, bright);
+                }
+            },
+        )
+        .absolute()
+        .top(px(0.))
+        .left(px(0.))
+        .right(px(0.))
+        .bottom(px(0.));
+        Some(el.into_any_element())
     }
 
     /// 状态栏席位:`Some(("WESTIE · IDLE", live))`;关闭系统时显示 PET · OFF
@@ -2876,43 +3005,10 @@ impl PetView {
             }
             None => {}
         }
-        // 磷光通道(规则 J):岗台接缝撕开磷光锯齿裂缝 + 光点。开门亮起变长,召回
-        // 收束熄灭,切换只闪光点。颜色只用 ph 体系(PH_DIM 含 alpha 不能直接 rgb,
-        // 故愈合端用实心暗磷光);峰值 ≤召唤线,绝不外发光。放在镜像之后免得追尾跳位。
-        if let Some(cue) = self.cue {
-            const PH_FADE: u32 = 0x357A68; // 愈合端:暗磷光(实心)
-            let dur = self.cue_until_ms.saturating_sub(self.cue_start_ms).max(1);
-            let cp = (now.saturating_sub(self.cue_start_ms) as f32 / dur as f32).clamp(0.0, 1.0);
-            if cue.is_switch() {
-                // 切换:只在头侧闪一颗光点(不开合裂缝)。
-                if (now / 130) % 2 == 0 {
-                    out.push((9, -1, PH, 1.0 + body_dx, body_dy, 0.45, 0.45));
-                }
-            } else {
-                let open = cue.is_open();
-                let grown = if open { (cp / 0.6).min(1.0) } else { 1.0 - cp };
-                // 裂缝逐段(像素阶梯走向):中段 ph 最亮,顶端 ph 暗向透明愈合。
-                let jit = [0.0_f32, 1.5, -1.0];
-                let segs = (grown * 3.0).ceil() as i32;
-                for i in 0..segs.min(3) {
-                    let c = if i == 0 { PH } else { PH_FADE };
-                    out.push((7, -1 - i, c, body_dx + jit[i as usize], body_dy, 0.22, 1.0));
-                }
-                // 光点(全场最亮焦点):开门向上爬,召回向下收。
-                let lead = if open { grown } else { 1.0 - grown };
-                let dot = -1.0 - lead * 2.6; // y ∈ [-1, -3.6]
-                let yc = dot.floor().max(-3.0) as i32;
-                out.push((
-                    7,
-                    yc,
-                    PH,
-                    body_dx + 1.0,
-                    body_dy + (dot - yc as f32) * CELL,
-                    0.45,
-                    0.45,
-                ));
-            }
-        }
+        // 磷光通道的光点轨迹与目标接缝裂缝**不在本盒内画**(盒只有 100×84,够不到
+        // 屏幕中央的面板)。它由 render() 的全屏 channel canvas 绘制:光点从宠物头顶
+        // 飞到真实 UI 锚点并在那里开/合裂缝(规则 J「钥匙打开空间」)。本盒只保留
+        // 「蓄力压身」反应(见上方 body_dy)。
         out
     }
 }
@@ -3001,6 +3097,7 @@ impl Render for PetView {
         .left(px(0.))
         .right(px(0.))
         .bottom(px(0.));
+
 
         // ── 岗台:1px h1 发丝,左 28px 磷光点睛(SHEET 05 SPEC) ──
         let shelf = div()
@@ -3440,8 +3537,13 @@ impl Render for PetView {
         // ── 重置互动记忆二次确认(规则 I)──
         let reset_card = self.confirm_reset.then(|| self.render_reset_card(cx));
 
+        // 磷光通道(规则 J):宠物根现已是 workspace 最顶层,故在此画即可盖过浮层
+        // scrim。光点从宠物头顶飞到真实 UI 锚点开/合裂缝。放最后 = 画在最上。
+        let channel = self.channel_overlay(vw, vh);
+
         // 拖拽中:根容器接管 move/up(离开本体也能继续拖);否则根保持穿透。
         root.child(pet_box)
+            .when_some(channel, |d, c| d.child(c))
             .when_some(menu, |d, m| d.child(m))
             .when_some(reset_card, |d, c| d.child(c))
             .when_some(adopt_card, |d, c| d.child(c))

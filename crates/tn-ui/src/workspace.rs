@@ -7542,8 +7542,6 @@ impl Render for Workspace {
             .child(titlebar)
             .child(body)
             .child(self.render_status_bar(cx))
-            // 像素宠物:状态栏上方 overlay(z 在浮层 scrim 之下)— SHEET 05
-            .child(self.pet.clone())
             .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p))
             .when_some(split_launcher, |d, s| d.child(s))
@@ -7552,7 +7550,11 @@ impl Render for Workspace {
             .when_some(ssh_prompt, |d, s| d.child(s))
             .when_some(remote_dir_picker, |d, p| d.child(p))
             .when_some(agent_dir_picker, |d, p| d.child(p))
-            .when_some(agent_form, |d, f| d.child(f));
+            .when_some(agent_form, |d, f| d.child(f))
+            // 像素宠物:最顶层 overlay(SHEET 05)。置于浮层之上,磷光通道的光点/裂缝
+            // 才能盖过 Quick Look / 命令面板的 scrim 被看见(规则 J「宠物打开窗口」)。
+            // 宠物根穿透,只有狗本体/菜单/卡片有命中区,不抢浮层焦点。
+            .child(self.pet.clone());
 
         // No render-data cache here (tab labels/cwd live in the child panes and
         // change without signalling the workspace, so a cache would risk stale
