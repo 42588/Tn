@@ -16,7 +16,7 @@ version). Run: python scripts/gen_icon.py
 
 import struct
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 # ── 磷光 palette (design/phosphor.css :root) ──
 PHOSPHOR = (0x5B, 0xE7, 0xC4)      # #5BE7C4  the single life color (cursor)
@@ -31,302 +31,188 @@ def _lerp(a, b, t):
     return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
 
 
-def draw_gradient_polygon(img, pts, color_start, color_end, direction="vertical"):
-    """Draw a polygon filled with a linear gradient from color_start to color_end."""
-    # Create single-channel mask and draw polygon on it
-    mask = Image.new("L", img.size, 0)
-    ImageDraw.Draw(mask).polygon(pts, fill=255)
-    
-    # Get bounding box of the polygon
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    min_x, max_x = int(min(xs)), int(max(xs))
-    min_y, max_y = int(min(ys)), int(max(ys))
-    
-    w = max_x - min_x + 1
-    h = max_y - min_y + 1
-    if w <= 0 or h <= 0:
-        return
-        
-    # Create gradient fill image
-    grad = Image.new("RGBA", (w, h))
-    gpx = grad.load()
-    for y in range(h):
-        for x in range(w):
-            if direction == "vertical":
-                t = y / (h - 1) if h > 1 else 0
-            else: # diagonal
-                t = (x + y) / (w + h - 2) if (w + h - 2) > 0 else 0
-            
-            r = round(color_start[0] + (color_end[0] - color_start[0]) * t)
-            g = round(color_start[1] + (color_end[1] - color_start[1]) * t)
-            b = round(color_start[2] + (color_end[2] - color_start[2]) * t)
-            a = round(color_start[3] + (color_end[3] - color_start[3]) * t) if len(color_start) > 3 and len(color_end) > 3 else 255
-            gpx[x, y] = (r, g, b, a)
-            
-    # Paste the cropped gradient to the target image using the mask
-    img.paste(grad, (min_x, min_y), mask.crop((min_x, min_y, max_x + 1, max_y + 1)))
-
-
 def render(size: int) -> Image.Image:
-    """Render the premium 3D Isometric Titanium Chassis and Suspended Core at `size`×`size` (RGBA)."""
+    """Render the premium vibrant sci-fi icon with Tn Monogram at `size`×`size` (RGBA)."""
     s = size * SS
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     scale = s / 256.0
 
-    # Colors
+    # ── Colors & Design Specs ──
     ph = PHOSPHOR + (255,)
-    ph_glow = PHOSPHOR + (90,)
-    ph_glow_soft = PHOSPHOR + (30,)
+    ph_glow = PHOSPHOR + (45,)    # glow opacity
+    ph_border = PHOSPHOR + (200,)  # border opacity
+    ph_bg_glow = PHOSPHOR + (60,)  # bezel glow opacity
 
-    # 1. Bottom Shadow (only if size >= 24 for clean results)
+    # ── 1. Outer Bezel (Chassis) ──
+    bezel_radius = int(0.20 * s)
+    bezel_mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(bezel_mask).rounded_rectangle(
+        [0, 0, s - 1, s - 1], radius=bezel_radius, fill=255
+    )
+
+    # Diagonal bezel fill
+    bezel_grad = Image.new("RGBA", (s, s))
+    bgpx = bezel_grad.load()
+    for y in range(s):
+        for x in range(s):
+            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
+            r, g, b = _lerp((0x22, 0x26, 0x3F), (0x0E, 0x0F, 0x16), t)
+            bgpx[x, y] = (r, g, b, 255)
+    img.paste(bezel_grad, (0, 0), bezel_mask)
+
+    # Bezel border glow pass (neon edge)
+    bezel_glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(bezel_glow).rounded_rectangle(
+        [SS // 2, SS // 2, s - 1 - SS // 2, s - 1 - SS // 2],
+        radius=bezel_radius - SS // 2,
+        outline=ph_bg_glow,
+        width=int(SS * 1.5),
+    )
+    img = Image.alpha_composite(img, bezel_glow)
+
+    # Bezel border sharp pass
+    bezel_sharp = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(bezel_sharp).rounded_rectangle(
+        [SS // 2, SS // 2, s - 1 - SS // 2, s - 1 - SS // 2],
+        radius=bezel_radius - SS // 2,
+        outline=ph_border,
+        width=max(1, SS // 2),
+    )
+    img = Image.alpha_composite(img, bezel_sharp)
+
+    # ── 2. Inner Screen ──
+    screen_inset = round(0.06 * s)
+    screen_radius = int((0.20 - 0.06) * s)
+    screen_box = [screen_inset, screen_inset, s - 1 - screen_inset, s - 1 - screen_inset]
+
+    screen_mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(screen_mask).rounded_rectangle(
+        screen_box, radius=screen_radius, fill=255
+    )
+
+    # Deep recessed background gradient
+    screen_bg = Image.new("RGBA", (s, s))
+    sbpx = screen_bg.load()
+    for y in range(s):
+        for x in range(s):
+            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
+            r, g, b = _lerp((0x12, 0x16, 0x25), (0x08, 0x0A, 0x10), t)
+            sbpx[x, y] = (r, g, b, 255)
+    img.paste(screen_bg, (0, 0), screen_mask)
+
+    # Screen inner subtle border
+    screen_border = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(screen_border).rounded_rectangle(
+        [screen_inset + SS // 2, screen_inset + SS // 2, s - 1 - screen_inset - SS // 2, s - 1 - screen_inset - SS // 2],
+        radius=screen_radius - SS // 2,
+        outline=(0x1B, 0x23, 0x34, 180),
+        width=max(1, SS // 2),
+    )
+    img = Image.alpha_composite(img, screen_border)
+
+    # ── 3. Screen Grid HUD (Radar and crosshairs) ──
+    # Only draw when size >= 24 to avoid rendering messy lines at 16px
     if size >= 24:
-        shadow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        sd = ImageDraw.Draw(shadow)
-        shadow_pts = [
-            (128 * scale, (65 + 15) * scale),
-            (228 * scale, (120 + 15) * scale),
-            (128 * scale, (190 + 15) * scale),
-            (28 * scale, (120 + 15) * scale)
-        ]
-        sd.polygon(shadow_pts, fill=(0, 0, 0, 215))
-        shadow_blur = shadow.filter(ImageFilter.GaussianBlur(max(1.0, 8.0 * scale)))
-        img = Image.alpha_composite(img, shadow_blur)
+        hud = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+        hd = ImageDraw.Draw(hud)
+        hud_color = PHOSPHOR + (20,) # very faint
+        
+        # Radar circles
+        # r = 80
+        hd.ellipse([
+            round(48 * scale), round(48 * scale),
+            round(208 * scale), round(208 * scale)
+        ], fill=None, outline=PHOSPHOR + (15,))
+        # r = 50
+        hd.ellipse([
+            round(78 * scale), round(78 * scale),
+            round(178 * scale), round(178 * scale)
+        ], fill=None, outline=PHOSPHOR + (10,))
 
-    # 2. Chassis Base Left and Right Walls
-    chassis_left_pts = [
-        (36 * scale, (95 + 15) * scale),
-        (128 * scale, (145 + 15) * scale),
-        (128 * scale, (185 + 15) * scale),
-        (36 * scale, (135 + 15) * scale)
+        # Crosshairs
+        hd.line([(round(128 * scale), round(20 * scale)), (round(128 * scale), round(40 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(128 * scale), round(216 * scale)), (round(128 * scale), round(236 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(20 * scale), round(128 * scale)), (round(40 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(216 * scale), round(128 * scale)), (round(236 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
+        
+        # Center ticks
+        hd.line([(round(120 * scale), round(128 * scale)), (round(136 * scale), round(128 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
+        hd.line([(round(128 * scale), round(120 * scale)), (round(128 * scale), round(136 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
+        
+        img = Image.alpha_composite(img, hud)
+
+    # ── 4. Drawing Paths (Monogram and Viewfinder Brackets) ──
+    mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    md = ImageDraw.Draw(mark)
+
+    w_sharp = max(1, round(3.2 * scale))
+    w_glow = max(1, round(8.0 * scale))
+
+    def draw_strip(points, width, color):
+        scaled_pts = [(round(p[0] * scale), round(p[1] * scale)) for p in points]
+        md.line(scaled_pts, fill=color, width=width, joint="round")
+        cap = width / 2.0
+        for pt in scaled_pts:
+            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
+
+    def draw_n_arc(width, color):
+        # Bounding box of the arc: [135, 110, 155, 130]
+        arc_box = [round(135 * scale), round(110 * scale), round(155 * scale), round(130 * scale)]
+        md.arc(arc_box, start=180, end=360, fill=color, width=width)
+        cap = width / 2.0
+        # Round caps at the arc endpoints
+        for pt in [(round(135 * scale), round(120 * scale)), (round(155 * scale), round(120 * scale))]:
+            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
+
+    # ── Viewfinder brackets ──
+    brackets = [
+        [(60, 80), (60, 60), (80, 60)],
+        [(176, 60), (196, 60), (196, 80)],
+        [(60, 176), (60, 196), (80, 196)],
+        [(176, 196), (196, 196), (196, 176)]
     ]
-    draw_gradient_polygon(img, chassis_left_pts, (0x2A, 0x30, 0x45), (0x0E, 0x10, 0x17), direction="vertical")
 
-    chassis_right_pts = [
-        (128 * scale, (145 + 15) * scale),
-        (220 * scale, (95 + 15) * scale),
-        (220 * scale, (135 + 15) * scale),
-        (128 * scale, (185 + 15) * scale)
-    ]
-    draw_gradient_polygon(img, chassis_right_pts, (0x1B, 0x1E, 0x2A), (0x09, 0x0B, 0x10), direction="vertical")
-
-    # 3. Side Grooves/Gratings (only if size >= 48 for clean detail)
-    if size >= 48:
-        md = ImageDraw.Draw(img)
-        w_groove = max(1, round(1.0 * scale))
+    # Glow pass for brackets & logo
+    if size >= 24:  # skip glow at 16px to avoid blur mess
+        for pts in brackets:
+            draw_strip(pts, w_glow, ph_glow)
         
-        # Left wall grooves
-        md.polygon([
-            (52 * scale, (118 + 15) * scale),
-            (112 * scale, (151 + 15) * scale),
-            (112 * scale, (153 + 15) * scale),
-            (52 * scale, (120 + 15) * scale)
-        ], fill=(6, 7, 10, 255))
-        md.line([(52 * scale, (120 + 15) * scale), (112 * scale, (153 + 15) * scale)], fill=(0x37, 0x3E, 0x54, 150), width=w_groove)
-        
-        md.polygon([
-            (52 * scale, (126 + 15) * scale),
-            (112 * scale, (159 + 15) * scale),
-            (112 * scale, (161 + 15) * scale),
-            (52 * scale, (128 + 15) * scale)
-        ], fill=(6, 7, 10, 255))
-        md.line([(52 * scale, (128 + 15) * scale), (112 * scale, (161 + 15) * scale)], fill=(0x37, 0x3E, 0x54, 150), width=w_groove)
+        # T glow
+        draw_strip([(85, 105), (125, 105)], w_glow, ph_glow) # T bar
+        draw_strip([(105, 105), (105, 155)], w_glow, ph_glow) # T stem
+        # n glow
+        draw_strip([(135, 155), (135, 120)], w_glow, ph_glow) # n left leg
+        draw_n_arc(w_glow, ph_glow)                          # n arc
+        draw_strip([(155, 120), (155, 155)], w_glow, ph_glow) # n right leg
 
-        # Right wall grooves
-        md.polygon([
-            (144 * scale, (151 + 15) * scale),
-            (204 * scale, (118 + 15) * scale),
-            (204 * scale, (120 + 15) * scale),
-            (144 * scale, (153 + 15) * scale)
-        ], fill=(6, 7, 10, 255))
-        md.line([(144 * scale, (153 + 15) * scale), (204 * scale, (120 + 15) * scale)], fill=(0x26, 0x2B, 0x3A, 150), width=w_groove)
-        
-        md.polygon([
-            (144 * scale, (159 + 15) * scale),
-            (204 * scale, (126 + 15) * scale),
-            (204 * scale, (128 + 15) * scale),
-            (144 * scale, (161 + 15) * scale)
-        ], fill=(6, 7, 10, 255))
-        md.line([(144 * scale, (161 + 15) * scale), (204 * scale, (128 + 15) * scale)], fill=(0x26, 0x2B, 0x3A, 150), width=w_groove)
-
-    # 4. Chassis Base Top Face
-    chassis_top_pts = [
-        (128 * scale, (45 + 15) * scale),
-        (220 * scale, (95 + 15) * scale),
-        (128 * scale, (145 + 15) * scale),
-        (36 * scale, (95 + 15) * scale)
-    ]
-    draw_gradient_polygon(img, chassis_top_pts, (0x21, 0x25, 0x36), (0x0C, 0x0E, 0x14), direction="diagonal")
-
-    # 5. CNC Chamfer Highlights
-    md = ImageDraw.Draw(img)
-    w_cnc = max(SS, round(1.5 * scale * SS) // SS)
-    md.line([
-        (36 * scale, (95 + 15) * scale),
-        (128 * scale, (145 + 15) * scale),
-        (220 * scale, (95 + 15) * scale)
-    ], fill=(255, 255, 255, 46), width=w_cnc, joint="round")
-    md.line([
-        (128 * scale, (145 + 15) * scale),
-        (128 * scale, (185 + 15) * scale)
-    ], fill=(255, 255, 255, 20), width=max(1, SS // 2))
-
-    # 6. Recessed Screen Basin (only if size >= 24 to avoid messy noise at 16px)
-    if size >= 24:
-        screen_basin_pts = [
-            (128 * scale, (55 + 15) * scale),
-            (208 * scale, (95 + 15) * scale),
-            (128 * scale, (135 + 15) * scale),
-            (48 * scale, (95 + 15) * scale)
-        ]
-        draw_gradient_polygon(img, screen_basin_pts, (0x0F, 0x11, 0x1C), (0x03, 0x04, 0x06), direction="diagonal")
-        md.polygon(screen_basin_pts, fill=None, outline=(0x1A, 0x1D, 0x2E, 255))
-        
-        basin_glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        ImageDraw.Draw(basin_glow).polygon(screen_basin_pts, fill=None, outline=PHOSPHOR + (30,), width=max(2, round(2.5 * scale)))
-        basin_glow_blur = basin_glow.filter(ImageFilter.GaussianBlur(max(1.0, 4.0 * scale)))
-        img = Image.alpha_composite(img, basin_glow_blur)
-
-    # 7. Floor Glow from Crystal
-    if size >= 24:
-        floor_glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        fgd = ImageDraw.Draw(floor_glow)
-        cx, cy = 128 * scale, (100 + 15) * scale
-        rx, ry = 28 * scale, 14 * scale
-        fgd.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=PHOSPHOR + (56,))
-        floor_glow_blur = floor_glow.filter(ImageFilter.GaussianBlur(max(1.0, 6.0 * scale)))
-        img = Image.alpha_composite(img, floor_glow_blur)
-
-    # 8. Suspended 3D Core (Crystal)
-    c_yoff = -12 * scale
+    # Sharp pass for brackets & logo
+    # For very small size (16px), scale line width up slightly to keep it sharp
+    w_draw_sharp = max(SS, w_sharp)
+    for pts in brackets:
+        draw_strip(pts, w_draw_sharp, ph)
     
-    if size >= 24:
-        crystal_glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        cgd = ImageDraw.Draw(crystal_glow)
-        cgd.polygon([
-            (128 * scale, (70 + 15) * scale + c_yoff),
-            (148 * scale, (80 + 15) * scale + c_yoff),
-            (128 * scale, (90 + 15) * scale + c_yoff),
-            (108 * scale, (80 + 15) * scale + c_yoff)
-        ], fill=PHOSPHOR + (90,))
-        cgd.polygon([
-            (108 * scale, (80 + 15) * scale + c_yoff),
-            (128 * scale, (90 + 15) * scale + c_yoff),
-            (128 * scale, (110 + 15) * scale + c_yoff),
-            (108 * scale, (100 + 15) * scale + c_yoff)
-        ], fill=PHOSPHOR + (64,))
-        cgd.polygon([
-            (128 * scale, (90 + 15) * scale + c_yoff),
-            (148 * scale, (80 + 15) * scale + c_yoff),
-            (148 * scale, (100 + 15) * scale + c_yoff),
-            (128 * scale, (110 + 15) * scale + c_yoff)
-        ], fill=PHOSPHOR + (64,))
-        
-        crystal_glow_blur = crystal_glow.filter(ImageFilter.GaussianBlur(max(1.0, 4.0 * scale)))
-        img = Image.alpha_composite(img, crystal_glow_blur)
+    # T sharp
+    draw_strip([(85, 105), (125, 105)], w_draw_sharp, ph)
+    draw_strip([(105, 105), (105, 155)], w_draw_sharp, ph)
+    # n sharp
+    draw_strip([(135, 155), (135, 120)], w_draw_sharp, ph)
+    draw_n_arc(w_draw_sharp, ph)
+    draw_strip([(155, 120), (155, 155)], w_draw_sharp, ph)
 
-    # Crystal Faces
-    crystal_top_pts = [
-        (128 * scale, (70 + 15) * scale + c_yoff),
-        (148 * scale, (80 + 15) * scale + c_yoff),
-        (128 * scale, (90 + 15) * scale + c_yoff),
-        (108 * scale, (80 + 15) * scale + c_yoff)
-    ]
-    draw_gradient_polygon(img, crystal_top_pts, (0xA3, 0xF7, 0xDF), (0x3C, 0xE2, 0xB6), direction="diagonal")
-
-    crystal_left_pts = [
-        (108 * scale, (80 + 15) * scale + c_yoff),
-        (128 * scale, (90 + 15) * scale + c_yoff),
-        (128 * scale, (110 + 15) * scale + c_yoff),
-        (108 * scale, (100 + 15) * scale + c_yoff)
-    ]
-    draw_gradient_polygon(img, crystal_left_pts, (0x1E, 0xA8, 0x85), (0x09, 0x53, 0x41), direction="vertical")
-
-    crystal_right_pts = [
-        (128 * scale, (90 + 15) * scale + c_yoff),
-        (148 * scale, (80 + 15) * scale + c_yoff),
-        (148 * scale, (100 + 15) * scale + c_yoff),
-        (128 * scale, (110 + 15) * scale + c_yoff)
-    ]
-    draw_gradient_polygon(img, crystal_right_pts, (0x12, 0x89, 0x6B), (0x05, 0x3A, 0x2D), direction="vertical")
-
-    # Crystal Ridges
-    md = ImageDraw.Draw(img)
-    w_ridge = max(1, round(1.2 * scale))
-    md.line([
-        (108 * scale, (80 + 15) * scale + c_yoff),
-        (128 * scale, (90 + 15) * scale + c_yoff),
-        (148 * scale, (80 + 15) * scale + c_yoff)
-    ], fill=(0xA3, 0xF7, 0xDF, 204), width=w_ridge, joint="round")
-    md.line([
-        (128 * scale, (90 + 15) * scale + c_yoff),
-        (128 * scale, (110 + 15) * scale + c_yoff)
-    ], fill=(0xA3, 0xF7, 0xDF, 204), width=w_ridge)
-
-    # 9. Laser-Etched T/n (LOD: only draw if size >= 48)
-    if size >= 48:
-        # T (Left side)
-        w_laser_glow = max(2, round(2.5 * scale))
-        md.line([
-            (112 * scale, (84.5 + 15) * scale + c_yoff),
-            (124 * scale, (90.5 + 15) * scale + c_yoff)
-        ], fill=PHOSPHOR + (120,), width=w_laser_glow, joint="round")
-        md.line([
-            (118 * scale, (87.5 + 15) * scale + c_yoff),
-            (118 * scale, (102.5 + 15) * scale + c_yoff)
-        ], fill=PHOSPHOR + (120,), width=w_laser_glow, joint="round")
-        
-        w_laser_core = max(1, round(1.0 * scale))
-        md.line([
-            (112 * scale, (84.5 + 15) * scale + c_yoff),
-            (124 * scale, (90.5 + 15) * scale + c_yoff)
-        ], fill=(255, 255, 255, 255), width=w_laser_core, joint="round")
-        md.line([
-            (118 * scale, (87.5 + 15) * scale + c_yoff),
-            (118 * scale, (102.5 + 15) * scale + c_yoff)
-        ], fill=(255, 255, 255, 255), width=w_laser_core, joint="round")
-
-        # n (Right side)
-        n_pts = [
-            (134 * scale, (105.5 + 15) * scale + c_yoff),
-            (134 * scale, (98.5 + 15) * scale + c_yoff),
-            (138 * scale, (95.5 + 15) * scale + c_yoff),
-            (142 * scale, (97.5 + 15) * scale + c_yoff),
-            (142 * scale, (102.5 + 15) * scale + c_yoff)
-        ]
-        md.line(n_pts, fill=PHOSPHOR + (120,), width=w_laser_glow, joint="round")
-        md.line(n_pts, fill=(255, 255, 255, 255), width=w_laser_core, joint="round")
-
-    # 10. Floating Target Brackets (only if size >= 24)
-    if size >= 24:
-        brackets = [
-            [(103, 62 + 15), (118, 55 + 15), (123, 57.5 + 15)],
-            [(153, 62 + 15), (138, 55 + 15), (133, 57.5 + 15)],
-            [(103, 128 + 15), (118, 135 + 15), (123, 132.5 + 15)],
-            [(153, 128 + 15), (138, 135 + 15), (133, 132.5 + 15)]
-        ]
-        w_b_glow = max(2, round(2.0 * scale))
-        w_b_sharp = max(SS, round(1.0 * scale * SS) // SS)
-        
-        for b_pts in brackets:
-            scaled_pts = [(round(p[0] * scale), round(p[1] * scale)) for p in b_pts]
-            md.line(scaled_pts, fill=PHOSPHOR + (60,), width=w_b_glow, joint="round")
-        for b_pts in brackets:
-            scaled_pts = [(round(p[0] * scale), round(p[1] * scale)) for p in b_pts]
-            md.line(scaled_pts, fill=ph, width=w_b_sharp, joint="round")
-
-    # 11. Tech Particles (only if size >= 64)
+    # ── 5. HUD Text details (only draw if size >= 64) ──
     if size >= 64:
-        p1 = (round(80 * scale), round((95 + 15) * scale))
-        p2 = (round(176 * scale), round((95 + 15) * scale))
-        p3 = (round(128 * scale), round((155 + 15) * scale))
-        r12 = max(1, round(1.5 * scale))
-        r3 = max(1, round(1.2 * scale))
-        
-        md.ellipse([p1[0] - r12, p1[1] - r12, p1[0] + r12, p1[1] + r12], fill=PHOSPHOR + (150,))
-        md.ellipse([p2[0] - r12, p2[1] - r12, p2[0] + r12, p2[1] + r12], fill=PHOSPHOR + (150,))
-        md.ellipse([p3[0] - r3, p3[1] - r3, p3[0] + r3, p3[1] + r3], fill=PHOSPHOR + (100,))
+        try:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+            text_color = PHOSPHOR + (75,) # faint text
+            md.text((round(32 * scale), round(38 * scale)), "SYS_ON", fill=text_color, font=font)
+            md.text((round(180 * scale), round(38 * scale)), "CH.01", fill=text_color, font=font)
+            md.text((round(32 * scale), round(208 * scale)), "LNK: OK", fill=text_color, font=font)
+            md.text((round(176 * scale), round(208 * scale)), "v2.0.7", fill=text_color, font=font)
+        except Exception:
+            pass
 
+    img = Image.alpha_composite(img, mark)
     return img.resize((size, size), Image.LANCZOS)
 
 
