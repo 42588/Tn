@@ -19,8 +19,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, Bounds, Context, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, SharedString, Window,
+    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, Bounds, Context, ElementInputHandler,
+    EntityInputHandler, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    Pixels, Point, SharedString, UTF16Selection, Window,
 };
 use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
@@ -783,7 +784,6 @@ impl Entrance {
 enum Toy {
     Ball,
     Bone,
-    Blanket,
 }
 
 impl Toy {
@@ -792,7 +792,6 @@ impl Toy {
         match self {
             Toy::Ball => "小球",
             Toy::Bone => "骨头",
-            Toy::Blanket => "小毯子",
         }
     }
 }
@@ -1091,7 +1090,9 @@ pub struct PetView {
     adopt_breed: Breed,
     /// 改名 / 领养命名输入缓冲(None = 不在改名)。
     name_editing: Option<String>,
-    /// 文本输入焦点(领养卡 / 改名;track_focus + on_key_down 累积)。
+    /// IME 组字预览(拼音输入中、未上屏的串;上屏后清空 → 见 EntityInputHandler)。
+    name_marked: Option<String>,
+    /// 文本输入焦点(领养卡 / 改名;track_focus + IME handle_input)。
     focus: gpui::FocusHandle,
     /// 下一帧需要抓取焦点(浮层刚打开)。
     grab_focus: bool,
@@ -1155,6 +1156,7 @@ impl PetView {
             adopt_open: false,
             adopt_breed: breed,
             name_editing: None,
+            name_marked: None,
             focus: cx.focus_handle(),
             grab_focus: false,
         };
@@ -2036,17 +2038,22 @@ impl PetView {
     /// 领养卡 / 改名输入键(沿命令面板同款:打字累积、Backspace 删、Enter 确认、
     /// Esc 取消;Tab 在领养卡里换下一只品种)。CJK 走 key_char。
     fn on_name_key(&mut self, ev: &KeyDownEvent, cx: &mut Context<Self>) {
-        cx.stop_propagation();
         let m = &ev.keystroke.modifiers;
         let key = ev.keystroke.key.as_str();
-        match key {
+        // 仅处理命名键;**可打印字符与空格不在此处理**,放行给 IME 输入处理器
+        // (replace_text_in_range)——既支持中文拼音组字上屏,也走 WM_CHAR 处理英文。
+        // 若在这里 stop_propagation 会让 gpui 跳过 translate_message,中文永远组不了字
+        // (与 QuickLook 编辑器同款修法)。backspace 仍在此编码处理(平台不发 WM_CHAR)。
+        let handled = match key {
             "escape" => {
                 if self.adopt_open {
                     self.skip_adopt(cx);
                 } else {
                     self.name_editing = None;
+                    self.name_marked = None;
                     cx.notify();
                 }
+                true
             }
             "enter" => {
                 if self.adopt_open {
@@ -2054,6 +2061,7 @@ impl PetView {
                 } else if let Some(raw) = self.name_editing.take() {
                     self.commit_name(&raw, cx);
                 }
+                true
             }
             "tab" if self.adopt_open => {
                 let i = ALL_BREEDS
@@ -2062,41 +2070,40 @@ impl PetView {
                     .unwrap_or(0);
                 let next = ALL_BREEDS[(i + 1) % ALL_BREEDS.len()];
                 self.adopt_pick(next, cx);
+                true
             }
             "backspace" => {
                 if let Some(buf) = self.name_editing.as_mut() {
                     buf.pop();
                     cx.notify();
                 }
+                true
             }
-            "space" if !m.control && !m.alt => {
-                if let Some(buf) = self.name_editing.as_mut() {
-                    buf.push(' ');
-                    cx.notify();
+            _ => false,
+        };
+        // 已处理的命名键吞掉;其余(可打印 / 空格 / IME)放行给输入处理器。
+        if handled {
+            let _ = m;
+            cx.stop_propagation();
+        }
+    }
+
+    /// 把一段上屏文本并入名字缓冲(≤8 显示字;领养/改名共用)。IME 与英文都走这里。
+    fn name_insert(&mut self, text: &str) {
+        if let Some(buf) = self.name_editing.as_mut() {
+            for ch in text.chars() {
+                if buf.chars().count() >= 8 {
+                    break;
                 }
+                buf.push(ch);
             }
-            k if k.chars().count() == 1 && !m.control && !m.alt => {
-                let ch = ev
-                    .keystroke
-                    .key_char
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or(k);
-                if let Some(buf) = self.name_editing.as_mut() {
-                    // ≤8 显示字(超出忽略;命令面板同款即时反馈)。
-                    if buf.chars().count() < 8 {
-                        buf.push_str(ch);
-                        cx.notify();
-                    }
-                }
-            }
-            _ => {}
         }
     }
 
     /// 输入栏(领养卡 / 改名共用):「名字 <buf>▌」+ ≤8 字提示。
     fn name_field(&self) -> impl IntoElement {
         let buf = self.name_editing.clone().unwrap_or_default();
+        let marked = self.name_marked.clone().unwrap_or_default();
         div()
             .flex()
             .flex_row()
@@ -2112,6 +2119,17 @@ impl PetView {
             .font_family(SharedString::from(self.cfg.font().family.clone()))
             .child(div().text_size(px(crate::style::FS_MICRO)).text_color(rgb(T2)).child("名字"))
             .child(div().text_size(px(crate::style::FS_BODY)).text_color(rgb(T0)).child(SharedString::from(buf)))
+            // IME 组字预览(拼音串):带下划线、弱色,上屏后消失。
+            .when(!marked.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_size(px(crate::style::FS_BODY))
+                        .text_color(rgb(T1))
+                        .border_b_1()
+                        .border_color(rgba(PH_DIM))
+                        .child(SharedString::from(marked)),
+                )
+            })
             .child(div().text_size(px(crate::style::FS_BODY)).text_color(rgb(PH)).child("▌"))
             .child(div().flex_1())
             .child(
@@ -2120,6 +2138,22 @@ impl PetView {
                     .text_color(rgb(T3))
                     .child("中文可用 · ≤8 字"),
             )
+    }
+
+    /// IME 输入处理器注册(领养/改名卡):一个 size_full 的 canvas,在 paint 时把
+    /// 焦点上的文本输入路由到本视图(replace_text_in_range)。中文拼音组字/上屏、
+    /// 英文 WM_CHAR 都经此到 `name_editing`。不挂它则中文永远输不进(键路由没有终点)。
+    fn ime_canvas(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let focus = self.focus.clone();
+        let entity = cx.entity();
+        canvas(
+            |_bounds, _window, _cx| {},
+            move |bounds, _state, window, cx| {
+                window.handle_input(&focus, ElementInputHandler::new(bounds, entity.clone()), cx);
+            },
+        )
+        .absolute()
+        .size_full()
     }
 
     /// 浮层按钮(主/次):主 = 磷光描边强调。
@@ -2193,6 +2227,7 @@ impl PetView {
             );
         }
         let card = div()
+            .relative()
             .w(px(560.))
             .p(px(16.))
             .rounded(px(crate::style::R_PANEL))
@@ -2201,6 +2236,7 @@ impl PetView {
             .bg(col(self.cfg.theme.ui.palette_bg))
             .shadow(crate::style::shadow_float())
             .font_family(family)
+            .child(self.ime_canvas(cx)) // IME 输入处理器(中文/英文上屏终点)
             .child(
                 div()
                     .flex()
@@ -2286,6 +2322,7 @@ impl PetView {
     /// 改名浮层(规则 0:小件,只换名字)。
     fn render_rename_card(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let card = div()
+            .relative()
             .w(px(360.))
             .p(px(16.))
             .rounded(px(crate::style::R_PANEL))
@@ -2328,7 +2365,8 @@ impl PetView {
                         },
                         cx,
                     )),
-            );
+            )
+            .child(self.ime_canvas(cx)); // IME 输入处理器(中文/英文上屏终点)
         div()
             .absolute()
             .top(px(0.))
@@ -2555,19 +2593,6 @@ impl PetView {
             (1.0, false, 0.0)
         };
         body_dx += spin_sway;
-
-        // 狗窝软垫(规则 G 玩具):**画在最前 = 在狗身后**,小狗趴/站在垫上 ——
-        // 此前 blanket 在 out 末尾被压在狗身上,睡相像「盖了条横杠」(用户反馈奇怪)。
-        // 一条贴岗台的蓝灰垫,趴睡时略宽(像床),站立时窄一点(像踏垫);不随身体动。
-        if self.state.toy == Some(Toy::Blanket) {
-            let (x0, x1) = if lie { (0, 13) } else { (2, 11) };
-            for x in x0..=x1 {
-                out.push((x, 8, 0x6A7A95, 0.0, 4.0, 1.0, 0.5)); // 垫面(贴底,薄)
-            }
-            // 两端卷边低一点,垫子有厚度感。
-            out.push((x0, 8, 0x5A6A85, 0.0, 5.5, 1.0, 0.35));
-            out.push((x1, 8, 0x5A6A85, 0.0, 5.5, 1.0, 0.35));
-        }
 
         for (y, row) in rows.iter().enumerate() {
             let y = y as i32;
@@ -2850,9 +2875,7 @@ impl PetView {
                     out.push((12, 8, 0xEDE6D6, 4.0, 1.0, 0.45, 0.45));
                 }
             }
-            // 毯子(狗窝软垫)在循环前已画在狗身后,见上方;此处不再重复(否则会
-            // 盖在狗身上)。
-            Some(Toy::Blanket) | None => {}
+            None => {}
         }
         out
     }
@@ -3241,12 +3264,11 @@ impl Render for PetView {
                     cx,
                 ))
                 .child(grp("摆个玩具"));
-            // 玩具四选(规则 G:球 / 骨头 / 毯子 / 收起;无货币、无稀有度、无收集)。
+            // 玩具三选(规则 G:球 / 骨头 / 收起;无货币、无稀有度、无收集)。
             {
-                let opts: [(Option<Toy>, &'static str); 4] = [
+                let opts: [(Option<Toy>, &'static str); 3] = [
                     (Some(Toy::Ball), "球"),
                     (Some(Toy::Bone), "骨头"),
-                    (Some(Toy::Blanket), "毯子"),
                     (None, "收起"),
                 ];
                 let mut row = div()

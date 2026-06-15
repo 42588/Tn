@@ -1,220 +1,160 @@
 """Generate tn.ico — the Tn application icon (磷光 Phosphor language).
 
-Design (replaces the old Tokyo-Night blue→purple gradient):
-  • Chassis: an opaque, rounded-square instrument plate. Depth comes from a
-    subtle vertical elevation (L1 #141926 → L0 #0B0E16) plus a 1px cool hairline
-    edge — structure, not light pollution. No glow, no flashy gradient.
-  • Mark: a viewfinder — four phosphor corner brackets (the 磷光 design system's
-    signature "focus = 取景器角标" motif) framing a solid block cursor, all in the
-    single life color #5BE7C4. The brackets give Tn an instrument identity; the
-    block cursor is the live thing the phosphor color is reserved for.
+Design: macOS-style 3D / Glassmorphism
+  • Chassis: rounded-square with a smooth diagonal gradient (3D body)
+  • Overlay: a subtle frosted/glossy top reflection
+  • Edge: inner bevel highlight/shadow
+  • Shadow: soft drop shadow behind the icon
+  • Mark: a clean ">" prompt with the signature #5BE7C4 Phosphor block cursor
 
-Output sizes: 16/24/32/48/64/128/256 px, BMP/DIB entries (traditional ICO,
-works with LoadImageW and as an embedded Win32 resource on every Windows
-version). Run: python scripts/gen_icon.py
+Output sizes: 16/24/32/48/64/128/256 px, BMP/DIB entries.
+Run: python scripts/gen_icon.py
 """
 
 import struct
 from pathlib import Path
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 # ── 磷光 palette (design/phosphor.css :root) ──
 PHOSPHOR = (0x5B, 0xE7, 0xC4)      # #5BE7C4  the single life color (cursor)
-PLATE_TOP = (0x16, 0x1B, 0x29)     # slightly lifted L1 — top of the chassis
-PLATE_BOT = (0x0B, 0x0E, 0x16)     # #0B0E16  L0 chassis floor — bottom
-HAIRLINE = (0x34, 0x3E, 0x52)      # cool seam edge (h1-ish), opaque-ish
-CORNER_RADIUS_RATIO = 0.235        # rounded-square chassis
+BG_TOP = (0x3B, 0x43, 0x58)       # Lighter grayish blue for 3D top
+BG_BOT = (0x16, 0x1B, 0x29)       # Darker bottom
+BORDER_TOP = (0x7F, 0x8A, 0xA4)   # Highlight on top edge
+BORDER_BOT = (0x0B, 0x0E, 0x16)   # Shadow on bottom edge
+PROMPT_COLOR = (0xFF, 0xFF, 0xFF) # White for '>'
+CORNER_RADIUS_RATIO = 0.225       # macOS style is roughly 22.5%
 SS = 4                             # supersampling for anti-aliasing
 
 
 def _lerp(a, b, t):
-    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(len(a)))
+
+
+def _draw_rounded_rect_with_gradient(box, radius, color_top, color_bot, direction="vertical"):
+    x0, y0, x1, y1 = box
+    w = x1 - x0
+    h = y1 - y0
+    
+    grad = Image.new("RGBA", (w, h))
+    gpx = grad.load()
+    for y in range(h):
+        for x in range(w):
+            if direction == "vertical":
+                t = y / max(1, (h - 1))
+            else:
+                t = (x + y) / max(1, (w + h - 2))
+            gpx[x, y] = _lerp(color_top, color_bot, t) + (255,)
+            
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, w-1, h-1], radius=radius, fill=255)
+    
+    temp = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    temp.paste(grad, (0, 0), mask)
+    return temp
 
 
 def render(size: int) -> Image.Image:
-    """Render the premium vibrant sci-fi icon with Tn Monogram at `size`×`size` (RGBA)."""
+    """Render the icon at `size`×`size` (RGBA), supersampled then downscaled."""
     s = size * SS
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    scale = s / 256.0
-
-    # ── Colors & Design Specs ──
-    ph = PHOSPHOR + (255,)
-    ph_glow = PHOSPHOR + (45,)    # glow opacity
-    ph_border = PHOSPHOR + (200,)  # border opacity
-    ph_bg_glow = PHOSPHOR + (60,)  # bezel glow opacity
-
-    # ── 1. Outer Bezel (Chassis) ──
-    bezel_radius = int(0.20 * s)
-    bezel_mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(bezel_mask).rounded_rectangle(
-        [0, 0, s - 1, s - 1], radius=bezel_radius, fill=255
-    )
-
-    # Diagonal bezel fill
-    bezel_grad = Image.new("RGBA", (s, s))
-    bgpx = bezel_grad.load()
-    for y in range(s):
-        for x in range(s):
-            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
-            r, g, b = _lerp((0x22, 0x26, 0x3F), (0x0E, 0x0F, 0x16), t)
-            bgpx[x, y] = (r, g, b, 255)
-    img.paste(bezel_grad, (0, 0), bezel_mask)
-
-    # Bezel border glow pass (neon edge)
-    bezel_glow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    ImageDraw.Draw(bezel_glow).rounded_rectangle(
-        [SS // 2, SS // 2, s - 1 - SS // 2, s - 1 - SS // 2],
-        radius=bezel_radius - SS // 2,
-        outline=ph_bg_glow,
-        width=int(SS * 1.5),
-    )
-    img = Image.alpha_composite(img, bezel_glow)
-
-    # Bezel border sharp pass
-    bezel_sharp = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    ImageDraw.Draw(bezel_sharp).rounded_rectangle(
-        [SS // 2, SS // 2, s - 1 - SS // 2, s - 1 - SS // 2],
-        radius=bezel_radius - SS // 2,
-        outline=ph_border,
-        width=max(1, SS // 2),
-    )
-    img = Image.alpha_composite(img, bezel_sharp)
-
-    # ── 2. Inner Screen ──
-    screen_inset = round(0.06 * s)
-    screen_radius = int((0.20 - 0.06) * s)
-    screen_box = [screen_inset, screen_inset, s - 1 - screen_inset, s - 1 - screen_inset]
-
-    screen_mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(screen_mask).rounded_rectangle(
-        screen_box, radius=screen_radius, fill=255
-    )
-
-    # Deep recessed background gradient
-    screen_bg = Image.new("RGBA", (s, s))
-    sbpx = screen_bg.load()
-    for y in range(s):
-        for x in range(s):
-            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
-            r, g, b = _lerp((0x12, 0x16, 0x25), (0x08, 0x0A, 0x10), t)
-            sbpx[x, y] = (r, g, b, 255)
-    img.paste(screen_bg, (0, 0), screen_mask)
-
-    # Screen inner subtle border
-    screen_border = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    ImageDraw.Draw(screen_border).rounded_rectangle(
-        [screen_inset + SS // 2, screen_inset + SS // 2, s - 1 - screen_inset - SS // 2, s - 1 - screen_inset - SS // 2],
-        radius=screen_radius - SS // 2,
-        outline=(0x1B, 0x23, 0x34, 180),
-        width=max(1, SS // 2),
-    )
-    img = Image.alpha_composite(img, screen_border)
-
-    # ── 3. Screen Grid HUD (Radar and crosshairs) ──
-    # Only draw when size >= 24 to avoid rendering messy lines at 16px
-    if size >= 24:
-        hud = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-        hd = ImageDraw.Draw(hud)
-        hud_color = PHOSPHOR + (20,) # very faint
-        
-        # Radar circles
-        # r = 80
-        hd.ellipse([
-            round(48 * scale), round(48 * scale),
-            round(208 * scale), round(208 * scale)
-        ], fill=None, outline=PHOSPHOR + (15,))
-        # r = 50
-        hd.ellipse([
-            round(78 * scale), round(78 * scale),
-            round(178 * scale), round(178 * scale)
-        ], fill=None, outline=PHOSPHOR + (10,))
-
-        # Crosshairs
-        hd.line([(round(128 * scale), round(20 * scale)), (round(128 * scale), round(40 * scale))], fill=hud_color, width=max(1, SS // 4))
-        hd.line([(round(128 * scale), round(216 * scale)), (round(128 * scale), round(236 * scale))], fill=hud_color, width=max(1, SS // 4))
-        hd.line([(round(20 * scale), round(128 * scale)), (round(40 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
-        hd.line([(round(216 * scale), round(128 * scale)), (round(236 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
-        
-        # Center ticks
-        hd.line([(round(120 * scale), round(128 * scale)), (round(136 * scale), round(128 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
-        hd.line([(round(128 * scale), round(120 * scale)), (round(128 * scale), round(136 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
-        
-        img = Image.alpha_composite(img, hud)
-
-    # ── 4. Drawing Paths (Monogram and Viewfinder Brackets) ──
-    mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    md = ImageDraw.Draw(mark)
-
-    w_sharp = max(1, round(3.2 * scale))
-    w_glow = max(1, round(8.0 * scale))
-
-    def draw_strip(points, width, color):
-        scaled_pts = [(round(p[0] * scale), round(p[1] * scale)) for p in points]
-        md.line(scaled_pts, fill=color, width=width, joint="round")
-        cap = width / 2.0
-        for pt in scaled_pts:
-            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
-
-    def draw_n_arc(width, color):
-        # Bounding box of the arc: [135, 110, 155, 130]
-        arc_box = [round(135 * scale), round(110 * scale), round(155 * scale), round(130 * scale)]
-        md.arc(arc_box, start=180, end=360, fill=color, width=width)
-        cap = width / 2.0
-        # Round caps at the arc endpoints
-        for pt in [(round(135 * scale), round(120 * scale)), (round(155 * scale), round(120 * scale))]:
-            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
-
-    # ── Viewfinder brackets ──
-    brackets = [
-        [(60, 80), (60, 60), (80, 60)],
-        [(176, 60), (196, 60), (196, 80)],
-        [(60, 176), (60, 196), (80, 196)],
-        [(176, 196), (196, 196), (196, 176)]
-    ]
-
-    # Glow pass for brackets & logo
-    if size >= 24:  # skip glow at 16px to avoid blur mess
-        for pts in brackets:
-            draw_strip(pts, w_glow, ph_glow)
-        
-        # T glow
-        draw_strip([(85, 105), (125, 105)], w_glow, ph_glow) # T bar
-        draw_strip([(105, 105), (105, 155)], w_glow, ph_glow) # T stem
-        # n glow
-        draw_strip([(135, 155), (135, 120)], w_glow, ph_glow) # n left leg
-        draw_n_arc(w_glow, ph_glow)                          # n arc
-        draw_strip([(155, 120), (155, 155)], w_glow, ph_glow) # n right leg
-
-    # Sharp pass for brackets & logo
-    # For very small size (16px), scale line width up slightly to keep it sharp
-    w_draw_sharp = max(SS, w_sharp)
-    for pts in brackets:
-        draw_strip(pts, w_draw_sharp, ph)
     
-    # T sharp
-    draw_strip([(85, 105), (125, 105)], w_draw_sharp, ph)
-    draw_strip([(105, 105), (105, 155)], w_draw_sharp, ph)
-    # n sharp
-    draw_strip([(135, 155), (135, 120)], w_draw_sharp, ph)
-    draw_n_arc(w_draw_sharp, ph)
-    draw_strip([(155, 120), (155, 155)], w_draw_sharp, ph)
+    radius = int(CORNER_RADIUS_RATIO * s)
+    margin = int(0.08 * s)  # Drop shadow margin
+    
+    body_box = [margin, margin, s - margin - 1, s - margin - 1]
+    bw = body_box[2] - body_box[0]
+    bh = body_box[3] - body_box[1]
+    
+    # 1. Drop Shadow
+    shadow_offset = int(0.04 * s)
+    shadow = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(shadow).rounded_rectangle(
+        [margin, margin + shadow_offset, s - margin - 1, s - margin - 1 + shadow_offset],
+        radius=radius, fill=(0, 0, 0, 100)
+    )
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=int(0.04 * s)))
+    img.alpha_composite(shadow)
+    
+    # 2. Main Chassis Gradient (Diagonal)
+    chassis = _draw_rounded_rect_with_gradient(
+        [0, 0, bw, bh], radius, BG_TOP, BG_BOT, direction="diagonal"
+    )
+    img.alpha_composite(chassis, (margin, margin))
+    
+    # 3. Inner border highlight/shadow
+    border_w = max(1, int(0.015 * s))
+    border = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    bd = ImageDraw.Draw(border)
+    bd.rounded_rectangle(body_box, radius=radius, outline=BORDER_TOP+(180,), width=border_w)
+    
+    border_mask = Image.new("L", (s, s))
+    bmpx = border_mask.load()
+    for y in range(s):
+        t = y / max(1, (s - 1))
+        for x in range(s):
+            bmpx[x, y] = int((1 - t) * 255)
+    border_top_layer = Image.new("RGBA", (s, s))
+    border_top_layer.paste(border, (0, 0), border_mask)
+    img.alpha_composite(border_top_layer)
+    
+    border_bot = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(border_bot).rounded_rectangle(body_box, radius=radius, outline=BORDER_BOT+(200,), width=border_w)
+    border_bot_mask = Image.new("L", (s, s))
+    bbmpx = border_bot_mask.load()
+    for y in range(s):
+        t = y / max(1, (s - 1))
+        for x in range(s):
+            bbmpx[x, y] = int(t * 255)
+    border_bot_layer = Image.new("RGBA", (s, s))
+    border_bot_layer.paste(border_bot, (0, 0), border_bot_mask)
+    img.alpha_composite(border_bot_layer)
+    
+    # 4. Glass reflection (Top glossy curve)
+    gloss = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    ImageDraw.Draw(gloss).ellipse([-bw*0.5, -bh*0.8, bw*1.5, bh*0.5], fill=(255, 255, 255, 12))
+    gloss_mask = Image.new("L", (bw, bh), 0)
+    ImageDraw.Draw(gloss_mask).rounded_rectangle([0, 0, bw-1, bh-1], radius=radius, fill=255)
+    gloss_layer = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+    gloss_layer.paste(gloss, (0, 0), gloss_mask)
+    img.alpha_composite(gloss_layer, (margin, margin))
+    
+    # 5. Terminal prompt ">_"
+    content = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    cd = ImageDraw.Draw(content)
+    
+    stroke = max(1, int(0.06 * s))
+    cx, cy = int(0.32 * s), int(0.48 * s)
+    arr_w, arr_h = int(0.12 * s), int(0.12 * s)
+    
+    # ">"
+    cd.line([(cx - arr_w/2, cy - arr_h), (cx + arr_w/2, cy), (cx - arr_w/2, cy + arr_h)], 
+            fill=PROMPT_COLOR+(255,), width=stroke, joint="curve")
+    # Cap the ends
+    cd.ellipse([cx - arr_w/2 - stroke/2, cy - arr_h - stroke/2, cx - arr_w/2 + stroke/2, cy - arr_h + stroke/2], fill=PROMPT_COLOR+(255,))
+    cd.ellipse([cx - arr_w/2 - stroke/2, cy + arr_h - stroke/2, cx - arr_w/2 + stroke/2, cy + arr_h + stroke/2], fill=PROMPT_COLOR+(255,))
+    cd.ellipse([cx + arr_w/2 - stroke/2, cy - stroke/2, cx + arr_w/2 + stroke/2, cy + stroke/2], fill=PROMPT_COLOR+(255,))
+            
+    # "_" (Phosphor colored block)
+    bx, by = int(0.50 * s), int(0.48 * s + arr_h - stroke/2)
+    bw_cur, bh_cur = int(0.18 * s), stroke
+    cd.rectangle([bx, by, bx + bw_cur, by + bh_cur], fill=PHOSPHOR+(255,))
+    cd.ellipse([bx - stroke/2, by, bx + stroke/2, by + bh_cur], fill=PHOSPHOR+(255,))
+    cd.ellipse([bx + bw_cur - stroke/2, by, bx + bw_cur + stroke/2, by + bh_cur], fill=PHOSPHOR+(255,))
+    
+    # Drop shadow for the prompt to enhance depth
+    content_shadow = content.copy()
+    content_shadow = content_shadow.filter(ImageFilter.GaussianBlur(radius=int(0.01 * s)))
+    cs_data = content_shadow.load()
+    for y in range(s):
+        for x in range(s):
+            r, g, b, a = cs_data[x, y]
+            if a > 0:
+                cs_data[x, y] = (0, 0, 0, int(a * 0.4))
+                
+    img.alpha_composite(content_shadow, (0, int(0.015 * s)))
+    img.alpha_composite(content)
 
-    # ── 5. HUD Text details (only draw if size >= 64) ──
-    if size >= 64:
-        try:
-            from PIL import ImageFont
-            font = ImageFont.load_default()
-            text_color = PHOSPHOR + (75,) # faint text
-            md.text((round(32 * scale), round(38 * scale)), "SYS_ON", fill=text_color, font=font)
-            md.text((round(180 * scale), round(38 * scale)), "CH.01", fill=text_color, font=font)
-            md.text((round(32 * scale), round(208 * scale)), "LNK: OK", fill=text_color, font=font)
-            md.text((round(176 * scale), round(208 * scale)), "v2.0.7", fill=text_color, font=font)
-        except Exception:
-            pass
-
-    img = Image.alpha_composite(img, mark)
     return img.resize((size, size), Image.LANCZOS)
-
 
 # ── ICO packing (BMP / DIB entries — the traditional, maximally compatible form) ──
 
@@ -222,11 +162,11 @@ def write_ico(images: dict[int, Image.Image], dest: Path):
     entries, image_data = [], []
     for sz, img in sorted(images.items()):
         w, h = img.size
-        px = img.load()
+        px = list(img.getdata())
         xor = bytearray()
         for y in range(h - 1, -1, -1):
             for x in range(w):
-                r, g, b, a = px[x, y]
+                r, g, b, a = px[y * w + x]
                 xor.extend([b, g, r, a])
         and_mask = bytearray(((w + 31) // 32) * 4 * h)
         bih = struct.pack(
