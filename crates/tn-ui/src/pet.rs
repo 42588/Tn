@@ -3111,22 +3111,15 @@ impl Render for PetView {
             };
             // 档案只读行(规则 F:名字 · 品种 · 在一起第 N 天;平时不展示、不提醒)。
             let day_n = self.state.days_together.max(1);
-            // 钳进视口:左缘对齐宠物盒、但不越界(此前固定右锚 → 到边栏被裁剪);
-            // 底边贴岗台上方、不顶标题栏;过高则在窗内滚动(菜单较长)。
-            let menu_w = 212.0_f32;
-            let menu_left = (vw - right - box_w).clamp(8.0, (vw - menu_w - 8.0).max(8.0));
-            let menu_bottom =
-                (bottom + 6.0).clamp(STATUSBAR_H + 6.0, (vh - 16.0).max(STATUSBAR_H + 6.0));
-            let menu_max_h = (vh - menu_bottom - 12.0).max(180.0);
+            // 居中悬浮面板(用户定夺:不再吊在宠物角落,改与领养/改名卡同款 ——
+            // 全屏 scrim + 居中卡片;过高在卡内滚动,永不被边栏/视口裁剪)。
+            let menu_max_h = (vh - 80.0).max(200.0);
             let mut menu = div()
                 .id("pet-menu") // overflow_y_scroll 需 stateful 元素(带 id)
-                .absolute()
-                .left(px(menu_left))
-                .bottom(px(menu_bottom))
-                .w(px(menu_w))
+                .w(px(280.))
                 .max_h(px(menu_max_h))
                 .overflow_y_scroll()
-                .p(px(6.))
+                .p(px(8.))
                 .rounded(px(crate::style::R_PANEL))
                 .border_1()
                 .border_color(rgba(H2))
@@ -3384,7 +3377,25 @@ impl Render for PetView {
                     }),
                     cx,
                 ));
-            menu
+            // 全屏 scrim + 居中:点空白处或滚轮关闭(卡片本体已 stop_propagation)。
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .right(px(0.))
+                .bottom(px(0.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgba(SCRIM))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|p, _e, _w, cx| {
+                        p.menu_open = false;
+                        cx.notify();
+                    }),
+                )
+                .child(menu)
         });
 
         // 文本输入卡(领养 / 改名)打开期间 **每帧重夺焦点**,而非一次性 grab ——
