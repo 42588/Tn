@@ -6971,7 +6971,7 @@ impl Render for QuickLook {
 // 着色器。磷光是唯一生命色(契约),所以正文走文字阶梯 T0/T2、链接走 INFO 蓝,不滥用 PH。
 // ════════════════════════════════════════════════════════════════════════════
 use gpui::{FontStyle, FontWeight, StrikethroughStyle, StyledText, UnderlineStyle};
-use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// 该文件是否按 Markdown 渲染(预览态)。
 fn is_markdown_path(p: Option<&std::path::Path>) -> bool {
@@ -7148,64 +7148,138 @@ fn md_inline<'e>(
     inl
 }
 
-/// 消费块级事件直到当前容器的 End(顶层则直到流结束)。同样靠「落到本层的第一个
-/// End 即关闭本容器」:子容器(列表/引用/表/代码块)各自在递归里吃掉自己的 End,
-/// 段落/标题由 `md_inline` 吃掉,所以传到这里 match 的 End 必是本容器的收尾。
+/// 把累积的行内缓冲冲刷成一个段落 div(空则不产出)。
+fn md_flush_para(out: &mut Vec<gpui::Div>, inl: &mut MdInline, ctx: &MdCtx) {
+    let taken = std::mem::replace(inl, MdInline::new());
+    if let Some(t) = taken.into_text() {
+        out.push(
+            div()
+                .pb(px(8.))
+                .text_size(px(13.5))
+                .line_height(px(21.))
+                .text_color(ctx.body)
+                .child(t),
+        );
+    }
+}
+
+/// 消费块级事件直到当前容器的 End(顶层则直到流结束)。
+///
+/// 关键:**块级层也要累积行内内容**。紧凑列表(tight list)的项内容不被包进
+/// `Paragraph`,而是直接吐出 `Text`/`Code`/`Start(Link)` 等行内事件;若只认 `Text`
+/// 就会丢掉行内码、把链接当容器吃掉、并让每个文本碎片各成一段(换行)。所以这里
+/// 维护一个行内样式栈累积 `inl`,遇到真正的块边界(段落 End / 块容器 / 分隔线)
+/// 才 flush。块容器(列表/引用/表/代码块/标题)各自在递归里吃掉自己的 End;落到
+/// 本层 match 到的「非行内 End」即本容器收尾 → flush 并退出。
 fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<gpui::Div> {
     let mut out = Vec::new();
+    let mut inl = MdInline::new();
+    let mut stack = vec![ctx.base()]; // 行内强调/链接样式栈
     loop {
         match events.next() {
-            None => break,
-            Some(MdEvent::End(_)) => break,
-            Some(MdEvent::Start(tag)) => match tag {
-                Tag::Paragraph => {
-                    let inl = md_inline(events, ctx, ctx.base());
-                    if let Some(t) = inl.into_text() {
-                        out.push(
-                            div()
-                                .pb(px(8.))
-                                .text_size(px(13.5))
-                                .line_height(px(21.))
-                                .text_color(ctx.body)
-                                .child(t),
-                        );
+            None => {
+                md_flush_para(&mut out, &mut inl, ctx);
+                break;
+            }
+            Some(MdEvent::End(end)) => match end {
+                TagEnd::Emphasis
+                | TagEnd::Strong
+                | TagEnd::Strikethrough
+                | TagEnd::Link
+                | TagEnd::Image => {
+                    if stack.len() > 1 {
+                        stack.pop();
                     }
                 }
+                TagEnd::Paragraph => md_flush_para(&mut out, &mut inl, ctx),
+                // 其余 End = 关闭本容器(Item / BlockQuote / 顶层不会到这);收尾退出。
+                _ => {
+                    md_flush_para(&mut out, &mut inl, ctx);
+                    break;
+                }
+            },
+            Some(MdEvent::Start(tag)) => match tag {
+                // ── 行内开标签:压样式栈,内容继续累积到 inl ──
+                Tag::Strong => {
+                    let mut s = *stack.last().unwrap();
+                    s.weight = FontWeight::BOLD;
+                    stack.push(s);
+                }
+                Tag::Emphasis => {
+                    let mut s = *stack.last().unwrap();
+                    s.italic = true;
+                    stack.push(s);
+                }
+                Tag::Strikethrough => {
+                    let mut s = *stack.last().unwrap();
+                    s.strike = true;
+                    stack.push(s);
+                }
+                Tag::Link { .. } => {
+                    let mut s = *stack.last().unwrap();
+                    s.color = ctx.link;
+                    s.underline = Some(ctx.link);
+                    stack.push(s);
+                }
+                Tag::Image { .. } => {
+                    inl.push("🖼 ", *stack.last().unwrap(), &ctx.fonts);
+                    let mut s = *stack.last().unwrap();
+                    s.color = ctx.muted;
+                    stack.push(s);
+                }
+                // ── 块级开标签:先 flush 当前行内,再产出块 ──
+                Tag::Paragraph => md_flush_para(&mut out, &mut inl, ctx),
                 Tag::Heading { level, .. } => {
+                    md_flush_para(&mut out, &mut inl, ctx);
                     let mut base = ctx.base();
                     base.weight = FontWeight::BOLD;
-                    let inl = md_inline(events, ctx, base);
-                    out.push(md_heading(level, inl, ctx));
+                    let h = md_inline(events, ctx, base);
+                    out.push(md_heading(level, h, ctx));
                 }
                 Tag::CodeBlock(_) => {
+                    md_flush_para(&mut out, &mut inl, ctx);
                     let lines = md_collect_code(events);
                     out.push(md_code_block(&lines, ctx));
                 }
-                Tag::List(start) => out.push(md_list(events, start, ctx)),
+                Tag::List(start) => {
+                    md_flush_para(&mut out, &mut inl, ctx);
+                    out.push(md_list(events, start, ctx));
+                }
                 Tag::BlockQuote(_) => {
+                    md_flush_para(&mut out, &mut inl, ctx);
                     let inner = md_blocks(events, ctx);
                     out.push(md_quote(inner, ctx));
                 }
-                Tag::Table(_) => out.push(md_table(events, ctx)),
-                Tag::Item => {
-                    // 不应在此层直接出现(由 md_list 处理);兜底:当作裸容器递归。
-                    let inner = md_blocks(events, ctx);
-                    out.push(div().flex().flex_col().children(inner));
+                Tag::Table(_) => {
+                    md_flush_para(&mut out, &mut inl, ctx);
+                    out.push(md_table(events, ctx));
                 }
                 _ => {
-                    // 未建模的块容器(脚注定义等):递归消费掉它的内容与 End。
+                    // 未建模的块容器(脚注定义等):flush 后递归消费其内容与 End。
+                    md_flush_para(&mut out, &mut inl, ctx);
                     let _ = md_blocks(events, ctx);
                 }
             },
-            Some(MdEvent::Rule) => {
-                out.push(div().my(px(10.)).h(px(1.)).bg(ctx.border));
+            Some(MdEvent::Text(t)) => inl.push(&t, *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::Code(t)) => {
+                let mut s = *stack.last().unwrap();
+                s.mono = true;
+                s.bg = Some(ctx.code_bg);
+                s.color = ctx.code_fg;
+                inl.push(&t, s, &ctx.fonts);
             }
-            Some(MdEvent::Text(t)) => {
-                let mut inl = MdInline::new();
-                inl.push(&t, ctx.base(), &ctx.fonts);
-                if let Some(x) = inl.into_text() {
-                    out.push(div().pb(px(8.)).text_size(px(13.5)).child(x));
-                }
+            Some(MdEvent::SoftBreak) => inl.push(" ", *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::HardBreak) => inl.push("\n", *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::TaskListMarker(done)) => {
+                inl.push(
+                    if done { "☑ " } else { "☐ " },
+                    *stack.last().unwrap(),
+                    &ctx.fonts,
+                );
+            }
+            Some(MdEvent::Rule) => {
+                md_flush_para(&mut out, &mut inl, ctx);
+                out.push(div().my(px(10.)).h(px(1.)).bg(ctx.border));
             }
             _ => {}
         }
@@ -7482,6 +7556,39 @@ mod tests {
             got.as_deref(),
             Some(&["fn main() {}".to_string(), "let x = 1;".to_string()][..]),
         );
+    }
+
+    #[test]
+    fn tight_list_item_emits_inline_events_without_paragraph_wrapper() {
+        // 根因守卫:紧凑列表的项内容**不被包进 Paragraph**,行内码 / 链接直接以
+        // 行内事件出现在「块级层」。md_blocks 必须在块级层也累积行内,否则会丢码、
+        // 把链接当容器吃掉、并让文本碎片各自换行(见 2026-06-15 修复)。
+        let src = "- 纯色(海拔)→ `Div::bg`;杜绝 [链接](u) 收尾。\n";
+        let evs: Vec<_> = Parser::new(src).collect();
+        let mut saw_item = false;
+        let mut paragraph_in_item = false;
+        let mut code_in_item = false;
+        let mut link_in_item = false;
+        let mut depth = 0i32; // Item 内嵌套深度(此例无嵌套块)
+        for ev in &evs {
+            match ev {
+                MdEvent::Start(Tag::Item) => {
+                    saw_item = true;
+                    depth = 0;
+                }
+                MdEvent::End(TagEnd::Item) => saw_item = false,
+                MdEvent::Start(Tag::Paragraph) if saw_item && depth == 0 => paragraph_in_item = true,
+                MdEvent::Code(_) if saw_item && depth == 0 => code_in_item = true,
+                MdEvent::Start(Tag::Link { .. }) if saw_item && depth == 0 => link_in_item = true,
+                _ => {}
+            }
+        }
+        assert!(
+            !paragraph_in_item,
+            "紧凑列表项不应有 Paragraph 包裹(若 pulldown 改了语义,需重审 md_blocks)"
+        );
+        assert!(code_in_item, "行内码应作为块级层事件出现");
+        assert!(link_in_item, "链接应作为块级层事件出现");
     }
 
     #[test]
