@@ -1525,10 +1525,14 @@ impl PetView {
     }
 
     /// 磷光通道全屏 overlay(规则 J)。宠物根现为 workspace 最顶层,故此 overlay 画
-    /// 在所有浮层 scrim 之上,光点/裂缝才不会被 Quick Look / 命令面板的 scrim 压暗。
-    /// 一颗磷光光点从宠物头顶飞过整屏到达真实 UI 锚点,并在那里撕开磷光锯齿裂缝
-    /// 把空间「打开」;召回类反向收回,切换类只闪光点。宠物 = Tn 空间的钥匙。
-    /// 纯绘制、无命中区、无监听 —— 不阻塞 UI,不抢焦点。
+    /// 在所有浮层 scrim 之上,小狗/裂缝才不会被 Quick Look / 命令面板的 scrim 压暗。
+    ///
+    /// **演出(v2.3 改版二):小狗叼开空间裂隙。** 一只像素小狗从岗台跃出、跨屏奔到
+    /// 该转场的真实 UI 锚点(命令面板顶缘 / Quick Look 侧边 / 分屏中线 / 欢迎区 /
+    /// 远端 pane),落在接缝上 → 蹲身蓄力 → 猛地起身把一道磷光锯齿裂隙**拉开**,关键
+    /// UI 就从这道裂隙里展开。召回类反向:小狗奔到已开的裂隙、把它拉合、再化作磷光
+    /// 残影散去。切换类只在锚点脉冲一下。小狗 = Tn 空间的钥匙,它亲手打开空间。
+    /// 纯绘制、无命中区、无监听 —— 不阻塞 UI,不抢焦点;小狗仍是像素狗(rule J3)。
     fn channel_overlay(&self, vw: f32, vh: f32) -> Option<gpui::AnyElement> {
         let cue = self.cue?;
         if !self.state.enabled || !self.state.visible || (self.state.welcome_only && !self.on_welcome)
@@ -1567,6 +1571,9 @@ impl PetView {
         };
         let open = cue.is_open();
         let switch = cue.is_switch();
+        // 跨屏奔跑的小狗本体:复用本品种静态像素行(磷光通道里不做眨眼/微动作,
+        // 只做奔跑→蹲身→起身拉裂隙这一条主线)。rows 是 &'static str 数组,Copy。
+        let rows: [&'static str; 9] = self.breed.sprite().rows;
         let el = canvas(
             |_b, _w, _cx| {},
             move |_bounds, _state, window, _cx| {
@@ -1581,7 +1588,63 @@ impl PetView {
                 };
                 let bright = rgb(PH);
                 let faded = |a: u32| rgba((PH << 8) | a);
-                // reduced motion:静态换岗 —— 锚点只闪一颗 1px 磷光点(可访问性规则)。
+                // 像素小狗投影:以 (cx,cy) 为雪碧图中心,dcell 格距;dip>0 整身下沉,
+                // ghost=Some(a) 时整只画成半透明磷光残影(奔跑拖影 / 收尾消散),
+                // 否则画本体真实毛色(rule J3:仍是像素狗,不是光团)。
+                const DCELL: f32 = 4.0; // 跨屏投影格距(岗台本体为 CELL=6)
+                let paint_dog =
+                    |window: &mut Window, cx: f32, cy: f32, dip: f32, ghost: Option<u32>| {
+                        let ox = cx - 7.0 * DCELL; // 雪碧图 14 列,中心列 7
+                        let oy = cy - 4.5 * DCELL; // 9 行,中心 4.5
+                        for (gy, row) in rows.iter().enumerate() {
+                            for (gx, ch) in row.chars().enumerate() {
+                                let Some(c) = pixel_color(ch) else {
+                                    continue;
+                                };
+                                let mut yy = oy + gy as f32 * DCELL;
+                                if dip != 0.0 {
+                                    yy += dip;
+                                }
+                                let color: gpui::Rgba = match ghost {
+                                    Some(a) => rgba((PH << 8) | a),
+                                    None => rgb(c),
+                                };
+                                window.paint_quad(fill(
+                                    Bounds {
+                                        origin: point(px(ox + gx as f32 * DCELL), px(yy)),
+                                        size: size(px(DCELL), px(DCELL)),
+                                    },
+                                    color,
+                                ));
+                            }
+                        }
+                    };
+                // 磷光锯齿裂隙:从接缝 (ax,ay) 向下撕开,o=张开度 0..1,a=整体不透明。
+                // o 增 → 段数变多、左右抖动加大、握点亮点变大。绝不外发光。
+                let rift = |window: &mut Window, o: f32, a: f32| {
+                    if o <= 0.01 || a <= 0.0 {
+                        return;
+                    }
+                    let core = ((a * 255.0) as u32).clamp(40, 255);
+                    let edge = ((a * 150.0) as u32).clamp(30, 150);
+                    let gap = o * 4.0;
+                    let segs = (3.0 + o * 10.0) as i32; // 张得越开越长
+                    for i in 0..segs {
+                        let yy = ay + i as f32 * 4.0;
+                        let jx = if i % 2 == 0 { gap } else { -gap };
+                        let dim = i == 0 || i == segs - 1;
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(ax - 0.75 + jx), px(yy)),
+                                size: size(px(1.5), px(4.0)),
+                            },
+                            if dim { faded(edge) } else { faded(core) },
+                        ));
+                    }
+                    // 握点亮核(小狗起身把裂隙撑开处)。
+                    dot(window, ax, ay, 4.0 + o * 5.0, faded(core));
+                };
+                // reduced motion:静态换岗 —— 锚点只闪一颗磷光点(可访问性规则,无奔跑)。
                 if !motion {
                     if (now / 160) % 2 == 0 {
                         dot(window, ax, ay, 3.0, bright);
@@ -1589,59 +1652,84 @@ impl PetView {
                     return;
                 }
                 let ease = |t: f32| 1.0 - (1.0 - t).powi(3);
-                // 沿 发射→锚点 的行进分数(0=宠物,1=锚点);开门递增,召回递减。
-                let lead = if switch {
+                // ── 奔跑段:小狗从岗台头顶 (ex,ey) 抛物线奔到接缝上方落点 ──
+                // 落点 = 接缝正上方,使小狗四脚正好踩在裂隙顶端 (ay)。
+                let base_cy = (ay - 3.5 * DCELL).max(22.0); // gy8(脚)落在 ay
+                let tdur = if switch { 0.30 } else { 0.28 };
+                let tp = (cp / tdur).clamp(0.0, 1.0);
+                let te = ease(tp);
+                let run_x = ex + (ax - ex) * te;
+                let run_y = {
+                    let by = ey + (base_cy - ey) * te;
+                    by - 60.0 * (4.0 * te * (1.0 - te)) // 跨屏弧线
+                };
+                // ── 蹲身蓄力 → 猛起拉开裂隙(到位后才发生)──
+                // body_shift: + 下沉(蹲),− 上提(起身拉裂隙)。
+                let body_shift = if switch || cp < 0.35 {
+                    0.0 // 奔跑/未到位:不蹲不起
+                } else if cp < 0.52 {
+                    5.0 * ((cp - 0.35) / 0.17) // 蹲下 0→+5
+                } else if cp < 0.70 {
+                    5.0 - 16.0 * ((cp - 0.52) / 0.18) // 猛起 +5→−11
+                } else if cp < 0.82 {
+                    -11.0
+                } else {
+                    0.0
+                };
+                // 张开度 o(开门:蓄力后拉开;召回:从开到合;切换:脉冲一下)。
+                let o = if switch {
+                    let p = ((cp - 0.20) / 0.5).clamp(0.0, 1.0);
+                    (p * std::f32::consts::PI).sin() // 0→1→0 脉冲
+                } else if open {
+                    if cp < 0.42 {
+                        0.0
+                    } else if cp < 0.70 {
+                        ease((cp - 0.42) / 0.28)
+                    } else {
+                        1.0
+                    }
+                } else if cp < 0.35 {
+                    1.0
+                } else if cp < 0.66 {
+                    1.0 - ease((cp - 0.35) / 0.31)
+                } else {
+                    0.0
+                };
+                // 裂隙整体不透明:开门末段淡出(UI 已自显,残影散去);召回随 o 走。
+                let rift_a = if switch {
                     1.0
                 } else if open {
-                    ease(cp)
+                    if cp < 0.85 {
+                        1.0
+                    } else {
+                        (1.0 - (cp - 0.85) / 0.15).max(0.0)
+                    }
                 } else {
-                    1.0 - ease(cp)
+                    1.0
                 };
-                let dist = ((ax - ex).powi(2) + (ay - ey).powi(2)).sqrt();
-                let arc = (dist * 0.10).min(70.0); // 轨迹微微上拱
-                let at = |u: f32| {
-                    let u = u.clamp(0.0, 1.0);
-                    (
-                        ex + (ax - ex) * u,
-                        ey + (ay - ey) * u - arc * (4.0 * u * (1.0 - u)),
-                    )
+                // 收尾:小狗化作磷光残影散去(本体从未离开岗台,这里只散投影)。
+                let exit = ((cp - 0.82) / 0.18).clamp(0.0, 1.0);
+                let dog_ghost = if exit > 0.0 {
+                    Some((((1.0 - exit) * 200.0) as u32).max(1))
+                } else {
+                    None
                 };
-                // 光点拖尾(残影:沿运动反方向渐隐渐小)。切换式不拖尾。
-                if !switch {
-                    let ddir = if open { 1.0 } else { -1.0 };
-                    for k in 1..6 {
-                        let (tx, ty) = at(lead - ddir * k as f32 * 0.055);
-                        let sz = (5.0 - k as f32 * 0.7).max(1.5);
-                        dot(window, tx, ty, sz, faded((200 - k * 32).max(40)));
+                // 先画裂隙(在小狗脚下),再画奔跑拖影,最后画小狗本体(压在最上)。
+                rift(window, o, rift_a);
+                if tp < 1.0 && !switch {
+                    for k in 1..=2 {
+                        let tk = ease((tp - k as f32 * 0.07).max(0.0));
+                        let cxk = ex + (ax - ex) * tk;
+                        let cyk = {
+                            let by = ey + (base_cy - ey) * tk;
+                            by - 60.0 * (4.0 * tk * (1.0 - tk))
+                        };
+                        paint_dog(window, cxk, cyk, 0.0, Some(((100 - k * 35) as u32).max(40)));
                     }
                 }
-                // 领头光点(全场最亮焦点)。
-                let (lx, ly) = at(lead);
-                dot(window, lx, ly, 5.0, bright);
-                // 目标接缝裂缝:开门(到达后)/召回(离开前)/切换(常闪)时,在锚点
-                // 撕开一道磷光锯齿 + 亮点。绝不外发光,峰值 ≤ 召唤线。
-                let bloom = if switch {
-                    (now / 130) % 2 == 0
-                } else if open {
-                    cp > 0.5
-                } else {
-                    cp < 0.5
-                };
-                if bloom {
-                    for i in -2i32..=2 {
-                        let yy = ay + i as f32 * 4.0;
-                        let jx = if i % 2 == 0 { 0.0 } else { 2.0 };
-                        let col = if i.abs() <= 1 { bright } else { faded(130) };
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: point(px(ax - 0.75 + jx), px(yy)),
-                                size: size(px(1.5), px(4.0)),
-                            },
-                            col,
-                        ));
-                    }
-                    dot(window, ax, ay, 6.0, bright);
-                }
+                let dog_cx = if tp < 1.0 { run_x } else { ax };
+                let dog_cy = if tp < 1.0 { run_y } else { base_cy + body_shift };
+                paint_dog(window, dog_cx, dog_cy, 0.0, dog_ghost);
             },
         )
         .absolute()
