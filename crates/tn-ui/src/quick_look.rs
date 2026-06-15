@@ -5959,6 +5959,13 @@ impl Render for QuickLook {
                     .text_color(col(ui.muted))
                     .child("无改动 · git working tree clean"),
             );
+        } else if !editing
+            && tab == Tab::File
+            && matches!(self.file_data, QuickLookData::Text { .. })
+            && is_markdown_path(self.path.as_deref())
+        {
+            // Markdown 预览态:直接渲染排版(Enter 进编辑切回自绘编辑器,Esc 回预览)。
+            body = body.child(markdown_view(&self.config, &lines));
         } else if should_self_paint_diff(self.el_render, editing, tab, &self.file_data) {
             // TnE-13: Diff tab now uses the same self-painted canvas/prepaint path
             // as File preview. `TN_QL_LEGACY=1` still falls through to the old list.
@@ -6955,12 +6962,526 @@ impl Render for QuickLook {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// Markdown 预览渲染(规则:.md 默认渲染态,Enter 进编辑、Esc 回预览)
+//
+// pulldown-cmark 解析事件流 → GPUI 原生元素(div + StyledText/TextRun)。无 WebView:
+// 整进程是 GPUI 终端 app,且契约「原型必须 GPUI 可还原」。行内排版用 StyledText 带
+// per-run 字重/斜体/删除线/底色以获得正确的换行;代码围栏复用文件预览的 `highlight()`
+// 着色器。磷光是唯一生命色(契约),所以正文走文字阶梯 T0/T2、链接走 INFO 蓝,不滥用 PH。
+// ════════════════════════════════════════════════════════════════════════════
+use gpui::{FontStyle, FontWeight, StrikethroughStyle, StyledText, UnderlineStyle};
+use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag};
+
+/// 该文件是否按 Markdown 渲染(预览态)。
+fn is_markdown_path(p: Option<&std::path::Path>) -> bool {
+    p.and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| {
+            matches!(
+                e.as_str(),
+                "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "mdwn" | "mdx"
+            )
+        })
+}
+
+#[derive(Clone)]
+struct MdFonts {
+    sans: gpui::Font,
+    mono: gpui::Font,
+}
+
+/// 行内一段文本的样式(随强调/链接/行内码层叠)。
+#[derive(Clone, Copy)]
+struct MdStyle {
+    color: Hsla,
+    weight: FontWeight,
+    italic: bool,
+    strike: bool,
+    underline: Option<Hsla>,
+    mono: bool,
+    bg: Option<Hsla>,
+}
+
+/// 渲染上下文:字体 + 磷光体系派生色板 + 主题(供代码着色)。
+struct MdCtx<'a> {
+    config: &'a Loaded,
+    fonts: MdFonts,
+    body: Hsla,     // 正文 T0
+    muted: Hsla,    // 弱文 T2(列表标记 / 图片占位)
+    link: Hsla,     // 链接 INFO 蓝(不动用磷光)
+    code_fg: Hsla,  // 行内码字
+    code_bg: Hsla,  // 行内码底 L2
+    block_bg: Hsla, // 代码块 / 表头底 L1
+    border: Hsla,   // 发丝边 H1
+    quote: Hsla,    // 引用左条 H2
+}
+
+impl MdCtx<'_> {
+    fn base(&self) -> MdStyle {
+        MdStyle {
+            color: self.body,
+            weight: FontWeight::NORMAL,
+            italic: false,
+            strike: false,
+            underline: None,
+            mono: false,
+            bg: None,
+        }
+    }
+}
+
+/// 累积一段行内内容为 `(String, Vec<TextRun>)`,交给 `StyledText` 做正确换行。
+struct MdInline {
+    text: String,
+    runs: Vec<TextRun>,
+}
+
+impl MdInline {
+    fn new() -> Self {
+        Self {
+            text: String::new(),
+            runs: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, s: &str, st: MdStyle, fonts: &MdFonts) {
+        if s.is_empty() {
+            return;
+        }
+        let mut font = if st.mono {
+            fonts.mono.clone()
+        } else {
+            fonts.sans.clone()
+        };
+        font.weight = st.weight;
+        font.style = if st.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
+        self.runs.push(TextRun {
+            len: s.len(),
+            font,
+            color: st.color,
+            background_color: st.bg,
+            underline: st.underline.map(|c| UnderlineStyle {
+                thickness: px(1.),
+                color: Some(c),
+                wavy: false,
+            }),
+            strikethrough: st.strike.then(|| StrikethroughStyle {
+                thickness: px(1.),
+                color: Some(st.color),
+            }),
+        });
+        self.text.push_str(s);
+    }
+
+    fn into_text(self) -> Option<StyledText> {
+        if self.text.is_empty() {
+            None
+        } else {
+            Some(StyledText::new(SharedString::from(self.text)).with_runs(self.runs))
+        }
+    }
+}
+
+/// 消费行内事件直到当前块(段落/标题/单元格)的 End。强调/链接用样式栈层叠;
+/// 由于事件流良构,每进入一个行内 Start 压栈、其 End 弹栈,落到栈底的那个 End
+/// 即关闭本块 → 退出。
+fn md_inline<'e>(
+    events: &mut impl Iterator<Item = MdEvent<'e>>,
+    ctx: &MdCtx,
+    base: MdStyle,
+) -> MdInline {
+    let mut inl = MdInline::new();
+    let mut stack = vec![base];
+    loop {
+        match events.next() {
+            None => break,
+            Some(MdEvent::End(_)) => {
+                if stack.len() <= 1 {
+                    break;
+                }
+                stack.pop();
+            }
+            Some(MdEvent::Start(tag)) => {
+                let mut s = *stack.last().unwrap();
+                match tag {
+                    Tag::Strong => s.weight = FontWeight::BOLD,
+                    Tag::Emphasis => s.italic = true,
+                    Tag::Strikethrough => s.strike = true,
+                    Tag::Link { .. } => {
+                        s.color = ctx.link;
+                        s.underline = Some(ctx.link);
+                    }
+                    Tag::Image { .. } => {
+                        inl.push("🖼 ", *stack.last().unwrap(), &ctx.fonts);
+                        s.color = ctx.muted;
+                    }
+                    _ => {}
+                }
+                stack.push(s);
+            }
+            Some(MdEvent::Text(t)) => inl.push(&t, *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::Code(t)) => {
+                let mut s = *stack.last().unwrap();
+                s.mono = true;
+                s.bg = Some(ctx.code_bg);
+                s.color = ctx.code_fg;
+                inl.push(&t, s, &ctx.fonts);
+            }
+            Some(MdEvent::SoftBreak) => inl.push(" ", *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::HardBreak) => inl.push("\n", *stack.last().unwrap(), &ctx.fonts),
+            Some(MdEvent::TaskListMarker(done)) => {
+                inl.push(
+                    if done { "☑ " } else { "☐ " },
+                    *stack.last().unwrap(),
+                    &ctx.fonts,
+                );
+            }
+            _ => {}
+        }
+    }
+    inl
+}
+
+/// 消费块级事件直到当前容器的 End(顶层则直到流结束)。同样靠「落到本层的第一个
+/// End 即关闭本容器」:子容器(列表/引用/表/代码块)各自在递归里吃掉自己的 End,
+/// 段落/标题由 `md_inline` 吃掉,所以传到这里 match 的 End 必是本容器的收尾。
+fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<gpui::Div> {
+    let mut out = Vec::new();
+    loop {
+        match events.next() {
+            None => break,
+            Some(MdEvent::End(_)) => break,
+            Some(MdEvent::Start(tag)) => match tag {
+                Tag::Paragraph => {
+                    let inl = md_inline(events, ctx, ctx.base());
+                    if let Some(t) = inl.into_text() {
+                        out.push(
+                            div()
+                                .pb(px(8.))
+                                .text_size(px(13.5))
+                                .line_height(px(21.))
+                                .text_color(ctx.body)
+                                .child(t),
+                        );
+                    }
+                }
+                Tag::Heading { level, .. } => {
+                    let mut base = ctx.base();
+                    base.weight = FontWeight::BOLD;
+                    let inl = md_inline(events, ctx, base);
+                    out.push(md_heading(level, inl, ctx));
+                }
+                Tag::CodeBlock(_) => {
+                    let lines = md_collect_code(events);
+                    out.push(md_code_block(&lines, ctx));
+                }
+                Tag::List(start) => out.push(md_list(events, start, ctx)),
+                Tag::BlockQuote(_) => {
+                    let inner = md_blocks(events, ctx);
+                    out.push(md_quote(inner, ctx));
+                }
+                Tag::Table(_) => out.push(md_table(events, ctx)),
+                Tag::Item => {
+                    // 不应在此层直接出现(由 md_list 处理);兜底:当作裸容器递归。
+                    let inner = md_blocks(events, ctx);
+                    out.push(div().flex().flex_col().children(inner));
+                }
+                _ => {
+                    // 未建模的块容器(脚注定义等):递归消费掉它的内容与 End。
+                    let _ = md_blocks(events, ctx);
+                }
+            },
+            Some(MdEvent::Rule) => {
+                out.push(div().my(px(10.)).h(px(1.)).bg(ctx.border));
+            }
+            Some(MdEvent::Text(t)) => {
+                let mut inl = MdInline::new();
+                inl.push(&t, ctx.base(), &ctx.fonts);
+                if let Some(x) = inl.into_text() {
+                    out.push(div().pb(px(8.)).text_size(px(13.5)).child(x));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// 标题:字号阶梯 + 粗体;h1/h2 加底部发丝边表达层级结构(契约:深度=线,不靠色块)。
+fn md_heading(level: HeadingLevel, inl: MdInline, ctx: &MdCtx) -> gpui::Div {
+    let (size, top, bottom, border) = match level {
+        HeadingLevel::H1 => (22.0, 14.0, 8.0, true),
+        HeadingLevel::H2 => (18.0, 12.0, 6.0, true),
+        HeadingLevel::H3 => (15.5, 10.0, 4.0, false),
+        _ => (13.5, 8.0, 4.0, false),
+    };
+    let mut d = div()
+        .pt(px(top))
+        .pb(px(bottom))
+        .text_size(px(size))
+        .line_height(px(size * 1.35))
+        .text_color(ctx.body);
+    if let Some(t) = inl.into_text() {
+        d = d.child(t);
+    }
+    if border {
+        d = d.border_b_1().border_color(ctx.border);
+    }
+    d
+}
+
+/// 收集围栏/缩进代码块的纯文本,按行切分(去掉收尾换行产生的空尾行)。
+fn md_collect_code<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>) -> Vec<String> {
+    let mut text = String::new();
+    loop {
+        match events.next() {
+            None | Some(MdEvent::End(_)) => break,
+            Some(MdEvent::Text(t)) | Some(MdEvent::Code(t)) => text.push_str(&t),
+            _ => {}
+        }
+    }
+    let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// 代码块:L1 底 + 发丝边 + 圆角,逐行复用文件预览的 `highlight()` 着色器(mono)。
+fn md_code_block(lines: &[String], ctx: &MdCtx) -> gpui::Div {
+    let mut col_div = div().flex().flex_col();
+    let mut mono = ctx.base();
+    mono.mono = true;
+    for line in lines {
+        let spans = highlight(line);
+        let mut inl = MdInline::new();
+        if spans.is_empty() {
+            inl.push(" ", mono, &ctx.fonts); // 空行也占一行高
+        }
+        for (txt, tint) in spans {
+            let mut s = mono;
+            s.color = tint_color(ctx.config, tint).into();
+            inl.push(&txt, s, &ctx.fonts);
+        }
+        let mut row = div().text_size(px(12.0)).line_height(px(18.0));
+        if let Some(t) = inl.into_text() {
+            row = row.child(t);
+        }
+        col_div = col_div.child(row);
+    }
+    div()
+        .my(px(8.))
+        .px(px(12.))
+        .py(px(9.))
+        .rounded(px(crate::style::R_CARD))
+        .bg(ctx.block_bg)
+        .border_1()
+        .border_color(ctx.border)
+        .child(col_div)
+}
+
+/// 引用块:左侧 2px 竖条 + 缩进 + 次文色,内部是任意块。
+fn md_quote(inner: Vec<gpui::Div>, ctx: &MdCtx) -> gpui::Div {
+    div()
+        .my(px(6.))
+        .pl(px(12.))
+        .border_l(px(2.))
+        .border_color(ctx.quote)
+        .text_color(ctx.muted)
+        .flex()
+        .flex_col()
+        .children(inner)
+}
+
+/// 列表:逐 Item 渲染「标记 + 内容块」。有序用 `n.`,无序用 `•`。
+fn md_list<'e>(
+    events: &mut impl Iterator<Item = MdEvent<'e>>,
+    start: Option<u64>,
+    ctx: &MdCtx,
+) -> gpui::Div {
+    let mut idx = start;
+    let mut rows: Vec<gpui::Div> = Vec::new();
+    loop {
+        match events.next() {
+            None | Some(MdEvent::End(_)) => break,
+            Some(MdEvent::Start(Tag::Item)) => {
+                let blocks = md_blocks(events, ctx);
+                let marker = match idx {
+                    Some(n) => format!("{n}."),
+                    None => "•".to_string(),
+                };
+                if let Some(n) = idx.as_mut() {
+                    *n += 1;
+                }
+                rows.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(8.))
+                        .child(
+                            div()
+                                .flex_none()
+                                .min_w(px(18.))
+                                .text_size(px(13.5))
+                                .line_height(px(21.))
+                                .text_color(ctx.muted)
+                                .child(SharedString::from(marker)),
+                        )
+                        .child(div().flex_1().min_w(px(0.)).flex().flex_col().children(blocks)),
+                );
+            }
+            _ => {}
+        }
+    }
+    div().flex().flex_col().pb(px(6.)).children(rows)
+}
+
+/// 表格:表头 L1 底,逐行发丝边分隔,单元格等分宽。
+fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> gpui::Div {
+    let mut header: Vec<MdInline> = Vec::new();
+    let mut rows: Vec<Vec<MdInline>> = Vec::new();
+    loop {
+        match events.next() {
+            None | Some(MdEvent::End(_)) => break,
+            Some(MdEvent::Start(Tag::TableHead)) => header = md_row_cells(events, ctx),
+            Some(MdEvent::Start(Tag::TableRow)) => rows.push(md_row_cells(events, ctx)),
+            _ => {}
+        }
+    }
+    let mk_row = |cells: Vec<MdInline>, is_head: bool, ctx: &MdCtx| {
+        let mut r = div()
+            .flex()
+            .flex_row()
+            .border_b_1()
+            .border_color(ctx.border);
+        for c in cells {
+            let mut cell = div()
+                .flex_1()
+                .min_w(px(0.))
+                .px(px(9.))
+                .py(px(5.))
+                .text_size(px(13.))
+                .line_height(px(18.))
+                .text_color(ctx.body);
+            if is_head {
+                cell = cell.bg(ctx.block_bg).font_weight(FontWeight::BOLD);
+            }
+            if let Some(t) = c.into_text() {
+                cell = cell.child(t);
+            }
+            r = r.child(cell);
+        }
+        r
+    };
+    let mut tbl = div()
+        .my(px(8.))
+        .rounded(px(crate::style::R_CARD))
+        .border_1()
+        .border_color(ctx.border)
+        .overflow_hidden()
+        .flex()
+        .flex_col();
+    if !header.is_empty() {
+        tbl = tbl.child(mk_row(header, true, ctx));
+    }
+    for row in rows {
+        tbl = tbl.child(mk_row(row, false, ctx));
+    }
+    tbl
+}
+
+/// 收集一行(表头/表体)的所有单元格行内内容。
+fn md_row_cells<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<MdInline> {
+    let mut cells = Vec::new();
+    loop {
+        match events.next() {
+            None | Some(MdEvent::End(_)) => break,
+            Some(MdEvent::Start(Tag::TableCell)) => cells.push(md_inline(events, ctx, ctx.base())),
+            _ => {}
+        }
+    }
+    cells
+}
+
+/// Markdown 预览视图:解析整篇 → 块元素,装进可纵向滚动的浮板正文区。
+fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
+    let source = lines.join("\n");
+    let ctx = MdCtx {
+        config,
+        fonts: MdFonts {
+            sans: gpui::font(UI_SANS),
+            mono: gpui::font(&config.font().family),
+        },
+        body: gpui::rgb(crate::style::T0).into(),
+        muted: gpui::rgb(crate::style::T2).into(),
+        link: gpui::rgb(crate::style::INFO).into(),
+        code_fg: gpui::rgb(crate::style::T0).into(),
+        code_bg: gpui::rgb(crate::style::L2).into(),
+        block_bg: gpui::rgb(crate::style::L1).into(),
+        border: rgba(crate::style::H1).into(),
+        quote: rgba(crate::style::H2).into(),
+    };
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    let mut events = Parser::new_ext(&source, opts);
+    let blocks = md_blocks(&mut events, &ctx);
+    div()
+        .id("ql-md")
+        .size_full()
+        .overflow_y_scroll()
+        .bg(gpui::rgb(CODE_BG))
+        .px(px(18.))
+        .py(px(12.))
+        .font_family(SharedString::from(UI_SANS))
+        .children(blocks)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn buf(lines: &[&str]) -> Vec<String> {
         lines.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn markdown_path_detection() {
+        use std::path::Path;
+        assert!(is_markdown_path(Some(Path::new("README.md"))));
+        assert!(is_markdown_path(Some(Path::new("a/b/notes.MARKDOWN"))));
+        assert!(is_markdown_path(Some(Path::new("x.Mdx"))));
+        assert!(!is_markdown_path(Some(Path::new("main.rs"))));
+        assert!(!is_markdown_path(Some(Path::new("LICENSE"))));
+        assert!(!is_markdown_path(None));
+    }
+
+    #[test]
+    fn markdown_code_fence_collects_lines() {
+        // 围栏代码块按行切分,且收尾换行不产生空尾行。
+        let src = "```rust\nfn main() {}\nlet x = 1;\n```\n";
+        let mut events = Parser::new(src);
+        // 推进到 CodeBlock 的 Start,再交给 md_collect_code 吃掉正文 + End。
+        let mut got = None;
+        while let Some(ev) = events.next() {
+            if matches!(ev, MdEvent::Start(Tag::CodeBlock(_))) {
+                got = Some(md_collect_code(&mut events));
+                break;
+            }
+        }
+        assert_eq!(
+            got.as_deref(),
+            Some(&["fn main() {}".to_string(), "let x = 1;".to_string()][..]),
+        );
     }
 
     #[test]

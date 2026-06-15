@@ -24,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 notify.workspace = true # 活动栏「本次改动」文件监听(变化即刷新)
 smol_str = "0.3.2"
+pulldown-cmark = { version = "0.12", default-features = false } # Markdown 预览解析(纯 Rust CommonMark)
 
 # Document Preview Enhancements
 pdfium-render = "0.9.1"
