@@ -2556,6 +2556,19 @@ impl PetView {
         };
         body_dx += spin_sway;
 
+        // 狗窝软垫(规则 G 玩具):**画在最前 = 在狗身后**,小狗趴/站在垫上 ——
+        // 此前 blanket 在 out 末尾被压在狗身上,睡相像「盖了条横杠」(用户反馈奇怪)。
+        // 一条贴岗台的蓝灰垫,趴睡时略宽(像床),站立时窄一点(像踏垫);不随身体动。
+        if self.state.toy == Some(Toy::Blanket) {
+            let (x0, x1) = if lie { (0, 13) } else { (2, 11) };
+            for x in x0..=x1 {
+                out.push((x, 8, 0x6A7A95, 0.0, 4.0, 1.0, 0.5)); // 垫面(贴底,薄)
+            }
+            // 两端卷边低一点,垫子有厚度感。
+            out.push((x0, 8, 0x5A6A85, 0.0, 5.5, 1.0, 0.35));
+            out.push((x1, 8, 0x5A6A85, 0.0, 5.5, 1.0, 0.35));
+        }
+
         for (y, row) in rows.iter().enumerate() {
             let y = y as i32;
             for (x, ch) in row.chars().enumerate() {
@@ -2837,12 +2850,9 @@ impl PetView {
                     out.push((12, 8, 0xEDE6D6, 4.0, 1.0, 0.45, 0.45));
                 }
             }
-            Some(Toy::Blanket) => {
-                for x in 1..5 {
-                    out.push((x, 8, 0x6A7A95, 0.0, 3.0, 1.0, 0.5));
-                }
-            }
-            None => {}
+            // 毯子(狗窝软垫)在循环前已画在狗身后,见上方;此处不再重复(否则会
+            // 盖在狗身上)。
+            Some(Toy::Blanket) | None => {}
         }
         out
     }
