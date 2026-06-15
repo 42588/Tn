@@ -32,9 +32,10 @@ def _lerp(a, b, t):
 
 
 def render(size: int) -> Image.Image:
-    """Render the premium vibrant sci-fi icon at `size`×`size` (RGBA), supersampled then downscaled."""
+    """Render the premium vibrant sci-fi icon with Tn Monogram at `size`×`size` (RGBA)."""
     s = size * SS
     img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    scale = s / 256.0
 
     # ── Colors & Design Specs ──
     ph = PHOSPHOR + (255,)
@@ -49,12 +50,12 @@ def render(size: int) -> Image.Image:
         [0, 0, s - 1, s - 1], radius=bezel_radius, fill=255
     )
 
-    # Diagonal bezel fill (rich violet-blue to dark-tech slate)
+    # Diagonal bezel fill
     bezel_grad = Image.new("RGBA", (s, s))
     bgpx = bezel_grad.load()
     for y in range(s):
         for x in range(s):
-            t = (x + y) / (2 * (s - 1))
+            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
             r, g, b = _lerp((0x22, 0x26, 0x3F), (0x0E, 0x0F, 0x16), t)
             bgpx[x, y] = (r, g, b, 255)
     img.paste(bezel_grad, (0, 0), bezel_mask)
@@ -89,12 +90,12 @@ def render(size: int) -> Image.Image:
         screen_box, radius=screen_radius, fill=255
     )
 
-    # Deep recessed background gradient (rich dark blue to rich black)
+    # Deep recessed background gradient
     screen_bg = Image.new("RGBA", (s, s))
     sbpx = screen_bg.load()
     for y in range(s):
         for x in range(s):
-            t = (x + y) / (2 * (s - 1))
+            t = (x + y) / (2.0 * (s - 1)) if s > 1 else 0
             r, g, b = _lerp((0x12, 0x16, 0x25), (0x08, 0x0A, 0x10), t)
             sbpx[x, y] = (r, g, b, 255)
     img.paste(screen_bg, (0, 0), screen_mask)
@@ -109,62 +110,107 @@ def render(size: int) -> Image.Image:
     )
     img = Image.alpha_composite(img, screen_border)
 
-    # ── 3. Glowing Viewfinder Corner Brackets ──
+    # ── 3. Screen Grid HUD (Radar and crosshairs) ──
+    # Only draw when size >= 24 to avoid rendering messy lines at 16px
+    if size >= 24:
+        hud = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+        hd = ImageDraw.Draw(hud)
+        hud_color = PHOSPHOR + (20,) # very faint
+        
+        # Radar circles
+        # r = 80
+        hd.ellipse([
+            round(48 * scale), round(48 * scale),
+            round(208 * scale), round(208 * scale)
+        ], fill=None, outline=PHOSPHOR + (15,))
+        # r = 50
+        hd.ellipse([
+            round(78 * scale), round(78 * scale),
+            round(178 * scale), round(178 * scale)
+        ], fill=None, outline=PHOSPHOR + (10,))
+
+        # Crosshairs
+        hd.line([(round(128 * scale), round(20 * scale)), (round(128 * scale), round(40 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(128 * scale), round(216 * scale)), (round(128 * scale), round(236 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(20 * scale), round(128 * scale)), (round(40 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
+        hd.line([(round(216 * scale), round(128 * scale)), (round(236 * scale), round(128 * scale))], fill=hud_color, width=max(1, SS // 4))
+        
+        # Center ticks
+        hd.line([(round(120 * scale), round(128 * scale)), (round(136 * scale), round(128 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
+        hd.line([(round(128 * scale), round(120 * scale)), (round(128 * scale), round(136 * scale))], fill=PHOSPHOR + (40,), width=max(1, SS // 4))
+        
+        img = Image.alpha_composite(img, hud)
+
+    # ── 4. Drawing Paths (Monogram and Viewfinder Brackets) ──
     mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
     md = ImageDraw.Draw(mark)
 
-    w = max(1, round(0.035 * s))       # sleeker bracket stroke
-    inset = round(0.180 * s)           # bracket inset from outer edge
-    arm = round(0.120 * s)             # arm length
-    cap = w / 2.0
-    glow_cap = (w * 2.2) / 2.0
+    w_sharp = max(1, round(3.2 * scale))
+    w_glow = max(1, round(8.0 * scale))
 
-    corners = [
-        (inset, inset, 1, 1),
-        (s - inset, inset, -1, 1),
-        (inset, s - inset, 1, -1),
-        (s - inset, s - inset, -1, -1),
+    def draw_strip(points, width, color):
+        scaled_pts = [(round(p[0] * scale), round(p[1] * scale)) for p in points]
+        md.line(scaled_pts, fill=color, width=width, joint="round")
+        cap = width / 2.0
+        for pt in scaled_pts:
+            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
+
+    def draw_n_arc(width, color):
+        # Bounding box of the arc: [135, 110, 155, 130]
+        arc_box = [round(135 * scale), round(110 * scale), round(155 * scale), round(130 * scale)]
+        md.arc(arc_box, start=180, end=360, fill=color, width=width)
+        cap = width / 2.0
+        # Round caps at the arc endpoints
+        for pt in [(round(135 * scale), round(120 * scale)), (round(155 * scale), round(120 * scale))]:
+            md.ellipse([pt[0] - cap, pt[1] - cap, pt[0] + cap, pt[1] + cap], fill=color)
+
+    # ── Viewfinder brackets ──
+    brackets = [
+        [(60, 80), (60, 60), (80, 60)],
+        [(176, 60), (196, 60), (196, 80)],
+        [(60, 176), (60, 196), (80, 196)],
+        [(176, 196), (196, 196), (196, 176)]
     ]
 
-    # Glow pass for brackets
-    for cx, cy, sx, sy in corners:
-        md.line([(cx, cy), (cx + sx * arm, cy)], fill=ph_glow, width=int(w * 2.2))
-        md.line([(cx, cy), (cx, cy + sy * arm)], fill=ph_glow, width=int(w * 2.2))
-        # Round the bracket ends for glow
-        for ex, ey in ((cx, cy), (cx + sx * arm, cy), (cx, cy + sy * arm)):
-            md.ellipse([ex - glow_cap, ey - glow_cap, ex + glow_cap, ey + glow_cap], fill=ph_glow)
+    # Glow pass for brackets & logo
+    if size >= 24:  # skip glow at 16px to avoid blur mess
+        for pts in brackets:
+            draw_strip(pts, w_glow, ph_glow)
+        
+        # T glow
+        draw_strip([(85, 105), (125, 105)], w_glow, ph_glow) # T bar
+        draw_strip([(105, 105), (105, 155)], w_glow, ph_glow) # T stem
+        # n glow
+        draw_strip([(135, 155), (135, 120)], w_glow, ph_glow) # n left leg
+        draw_n_arc(w_glow, ph_glow)                          # n arc
+        draw_strip([(155, 120), (155, 155)], w_glow, ph_glow) # n right leg
 
-    # Sharp pass for brackets
-    for cx, cy, sx, sy in corners:
-        md.line([(cx, cy), (cx + sx * arm, cy)], fill=ph, width=w)
-        md.line([(cx, cy), (cx, cy + sy * arm)], fill=ph, width=w)
-        # Round the bracket ends for sharp
-        for ex, ey in ((cx, cy), (cx + sx * arm, cy), (cx, cy + sy * arm)):
-            md.ellipse([ex - cap, ey - cap, ex + cap, ey + cap], fill=ph)
+    # Sharp pass for brackets & logo
+    # For very small size (16px), scale line width up slightly to keep it sharp
+    w_draw_sharp = max(SS, w_sharp)
+    for pts in brackets:
+        draw_strip(pts, w_draw_sharp, ph)
+    
+    # T sharp
+    draw_strip([(85, 105), (125, 105)], w_draw_sharp, ph)
+    draw_strip([(105, 105), (105, 155)], w_draw_sharp, ph)
+    # n sharp
+    draw_strip([(135, 155), (135, 120)], w_draw_sharp, ph)
+    draw_n_arc(w_draw_sharp, ph)
+    draw_strip([(155, 120), (155, 155)], w_draw_sharp, ph)
 
-    # ── 4. Glowing Block Cursor ──
-    cx = s / 2
-    cy = s / 2
-    cur_left = round(0.44 * s)
-    cur_right = round(0.56 * s)
-    cur_top = round(0.42 * s)
-    cur_bot = round(0.58 * s)
-    cur_radius = max(1, round(0.015 * s))
-
-    # Glow pass for cursor
-    glow_expand = round(0.02 * s)
-    md.rounded_rectangle(
-        [cur_left - glow_expand, cur_top - glow_expand, cur_right + glow_expand, cur_bot + glow_expand],
-        radius=cur_radius + glow_expand,
-        fill=ph_glow
-    )
-
-    # Sharp pass for cursor
-    md.rounded_rectangle(
-        [cur_left, cur_top, cur_right, cur_bot],
-        radius=cur_radius,
-        fill=ph
-    )
+    # ── 5. HUD Text details (only draw if size >= 64) ──
+    if size >= 64:
+        try:
+            from PIL import ImageFont
+            font = ImageFont.load_default()
+            text_color = PHOSPHOR + (75,) # faint text
+            md.text((round(32 * scale), round(38 * scale)), "SYS_ON", fill=text_color, font=font)
+            md.text((round(180 * scale), round(38 * scale)), "CH.01", fill=text_color, font=font)
+            md.text((round(32 * scale), round(208 * scale)), "LNK: OK", fill=text_color, font=font)
+            md.text((round(176 * scale), round(208 * scale)), "v2.0.7", fill=text_color, font=font)
+        except Exception:
+            pass
 
     img = Image.alpha_composite(img, mark)
     return img.resize((size, size), Image.LANCZOS)
