@@ -846,11 +846,15 @@ impl PetContext {
 const PLAY_MS: u64 = 1400;
 /// 探头入场窗口(SHEET 05-E:从岗台线后升起,全高裁切,~500ms 缓出)。
 const PEEK_MS: u64 = 500;
-/// idle 微动作单次时长(规则 C:做完 ≤1.5s 回 idle)。
-const MICRO_MS: u64 = 1500;
-/// 微动作随机触发间隔下限 / 抖动跨度(规则 C:20–60s 随机一个)。
-const MICRO_GAP_MIN_MS: u64 = 20_000;
-const MICRO_GAP_SPAN_MS: u64 = 40_000;
+/// idle 微动作单次时长(规则 C:做完 ≤1.5s 回 idle)。略加长到 1.8s,
+/// 让动作有起-保持-收的余地、真的看得清(此前 1.5s 一闪而过)。
+const MICRO_MS: u64 = 1800;
+/// 微动作随机触发间隔下限 / 抖动跨度。原 20–60s 太稀、几乎遇不到;收紧到
+/// 12–28s(仍受 ≤2 次/分钟预算约束,不会聒噪),让「活着」真的被看到。
+const MICRO_GAP_MIN_MS: u64 = 12_000;
+const MICRO_GAP_SPAN_MS: u64 = 16_000;
+/// 首个微动作的提前量:启动后 ~7s 就来一个,让用户立刻感到它是活的。
+const MICRO_FIRST_MS: u64 = 7_000;
 /// 投喂演出总时长(规则 B 板 F:抛接 → 咀嚼 → 爱心 + 摆尾收尾)。
 const FEED_MS: u64 = 2200;
 /// 饼干像素色(暖棕,非磷光;SHEET 05 板 F #C99052)。
@@ -1115,7 +1119,7 @@ impl PetView {
             micro: None,
             micro_until_ms: 0,
             last_micro: None,
-            next_micro_ms: now + MICRO_GAP_MIN_MS,
+            next_micro_ms: now + MICRO_FIRST_MS,
             micro_times: [0, 0],
             rng: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1162,6 +1166,7 @@ impl PetView {
             view.adopt_breed = breed;
             view.name_editing = Some(breed.name_cn().to_string()); // 默认 = 品种名
             view.grab_focus = true;
+            Self::spawn_card_focus_driver(cx); // 重绘心跳:把焦点稳稳落到领养卡
         }
         // 动画/上下文 tick:240ms。变化才 notify(空闲时零重绘)。
         let exec = cx.background_executor().clone();
@@ -1949,7 +1954,33 @@ impl PetView {
         self.name_editing = Some(self.display_name());
         self.menu_open = false;
         self.grab_focus = true;
+        Self::spawn_card_focus_driver(cx);
         cx.notify();
+    }
+
+    /// 文本输入卡(领养 / 改名)打开期间的重绘心跳:卡片本身是静态的、不会触发
+    /// fingerprint 变化 → 不重绘 → render 里的「每帧重夺焦点」就跑不到。这里在卡片
+    /// 打开期间 120ms notify 一次,保证 render 反复执行把焦点稳稳落到输入卡;卡片
+    /// 关闭即自停。(reduced motion 也要能改名,故不受 motion 开关影响。)
+    fn spawn_card_focus_driver(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| loop {
+            cx.background_executor()
+                .timer(Duration::from_millis(120))
+                .await;
+            let open = this
+                .update(cx, |pet, cx| {
+                    let open = pet.adopt_open || pet.name_editing.is_some();
+                    if open {
+                        cx.notify();
+                    }
+                    open
+                })
+                .unwrap_or(false);
+            if !open {
+                break;
+            }
+        })
+        .detach();
     }
 
     /// 提交名字(领养命名 / 改名共用):≤8 显示字,空 = 用品种名。
@@ -2456,6 +2487,10 @@ impl PetView {
         if motion && self.ctx == PetContext::Idle && !lie && self.breath {
             body_dy += 1.0; // 呼吸 1px 沉浮
         }
+        // 奔跑起伏(gallop bob):整身随步态相位上下颠 ~2px,比单纯换脚更有冲劲。
+        if motion && self.ctx == PetContext::Running {
+            body_dy += if self.phase { -1.5 } else { 0.5 };
+        }
         let mut body_dx = 0.0_f32;
         // 探头入场(SHEET 05-E 审核定稿):从岗台线**后面**升起 —— 全高(9 格)
         // 下沉起步、缓出上浮,线下部分由 painter 裁切;不是可见状态下的位移。
@@ -2509,6 +2544,18 @@ impl PetView {
         // 肚皮行(8)贴岗台不动(审核稿吸气帧,无裂缝)。
         let inhale = lie && motion && self.breath;
 
+        // 追尾转圈(Spin)= 绕立轴旋转的 2D 读法:整身宽度按 cos 收放(侧脸最窄)、
+        // cos<0 即转到背面 → 水平镜像;同时身体画个小圈(sin 横摆)。比单纯镜像翻面
+        // 真实得多 —— 看上去是在原地转圈,而不是「左右横跳」。
+        let (spin_ws, spin_flip, spin_sway) = if motion && self.micro == Some(Micro::Spin) {
+            let a = (now % 720) as f32 / 720.0 * std::f32::consts::TAU; // 0.72s 一圈
+            let c = a.cos();
+            (c.abs().max(0.18), c < 0.0, a.sin() * 3.0)
+        } else {
+            (1.0, false, 0.0)
+        };
+        body_dx += spin_sway;
+
         for (y, row) in rows.iter().enumerate() {
             let y = y as i32;
             for (x, ch) in row.chars().enumerate() {
@@ -2518,12 +2565,17 @@ impl PetView {
                 };
                 let mut dx = body_dx;
                 let mut dy = body_dy;
-                let ws = 1.0_f32;
+                let mut ws = 1.0_f32;
                 let mut hs = 1.0_f32;
                 let is_eye = eyes.contains(&(x, y));
                 let is_ear = !lie && sp.ears.contains(&(x, y));
                 let is_tail = !lie && sp.tail.contains(&(x, y));
                 let is_leg = !lie && y == 8;
+                // 转圈:列向中心列(x=7)收拢 + 单元格变窄 → 整身绕中轴压扁(旋转读法)。
+                if spin_ws < 1.0 {
+                    ws = spin_ws;
+                    dx += (7.0 - x as f32) * CELL * (1.0 - spin_ws);
+                }
 
                 if inhale {
                     if y <= 6 {
@@ -2565,33 +2617,54 @@ impl PetView {
                 // 活物引擎(规则 C):idle 微动作,全部用既有 dx/dy 变换(追尾的
                 // 水平镜像在 out 构建后统一处理)。sub = 快速子相位(抖动/交替)。
                 if let Some(m) = self.micro {
-                    let sub = (now / 110) % 2 == 0;
+                    let sub = (now / 100) % 2 == 0;
                     match m {
-                        // ① 抓痒:后腿(右侧腿格)上抬并快速抖动。
-                        Micro::Scratch if is_leg && x >= 7 => {
-                            dy -= 3.0;
-                            dx += if sub { 1.0 } else { -1.0 };
+                        // ① 抓痒:后腿(右侧腿格)大幅上抬 + 快速抖动;头随之微歪向后腿。
+                        Micro::Scratch => {
+                            if is_leg && x >= 7 {
+                                dy -= 5.0;
+                                dx += if sub { 2.0 } else { -2.0 };
+                            }
+                            if y <= 3 && x >= 7 {
+                                dy += 1.0; // 头偏向被挠的一侧
+                            }
                         }
-                        // ② 舔爪:头低 1 格 + 前爪(左侧腿格)上抬。
+                        // ② 舔爪:头低 + 前爪(左侧腿格)抬到嘴边并随子相位「舔」。
                         Micro::Lick => {
                             if y <= 5 {
-                                dy += CELL;
+                                dy += CELL * 0.8;
                             }
                             if is_leg && x < 7 {
-                                dy -= 2.0;
+                                dy -= 4.0 + if sub { 1.5 } else { 0.0 };
                             }
                         }
-                        // ④ 竖耳听声:双耳 +1 格(垂耳犬权重为 0,不会进到这里)。
-                        Micro::EarPerk if is_ear => dy -= CELL,
-                        // ⑤ 望屏外:头部右移 1 格。
-                        Micro::LookAway if y <= 5 => dx += CELL,
-                        // ⑥ 伸懒腰:前低后高 —— 头顶行 +1px 下压,尾巴 −1px 上扬。
-                        Micro::Stretch => {
+                        // ④ 竖耳听声:双耳 +1 格 + 头略抬(垂耳犬权重为 0,不会进到这里)。
+                        Micro::EarPerk => {
+                            if is_ear {
+                                dy -= CELL;
+                            } else if y <= 2 {
+                                dy -= 1.0;
+                            }
+                        }
+                        // ⑤ 望屏外:头部右移 1 格 + 略抬,像被窗外什么吸引。
+                        Micro::LookAway if y <= 5 => {
+                            dx += CELL;
                             if y <= 2 {
-                                dy += 1.0;
+                                dy -= 1.5;
+                            }
+                        }
+                        // ⑥ 伸懒腰(作揖 play bow):前身压低 + 前爪前伸,后身/尾抬高。
+                        Micro::Stretch => {
+                            if y <= 3 {
+                                dy += 2.5; // 头胸贴地
+                            }
+                            if is_leg && x < 7 {
+                                dx -= 3.0; // 前爪前伸
                             }
                             if is_tail {
-                                dy -= 1.0;
+                                dy -= 2.5; // 翘臀
+                            } else if y >= 6 && x >= 8 {
+                                dy -= 1.0; // 后背微抬
                             }
                         }
                         _ => {}
@@ -2618,6 +2691,10 @@ impl PetView {
                 if is_ear && self.ctx == PetContext::Error {
                     dy += CELL * 0.6;
                 }
+                // 奔跑耳朵扇动:随步态相位上下扑 ~2px(有立耳的犬更明显)。
+                if is_ear && self.ctx == PetContext::Running && motion {
+                    dy += if self.phase { -2.0 } else { 1.0 };
+                }
                 // 尾摆:running 快摆 2px,玩耍 3px 最欢;其余按品种基础幅度
                 // (规则 D 尾摆幅度列:1/2/3px);趴姿不摆。
                 if is_tail && motion {
@@ -2629,10 +2706,14 @@ impl PetView {
                     };
                     dy += if self.phase { -amp } else { amp };
                 }
-                // 小跑步态:脚掌前后交替(规则)。drag 时腿下垂。
+                // 小跑步态:脚掌前后交替 + 抬腿(规则)。drag 时腿下垂。
                 if is_leg {
                     if self.ctx == PetContext::Running && motion {
-                        dx += if (x < 7) == self.phase { 2.0 } else { -2.0 };
+                        let front = x < 7;
+                        dx += if front == self.phase { 3.0 } else { -3.0 }; // 更大步幅
+                        if front == self.phase {
+                            dy -= 2.0; // 迈出的那对脚抬起,奔跑感更足
+                        }
                     }
                     if self.ctx == PetContext::Drag {
                         dy += 3.0; // 悬空腿下垂
@@ -2721,21 +2802,40 @@ impl PetView {
             out.push((6, my, 0x323F49, body_dx, dy, 0.8, o));
             out.push((7, my, 0x323F49, body_dx + CELL * 0.2, dy, 0.8, o));
         }
-        // ③ 追尾转圈(规则 C):整身水平镜像 —— 翻转即「转身」,零新网格。
-        // 用慢子相位在 1.5s 内翻 ~2 次;镜像 x 与 dx 同时取反。
-        if motion && self.micro == Some(Micro::Spin) && (now / 360) % 2 == 1 {
+        // ③ 追尾转圈(规则 C):转到背面(cos<0)即整身水平镜像 —— 与上面的宽度
+        // 收放一起把翻面演成「转过去」,零新网格。镜像 x 与 dx 同时取反。
+        if spin_flip {
             for c in out.iter_mut() {
                 c.0 = 13 - c.0;
                 c.3 = -c.3;
             }
         }
-        // 岗台摆设(规则 G:暖色非磷光,贴地不随身体动;放在镜像之后免得追尾时跳位)。
+        // 岗台摆设(规则 G:暖色非磷光)。**逗弄(Play)时小狗真的跟玩具互动** ——
+        // 球被拍得蹦跳翻滚、骨头被叼到嘴边随身一起跳;平时则安静摆在岗台。
+        let playing = motion && self.ctx == PetContext::Play;
         match self.state.toy {
-            Some(Toy::Ball) => out.push((12, 8, 0xE36B6B, 0.0, -1.0, 0.9, 0.9)),
+            Some(Toy::Ball) => {
+                if playing {
+                    // 球被拍起来:与小狗蹦跳反相地上下弹 + 左右滚一点。
+                    let by = if self.phase { -9.0 } else { 0.0 };
+                    let bx = if self.phase { -3.0 } else { 1.5 };
+                    out.push((12, 8, 0xE36B6B, bx, by, 0.9, 0.9));
+                } else {
+                    out.push((12, 8, 0xE36B6B, 0.0, -1.0, 0.9, 0.9));
+                }
+            }
             Some(Toy::Bone) => {
-                out.push((11, 8, 0xEDE6D6, 1.0, 1.0, 0.45, 0.45));
-                out.push((12, 8, 0xEDE6D6, 0.0, 1.0, 0.9, 0.45));
-                out.push((12, 8, 0xEDE6D6, 4.0, 1.0, 0.45, 0.45));
+                if playing {
+                    // 叼着骨头:横在嘴边、随蹦跳(body_dy)一起上下。
+                    let my = (eyes[0].1 + 2).min(8);
+                    out.push((5, my, 0xEDE6D6, 2.0 + body_dx, body_dy, 0.45, 0.45));
+                    out.push((6, my, 0xEDE6D6, body_dx, body_dy, 1.4, 0.45));
+                    out.push((8, my, 0xEDE6D6, -1.0 + body_dx, body_dy, 0.45, 0.45));
+                } else {
+                    out.push((11, 8, 0xEDE6D6, 1.0, 1.0, 0.45, 0.45));
+                    out.push((12, 8, 0xEDE6D6, 0.0, 1.0, 0.9, 0.45));
+                    out.push((12, 8, 0xEDE6D6, 4.0, 1.0, 0.45, 0.45));
+                }
             }
             Some(Toy::Blanket) => {
                 for x in 1..5 {
@@ -2744,10 +2844,6 @@ impl PetView {
             }
             None => {}
         }
-        // 磷光通道的光点轨迹与目标接缝裂缝**不在本盒内画**(盒只有 100×84,够不到
-        // 屏幕中央的面板)。它由 render() 的全屏 channel canvas 绘制:光点从宠物头顶
-        // 飞到真实 UI 锚点并在那里开/合裂缝(规则 J「钥匙打开空间」)。本盒只保留
-        // 「蓄力压身」反应(见上方 body_dy)。
         out
     }
 }
@@ -3014,18 +3110,23 @@ impl Render for PetView {
                     .child(label)
             };
             // 档案只读行(规则 F:名字 · 品种 · 在一起第 N 天;平时不展示、不提醒)。
-            let archive = format!(
-                "{} · {} · 在一起第 {} 天",
-                self.display_name(),
-                self.breed.name_cn(),
-                self.state.days_together.max(1),
-            );
+            let day_n = self.state.days_together.max(1);
+            // 钳进视口:左缘对齐宠物盒、但不越界(此前固定右锚 → 到边栏被裁剪);
+            // 底边贴岗台上方、不顶标题栏;过高则在窗内滚动(菜单较长)。
+            let menu_w = 212.0_f32;
+            let menu_left = (vw - right - box_w).clamp(8.0, (vw - menu_w - 8.0).max(8.0));
+            let menu_bottom =
+                (bottom + 6.0).clamp(STATUSBAR_H + 6.0, (vh - 16.0).max(STATUSBAR_H + 6.0));
+            let menu_max_h = (vh - menu_bottom - 12.0).max(180.0);
             let mut menu = div()
+                .id("pet-menu") // overflow_y_scroll 需 stateful 元素(带 id)
                 .absolute()
-                .right(px(right + box_w - 10.))
-                .bottom(px(bottom + 6.))
-                .w(px(200.))
-                .p(px(5.))
+                .left(px(menu_left))
+                .bottom(px(menu_bottom))
+                .w(px(menu_w))
+                .max_h(px(menu_max_h))
+                .overflow_y_scroll()
+                .p(px(6.))
                 .rounded(px(crate::style::R_PANEL))
                 .border_1()
                 .border_color(rgba(H2))
@@ -3035,6 +3136,44 @@ impl Render for PetView {
                     MouseButton::Left,
                     cx.listener(|_p, _e, _w, cx| cx.stop_propagation()),
                 )
+                .on_scroll_wheel(
+                    cx.listener(|_p, _e: &gpui::ScrollWheelEvent, _w, cx| cx.stop_propagation()),
+                )
+                // 身份页眉(规则 F 档案):名字 · 品种 · 第 N 天 —— 大字名 + 弱灰副行。
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(1.))
+                        .px(px(8.))
+                        .pt(px(2.))
+                        .pb(px(6.))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(div().text_color(rgb(PH)).text_size(px(11.)).child("⌂"))
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .text_color(rgb(T0))
+                                        .child(SharedString::from(self.display_name())),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(9.))
+                                .text_color(rgb(T3))
+                                .child(SharedString::from(format!(
+                                    "{} · 在一起第 {} 天",
+                                    self.breed.name_cn(),
+                                    day_n,
+                                ))),
+                        ),
+                )
+                .child(sep())
                 // 给小饼干(规则 B 首组):今日还有则可点,喂过置灰「今天吃过啦」。
                 .child({
                     let can = self.can_feed_today();
@@ -3070,20 +3209,6 @@ impl Render for PetView {
                     }
                     row
                 })
-                .child(sep())
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(9.))
-                        .h(px(26.))
-                        .px(px(10.))
-                        .text_size(px(11.))
-                        .text_color(rgb(T2))
-                        .child(div().text_color(rgb(PH)).child("⌂"))
-                        .child(SharedString::from(archive)),
-                )
                 // 记忆透明(规则 I):「它记得:…」最多 3 标签;无数据 → 还在认识你。
                 .child({
                     let labels = self.memory_labels();
@@ -3262,11 +3387,14 @@ impl Render for PetView {
             menu
         });
 
-        // 浮层刚打开 → 下一帧抓焦点(领养卡 / 改名输入键盘可达)。
-        if self.grab_focus {
+        // 文本输入卡(领养 / 改名)打开期间 **每帧重夺焦点**,而非一次性 grab ——
+        // 一次性 grab 偶尔抢不到第一帧、或被宿主重新泊焦抢走,导致「打不出字」
+        // (与 workspace 浮层同款修法:focus() 幂等,已聚焦即早退,不会循环)。
+        let text_card_open = self.adopt_open || self.name_editing.is_some();
+        if text_card_open && (self.grab_focus || !self.focus.is_focused(window)) {
             window.focus(&self.focus);
-            self.grab_focus = false;
         }
+        self.grab_focus = false;
 
         // ── 领养卡(规则 0:首次启用宠物的一次性领养仪式;浮层家族)──
         let adopt_card = self.adopt_open.then(|| self.render_adopt_card(cx));
