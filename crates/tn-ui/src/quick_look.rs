@@ -1904,6 +1904,7 @@ impl QuickLook {
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
+                        let dynamic_img = dynamic_img.thumbnail(2048, 2048);
                         let render_img = dynamic_image_to_render_image(dynamic_img);
                         Ok(render_img)
                     })
