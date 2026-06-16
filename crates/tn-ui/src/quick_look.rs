@@ -1947,17 +1947,51 @@ impl QuickLook {
                             // 1000px 对速览足够清晰,比 1200 省 ~30% JPEG 字节/页内存(审查⑪)。
                             let render_config = PdfRenderConfig::new().set_target_width(1000);
                             use futures::StreamExt;
-                            while let Some(i) = render_rx.next().await {
+                            // 每 100ms 检查一次 cancel token，打破「pdfium 线程卡在
+                            // render_rx.next().await → render_rx 不关闭 → 外层协调循环不退出」
+                            // 的循环死锁。与图片预览的 cancel_token 策略对齐。
+                            'render_loop: loop {
+                                let render_fut = render_rx.next();
+                                let timer_fut = exec_debounce
+                                    .timer(std::time::Duration::from_millis(100));
+                                futures::pin_mut!(render_fut);
+                                futures::pin_mut!(timer_fut);
+
+                                let i = match futures::future::select(
+                                    render_fut,
+                                    timer_fut,
+                                )
+                                .await
+                                {
+                                    futures::future::Either::Left((Some(i), _)) => i,
+                                    futures::future::Either::Left((None, _)) => {
+                                        // render_rx channel 已关闭（所有 sender 被 drop）
+                                        break 'render_loop;
+                                    }
+                                    futures::future::Either::Right((_, _)) => {
+                                        // 定时器触发：检查 cancel
+                                        if pdf_cancel
+                                            .load(std::sync::atomic::Ordering::Relaxed)
+                                        {
+                                            break 'render_loop;
+                                        }
+                                        continue 'render_loop;
+                                    }
+                                };
+
                                 if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                                    break;
+                                    break 'render_loop;
                                 }
                                 if i >= limit {
-                                    continue;
+                                    continue 'render_loop;
                                 }
                                 if let Ok(page) = document.pages().get((i as u16).into()) {
-                                    if let Ok(bitmap) = page.render_with_config(&render_config) {
+                                    if let Ok(bitmap) =
+                                        page.render_with_config(&render_config)
+                                    {
                                         if let Ok(img) = bitmap.as_image() {
-                                            let render_img = dynamic_image_to_render_image(img);
+                                            let render_img =
+                                                dynamic_image_to_render_image(img);
                                             let _ = tx.unbounded_send(Ok((
                                                 limit,
                                                 Some((i, Arc::new(render_img))),
@@ -1965,9 +1999,11 @@ impl QuickLook {
                                         }
                                     }
                                 }
-                                // Reclaim PDF rendering engine and bitmap memory dynamically
+                                // 每页渲染完立即回收 pdfium bitmap 缓存
                                 unsafe { mi_collect(true); }
                             }
+                            // pdfium 线程退出：立即物理回收 document 占用的内存（字体/资源树等）
+                            unsafe { mi_collect(true); }
                         }
                         Err(_) => {
                             let _ = tx.unbounded_send(Err("无法解析此 PDF 文件".to_string()));
@@ -2004,16 +2040,22 @@ impl QuickLook {
                             });
                         }
                         Ok((_, Some((i, img)))) => {
+                            // generation 检查必须在 arc.lock() 之前完成：
+                            // 若先写入 pages_arc 再逐出 GPU，CPU 侧 RenderImage
+                            // 字节缓冲区仍被 pages_arc 持有，内存不会释放。
                             if let Some(arc) = &pages_arc {
-                                if let Ok(mut lock) = arc.lock() {
-                                    lock[i] = Some(img.clone());
-                                }
+                                let arc_clone = arc.clone();
                                 let _ = this.update(cx, |v, cx| {
                                     if v.generation != gen {
+                                        // 过时结果：只逐出 GPU 纹理，不写入 pages_arc
                                         evict_render_image(&img, cx);
-                                    } else {
-                                        cx.notify();
+                                        return;
                                     }
+                                    // 当前 generation：写入 pages_arc 并通知重绘
+                                    if let Ok(mut lock) = arc_clone.lock() {
+                                        lock[i] = Some(img.clone());
+                                    }
+                                    cx.notify();
                                 });
                             }
                         }
@@ -2033,6 +2075,9 @@ impl QuickLook {
                         }
                     }
                 }
+                // 外层协调循环退出（pdfium 线程已退出，pages_arc 即将析构）
+                // 立即物理回收已渲染页面缓冲区和 pdfium 零散分配，与图片预览策略对齐。
+                unsafe { mi_collect(true); }
                 return;
             }
 
