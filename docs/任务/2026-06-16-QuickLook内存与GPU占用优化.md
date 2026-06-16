@@ -46,3 +46,27 @@
 1. 运行 `cargo check` 确保编译通过。
 2. 运行 `cargo test -p tn-ui`，全量测试 208 个用例全部成功通过，无任何 Regression。
 3. 实际真机体验中，切换图片时内存曲线极速回落，完美解决切换时的 300MB+ 内存重叠峰值和 1-2 秒的释放延迟，实现了极其平滑的资源回收效果。
+
+---
+
+## 补丁（2026-06-17）：PDF 按需渲染管道接通
+
+### 根因
+
+用户反馈**打开 PDF 时内存就已经很大**。排查发现 render 分支解构 `QuickLookData::Pdf` 时只取了 `{ pages, page_count }`，漏掉了 `render_tx` 和 `requested` 两个字段。
+
+- 后台 pdfium 渲染线程在 `render_rx.next().await` 永远阻塞，没有任何页面渲染请求被发出。
+- `uniform_list` 闭包看到的所有 `lock[i]` 都是 `None`，展示暗色占位，但**从不触发懒加载**。
+- 结果：pdfium 把整个 PDF 文档（结构树、字体、资源字典）全部挂在内存，却什么都不渲染。
+- 顺带发现 `document.pages().get(i as u16)` 存在类型错误（`PdfPageIndex = i32`），属预存编译错误。
+
+### 修复（commit `f0e4205`）
+
+1. render 分支完整解构 `QuickLookData::Pdf { pages, page_count, render_tx, requested }`
+2. `uniform_list` 闭包内：当 `lock[i]` 为 `None` 时，通过 `requested` HashSet 防止重复请求，然后 `render_tx.unbounded_send(i)` 触发后台按需渲染，同时预取 `i+1` 减少翻页等待。
+3. 修复 `PdfPageIndex` 类型错误：`i as u16` → `(i as u16).into()`。
+
+### 验证
+
+`cargo check` + `cargo test -p tn-ui` 208 全绿，0 失败。
+
