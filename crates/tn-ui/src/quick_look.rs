@@ -2016,6 +2016,14 @@ impl QuickLook {
                 let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>> =
                     None;
 
+                // 最多在内存中保留 MAX_RENDERED_PAGES 页（LRU 策略）。
+                // 每页 1000×~1400px × 4B ≈ 5.6MB，8 页约 45MB 上限。
+                // 翻出窗口的页面从 pages_arc 移除（CPU 内存释放）+ GPU 纹理驱逐
+                // + 从 requested 清除（允许重新渲染），与图片预览驻留策略对齐。
+                const MAX_RENDERED_PAGES: usize = 8;
+                let mut render_order: std::collections::VecDeque<usize> =
+                    std::collections::VecDeque::new();
+
                 let render_tx_clone = render_tx.clone();
                 let requested_clone = requested.clone();
                 while let Some(msg) = rx.next().await {
@@ -2044,15 +2052,36 @@ impl QuickLook {
                             // 若先写入 pages_arc 再逐出 GPU，CPU 侧 RenderImage
                             // 字节缓冲区仍被 pages_arc 持有，内存不会释放。
                             if let Some(arc) = &pages_arc {
+                                // LRU：记录本页渲染顺序，超出上限则驱逐最旧页
+                                render_order.retain(|&x| x != i); // 去重（重渲染时）
+                                render_order.push_front(i);
+                                let evict_idx = if render_order.len() > MAX_RENDERED_PAGES {
+                                    render_order.pop_back()
+                                } else {
+                                    None
+                                };
+
                                 let arc_clone = arc.clone();
+                                let req_for_evict = requested_clone.clone();
                                 let _ = this.update(cx, |v, cx| {
                                     if v.generation != gen {
                                         // 过时结果：只逐出 GPU 纹理，不写入 pages_arc
                                         evict_render_image(&img, cx);
                                         return;
                                     }
-                                    // 当前 generation：写入 pages_arc 并通知重绘
                                     if let Ok(mut lock) = arc_clone.lock() {
+                                        // 先驱逐最旧页（LRU eviction）
+                                        if let Some(old_idx) = evict_idx {
+                                            if let Some(old_img) = lock[old_idx].take() {
+                                                // 释放 GPU 纹理
+                                                evict_render_image(&old_img, cx);
+                                                // 从 requested 移除，允许重新渲染
+                                                if let Ok(mut req) = req_for_evict.lock() {
+                                                    req.remove(&old_idx);
+                                                }
+                                            }
+                                        }
+                                        // 再写入当前页
                                         lock[i] = Some(img.clone());
                                     }
                                     cx.notify();
