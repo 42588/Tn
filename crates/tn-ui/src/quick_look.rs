@@ -1324,6 +1324,48 @@ fn evict_render_image(img: &Arc<RenderImage>, cx: &mut App) {
     }
 }
 
+fn resize_image_to_fit(img: image::DynamicImage, max_w: u32, max_h: u32) -> image::DynamicImage {
+    let (width, height) = (img.width(), img.height());
+    if width <= max_w && height <= max_h {
+        return img;
+    }
+
+    let ratio = width as f32 / height as f32;
+    let (new_w, new_h) = if width > height {
+        let new_w = max_w.min(width);
+        let new_h = (new_w as f32 / ratio).round() as u32;
+        (new_w, new_h)
+    } else {
+        let new_h = max_h.min(height);
+        let new_w = (new_h as f32 * ratio).round() as u32;
+        (new_w, new_h)
+    };
+
+    let new_w = new_w.max(1);
+    let new_h = new_h.max(1);
+
+    let src_rgba = img.into_rgba8();
+    let src_image = fast_image_resize::images::Image::from_vec_u8(
+        width.max(1),
+        height.max(1),
+        src_rgba.into_raw(),
+        fast_image_resize::PixelType::U8x4,
+    ).unwrap();
+
+    let mut dst_image = fast_image_resize::images::Image::new(
+        new_w,
+        new_h,
+        src_image.pixel_type(),
+    );
+
+    let mut resizer = fast_image_resize::Resizer::new();
+    resizer.resize(&src_image, &mut dst_image, &fast_image_resize::ResizeOptions::new()).unwrap();
+
+    let dst_raw = dst_image.into_vec();
+    let dst_buffer = image::ImageBuffer::from_raw(new_w, new_h, dst_raw).unwrap();
+    image::DynamicImage::ImageRgba8(dst_buffer)
+}
+
 fn dynamic_image_to_render_image(img: image::DynamicImage) -> RenderImage {
     let mut rgba = img.into_rgba8();
     for pixel in rgba.chunks_exact_mut(4) {
@@ -1904,7 +1946,7 @@ impl QuickLook {
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
-                        let dynamic_img = dynamic_img.thumbnail(2048, 2048);
+                        let dynamic_img = resize_image_to_fit(dynamic_img, 2048, 2048);
                         let render_img = dynamic_image_to_render_image(dynamic_img);
                         Ok(render_img)
                     })
