@@ -24,7 +24,7 @@ Thumbs.db
 tn.zip
 
 # Installer output (cargo-packager) — lands in crates/tn-app/dist/
-dist/
+dist/1
 
 # Loose downloaded redistributable archives + the dev-time loose pdfium.dll at
 # repo root (the real copy is vendored under crates/tn-app/vendor/pdfium/, so
@@ -36,7 +36,5 @@ dist/
 /_refs/
 .playwright-cli/
 tmp/
-# design file
-design/
 
 .fonttmp/
