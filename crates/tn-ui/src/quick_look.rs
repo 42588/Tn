@@ -1732,11 +1732,43 @@ impl QuickLook {
         }
     }
 
+    fn evict_assets_deferred(&self, cx: &mut Context<Self>) {
+        let mut images_to_evict = Vec::new();
+        match &self.file_data {
+            QuickLookData::Image { img } => {
+                images_to_evict.push(img.clone());
+            }
+            QuickLookData::Pdf { pages, .. } => {
+                if let Ok(lock) = pages.lock() {
+                    for page in lock.iter().flatten() {
+                        images_to_evict.push(page.clone());
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        if images_to_evict.is_empty() {
+            return;
+        }
+
+        let executor = cx.background_executor().clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            executor.timer(Duration::from_millis(150)).await;
+            let _ = this.update(cx, |_, cx| {
+                for img in images_to_evict {
+                    evict_render_image(&img, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
     /// Explicitly close QuickLook, evicting any GPUI caches and freeing memory capacity
     /// for HashMaps and large vectors to prevent "ghost" memory leaks when hidden.
     pub fn close(&mut self, cx: &mut Context<Self>) {
         // --- EXPLICIT GPUI CACHE EVICTION ---
-        self.evict_assets_internal(cx);
+        self.evict_assets_deferred(cx);
 
         // --- MEMORY CAPACITY RELEASE ---
         self.path = None;
@@ -1779,7 +1811,7 @@ impl QuickLook {
 
     fn reset_for_open(&mut self, path: PathBuf, is_remote: bool, cx: &mut Context<Self>) {
         // --- EXPLICIT GPUI CACHE EVICTION ---
-        self.evict_assets_internal(cx);
+        self.evict_assets_deferred(cx);
 
         self.path = Some(path.clone());
         self.root = path
