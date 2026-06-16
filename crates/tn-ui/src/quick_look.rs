@@ -1322,9 +1322,11 @@ fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, _is_remote:
 fn evict_render_image(img: &Arc<RenderImage>, cx: &mut App) {
     let windows = cx.windows();
     for win_handle in windows {
-        let _ = cx.update_window(win_handle, |_, window, cx| {
-            cx.drop_image(img.clone(), Some(window));
-        });
+        if let Some(workspace_win) = win_handle.downcast::<crate::workspace::Workspace>() {
+            let _ = cx.update_window(*workspace_win, |_, window, cx| {
+                cx.drop_image(img.clone(), Some(window));
+            });
+        }
     }
 }
 
