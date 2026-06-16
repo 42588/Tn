@@ -7455,6 +7455,7 @@ dependencies = [
  "futures",
  "gpui",
  "image",
+ "mimalloc",
  "notify",
  "pdfium-render",
  "pulldown-cmark",

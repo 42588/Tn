@@ -36,6 +36,7 @@ encoding_rs = "0.8.35"
 image = "0.25.9"
 sysinfo = "0.36.1"
 fast_image_resize = "6.0.0"
+mimalloc = { version = "0.1", default-features = false }
 
 
 # Quick Terminal (M5) global hotkey + topmost window glue — Windows only.

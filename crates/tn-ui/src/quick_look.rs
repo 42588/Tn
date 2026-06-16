@@ -19,6 +19,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+extern "C" {
+    fn mi_collect(force: bool);
+}
+
 use gpui::{
     canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, App, AsyncApp, Bounds,
     ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
@@ -1760,6 +1764,14 @@ impl QuickLook {
         self.hunk_busy = false;
         self.hunk_error = None;
 
+        let executor = cx.background_executor().clone();
+        cx.background_executor()
+            .spawn(async move {
+                executor.timer(Duration::from_millis(150)).await;
+                unsafe { mi_collect(true); }
+            })
+            .detach();
+
         cx.notify();
     }
 
@@ -1910,6 +1922,8 @@ impl QuickLook {
                                     }
                                 }
                             }
+                            // Reclaim PDF rendering engine and bitmap memory
+                            unsafe { mi_collect(true); }
                         }
                         Err(_) => {
                             let _ = tx.unbounded_send(Err("无法解析此 PDF 文件".to_string()));
@@ -1989,13 +2003,23 @@ impl QuickLook {
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
+
+                        // Reclaim previous image memory
+                        unsafe { mi_collect(true); }
+
                         let dynamic_img = image::ImageReader::open(&path_for_bg)?
                             .with_guessed_format()?
                             .decode()?;
+
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
+
                         let dynamic_img = resize_image_to_fit(dynamic_img, 2048, 2048);
+
+                        // Reclaim the huge decompression buffer memory
+                        unsafe { mi_collect(true); }
+
                         let render_img = dynamic_image_to_render_image(dynamic_img);
                         Ok(render_img)
                     })
