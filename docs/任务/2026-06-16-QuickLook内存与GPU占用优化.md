@@ -19,8 +19,9 @@
    - 在后台加载任务中直接使用 `image` 库对图片文件进行解码，直接得到 `image::DynamicImage`。
    - 在后台线程中快速做 RGBA 到 BGRA 转换（Swizzle），然后直接构建并返回 `gpui::RenderImage`，包装于 `QuickLookData::Image` 或 `QuickLookData::Pdf`。
    - 渲染时，直接使用 `gpui::ImageSource::Render(img)` 喂给 `gpui::img`。因为不经过 `ImageSource::Image` 的 asset 注册，GPUI 不会在 `App::loading_assets` 中缓存它，从而在 `QuickLook` 被丢弃或切换文件时，`Arc<RenderImage>` 可以伴随着 UI 析构直接在 CPU 侧被彻底 Drop 释放。
-2. **细粒度的异步加载与解码前置取消检查**：
-   - 在后台加载任务中，我们在执行 `std::fs::read` 之前、之后、以及调用 heavy 的 `image::load_from_memory_with_format` 解码之前与之后，均设置了对 `img_cancel` 的原子状态检查。
+2. **防抖与细粒度的异步加载与解码前置取消检查**：
+   - **异步加载防抖（Debounce）**：在所有后台预览加载任务（图片、PDF、文本及远程文件）的开始阶段，引入了 100ms 的防抖等待时间（使用 `timer(...).await`）。如果用户在快速连续按键切换文件，在 100ms 的防抖时间内前一个任务会直接被取消，绝不会触发任何文件读取与解码操作。这彻底解决了连续切换时多线程并行解码导致的内存瞬时飙升（900MB+）问题。
+   - **取消状态检查**：在执行 `std::fs::read` 之前、之后、以及调用 heavy 的 `image::load_from_memory_with_format` 解码之前与之后，均设置了对 `img_cancel` 的原子状态检查。
    - 如果用户在图片解码前切换了文件，取消标记为 `true`，后台任务会立刻终止退出，从而绝对避免了 192MB+ 解码缓冲区的分配，彻底消除了快速切换时的内存飙升。
    - 如果前一个加载任务碰巧在主线程更新前完成，但此时生成号已经过期（`v.generation != gen`），则主线程捕获该结果后会立即调用 `evict_render_image` 清除 GPU 纹理并将其 Drop，不留任何残留。
 3. **集成 `fast_image_resize` 进行 SIMD 硬件加速缩放**：
