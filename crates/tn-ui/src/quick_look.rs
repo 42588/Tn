@@ -1344,26 +1344,72 @@ fn resize_image_to_fit(img: image::DynamicImage, max_w: u32, max_h: u32) -> imag
     let new_w = new_w.max(1);
     let new_h = new_h.max(1);
 
-    let src_rgba = img.into_rgba8();
-    let src_image = fast_image_resize::images::Image::from_vec_u8(
-        width.max(1),
-        height.max(1),
-        src_rgba.into_raw(),
-        fast_image_resize::PixelType::U8x4,
-    ).unwrap();
+    match img {
+        image::DynamicImage::ImageRgb8(rgb_img) => {
+            let src_image = fast_image_resize::images::Image::from_vec_u8(
+                width.max(1),
+                height.max(1),
+                rgb_img.into_raw(),
+                fast_image_resize::PixelType::U8x3,
+            ).unwrap();
 
-    let mut dst_image = fast_image_resize::images::Image::new(
-        new_w,
-        new_h,
-        src_image.pixel_type(),
-    );
+            let mut dst_image = fast_image_resize::images::Image::new(
+                new_w,
+                new_h,
+                src_image.pixel_type(),
+            );
 
-    let mut resizer = fast_image_resize::Resizer::new();
-    resizer.resize(&src_image, &mut dst_image, &fast_image_resize::ResizeOptions::new()).unwrap();
+            let mut resizer = fast_image_resize::Resizer::new();
+            resizer.resize(&src_image, &mut dst_image, &fast_image_resize::ResizeOptions::new()).unwrap();
 
-    let dst_raw = dst_image.into_vec();
-    let dst_buffer = image::ImageBuffer::from_raw(new_w, new_h, dst_raw).unwrap();
-    image::DynamicImage::ImageRgba8(dst_buffer)
+            let dst_raw = dst_image.into_vec();
+            let dst_buffer = image::ImageBuffer::from_raw(new_w, new_h, dst_raw).unwrap();
+            image::DynamicImage::ImageRgb8(dst_buffer)
+        }
+        image::DynamicImage::ImageRgba8(rgba_img) => {
+            let src_image = fast_image_resize::images::Image::from_vec_u8(
+                width.max(1),
+                height.max(1),
+                rgba_img.into_raw(),
+                fast_image_resize::PixelType::U8x4,
+            ).unwrap();
+
+            let mut dst_image = fast_image_resize::images::Image::new(
+                new_w,
+                new_h,
+                src_image.pixel_type(),
+            );
+
+            let mut resizer = fast_image_resize::Resizer::new();
+            resizer.resize(&src_image, &mut dst_image, &fast_image_resize::ResizeOptions::new()).unwrap();
+
+            let dst_raw = dst_image.into_vec();
+            let dst_buffer = image::ImageBuffer::from_raw(new_w, new_h, dst_raw).unwrap();
+            image::DynamicImage::ImageRgba8(dst_buffer)
+        }
+        other => {
+            let rgba_img = other.into_rgba8();
+            let src_image = fast_image_resize::images::Image::from_vec_u8(
+                width.max(1),
+                height.max(1),
+                rgba_img.into_raw(),
+                fast_image_resize::PixelType::U8x4,
+            ).unwrap();
+
+            let mut dst_image = fast_image_resize::images::Image::new(
+                new_w,
+                new_h,
+                src_image.pixel_type(),
+            );
+
+            let mut resizer = fast_image_resize::Resizer::new();
+            resizer.resize(&src_image, &mut dst_image, &fast_image_resize::ResizeOptions::new()).unwrap();
+
+            let dst_raw = dst_image.into_vec();
+            let dst_buffer = image::ImageBuffer::from_raw(new_w, new_h, dst_raw).unwrap();
+            image::DynamicImage::ImageRgba8(dst_buffer)
+        }
+    }
 }
 
 fn dynamic_image_to_render_image(img: image::DynamicImage) -> RenderImage {
@@ -1943,19 +1989,9 @@ impl QuickLook {
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
-                        let bytes = std::fs::read(&path_for_bg)?;
-                        if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Err(anyhow::anyhow!("Cancelled"));
-                        }
-                        let fmt = match ext.as_str() {
-                            "png" => image::ImageFormat::Png,
-                            "jpg" | "jpeg" => image::ImageFormat::Jpeg,
-                            "webp" => image::ImageFormat::WebP,
-                            "gif" => image::ImageFormat::Gif,
-                            "bmp" => image::ImageFormat::Bmp,
-                            _ => image::ImageFormat::Png,
-                        };
-                        let dynamic_img = image::load_from_memory_with_format(&bytes, fmt)?;
+                        let dynamic_img = image::ImageReader::open(&path_for_bg)?
+                            .with_guessed_format()?
+                            .decode()?;
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
