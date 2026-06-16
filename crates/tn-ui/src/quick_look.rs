@@ -1321,8 +1321,8 @@ fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, _is_remote:
 
 fn evict_render_image(img: &Arc<RenderImage>, cx: &mut App) {
     let windows = cx.windows();
-    if let Some(win_handle) = windows.first() {
-        let _ = cx.update_window(*win_handle, |_, window, cx| {
+    for win_handle in windows {
+        let _ = cx.update_window(win_handle, |_, window, cx| {
             cx.drop_image(img.clone(), Some(window));
         });
     }
