@@ -910,6 +910,8 @@ enum QuickLookData {
     Pdf {
         pages: Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>,
         page_count: usize,
+        render_tx: futures::channel::mpsc::UnboundedSender<usize>,
+        requested: Arc<std::sync::Mutex<std::collections::HashSet<usize>>>,
     },
     Image {
         img: Arc<RenderImage>,
@@ -1894,6 +1896,8 @@ impl QuickLook {
 
             if ext == "pdf" {
                 let (tx, mut rx) = futures::channel::mpsc::unbounded();
+                let (render_tx, mut render_rx) = futures::channel::mpsc::unbounded::<usize>();
+                let requested = Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
                 let pdf_cancel = cancel_token.clone();
                 let exec_debounce = exec.clone();
                 exec.spawn(async move {
@@ -1942,22 +1946,28 @@ impl QuickLook {
 
                             // 1000px 对速览足够清晰,比 1200 省 ~30% JPEG 字节/页内存(审查⑪)。
                             let render_config = PdfRenderConfig::new().set_target_width(1000);
-                            for (i, page) in document.pages().iter().take(limit).enumerate() {
+                            use futures::StreamExt;
+                            while let Some(i) = render_rx.next().await {
                                 if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                                     break;
                                 }
-                                if let Ok(bitmap) = page.render_with_config(&render_config) {
-                                    if let Ok(img) = bitmap.as_image() {
-                                        let render_img = dynamic_image_to_render_image(img);
-                                        let _ = tx.unbounded_send(Ok((
-                                            limit,
-                                            Some((i, Arc::new(render_img))),
-                                        )));
+                                if i >= limit {
+                                    continue;
+                                }
+                                if let Ok(page) = document.pages().get((i as u16).into()) {
+                                    if let Ok(bitmap) = page.render_with_config(&render_config) {
+                                        if let Ok(img) = bitmap.as_image() {
+                                            let render_img = dynamic_image_to_render_image(img);
+                                            let _ = tx.unbounded_send(Ok((
+                                                limit,
+                                                Some((i, Arc::new(render_img))),
+                                            )));
+                                        }
                                     }
                                 }
+                                // Reclaim PDF rendering engine and bitmap memory dynamically
+                                unsafe { mi_collect(true); }
                             }
-                            // Reclaim PDF rendering engine and bitmap memory
-                            unsafe { mi_collect(true); }
                         }
                         Err(_) => {
                             let _ = tx.unbounded_send(Err("无法解析此 PDF 文件".to_string()));
@@ -1970,11 +1980,15 @@ impl QuickLook {
                 let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>> =
                     None;
 
+                let render_tx_clone = render_tx.clone();
+                let requested_clone = requested.clone();
                 while let Some(msg) = rx.next().await {
                     match msg {
                         Ok((limit, None)) => {
                             let arc = Arc::new(std::sync::Mutex::new(vec![None; limit]));
                             pages_arc = Some(arc.clone());
+                            let r_tx = render_tx_clone.clone();
+                            let req = requested_clone.clone();
                             let _ = this.update(cx, |v, cx| {
                                 if v.generation != gen {
                                     return;
@@ -1982,6 +1996,8 @@ impl QuickLook {
                                 v.file_data = QuickLookData::Pdf {
                                     pages: arc,
                                     page_count: limit,
+                                    render_tx: r_tx,
+                                    requested: req,
                                 };
                                 v.loading_state = LoadingState::Ready;
                                 cx.notify();
@@ -6045,9 +6061,17 @@ impl Render for QuickLook {
                             .child(format!("二进制文件或超过大小限制 ({size_str})")),
                     ),
             );
-        } else if let QuickLookData::Pdf { pages, page_count } = &self.file_data {
+        } else if let QuickLookData::Pdf {
+            pages,
+            page_count,
+            render_tx,
+            requested,
+        } = &self.file_data
+        {
             let pages = pages.clone();
             let page_count = *page_count;
+            let render_tx = render_tx.clone();
+            let requested = requested.clone();
             body = body.child(
                 div()
                     .flex_1()
@@ -6083,6 +6107,18 @@ impl Render for QuickLook {
                                                             .h_auto()
                                                             .object_fit(gpui::ObjectFit::ScaleDown),
                                                     );
+                                            }
+                                        }
+                                        // 当前页尚未渲染 → 按需触发后台渲染（懒加载）
+                                        if let Ok(mut req) = requested.lock() {
+                                            if !req.contains(&i) {
+                                                req.insert(i);
+                                                let _ = render_tx.unbounded_send(i);
+                                                // 预取下一页，提前解码减少翻页等待
+                                                if i + 1 < page_count && !req.contains(&(i + 1)) {
+                                                    req.insert(i + 1);
+                                                    let _ = render_tx.unbounded_send(i + 1);
+                                                }
                                             }
                                         }
                                         div().w_full().h(px(1400.)).bg(gpui::rgb(CODE_BG))
