@@ -70,3 +70,53 @@
 
 `cargo check` + `cargo test -p tn-ui` 208 全绿，0 失败。
 
+---
+
+## 补丁（2026-06-17）：PDF 切换内存叠加/关闭不释放（循环死锁）
+
+### 根因
+
+切换或关闭 PDF 后内存不释放，原因是三方形成**循环死锁**：
+
+```
+pdfium 线程  → 等 render_rx 关闭才退出
+render_rx   → 等外层协调循环 drop render_tx_clone 才关闭
+外层循环     → 等 pdfium 线程 drop tx 才退出
+```
+
+同时外层循环接收到过时页面时，先写入 `pages_arc` 再逐出 GPU，CPU 侧 `RenderImage` 字节缓冲区仍被 `pages_arc` 持有，实际并未释放。
+
+### 修复（commit `df4fa7c`）
+
+1. **pdfium 渲染线程**：`while-let` → `futures::future::select` + 100ms 定时器，`cancel_token=true` 后约 100ms 内退出，打破循环死锁。
+2. **pdfium 线程退出后**：`mi_collect(true)` 立即物理回收 document 内存（字体/资源树等）。
+3. **外层协调循环**：generation 检查移至 `arc.lock()` 之前，过时页面不再写入 `pages_arc`，直接逐出 GPU 纹理，彻底避免 CPU 侧内存残留。
+4. **外层循环退出后**：`mi_collect(true)` 物理回收已渲染页面缓冲区。
+
+### 验证
+
+`cargo test -p tn-ui` 208 全绿，0 失败。
+
+---
+
+## 补丁（2026-06-17）：PDF 翻页内存无上限增长（LRU 驱逐）
+
+### 根因
+
+`pages_arc` 无限积累所有已渲染页面，翻得越多内存越大。100 页 PDF 全翻完约 560MB，大文件可撑炸内存。
+
+### 修复（commit `e2d4025`）
+
+引入 **LRU 驱逐窗口**（`MAX_RENDERED_PAGES = 8`）：
+- `render_order: VecDeque<usize>` 记录渲染顺序（最新在头）
+- 超出上限时 `pop_back()` 取最旧页 `old_idx`：
+  - `pages_arc[old_idx].take()` → CPU `RenderImage` 内存立即释放
+  - `evict_render_image()` → GPU 纹理异步延迟驱逐
+  - `requested.remove(old_idx)` → 允许重新按需渲染
+
+内存上限约 **45MB**（8 页 × 5.6MB/页），无论 PDF 多大均稳定。
+
+### 验证
+
+`cargo test -p tn-ui` 208 全绿，0 失败。
+
