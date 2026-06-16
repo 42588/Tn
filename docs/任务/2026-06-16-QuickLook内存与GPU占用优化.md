@@ -32,8 +32,8 @@
    - 图像在缩放至最大 2048px 后，常驻内存与显存镜像开销从原先的 $500\text{ MB}$ 级别锐减到仅有约 **$30\text{ MB}$**（下降了 94%），且预览画面依然保持极高的清晰度。
 4. **PDF 渲染零拷贝直通**：
    - 删除了 PDF 渲染时多余的 JPEG 二次压缩步骤，直接把 pdfium-render 生成的 `DynamicImage` 通过 RGBA→BGRA 转换包装为 `RenderImage`，使 PDF 的预览响应速度提升数倍，并减少了约 50% 的中间内存分配。
-5. **统一的 `evict_render_image` 物理释放与多窗口清理**：
-    - 每次关闭 QuickLook、切换文件或 View 被 Drop 析构时，遍历所有打开的窗口并对每一处调用 `cx.drop_image(render_image, Some(window))` 清理 DirectX 显存中的 `SpriteAtlas` 缓存。这解决了在多窗口模式下（如存在悬浮 QT 窗口时）只清理第一个窗口导致主窗口的 GPU 纹理无法正确驱逐、显存随切换而增长的问题。
+5. **统一的 `evict_render_image` 物理释放与工作空间窗口清理**：
+    - 每次关闭 QuickLook、切换文件或 View 被 Drop 析构时，遍历所有打开的窗口，并通过类型下转型（Downcast）仅对那些承载 `Workspace`（工作空间）视图的窗口调用 `cx.drop_image(render_image, Some(window))` 清理其 DirectX 显存中的 `SpriteAtlas` 缓存。这解决了在多窗口模式下（如存在悬浮 QT 窗口时）只清理第一个窗口导致主窗口的 GPU 纹理无法正确驱逐的问题，同时避免了对其他不相关窗口（如 QuickTerminal）发起冗余的 `update_window` 更新重绘，从而消除由此产生的瞬时内存和 GPU 占用开销。
 6. **基于 `mimalloc` 的主动物理内存回收**：
    - **后台解码前回收上一张图**：在 100ms 防抖定时器结束、新图片解码开始前，立刻调用 `unsafe { mi_collect(true) }`，将已经被主线程析构的前一个图片的物理内存页强行归还给 OS，彻底消除两张大图解码瞬时的堆叠峰值。
    - **缩放完成后回收原始大图**：在 `resize_image_to_fit` 执行完毕后，原始大图的解码缓冲区被 Drop。此时在后台线程立即调用 `unsafe { mi_collect(true) }`，物理归还解码产生的瞬时大内存页，使内存瞬间滑落至 ~100MB，再将小图返回主线程渲染。
