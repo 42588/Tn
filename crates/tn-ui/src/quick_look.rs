@@ -1803,7 +1803,15 @@ impl QuickLook {
             if ext == "pdf" {
                 let (tx, mut rx) = futures::channel::mpsc::unbounded();
                 let pdf_cancel = cancel_token.clone();
+                let exec_debounce = exec.clone();
                 exec.spawn(async move {
+                    if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    exec_debounce.timer(std::time::Duration::from_millis(100)).await;
+                    if pdf_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
                     use pdfium_render::prelude::*;
                     static PDFIUM: std::sync::OnceLock<Option<Pdfium>> = std::sync::OnceLock::new();
                     let pdfium_lock = PDFIUM.get_or_init(|| {
@@ -1924,9 +1932,14 @@ impl QuickLook {
             ) {
                 let path_for_bg = path_clone.clone();
                 let img_cancel = cancel_token.clone();
+                let exec_debounce = cx.background_executor().clone();
                 let bytes_res: Result<RenderImage, anyhow::Error> = cx
                     .background_executor()
                     .spawn(async move {
+                        if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(anyhow::anyhow!("Cancelled"));
+                        }
+                        exec_debounce.timer(std::time::Duration::from_millis(100)).await;
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                             return Err(anyhow::anyhow!("Cancelled"));
                         }
@@ -1983,8 +1996,17 @@ impl QuickLook {
             }
 
             let txt_cancel = cancel_token.clone();
+            let exec_debounce = exec.clone();
             let res = exec
                 .spawn(async move {
+                    if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
+                    }
+                    exec_debounce.timer(std::time::Duration::from_millis(100)).await;
                     if txt_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                         return PreviewPayload {
                             data: QuickLookData::None,
@@ -2193,9 +2215,18 @@ impl QuickLook {
         cx.notify();
 
         let exec = cx.background_executor().clone();
+        let exec_debounce = exec.clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             let data = exec
                 .spawn(async move {
+                    if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
+                        return PreviewPayload {
+                            data: QuickLookData::None,
+                            format: None,
+                            guard: None,
+                        };
+                    }
+                    exec_debounce.timer(std::time::Duration::from_millis(100)).await;
                     if cancel_token.load(std::sync::atomic::Ordering::Relaxed) {
                         return PreviewPayload {
                             data: QuickLookData::None,
