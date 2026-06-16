@@ -2893,6 +2893,114 @@ const SPRITE_Y: f32 = BOX_H - 10.0 - 9.0 * CELL; // 9 行内容贴岗台
 // 欢迎页 2× 形态不再是静帧贴图:同一只 PetView 以 on_welcome ×2 渲染
 // (活状态机 + 完整交互),见 Render 实现(二轮差异总结 §8)。
 
+/// 命名输入的 IME 处理器(领养卡 / 改名卡共用)。组字预览写 `name_marked`,上屏文本
+/// 经 `name_insert` 并入 `name_editing`(≤8 字)。无此实现则中文拼音永远无处落字。
+impl EntityInputHandler for PetView {
+    fn text_for_range(
+        &mut self,
+        range: std::ops::Range<usize>,
+        adjusted: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let units: Vec<u16> = self
+            .name_marked
+            .as_deref()
+            .unwrap_or("")
+            .encode_utf16()
+            .collect();
+        let start = range.start.min(units.len());
+        let end = range.end.min(units.len());
+        *adjusted = Some(start..end);
+        Some(String::from_utf16_lossy(&units[start..end]))
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        if self.name_editing.is_none() {
+            return None;
+        }
+        let end = self
+            .name_marked
+            .as_deref()
+            .map(|s| s.encode_utf16().count())
+            .unwrap_or(0);
+        Some(UTF16Selection {
+            range: end..end,
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        self.name_marked
+            .as_deref()
+            .map(|s| 0..s.encode_utf16().count())
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.name_marked = None;
+        cx.notify();
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.name_insert(text);
+        self.name_marked = None;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        _range: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected: Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.name_marked = (!new_text.is_empty()).then(|| new_text.to_string());
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        _range_utf16: std::ops::Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        // IME 候选窗锚点:贴近名字输入行(canvas 注册在卡片本体,故相对卡左上偏移)。
+        Some(Bounds {
+            origin: gpui::point(
+                element_bounds.origin.x + px(56.),
+                element_bounds.origin.y + px(64.),
+            ),
+            size: gpui::size(px(200.), px(26.)),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        None
+    }
+}
+
 impl Render for PetView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // 穿透根:无监听、无背景 → 不挡终端;只有小狗本体/菜单有命中区。

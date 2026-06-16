@@ -11,7 +11,7 @@ Tn 的捆绑资源分两类,机制完全不同:
 
 | 资源 | 源路径 | 载入处 | 说明 |
 | --- | --- | --- | --- |
-| 等宽字体 ×4 | `crates/tn-ui/assets/fonts/CaskaydiaCoveNerdFont-{Regular,Bold,Italic,BoldItalic}.ttf` | `crates/tn-ui/src/lib.rs` | Nerd Font,运行时不依赖系统安装 |
+| 字体 | `crates/tn-ui/assets/fonts/` 下 JetBrainsMono Nerd Font ×4 + Inter ×3 + Space Grotesk ×2 | `crates/tn-ui/src/lib.rs` | 等宽/UI/展示字,`include_bytes!` 进 exe,运行时不依赖系统安装 |
 | 窗口图标 | `crates/tn-ui/assets/tn.ico` | `crates/tn-ui/src/platform.rs` | |
 | 默认配置 | `config/config.toml` | `crates/tn-config/src/config.rs` | |
 | 默认主题 | `config/themes/tn-dark.toml` | `crates/tn-config/src/theme.rs` | |
