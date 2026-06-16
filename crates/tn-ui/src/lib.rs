@@ -85,6 +85,10 @@ pub fn run() {
     // ── Load config ────────────────────────────────────────────────────
     let config = Arc::new(tn_config::load());
 
+    // ── Check if startup / silent mode argument is passed ──────────────
+    let args: Vec<String> = std::env::args().collect();
+    let is_startup = args.iter().any(|arg| arg == "--startup" || arg == "--silent");
+
     // ── Usage-ring pricing (auto-detect 定价) ───────────────────────────
     // Install the cached price table now (offline, instant), then refresh it from
     // the public list in the background when due. The built-in fallback covers
@@ -106,6 +110,15 @@ pub fn run() {
         && tn_config::parse_hotkey(&qt_cfg.hotkey)
             .map(|spec| platform::probe_hotkey(&spec))
             .unwrap_or(false);
+
+    if !is_primary {
+        #[cfg(target_os = "windows")]
+        {
+            if platform::notify_primary_instance() {
+                return;
+            }
+        }
+    }
 
     // ── Tray listener (primary only, BEFORE GPUI) ──────────────────────
     let tray = if is_primary {
@@ -165,46 +178,55 @@ pub fn run() {
             // `agent_host::build_registry` / `tn_ai::builtin_adapter_for_manifest`.
             cx.set_global(agent_host::AgentHost(agent_host::build_registry(&config)));
 
-            let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
-            let main_config = config.clone();
-            let main_window = cx
-                .open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Tn".into()),
-                            appears_transparent: true,
+            let tray_hwnd_opt = tray.as_ref().map(|(h, _)| *h);
+
+            let mut main_id_opt = None;
+            if !is_startup {
+                let bounds = Bounds::centered(None, size(px(1100.), px(720.)), cx);
+                let main_config = config.clone();
+                let main_window = cx
+                    .open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(bounds)),
+                            titlebar: Some(TitlebarOptions {
+                                title: Some("Tn".into()),
+                                appears_transparent: true,
+                                ..Default::default()
+                            }),
+                            window_background,
+                            show: false,
                             ..Default::default()
-                        }),
-                        window_background,
-                        show: false,
-                        ..Default::default()
-                    },
-                    move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),
-                )
-                .expect("failed to open window");
-            let main_id = main_window.window_id();
+                        },
+                        move |_window, cx| cx.new(|cx| Workspace::new(cx, main_config.clone())),
+                    )
+                    .expect("failed to open window");
+                main_id_opt = Some(main_window.window_id());
+            }
+
+            let mut tray_icon_visible = false;
+            if is_startup {
+                if let Some(h) = tray_hwnd_opt {
+                    tray_icon_visible = platform::create_tray_icon(h);
+                }
+            }
+
+            // ── Shared state for window-close handling ─────────────────────
+            let state = Arc::new(Mutex::new(AppState {
+                main_window_id: main_id_opt,
+                tray_hwnd: tray_hwnd_opt,
+                tray_icon_visible,
+            }));
 
             // ── Wire up tray (primary only) ──────────────────────────────
-            let tray_hwnd_opt = if let Some((tray_hwnd, tray_rx)) = tray {
+            if let Some((tray_hwnd, tray_rx)) = tray {
                 cx.set_global(TrayHwnd(tray_hwnd));
-                spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd);
-                Some(tray_hwnd)
-            } else {
-                None
-            };
+                spawn_tray_events_handler(cx, tray_rx, config.clone(), tray_hwnd, state.clone());
+            }
 
             // ── Quick Terminal (primary only — hotkey probe passed) ───────
             if is_primary {
                 spawn_quick_terminal(cx, config.clone());
             }
-
-            // ── Shared state for window-close handling ─────────────────────
-            let state = Arc::new(Mutex::new(AppState {
-                main_window_id: Some(main_id),
-                tray_hwnd: tray_hwnd_opt,
-                tray_icon_visible: false,
-            }));
 
             // ── on_window_closed: hide-to-tray or quit ─────────────────────
             cx.on_window_closed(move |cx| {
@@ -252,13 +274,25 @@ fn spawn_tray_events_handler(
     mut tray_rx: futures::channel::mpsc::UnboundedReceiver<platform::TrayEvent>,
     config: Arc<tn_config::Loaded>,
     tray_hwnd: isize,
+    state: Arc<Mutex<AppState>>,
 ) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         while let Some(event) = tray_rx.next().await {
             match event {
                 platform::TrayEvent::Show | platform::TrayEvent::ShowFromIpc => {
-                    // Re-create the main workspace window if it isn't already open.
-                    let _ = recreate_main_window(cx, config.clone());
+                    let already_open = cx.update(|cx| {
+                        let s = state.lock().unwrap();
+                        s.main_window_id
+                            .map(|id| cx.windows().iter().any(|w| w.window_id() == id))
+                            .unwrap_or(false)
+                    }).unwrap_or(false);
+
+                    if !already_open {
+                        if let Some(new_id) = recreate_main_window(cx, config.clone()) {
+                            let mut s = state.lock().unwrap();
+                            s.main_window_id = Some(new_id);
+                        }
+                    }
                 }
                 platform::TrayEvent::Quit => {
                     platform::QUITTING.store(true, Ordering::Release);

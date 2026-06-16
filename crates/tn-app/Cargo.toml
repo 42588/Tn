@@ -53,3 +53,4 @@ resources = [
 # Per-user install: no admin/UAC prompt, lands in %LOCALAPPDATA%\Programs\Tn.
 [package.metadata.packager.nsis]
 installMode = "currentUser"
+template = "installer.nsi"

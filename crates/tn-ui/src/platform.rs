@@ -722,6 +722,26 @@ mod imp {
 
         Some((hwnd_value, rx))
     }
+
+    /// Try to find the primary instance's tray window and send the IPC message to show the main window.
+    /// Returns `true` if the message was successfully posted.
+    pub fn notify_primary_instance() -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, PostMessageW, RegisterWindowMessageW, HWND_MESSAGE};
+        unsafe {
+            let class_name = windows::core::w!("Tn.TrayWindow");
+            let hwnd = FindWindowExW(Some(HWND_MESSAGE), None, class_name, None);
+            if let Ok(h) = hwnd {
+                if h.0 != std::ptr::null_mut() {
+                    let msg = RegisterWindowMessageW(windows::core::w!("Tn.Terminal.ShowMainWindow.v1"));
+                    if msg != 0 {
+                        let _ = PostMessageW(Some(h), msg, WPARAM(0), LPARAM(0));
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -773,6 +793,9 @@ mod stub {
         false
     }
     pub fn set_window_icon(_hwnd: isize) {}
+    pub fn notify_primary_instance() -> bool {
+        false
+    }
 }
 
 #[cfg(not(target_os = "windows"))]
