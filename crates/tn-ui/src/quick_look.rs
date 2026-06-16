@@ -20,10 +20,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, AsyncApp, Bounds,
+    canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, App, AsyncApp, Bounds,
     ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, TextRun, UTF16Selection,
+    Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, Subscription, TextRun, UTF16Selection,
     UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
@@ -1315,6 +1315,18 @@ fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, _is_remote:
     )
 }
 
+fn evict_image_asset(img: &Arc<gpui::Image>, cx: &mut App) {
+    let windows = cx.windows();
+    if let Some(win_handle) = windows.first() {
+        let _ = cx.update_window(*win_handle, |_, window, cx| {
+            if let Some(render_image) = img.clone().get_render_image(window, cx) {
+                cx.drop_image(render_image, Some(window));
+            }
+        });
+    }
+    img.clone().remove_asset(cx);
+}
+
 pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
@@ -1427,6 +1439,7 @@ pub struct QuickLook {
     /// canvas 写入)。`bounds_for_range` 在 `find_open` 时据此把 IME 候选框定位到
     /// 查找框旁,而非代码区光标(中文搜索时候选框才不会飘到正文)。
     find_field_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    _release_subscription: Subscription,
 }
 
 impl QuickLook {
@@ -1442,6 +1455,9 @@ impl QuickLook {
             .advance(font_id, px(CODE_FS), 'm')
             .map(|s| f32::from(s.width))
             .unwrap_or(CODE_FS * 0.6);
+        let _release_subscription = cx.on_release(|view, cx| {
+            view.evict_assets_internal(cx);
+        });
         Self {
             config,
             root,
@@ -1501,6 +1517,7 @@ impl QuickLook {
             el_render: std::env::var("TN_QL_LEGACY").is_err(),
             el_scroll_y: 0.0,
             find_field_bounds: Rc::new(Cell::new(None)),
+            _release_subscription,
         }
     }
 
@@ -1600,23 +1617,27 @@ impl QuickLook {
         Some((name, lang))
     }
 
-    /// Explicitly close QuickLook, evicting any GPUI caches and freeing memory capacity
-    /// for HashMaps and large vectors to prevent "ghost" memory leaks when hidden.
-    pub fn close(&mut self, cx: &mut Context<Self>) {
-        // --- EXPLICIT GPUI CACHE EVICTION ---
+    fn evict_assets_internal(&self, cx: &mut App) {
         match &self.file_data {
             QuickLookData::Image { img } => {
-                img.clone().remove_asset(cx);
+                evict_image_asset(img, cx);
             }
             QuickLookData::Pdf { pages, .. } => {
                 if let Ok(lock) = pages.lock() {
                     for page in lock.iter().flatten() {
-                        page.clone().remove_asset(cx);
+                        evict_image_asset(page, cx);
                     }
                 }
             }
             _ => {}
         }
+    }
+
+    /// Explicitly close QuickLook, evicting any GPUI caches and freeing memory capacity
+    /// for HashMaps and large vectors to prevent "ghost" memory leaks when hidden.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        // --- EXPLICIT GPUI CACHE EVICTION ---
+        self.evict_assets_internal(cx);
 
         // --- MEMORY CAPACITY RELEASE ---
         self.path = None;
@@ -1651,22 +1672,7 @@ impl QuickLook {
 
     fn reset_for_open(&mut self, path: PathBuf, is_remote: bool, cx: &mut Context<Self>) {
         // --- EXPLICIT GPUI CACHE EVICTION ---
-        // GPUI caches textures and images globally. If we don't manually remove the old
-        // image asset, switching between many large images will cause memory to grow
-        // unboundedly (e.g. hitting 1GB+).
-        match &self.file_data {
-            QuickLookData::Image { img } => {
-                img.clone().remove_asset(cx);
-            }
-            QuickLookData::Pdf { pages, .. } => {
-                if let Ok(lock) = pages.lock() {
-                    for page in lock.iter().flatten() {
-                        page.clone().remove_asset(cx);
-                    }
-                }
-            }
-            _ => {}
-        }
+        self.evict_assets_internal(cx);
 
         self.path = Some(path.clone());
         self.root = path
@@ -1850,7 +1856,7 @@ impl QuickLook {
                                 }
                                 let _ = this.update(cx, |v, cx| {
                                     if v.generation != gen {
-                                        img.clone().remove_asset(cx);
+                                        evict_image_asset(&img, cx);
                                     } else {
                                         cx.notify();
                                     }
@@ -1917,7 +1923,7 @@ impl QuickLook {
                 if let Ok(img) = bytes_res {
                     let _ = this.update(cx, |v, cx| {
                         if v.generation != gen {
-                            Arc::new(img).remove_asset(cx);
+                            evict_image_asset(&Arc::new(img), cx);
                             return;
                         }
                         v.file_data = QuickLookData::Image { img: Arc::new(img) };
