@@ -36,5 +36,7 @@ dist/
 /_refs/
 .playwright-cli/
 tmp/
+# design file
 design/
+
 .fonttmp/
