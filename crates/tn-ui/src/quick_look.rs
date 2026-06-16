@@ -23,8 +23,8 @@ use gpui::{
     canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, App, AsyncApp, Bounds,
     ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, Subscription, TextRun, UTF16Selection,
-    UniformListScrollHandle, WeakEntity, Window,
+    RenderImage, Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, Subscription, TextRun,
+    UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 use tn_pty::remote_cmd::SshCommandService;
@@ -904,11 +904,11 @@ enum QuickLookData {
         truncated: bool,
     },
     Pdf {
-        pages: Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>,
+        pages: Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>,
         page_count: usize,
     },
     Image {
-        img: Arc<gpui::Image>,
+        img: Arc<RenderImage>,
     },
     Binary {
         size: u64,
@@ -1315,16 +1315,21 @@ fn preview_is_editable(path: &std::path::Path, data: &QuickLookData, _is_remote:
     )
 }
 
-fn evict_image_asset(img: &Arc<gpui::Image>, cx: &mut App) {
+fn evict_render_image(img: &Arc<RenderImage>, cx: &mut App) {
     let windows = cx.windows();
     if let Some(win_handle) = windows.first() {
         let _ = cx.update_window(*win_handle, |_, window, cx| {
-            if let Some(render_image) = img.clone().get_render_image(window, cx) {
-                cx.drop_image(render_image, Some(window));
-            }
+            cx.drop_image(img.clone(), Some(window));
         });
     }
-    img.clone().remove_asset(cx);
+}
+
+fn dynamic_image_to_render_image(img: image::DynamicImage) -> RenderImage {
+    let mut rgba = img.into_rgba8();
+    for pixel in rgba.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    RenderImage::new(vec![image::Frame::new(rgba)])
 }
 
 pub struct QuickLook {
@@ -1620,12 +1625,12 @@ impl QuickLook {
     fn evict_assets_internal(&self, cx: &mut App) {
         match &self.file_data {
             QuickLookData::Image { img } => {
-                evict_image_asset(img, cx);
+                evict_render_image(img, cx);
             }
             QuickLookData::Pdf { pages, .. } => {
                 if let Ok(lock) = pages.lock() {
                     for page in lock.iter().flatten() {
-                        evict_image_asset(page, cx);
+                        evict_render_image(page, cx);
                     }
                 }
             }
@@ -1801,22 +1806,11 @@ impl QuickLook {
                                 }
                                 if let Ok(bitmap) = page.render_with_config(&render_config) {
                                     if let Ok(img) = bitmap.as_image() {
-                                        let mut cursor = std::io::Cursor::new(Vec::new());
-                                        let rgb_img =
-                                            image::DynamicImage::ImageRgb8(img.into_rgb8());
-                                        if rgb_img
-                                            .write_to(&mut cursor, image::ImageFormat::Jpeg)
-                                            .is_ok()
-                                        {
-                                            let gpui_img = gpui::Image::from_bytes(
-                                                gpui::ImageFormat::Jpeg,
-                                                cursor.into_inner(),
-                                            );
-                                            let _ = tx.unbounded_send(Ok((
-                                                limit,
-                                                Some((i, Arc::new(gpui_img))),
-                                            )));
-                                        }
+                                        let render_img = dynamic_image_to_render_image(img);
+                                        let _ = tx.unbounded_send(Ok((
+                                            limit,
+                                            Some((i, Arc::new(render_img))),
+                                        )));
                                     }
                                 }
                             }
@@ -1829,7 +1823,7 @@ impl QuickLook {
                 .detach();
 
                 use futures::StreamExt;
-                let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<gpui::Image>>>>>> =
+                let mut pages_arc: Option<Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>> =
                     None;
 
                 while let Some(msg) = rx.next().await {
@@ -1856,7 +1850,7 @@ impl QuickLook {
                                 }
                                 let _ = this.update(cx, |v, cx| {
                                     if v.generation != gen {
-                                        evict_image_asset(&img, cx);
+                                        evict_render_image(&img, cx);
                                     } else {
                                         cx.notify();
                                     }
@@ -1888,31 +1882,30 @@ impl QuickLook {
             ) {
                 let path_for_bg = path_clone.clone();
                 let img_cancel = cancel_token.clone();
-                let bytes_res = cx
+                let bytes_res: Result<RenderImage, anyhow::Error> = cx
                     .background_executor()
                     .spawn(async move {
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Interrupted,
-                                "Cancelled",
-                            ));
+                            return Err(anyhow::anyhow!("Cancelled"));
                         }
                         let bytes = std::fs::read(&path_for_bg)?;
                         if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::Interrupted,
-                                "Cancelled",
-                            ));
+                            return Err(anyhow::anyhow!("Cancelled"));
                         }
                         let fmt = match ext.as_str() {
-                            "png" => gpui::ImageFormat::Png,
-                            "jpg" | "jpeg" => gpui::ImageFormat::Jpeg,
-                            "webp" => gpui::ImageFormat::Webp,
-                            "gif" => gpui::ImageFormat::Gif,
-                            "bmp" => gpui::ImageFormat::Bmp,
-                            _ => gpui::ImageFormat::Png,
+                            "png" => image::ImageFormat::Png,
+                            "jpg" | "jpeg" => image::ImageFormat::Jpeg,
+                            "webp" => image::ImageFormat::WebP,
+                            "gif" => image::ImageFormat::Gif,
+                            "bmp" => image::ImageFormat::Bmp,
+                            _ => image::ImageFormat::Png,
                         };
-                        Ok(gpui::Image::from_bytes(fmt, bytes))
+                        let dynamic_img = image::load_from_memory_with_format(&bytes, fmt)?;
+                        if img_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Err(anyhow::anyhow!("Cancelled"));
+                        }
+                        let render_img = dynamic_image_to_render_image(dynamic_img);
+                        Ok(render_img)
                     })
                     .await;
 
@@ -1923,7 +1916,7 @@ impl QuickLook {
                 if let Ok(img) = bytes_res {
                     let _ = this.update(cx, |v, cx| {
                         if v.generation != gen {
-                            evict_image_asset(&Arc::new(img), cx);
+                            evict_render_image(&Arc::new(img), cx);
                             return;
                         }
                         v.file_data = QuickLookData::Image { img: Arc::new(img) };
@@ -5906,7 +5899,7 @@ impl Render for QuickLook {
                                         if let Some(lock) = &pages_lock {
                                             if let Some(img) = &lock[i] {
                                                 let img_source =
-                                                    gpui::ImageSource::Image(img.clone());
+                                                    gpui::ImageSource::Render(img.clone());
                                                 return div()
                                                     .w_full()
                                                     .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
@@ -5935,7 +5928,7 @@ impl Render for QuickLook {
                     ),
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
-            let img_source = gpui::ImageSource::Image(img.clone());
+            let img_source = gpui::ImageSource::Render(img.clone());
             body = body.child(
                 div()
                     .w_full()
