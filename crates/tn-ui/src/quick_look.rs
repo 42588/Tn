@@ -7685,13 +7685,13 @@ fn md_blocks<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> 
     out
 }
 
-/// 标题:字号阶梯 + 粗体;h1/h2 加底部发丝边表达层级结构(契约:深度=线,不靠色块)。
+/// 标题:字号阶梯 + 粗体。
 fn md_heading(level: HeadingLevel, inl: MdInline, ctx: &MdCtx) -> gpui::Div {
-    let (size, top, bottom, has_border_b) = match level {
-        HeadingLevel::H1 => (22.0, 18.0, 10.0, true),
-        HeadingLevel::H2 => (18.0, 14.0, 8.0, true),
-        HeadingLevel::H3 => (15.5, 12.0, 6.0, false),
-        _ => (13.5, 10.0, 6.0, false),
+    let (size, top, bottom) = match level {
+        HeadingLevel::H1 => (22.0, 18.0, 10.0),
+        HeadingLevel::H2 => (18.0, 14.0, 8.0),
+        HeadingLevel::H3 => (15.5, 12.0, 6.0),
+        _ => (13.5, 10.0, 6.0),
     };
     let mut d = div()
         .pt(px(top))
@@ -7703,24 +7703,6 @@ fn md_heading(level: HeadingLevel, inl: MdInline, ctx: &MdCtx) -> gpui::Div {
 
     if let Some(t) = inl.into_text() {
         d = d.child(t);
-    }
-    
-    match level {
-        HeadingLevel::H1 => {
-            d = d.border_l(px(3.))
-                 .border_color(gpui::rgba(crate::style::PH_DIM))
-                 .pl(px(10.));
-        }
-        HeadingLevel::H2 => {
-            d = d.border_l(px(2.))
-                 .border_color(gpui::rgba(crate::style::PH_DIM))
-                 .pl(px(8.));
-        }
-        _ => {}
-    }
-
-    if has_border_b {
-        d = d.border_b_1().border_color(ctx.border);
     }
     d
 }
