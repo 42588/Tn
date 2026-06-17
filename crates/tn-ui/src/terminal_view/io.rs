@@ -27,7 +27,6 @@ use tn_shell::{BlockEvent, ShellParser};
 use super::{
     launch::FileNamespace, CwdChanged, FilesChanged, ProcessExited, SharedWriter, TerminalView,
     UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, RAIL_WATCH_DEBOUNCE_MS,
-    SimpleRng, SparkParticle,
 };
 
 fn command_line_runs_agent(command: &str, registry: &AgentRegistry) -> bool {
@@ -392,17 +391,15 @@ impl TerminalView {
                     let dt = now.duration_since(last_tick).as_secs_f32().min(0.08);
                     last_tick = now;
 
-                    v.update_sparks(dt);
                     v.update_cursor_spring(dt);
 
                     let active_glide = v
                         .cursor_anim_start
                         .map(|t| t.elapsed() < Duration::from_millis(super::CURSOR_GLIDE_MS))
                         .unwrap_or(false);
-                    let sparks_active = !v.sparks.is_empty();
                     let cursor_moving = v.is_cursor_moving();
 
-                    let active = active_glide || sparks_active || cursor_moving;
+                    let active = active_glide || cursor_moving;
                     if !active {
                         v.cursor_gliding = false;
                         v.snap_cursor_to_target();
@@ -416,63 +413,6 @@ impl TerminalView {
             }
         })
         .detach();
-    }
-
-    pub(crate) fn emit_sparks(&mut self, x: f32, y: f32, _forward: bool) {
-        let mut rng = SimpleRng::new();
-        // Spontaneous explosion: 8 to 12 particles for a richer, more premium look
-        let num_particles = (rng.next_u32() % 5 + 8) as usize;
-        for _ in 0..num_particles {
-            // Radial velocity: select a random angle in [0, 2pi]
-            let angle = (rng.next_u32() % 360) as f32 * (std::f32::consts::PI / 180.0);
-            let speed = rng.gen_range(40.0, 110.0);
-            let vx = speed * angle.cos();
-            // Upward bias to make particles eject upwards and arc downwards under gravity
-            let vy = speed * angle.sin() - 30.0;
-
-            let life = rng.gen_range(0.7, 1.0);
-            let decay = rng.gen_range(0.08, 0.15);
-            let size = rng.gen_range(1.5, 3.5);
-
-            // 70% primary green (PH), 30% white-hot electric spark (0xffffff)
-            let color = if rng.next_u32() % 10 < 3 {
-                0xffffff
-            } else {
-                crate::style::PH
-            };
-
-            self.sparks.push(SparkParticle {
-                x,
-                y,
-                vx,
-                vy,
-                life,
-                decay,
-                color,
-                size,
-            });
-        }
-    }
-
-    fn update_sparks(&mut self, dt: f32) {
-        let drag: f32 = 0.88;
-        let gravity = 120.0;
-        let drag_factor = drag.powf(dt / 0.016);
-        let decay_factor = dt / 0.016;
-        let mut i = 0;
-        while i < self.sparks.len() {
-            let p = &mut self.sparks[i];
-            p.life -= p.decay * decay_factor;
-            if p.life <= 0.0 {
-                self.sparks.swap_remove(i);
-            } else {
-                p.vx *= drag_factor;
-                p.vy = p.vy * drag_factor + gravity * dt;
-                p.x += p.vx * dt;
-                p.y += p.vy * dt;
-                i += 1;
-            }
-        }
     }
 
     fn update_cursor_spring(&mut self, dt: f32) {

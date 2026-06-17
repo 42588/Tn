@@ -576,39 +576,6 @@ impl RailSource {
 #[derive(Clone)]
 struct SidecarConfirm {
     descriptor: AgentDescriptor,
-}#[derive(Clone, Copy, Debug)]
-struct SparkParticle {
-    x: f32,
-    y: f32,
-    vx: f32,
-    vy: f32,
-    life: f32,
-    decay: f32,
-    color: u32,
-    size: f32,
-}
-
-struct SimpleRng(u32);
-impl SimpleRng {
-    fn new() -> Self {
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u32;
-        Self(if seed == 0 { 0x12345678 } else { seed })
-    }
-    fn next_u32(&mut self) -> u32 {
-        let mut x = self.0;
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        self.0 = x;
-        x
-    }
-    fn gen_range(&mut self, min: f32, max: f32) -> f32 {
-        let val = (self.next_u32() as f64 / u32::MAX as f64) as f32;
-        min + val * (max - min)
-    }
 }
 
 pub struct TerminalView {
@@ -666,7 +633,6 @@ pub struct TerminalView {
     cursor_action_forward: bool,
     cursor_gliding: bool,
     cursor_vel: (f32, f32),
-    sparks: Vec<SparkParticle>,
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
@@ -1195,7 +1161,6 @@ impl TerminalView {
             cursor_action_forward: true,
             cursor_gliding: false,
             cursor_vel: (0.0, 0.0),
-            sparks: Vec::new(),
             scrollbar_drag: None,
             agent,
             ghost_chrome: false,
@@ -3059,14 +3024,6 @@ impl Render for TerminalView {
             if focused && small && !first && !force_hide_cursor {
                 self.cursor_anim_start = Some(Instant::now());
                 self.cursor_action_forward = dcol > 0;
- 
-                if dcol < 0 {
-                    // 删除/退格：在被删除字符的中心触发爆炸碎屑粒子
-                    let spark_x = target_px.0 + self.cell_width / 2.0;
-                    let spark_y = target_px.1 + self.line_height / 2.0;
-                    self.emit_sparks(spark_x, spark_y, false);
-                }
- 
                 self.spawn_cursor_glide(cx);
             } else {
                 self.cursor_anim_start = None; // snap
@@ -3351,50 +3308,6 @@ impl Render for TerminalView {
                         })),
                 )
                 .when_some(cursor_el, |this, c| this.child(c))
-                .when_some(
-                    (!self.sparks.is_empty()).then(|| {
-                        div()
-                            .absolute()
-                            .size_full()
-                            .children(self.sparks.iter().flat_map(|p| {
-                                let size_val = p.size * p.life;
-                                // Color temperature cooling transition
-                                let color_val = if p.life > 0.75 {
-                                    0xffffff // white-hot
-                                } else if p.life > 0.35 {
-                                    p.color // primary phosphor green / white
-                                } else {
-                                    0x1c8c72 // cool dark teal
-                                };
-                                
-                                // Main particle
-                                let main_dot = div()
-                                    .absolute()
-                                    .left(px(p.x - size_val / 2.0))
-                                    .top(px(p.y - size_val / 2.0))
-                                    .w(px(size_val))
-                                    .h(px(size_val))
-                                    .rounded(px(0.5))
-                                    .bg(rgba((color_val << 8) | ((p.life * 255.0) as u32 & 0xFF)));
-                                
-                                // Motion blur tail: placed at position of previous step
-                                let tail_x = p.x - p.vx * 0.008;
-                                let tail_y = p.y - p.vy * 0.008;
-                                let tail_size = size_val * 0.7;
-                                let tail_dot = div()
-                                    .absolute()
-                                    .left(px(tail_x - tail_size / 2.0))
-                                    .top(px(tail_y - tail_size / 2.0))
-                                    .w(px(tail_size))
-                                    .h(px(tail_size))
-                                    .rounded(px(0.5))
-                                    .bg(rgba((color_val << 8) | (((p.life * 120.0) as u32) & 0xFF)));
-                                    
-                                vec![tail_dot, main_dot]
-                            }))
-                    }),
-                    |this, s| this.child(s),
-                )
                 .when_some(ime_preedit, |this, p| this.child(p))
                 .when_some(scrollbar, |this, s| this.child(s))
                 .when_some(bell_overlay, |this, o| this.child(o));
