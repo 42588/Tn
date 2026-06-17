@@ -897,6 +897,9 @@ pub struct Workspace {
     /// 像素宠物 overlay(特色③)— 全局一只,状态栏上方栖位(SHEET 05)。
     pet: Entity<crate::pet::PetView>,
     pet_history_open: bool,
+    pet_history_focus: FocusHandle,
+    pet_history_needs_focus: bool,
+    pet_history_closed_needs_refocus: bool,
     /// Current git branch of the app cwd (status bar), resolved at startup.
     branch: Option<String>,
     /// Fallback focus anchor for the workspace. gpui dispatches keybindings by
@@ -1293,6 +1296,9 @@ impl Workspace {
             welcome,
             pet,
             pet_history_open: false,
+            pet_history_focus: cx.focus_handle(),
+            pet_history_needs_focus: false,
+            pet_history_closed_needs_refocus: false,
             branch: git_branch(),
             workspace_focus: cx.focus_handle(),
             palette_open: false,
@@ -2033,6 +2039,11 @@ impl Workspace {
             return;
         }
         self.pet_history_open = !self.pet_history_open;
+        if self.pet_history_open {
+            self.pet_history_needs_focus = true;
+        } else {
+            self.pet_history_closed_needs_refocus = true;
+        }
         cx.notify();
     }
 
@@ -2855,6 +2866,7 @@ impl Workspace {
                             cx.listener(move |this, _e, _w, cx| {
                                 cx.stop_propagation();
                                 this.pet_history_open = false;
+                                this.pet_history_closed_needs_refocus = true;
                                 // Scroll the pane to this command block
                                 pane_entity.update(cx, |p, cx| {
                                     p.select_command_block(b_id, cx);
@@ -2870,6 +2882,20 @@ impl Workspace {
         let menu_max_h = (f32::from(window.viewport_size().height) - 80.0).max(200.0).min(300.0);
 
         let popup = div()
+            .track_focus(&self.pet_history_focus)
+            .on_key_down(
+                cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.pet_history_open = false;
+                        this.pet_history_closed_needs_refocus = true;
+                        cx.notify();
+                    }
+                })
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_, _ev, _w, cx| cx.stop_propagation()),
+            )
             .absolute()
             .right(px(right_px))
             .bottom(px(bottom_px))
@@ -2917,6 +2943,7 @@ impl Workspace {
                                             cx.listener(|this, _e, _w, cx| {
                                                 cx.stop_propagation();
                                                 this.pet_history_open = false;
+                                                this.pet_history_closed_needs_refocus = true;
                                                 cx.notify();
                                             }),
                                         )
@@ -2944,6 +2971,7 @@ impl Workspace {
                     MouseButton::Left,
                     cx.listener(|this, _e, _w, cx| {
                         this.pet_history_open = false;
+                        this.pet_history_closed_needs_refocus = true;
                         cx.notify();
                     }),
                 )
@@ -7106,6 +7134,12 @@ impl Render for Workspace {
             self.agent_form_needs_focus = false;
             self.agent_form_focus.focus(window);
         }
+        if self.pet_history_open
+            && (self.pet_history_needs_focus || !self.pet_history_focus.is_focused(window))
+        {
+            self.pet_history_needs_focus = false;
+            self.pet_history_focus.focus(window);
+        }
         // IME control: disable IME for ASCII overlay fields (the SSH target filter,
         // the agent editor's command field), but keep it on for the SSH favorite
         // rename + the agent editor's name field so Chinese names work.
@@ -7123,6 +7157,7 @@ impl Render for Workspace {
             || self.agent_dir_picker.is_some()
             || self.split_launcher_open
             || self.layout_manager_open
+            || self.pet_history_open
             || self.palette_open; // search reads ASCII key_char; CJK search is parked
         if disable_ime != self.ime_disabled {
             if let Some(hwnd) = crate::platform::hwnd_of(window) {
@@ -7139,6 +7174,10 @@ impl Render for Workspace {
         if self.ql_refocus_pane {
             self.ql_refocus_pane = false;
             self.refocus_after_quick_look(window, cx);
+        }
+        if self.pet_history_closed_needs_refocus {
+            self.pet_history_closed_needs_refocus = false;
+            self.refocus_active(window, cx);
         }
 
         // Time the chrome build when TN_PERF is on. Panes are
