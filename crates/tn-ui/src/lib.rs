@@ -82,6 +82,8 @@ struct AppState {
 
 /// Open the main window and run the GPUI event loop (blocks until quit).
 pub fn run() {
+    let _timer_guard = platform::TimerResolutionGuard::new();
+
     // ── Load config ────────────────────────────────────────────────────
     let config = Arc::new(tn_config::load());
 

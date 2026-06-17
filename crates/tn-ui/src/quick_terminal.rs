@@ -1099,7 +1099,7 @@ impl QuickTerminal {
                         return;
                     }
                     cx.background_executor()
-                        .timer(Duration::from_millis(16))
+                        .timer(Duration::from_millis(8))
                         .await;
                 }
             },

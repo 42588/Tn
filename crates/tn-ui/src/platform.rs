@@ -742,6 +742,25 @@ mod imp {
             false
         }
     }
+
+    pub struct TimerResolutionGuard;
+
+    impl TimerResolutionGuard {
+        pub fn new() -> Self {
+            unsafe {
+                let _ = windows::Win32::Media::timeBeginPeriod(1);
+            }
+            Self
+        }
+    }
+
+    impl Drop for TimerResolutionGuard {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::Media::timeEndPeriod(1);
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -751,6 +770,14 @@ pub use imp::*;
 mod stub {
     use futures::channel::mpsc::UnboundedReceiver;
     use tn_config::{HotkeySpec, Rect};
+
+    pub struct TimerResolutionGuard;
+
+    impl TimerResolutionGuard {
+        pub fn new() -> Self {
+            Self
+        }
+    }
 
     pub fn spawn_hotkey_listener(_spec: &HotkeySpec) -> Option<UnboundedReceiver<()>> {
         None
