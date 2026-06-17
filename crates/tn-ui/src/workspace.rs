@@ -2869,60 +2869,70 @@ impl Workspace {
 
         let menu_max_h = (f32::from(window.viewport_size().height) - 80.0).max(200.0).min(300.0);
 
-        let popup = crate::style::float_panel(
-            div()
-                .absolute()
-                .right(px(right_px))
-                .bottom(px(bottom_px))
-                .w(px(320.))
-                .max_h(px(menu_max_h))
-                .flex()
-                .flex_col()
-                .p(px(8.))
-                .rounded(px(R_PANEL))
-                .bg(col(ui.palette_bg))
-                .child(
+        let popup = div()
+            .absolute()
+            .right(px(right_px))
+            .bottom(px(bottom_px))
+            .w(px(320.))
+            .max_h(px(menu_max_h))
+            .flex()
+            .flex_col()
+            .child(
+                crate::style::float_panel(
                     div()
+                        .size_full()
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .pb(px(6.))
-                        .border_b(px(1.))
-                        .border_color(rgba(H1))
+                        .flex_col()
+                        .p(px(8.))
+                        .rounded(px(R_PANEL - 1.))
+                        .bg(col(ui.palette_bg))
+                        .overflow_hidden()
                         .child(
                             div()
-                                .text_size(px(crate::style::FS_LABEL))
-                                .font_weight(gpui::FontWeight(600.))
-                                .text_color(rgb(T0))
-                                .child("历史命令")
-                        )
-                        .child(
-                            div()
-                                .px(px(2.))
-                                .rounded(px(R_CHIP))
                                 .flex()
+                                .flex_row()
                                 .items_center()
-                                .justify_center()
-                                .hover(|s| s.bg(col(ui.surface_2)))
-                                .child(icon("close", 12., ui.muted))
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e, _w, cx| {
-                                        cx.stop_propagation();
-                                        this.pet_history_open = false;
-                                        cx.notify();
-                                    }),
+                                .justify_between()
+                                .pb(px(6.))
+                                .border_b(px(1.))
+                                .border_color(rgba(H1))
+                                .child(
+                                    div()
+                                        .text_size(px(crate::style::FS_LABEL))
+                                        .font_weight(gpui::FontWeight(600.))
+                                        .text_color(rgb(T0))
+                                        .child("历史命令")
+                                )
+                                .child(
+                                    div()
+                                        .px(px(2.))
+                                        .rounded(px(R_CHIP))
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .hover(|s| s.bg(col(ui.surface_2)))
+                                        .child(icon("close", 12., ui.muted))
+                                        .on_mouse_down(
+                                            MouseButton::Left,
+                                            cx.listener(|this, _e, _w, cx| {
+                                                cx.stop_propagation();
+                                                this.pet_history_open = false;
+                                                cx.notify();
+                                            }),
+                                        )
                                 )
                         )
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .min_h(px(0.))
+                                .pt(px(4.))
+                                .child(list_content)
+                        )
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .pt(px(4.))
-                        .child(list_content)
-                )
-        );
+            );
 
         Some(
             div()
