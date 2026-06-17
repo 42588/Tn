@@ -467,20 +467,30 @@ impl TerminalView {
             super::BODY_PAD_X + self.cursor_cell.1 as f32 * self.cell_width,
             super::BODY_PAD_Y + self.cursor_cell.0 as f32 * self.line_height,
         );
-        let dx = target_px.0 - self.cursor_px.0;
-        let dy = target_px.1 - self.cursor_px.1;
         
-        let stiffness = 3600.0;
-        let damping = 90.0;
+        let stiffness = 8000.0;
+        let damping = 80.0;
         
-        let force_x = stiffness * dx - damping * self.cursor_vel.0;
-        let force_y = stiffness * dy - damping * self.cursor_vel.1;
-        
-        self.cursor_vel.0 += force_x * dt;
-        self.cursor_vel.1 += force_y * dt;
-        
-        self.cursor_px.0 += self.cursor_vel.0 * dt;
-        self.cursor_px.1 += self.cursor_vel.1 * dt;
+        // Sub-stepping: run the spring integration in steps of at most 2ms (0.002s)
+        // for perfect numerical stability and analytical accuracy under any dt.
+        let step_size = 0.002;
+        let mut remaining = dt;
+        while remaining > 0.0 {
+            let substep = remaining.min(step_size);
+            remaining -= substep;
+            
+            let dx = target_px.0 - self.cursor_px.0;
+            let dy = target_px.1 - self.cursor_px.1;
+            
+            let force_x = stiffness * dx - damping * self.cursor_vel.0;
+            let force_y = stiffness * dy - damping * self.cursor_vel.1;
+            
+            self.cursor_vel.0 += force_x * substep;
+            self.cursor_vel.1 += force_y * substep;
+            
+            self.cursor_px.0 += self.cursor_vel.0 * substep;
+            self.cursor_px.1 += self.cursor_vel.1 * substep;
+        }
     }
 
     fn is_cursor_moving(&self) -> bool {

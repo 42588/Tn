@@ -3058,12 +3058,8 @@ impl Render for TerminalView {
                 self.cursor_anim_start = Some(Instant::now());
                 self.cursor_action_forward = dcol > 0;
  
-                if dcol > 0 {
-                    // 输入/打字：位置瞬间对齐目标（消除位移延迟，手感极致利落），仅在目标处做微形变动效
-                    self.cursor_px = target_px;
-                    self.cursor_vel = (0.0, 0.0);
-                } else {
-                    // 删除/退格：仅在删除时触发火花粒子，位置平滑滑回
+                if dcol < 0 {
+                    // 删除/退格：仅在删除时触发火花粒子
                     let spark_x = self.cursor_px.0 + self.cell_width;
                     let spark_y = self.cursor_px.1 + self.line_height / 2.0;
                     self.emit_sparks(spark_x, spark_y, false);
@@ -3088,8 +3084,9 @@ impl Render for TerminalView {
             if t >= 1.0 {
                 self.cursor_anim_start = None;
             } else {
-                // Parabola: 4 * t * (1 - t) goes 0 -> 1 -> 0
-                let pop = 4.0 * t * (1.0 - t);
+                // Mechanical strike envelope: instant peak, cubic decay back to normal
+                let u = 1.0 - t;
+                let pop = u * u * u;
                 if self.cursor_action_forward {
                     // Typing: widen subtly, shrink height subtly (micro-feedback)
                     width_offset = self.cell_width * 0.22 * pop;
