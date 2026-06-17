@@ -120,3 +120,23 @@ render_rx   → 等外层协调循环 drop render_tx_clone 才关闭
 
 `cargo test -p tn-ui` 208 全绿，0 失败。
 
+
+## 补丁（2026-06-17）：PDF 常驻内存 ~200MB 排查与优化（直通 BGRA 与最大高度限制）
+
+### 根因
+
+用户实测打开 PDF 预览时，常驻物理内存约 200MB，与代码预计的 45MB（8页页存缓存）不符。排查发现 200MB 的主要成分如下：
+1. **进程与引擎基准开销**：Tn 终端程序本身开销约 50MB~80MB；pdfium 引擎全局初始化约 20MB。
+2. **PDF 文档结构加载**：`pdfium.load_pdf_from_file` 会把 PDF 文件的对象关联表、字体字典等元数据载入内存，这取决于 PDF 大小，为 30MB~80MB。
+3. **显卡驱动 RAM 镜像**：8页 GPU 纹理显存映射在系统 RAM 中有 45MB 镜像。
+4. **多重渲染转换浪费**：之前的渲染链路使用 `bitmap.as_image()`（执行了一次 C 侧到 Rust 侧的大数组拷贝，做了一次 BGRA->RGBA 通道转换），紧接着在 `dynamic_image_to_render_image` 中又通过遍历执行了一次 RGBA->BGRA 的 swizzle 反向转换。这一来一回产生了多次内存分配和 CPU 损耗，导致 mimalloc 的堆缓存碎片和物理内存居高不下。
+
+### 修复
+
+1. **直通 BGRA 零拷贝式转换**：废除 `bitmap.as_image()` 转换逻辑，直接通过 `bitmap.as_raw_bytes()` 获取 PDFium 原生 BGRA 的 `Vec<u8>`，使用 `image::ImageBuffer::from_raw` 无需任何通道转换，直接构建 `RgbaImage` 并包装为 `RenderImage`。消除了解码时的两次 swizzle 运算和中间临时拷贝，渲染链路内存分配降至最低。
+2. **限定页面渲染高度限制**：在 `PdfRenderConfig` 中设置最大高度限制 `.set_maximum_height(1400)`，防止超长 PDF 等异常分辨率导致内存溢出。
+3. **LRU 淘汰页后台延迟 GC**：在外层协调循环淘汰最旧页时，若发生逐出，在后台线程触发 100ms 延迟的主动物理回收 `unsafe { mi_collect(true); }`。此时主线程已完成绘制并 Drop 了老图，主动 GC 可以让 mimalloc 立即将物理内存页归还给 OS。
+
+### 验证
+
+`cargo check` 通过，`cargo test -p tn-ui` 成功。

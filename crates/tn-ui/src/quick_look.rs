@@ -1944,8 +1944,10 @@ impl QuickLook {
                             let limit = page_count.min(100); // 宽容到 100 页
                             let _ = tx.unbounded_send(Ok((limit, None)));
 
-                            // 1000px 对速览足够清晰,比 1200 省 ~30% JPEG 字节/页内存(审查⑪)。
-                            let render_config = PdfRenderConfig::new().set_target_width(1000);
+                            // 1000px 对速览足够清晰，高度限制为最大 1400px，防止特殊比例 PDF 内存超限。
+                            let render_config = PdfRenderConfig::new()
+                                .set_target_width(1000)
+                                .set_maximum_height(1400);
                             use futures::StreamExt;
                             // 每 100ms 检查一次 cancel token，打破「pdfium 线程卡在
                             // render_rx.next().await → render_rx 不关闭 → 外层协调循环不退出」
@@ -1989,9 +1991,11 @@ impl QuickLook {
                                     if let Ok(bitmap) =
                                         page.render_with_config(&render_config)
                                     {
-                                        if let Ok(img) = bitmap.as_image() {
-                                            let render_img =
-                                                dynamic_image_to_render_image(img);
+                                        let width = bitmap.width() as u32;
+                                        let height = bitmap.height() as u32;
+                                        let raw_bytes = bitmap.as_raw_bytes();
+                                        if let Some(rgba) = image::ImageBuffer::<image::Rgba<u8>, Vec<u8>>::from_raw(width, height, raw_bytes) {
+                                            let render_img = RenderImage::new(vec![image::Frame::new(rgba)]);
                                             let _ = tx.unbounded_send(Ok((
                                                 limit,
                                                 Some((i, Arc::new(render_img))),
@@ -2051,6 +2055,7 @@ impl QuickLook {
                             // generation 检查必须在 arc.lock() 之前完成：
                             // 若先写入 pages_arc 再逐出 GPU，CPU 侧 RenderImage
                             // 字节缓冲区仍被 pages_arc 持有，内存不会释放。
+                            let mut evicted = false;
                             if let Some(arc) = &pages_arc {
                                 // LRU：记录本页渲染顺序，超出上限则驱逐最旧页
                                 render_order.retain(|&x| x != i); // 去重（重渲染时）
@@ -2060,6 +2065,9 @@ impl QuickLook {
                                 } else {
                                     None
                                 };
+                                if evict_idx.is_some() {
+                                    evicted = true;
+                                }
 
                                 let arc_clone = arc.clone();
                                 let req_for_evict = requested_clone.clone();
@@ -2086,6 +2094,15 @@ impl QuickLook {
                                     }
                                     cx.notify();
                                 });
+                            }
+                            if evicted {
+                                let bg_exec = cx.background_executor().clone();
+                                let bg_exec_clone = bg_exec.clone();
+                                bg_exec.spawn(async move {
+                                    // 延迟 100ms，等待主线程重绘并 Drop 掉旧图引用后在后台执行物理 GC
+                                    bg_exec_clone.timer(std::time::Duration::from_millis(100)).await;
+                                    unsafe { mi_collect(true); }
+                                }).detach();
                             }
                         }
                         Err(e) => {
