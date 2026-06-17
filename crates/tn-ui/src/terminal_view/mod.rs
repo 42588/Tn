@@ -2166,17 +2166,40 @@ impl TerminalView {
     /// Retrieves the command output text of a specific block by block ID.
     pub fn get_block_output(&self, block_id: u64) -> Option<String> {
         let blocks = self.blocks.lock().unwrap();
-        let block = blocks.iter().find(|b| b.id == block_id)?;
+        
+        let mut iter = blocks.iter();
+        let mut target_block = None;
+        let mut next_prompt_line = None;
+        
+        while let Some(b) = iter.next() {
+            if b.id == block_id {
+                target_block = Some(b.clone());
+                if let Some(next_b) = iter.next() {
+                    next_prompt_line = Some(next_b.prompt_line);
+                }
+                break;
+            }
+        }
+        
+        let block = target_block?;
         let start_line = block.output_start?;
         
         let t = self.terminal.lock().unwrap();
-        let end_line = block.output_end.unwrap_or_else(|| t.cursor_abs_line());
+        let end_line = next_prompt_line
+            .or(block.output_end)
+            .unwrap_or_else(|| t.cursor_abs_line());
+            
+        let limit_line = if next_prompt_line.is_some() || block.output_end.is_some() {
+            end_line.saturating_sub(1)
+        } else {
+            end_line
+        };
         
-        if start_line > end_line {
+        if start_line > limit_line {
             return Some(String::new());
         }
         
-        Some(t.text_for_absolute_lines(start_line, end_line))
+        Some(t.text_for_absolute_lines(start_line, limit_line))
     }
 
     /// Copies the command output of a specific block to the clipboard.
