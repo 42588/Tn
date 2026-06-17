@@ -3057,12 +3057,18 @@ impl Render for TerminalView {
             if focused && small && !first && !force_hide_cursor {
                 self.cursor_anim_start = Some(Instant::now());
                 self.cursor_action_forward = dcol > 0;
-
-                // 击打溅射火花粒子
-                let spark_x = self.cursor_px.0 + if dcol > 0 { 0.0 } else { self.cell_width };
-                let spark_y = self.cursor_px.1 + self.line_height / 2.0;
-                self.emit_sparks(spark_x, spark_y, dcol > 0);
-
+ 
+                if dcol > 0 {
+                    // 输入/打字：位置瞬间对齐目标（消除位移延迟，手感极致利落），仅在目标处做微形变动效
+                    self.cursor_px = target_px;
+                    self.cursor_vel = (0.0, 0.0);
+                } else {
+                    // 删除/退格：仅在删除时触发火花粒子，位置平滑滑回
+                    let spark_x = self.cursor_px.0 + self.cell_width;
+                    let spark_y = self.cursor_px.1 + self.line_height / 2.0;
+                    self.emit_sparks(spark_x, spark_y, false);
+                }
+ 
                 self.spawn_cursor_glide(cx);
             } else {
                 self.cursor_anim_start = None; // snap
