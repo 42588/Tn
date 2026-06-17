@@ -203,6 +203,8 @@ const ACTIVITY_RAIL_W: f32 = 212.0;
 /// instant the pane widens past it; see [`rail_layout_for_width`].
 const RAIL_MIN_PANE_W: f32 = 560.0;
 
+const MIN_TERMINAL_COLS: usize = 80;
+
 fn fit_grid_size_from_bounds(
     bounds_w: f32,
     bounds_h: f32,
@@ -226,6 +228,7 @@ fn fit_grid_size_from_bounds(
     }
 
     let cols = (avail_w / cell_width).floor() as usize;
+    let cols = cols.max(MIN_TERMINAL_COLS);
     let rows = (avail_h / line_height).floor() as usize;
     Some(GridSize::new(rows, cols))
 }
@@ -637,6 +640,10 @@ pub struct TerminalView {
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
+    // Horizontal scrolling: scroll offset in pixels.
+    horizontal_scroll_offset: f32,
+    // Horizontal scrollbar drag state: cursor X - thumb left, px.
+    horizontal_scrollbar_drag: Option<f32>,
     // AI usage for this pane (M4): the agent it hosts + its latest usage
     // snapshot, polled off-thread from the agent's session log. `AgentId` is the
     // open identity resolved through the registry — no closed enum.
@@ -1231,6 +1238,8 @@ impl TerminalView {
             dup_last_rail: false,
             dup_last_cursor: (usize::MAX, usize::MAX),
             dup_resized_this_frame: false,
+            horizontal_scroll_offset: 0.0,
+            horizontal_scrollbar_drag: None,
             agent_surface_probe_frames: 0,
         }
     }
@@ -2318,7 +2327,7 @@ impl TerminalView {
         // Subtract the body inset (mockup .body padding) so a click maps to the cell
         // under the cursor — the grid is drawn at +BODY_PAD from content_bounds.
         cell_at_from_bounds(
-            f32::from(pos.x),
+            f32::from(pos.x) + self.horizontal_scroll_offset,
             f32::from(pos.y),
             f32::from(b.origin.x),
             f32::from(b.origin.y),
@@ -2369,6 +2378,15 @@ impl TerminalView {
                 return;
             }
             self.drag_scrollbar(event.position.y.into(), cx);
+            return;
+        }
+        if self.horizontal_scrollbar_drag.is_some() {
+            if event.pressed_button != Some(MouseButton::Left) {
+                self.horizontal_scrollbar_drag = None;
+                cx.notify();
+                return;
+            }
+            self.drag_horizontal_scrollbar(event.position.x.into(), cx);
             return;
         }
         match selection_drag_move(self.selecting, event.pressed_button) {
@@ -2425,8 +2443,47 @@ impl TerminalView {
         cx.notify();
     }
 
+    fn begin_horizontal_scrollbar_drag(&mut self, cursor_x: f32, cx: &mut Context<Self>) {
+        let b = *self.content_bounds.borrow();
+        let track_w = f32::from(b.size.width) - 2.0 * BODY_PAD_X;
+        let grid_w = self.size.cols as f32 * self.cell_width;
+        if track_w <= 0.0 || grid_w <= 0.0 {
+            return;
+        }
+        let thumb_top_left_x = f32::from(b.origin.x) + BODY_PAD_X + (self.horizontal_scroll_offset / grid_w) * track_w;
+        self.horizontal_scrollbar_drag = Some(cursor_x - thumb_top_left_x);
+        cx.notify();
+    }
+
+    fn drag_horizontal_scrollbar(&mut self, cursor_x: f32, cx: &mut Context<Self>) {
+        let Some(grab_dx) = self.horizontal_scrollbar_drag else {
+            return;
+        };
+        let b = *self.content_bounds.borrow();
+        let track_w = f32::from(b.size.width) - 2.0 * BODY_PAD_X;
+        if track_w <= 0.0 {
+            return;
+        }
+        let grid_w = self.size.cols as f32 * self.cell_width;
+        let avail_w = track_w;
+        let max_scroll_x = (grid_w - avail_w).max(0.0);
+        if max_scroll_x <= 0.0 {
+            return;
+        }
+        let frac = ((cursor_x - f32::from(b.origin.x) - BODY_PAD_X - grab_dx) / track_w).clamp(0.0, 1.0);
+        self.horizontal_scroll_offset = (frac * grid_w).clamp(0.0, max_scroll_x);
+        cx.notify();
+    }
+
     fn on_mouse_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let mut mutated = false;
         if self.scrollbar_drag.take().is_some() {
+            mutated = true;
+        }
+        if self.horizontal_scrollbar_drag.take().is_some() {
+            mutated = true;
+        }
+        if mutated {
             cx.notify();
             return;
         }
@@ -2657,12 +2714,32 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let scroll_x = match event.delta {
+            ScrollDelta::Lines(p) => p.x * self.cell_width,
+            ScrollDelta::Pixels(p) => f32::from(p.x),
+        };
+        if scroll_x != 0.0 {
+            let b = self.content_bounds.borrow();
+            let bw = f32::from(b.size.width);
+            let grid_w = self.size.cols as f32 * self.cell_width;
+            let avail_w = bw - 2.0 * BODY_PAD_X;
+            let max_scroll_x = (grid_w - avail_w).max(0.0);
+            if max_scroll_x > 0.0 {
+                self.horizontal_scroll_offset = (self.horizontal_scroll_offset - scroll_x)
+                    .clamp(0.0, max_scroll_x);
+                cx.notify();
+            }
+        }
+
         // Lines toward older output are positive.
         let lines = match event.delta {
             ScrollDelta::Lines(p) => p.y,
             ScrollDelta::Pixels(p) => f32::from(p.y) / self.line_height,
         };
         if lines == 0.0 {
+            if scroll_x != 0.0 {
+                cx.stop_propagation();
+            }
             return;
         }
         let mode = self.terminal.lock().unwrap().input_mode();
@@ -3048,6 +3125,23 @@ impl Render for TerminalView {
             }
             self.dup_last_cursor = (cur_row, cur_col);
         }
+
+        let grid_w = self.size.cols as f32 * self.cell_width;
+        let avail_w = bw - 2.0 * BODY_PAD_X;
+        let max_scroll_x = (grid_w - avail_w).max(0.0);
+        self.horizontal_scroll_offset = self.horizontal_scroll_offset.clamp(0.0, max_scroll_x);
+
+        let force_hide_cursor = self.agent_manages_cursor;
+        if cursor_visible && !force_hide_cursor && cur_row < self.size.rows && cur_col < self.size.cols {
+            let cursor_left_x = cur_col as f32 * self.cell_width;
+            let cursor_right_x = cursor_left_x + self.cell_width;
+            if cursor_left_x < self.horizontal_scroll_offset {
+                self.horizontal_scroll_offset = cursor_left_x;
+            } else if cursor_right_x > self.horizontal_scroll_offset + avail_w && avail_w > 0.0 {
+                self.horizontal_scroll_offset = (cursor_right_x - avail_w).min(max_scroll_x);
+            }
+        }
+
         let bounds_cell = self.content_bounds.clone();
         // Stable pane-width probe (drives 窄面板自适应折叠 of the activity rail next
         // frame). Captured on the pane outer below — full-width in the flex-col, so it
@@ -3192,7 +3286,7 @@ impl Render for TerminalView {
                     2.0
                 }) + width_offset;
                 let anim_h = self.line_height + height_offset;
-                let anim_x = cur_x - width_offset / 2.0;
+                let anim_x = cur_x - width_offset / 2.0 - self.horizontal_scroll_offset;
                 let anim_y = cur_y - height_offset / 2.0;
 
                 let base = div()
@@ -3253,7 +3347,7 @@ impl Render for TerminalView {
         let ime_preedit = self.ime_marked.clone().filter(|s| !s.is_empty()).map(|s| {
             div()
                 .absolute()
-                .left(px(BODY_PAD_X + cur_col as f32 * self.cell_width))
+                .left(px(BODY_PAD_X + cur_col as f32 * self.cell_width - self.horizontal_scroll_offset))
                 .top(px(BODY_PAD_Y + cur_row as f32 * self.line_height))
                 .h(px(self.line_height))
                 .bg(col(bg)) // cover the cells underneath so the preedit is legible
@@ -3302,6 +3396,41 @@ impl Render for TerminalView {
                         .mr(px(thumb.margin_right))
                         .rounded(px(2.))
                         .bg(rgba(thumb_bg)),
+                )
+        });
+
+        let horizontal_scrollbar = (max_scroll_x > 0.0).then(|| {
+            let total = grid_w;
+            let thumb_w = (avail_w / total).clamp(0.06, 1.0);
+            let left = (self.horizontal_scroll_offset / total).clamp(0.0, 1.0 - thumb_w);
+            let scrolled = self.horizontal_scrollbar_drag.is_some();
+            let thumb = scrollbar_thumb_style(rail_layout);
+            let thumb_bg = if scrolled {
+                thumb.active_bg
+            } else {
+                thumb.idle_bg
+            };
+            div()
+                .absolute()
+                .left(px(BODY_PAD_X))
+                .bottom(px(0.))
+                .w(px(avail_w))
+                .h(px(14.))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                        this.begin_horizontal_scrollbar_drag(ev.position.x.into(), cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(relative(left))
+                        .bottom(px(2.))
+                        .w(relative(thumb_w))
+                        .h(px(thumb.width))
+                        .rounded(px(2.))
+                        .bg(rgba(thumb_bg))
                 )
         });
 
@@ -3367,7 +3496,7 @@ impl Render for TerminalView {
                     // absolute so it shares the cursor's coordinate origin exactly.
                     div()
                         .absolute()
-                        .left(px(BODY_PAD_X))
+                        .left(px(BODY_PAD_X - self.horizontal_scroll_offset))
                         .top(px(BODY_PAD_Y))
                         .flex()
                         .flex_col()
@@ -3398,6 +3527,7 @@ impl Render for TerminalView {
                 .when_some(cursor_el, |this, c| this.child(c))
                 .when_some(ime_preedit, |this, p| this.child(p))
                 .when_some(scrollbar, |this, s| this.child(s))
+                .when_some(horizontal_scrollbar, |this, s| this.child(s))
                 .when_some(bell_overlay, |this, o| this.child(o));
 
         // agent:正文 + 右侧活动栏并排(mockup .abody = .body + .arail).
