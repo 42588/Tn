@@ -1868,7 +1868,7 @@ impl TerminalView {
         let block = self.blocks.lock().unwrap().iter().find(|b| b.id == block_id).cloned();
         if let Some(b) = block {
             self.selected_block_id = Some(block_id);
-            let line = b.output_start.or(b.input_line).unwrap_or(b.prompt_line);
+            let line = b.prompt_line;
             self.scroll_to_abs_line(line, cx);
         }
     }
