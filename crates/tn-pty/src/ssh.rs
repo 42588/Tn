@@ -588,7 +588,7 @@ async fn run_session(
                 current_size.rows as u32,
                 0,
                 0,
-                &[],
+                &[(russh::Pty::ECHO, 0)],
             )
             .await
             .context("request pty")?;

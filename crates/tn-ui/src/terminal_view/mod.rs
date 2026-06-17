@@ -899,11 +899,13 @@ impl TerminalView {
         // profile must NOT crash the app — pane construction runs inside GPUI's
         // window callback (non-unwinding), so a spawn panic aborts the whole
         // process; fall back to a plain pwsh instead.
+        let mut actual_ssh_cfg = None;
         let mut pty: Box<dyn PtyBackend> = if let Some(cfg) = &launch.ssh {
             let mut ssh_cfg = cfg.clone();
             if std::env::var("TN_NO_SHELL_INTEGRATION").is_err() {
                 ssh_cfg.shell_init = Some(Integration::new().ssh_init_cmd());
             }
+            actual_ssh_cfg = Some(ssh_cfg.clone());
             match SshBackend::spawn(ssh_cfg, pty_size) {
                 Ok(b) => Box::new(b),
                 Err(e) => {
@@ -1177,7 +1179,7 @@ impl TerminalView {
             agent_from_shell: false,
             spawn_cwd: launch.cwd.clone(),
             file_namespace: launch.file_namespace.clone(),
-            ssh_cfg: launch.ssh.clone(),
+            ssh_cfg: actual_ssh_cfg,
             integrate_pwsh: launch.integrate_pwsh,
             change_watcher,
             agent_exited,
@@ -1353,8 +1355,13 @@ impl TerminalView {
                 // moment this runs — without waiting for the next prompt (the first
                 // prompt may already be drawn). `TerminalView::cwd()` reads the
                 // model-level cwd from this bare P;Cwd (no A/B/C/D markers needed).
-                let integration_cmd = " if [ -n \"$BASH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; PROMPT_COMMAND=\"__tn_pc;${PROMPT_COMMAND:-}\"; __tn_pc; elif [ -n \"$ZSH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; typeset -ag precmd_functions; if [[ -z ${(M)precmd_functions:#__tn_pc} ]]; then precmd_functions+=(__tn_pc); fi; __tn_pc; fi\r";
-                self.send_bytes(integration_cmd.as_bytes());
+                // Only send this if shell integration wasn't already injected via shell_init,
+                // to avoid double injection and echoing a massive command on connection.
+                let has_shell_init = self.ssh_cfg.as_ref().and_then(|c| c.shell_init.as_ref()).is_some();
+                if !has_shell_init {
+                    let integration_cmd = " if [ -n \"$BASH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; PROMPT_COMMAND=\"__tn_pc;${PROMPT_COMMAND:-}\"; __tn_pc; elif [ -n \"$ZSH_VERSION\" ]; then __tn_pc() { printf '\\033]633;P;Cwd=%s\\007' \"$PWD\"; }; typeset -ag precmd_functions; if [[ -z ${(M)precmd_functions:#__tn_pc} ]]; then precmd_functions+=(__tn_pc); fi; __tn_pc; fi\r";
+                    self.send_bytes(integration_cmd.as_bytes());
+                }
 
                 cx.emit(SshConnected(method));
                 cx.notify();

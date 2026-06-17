@@ -90,6 +90,8 @@ fi
 
 # Append B (command start) marker after the prompt text.
 PS1="${PS1}\[\033]133;B\007\]"
+
+__tn_pc
 "#;
         SCRIPT.replace("__NONCE__", &self.nonce)
     }
@@ -136,6 +138,8 @@ precmd() {
 
 # Append B (command start) marker after the prompt text.
 PS1="${PS1}%{\033]133;B\007%}"
+
+precmd
 "#;
         SCRIPT.replace("__NONCE__", &self.nonce)
     }
