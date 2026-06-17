@@ -418,18 +418,29 @@ impl TerminalView {
         .detach();
     }
 
-    pub(crate) fn emit_sparks(&mut self, x: f32, y: f32, forward: bool) {
+    pub(crate) fn emit_sparks(&mut self, x: f32, y: f32, _forward: bool) {
         let mut rng = SimpleRng::new();
-        let num_particles = (rng.next_u32() % 4 + 3) as usize; // 3..=6
+        // Spontaneous explosion: 8 to 12 particles for a richer, more premium look
+        let num_particles = (rng.next_u32() % 5 + 8) as usize;
         for _ in 0..num_particles {
-            let vx = if forward {
-                rng.gen_range(15.0, 60.0)
-            } else {
-                rng.gen_range(-60.0, -15.0)
-            };
-            let vy = rng.gen_range(-30.0, 30.0);
-            let life = rng.gen_range(0.6, 1.0);
+            // Radial velocity: select a random angle in [0, 2pi]
+            let angle = (rng.next_u32() % 360) as f32 * (std::f32::consts::PI / 180.0);
+            let speed = rng.gen_range(40.0, 110.0);
+            let vx = speed * angle.cos();
+            // Upward bias to make particles eject upwards and arc downwards under gravity
+            let vy = speed * angle.sin() - 30.0;
+
+            let life = rng.gen_range(0.7, 1.0);
             let decay = rng.gen_range(0.08, 0.15);
+            let size = rng.gen_range(1.5, 3.5);
+
+            // 70% primary green (PH), 30% white-hot electric spark (0xffffff)
+            let color = if rng.next_u32() % 10 < 3 {
+                0xffffff
+            } else {
+                crate::style::PH
+            };
+
             self.sparks.push(SparkParticle {
                 x,
                 y,
@@ -437,6 +448,8 @@ impl TerminalView {
                 vy,
                 life,
                 decay,
+                color,
+                size,
             });
         }
     }
