@@ -2813,6 +2813,8 @@ impl Workspace {
                 .gap(px(2.))
                 .overflow_y_scroll();
 
+            let session_start_time = pane.read(cx).session_start_time();
+
             for b in history_cmds {
                 let cmd_text = b.command.as_ref().map(|s| s.to_string()).unwrap_or_default();
                 let b_id = b.id;
@@ -2833,34 +2835,86 @@ impl Workspace {
                     }
                 }).unwrap_or_default();
 
+                let time_text = b.started_at.map(|ms| {
+                    let time = session_start_time + std::time::Duration::from_millis(ms);
+                    let dt: chrono::DateTime<chrono::Local> = time.into();
+                    dt.format("%H:%M:%S").to_string()
+                }).unwrap_or_else(|| "--:--:--".to_string());
+
                 let pane_entity = pane.clone();
+                let pane_entity_for_copy = pane.clone();
+                let has_output = b.output_start.is_some();
+
                 list = list.child(
                     div()
                         .flex()
                         .flex_row()
                         .items_center()
+                        .justify_between()
                         .gap(px(8.))
                         .px(px(8.))
                         .py(px(4.))
                         .rounded(px(R_CARD))
                         .hover(|s| s.bg(col(ui.palette_selected)).text_color(rgb(T0)))
-                        .child(status_icon)
                         .child(
                             div()
-                                .flex_1()
-                                .font_family(mono.clone())
-                                .text_size(px(crate::style::FS_MICRO))
-                                .text_color(rgb(T1))
-                                .child(cmd_text)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .overflow_hidden()
+                                .child(status_icon)
+                                .child(
+                                    div()
+                                        .text_size(px(crate::style::FS_MICRO))
+                                        .text_color(rgb(T2))
+                                        .child(format!("[{}]", time_text))
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .font_family(mono.clone())
+                                        .text_size(px(crate::style::FS_MICRO))
+                                        .text_color(rgb(T1))
+                                        .child(cmd_text)
+                                )
                         )
-                        .when(!duration_text.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .text_size(px(crate::style::FS_MICRO))
-                                    .text_color(rgb(T2))
-                                    .child(duration_text)
-                            )
-                        })
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .when(!duration_text.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .text_size(px(crate::style::FS_MICRO))
+                                            .text_color(rgb(T2))
+                                            .child(duration_text)
+                                    )
+                                })
+                                .when(has_output, |d| {
+                                    d.child(
+                                        div()
+                                            .px(px(4.))
+                                            .py(px(1.))
+                                            .rounded(px(R_CHIP))
+                                            .text_size(px(crate::style::FS_MICRO))
+                                            .text_color(col(ui.muted))
+                                            .hover(|s| s.bg(col(ui.surface_2)).text_color(rgb(T1)))
+                                            .child("复制输出")
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |_this, _e: &MouseDownEvent, _w, cx| {
+                                                    cx.stop_propagation();
+                                                    pane_entity_for_copy.update(cx, |p, cx| {
+                                                        p.copy_block_output(b_id, cx);
+                                                    });
+                                                })
+                                            )
+                                    )
+                                })
+                        )
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _e, _w, cx| {

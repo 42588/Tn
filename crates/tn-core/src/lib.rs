@@ -963,6 +963,21 @@ impl Terminal {
         self.term.selection_to_string()
     }
 
+    /// Extracts the text between two absolute line numbers (inclusive).
+    pub fn text_for_absolute_lines(&self, start_abs_line: u64, end_abs_line: u64) -> String {
+        let grid = self.term.grid();
+        let mut lines = Vec::new();
+        for (abs, li) in (grid.topmost_line().0..=grid.bottommost_line().0).enumerate() {
+            let abs_u64 = abs as u64;
+            if abs_u64 >= start_abs_line && abs_u64 <= end_abs_line {
+                let row = &grid[Line(li)];
+                let line_str: String = (0..row.len()).map(|c| row[Column(c)].c).collect();
+                lines.push(line_str.trim_end().to_string());
+            }
+        }
+        lines.join("\n")
+    }
+
     /// Drain pending terminal events (Title, Bell, PtyWrite, ChildExit, ...).
     pub fn drain_events(&self) -> Vec<Event> {
         self.events.try_iter().collect()
@@ -1737,5 +1752,14 @@ mod tests {
             assert!(t.generation() > prev, "{step} must bump the generation");
             prev = t.generation();
         }
+    }
+
+    #[test]
+    fn test_text_for_absolute_lines() {
+        let mut t = Terminal::new(GridSize::new(4, 20));
+        t.advance(b"line 1\r\nline 2\r\nline 3");
+        assert_eq!(t.text_for_absolute_lines(0, 1), "line 1\nline 2");
+        assert_eq!(t.text_for_absolute_lines(1, 2), "line 2\nline 3");
+        assert_eq!(t.text_for_absolute_lines(0, 2), "line 1\nline 2\nline 3");
     }
 }

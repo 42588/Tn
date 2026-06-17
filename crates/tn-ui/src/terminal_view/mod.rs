@@ -716,6 +716,8 @@ pub struct TerminalView {
     bell_fading: bool,
     /// 会话时钟原点(≈ reader 线程的块事件时钟):RUN 块实时耗时 = 现在 − started_at。
     session_clock: Instant,
+    /// 会话物理启动时间，用于计算块的绝对墙上时间戳。
+    session_start_time: SystemTime,
     /// 运行中块的 200ms 重绘 ticker 是否在跑(防重复 spawn;静默长命令也走表)。
     block_ticking: bool,
     // `[appearance]` bell prefs, resolved once at construction.
@@ -1192,6 +1194,7 @@ impl TerminalView {
             bell_flash_at: None,
             bell_fading: false,
             session_clock: Instant::now(),
+            session_start_time: launched_at,
             block_ticking: false,
             visual_bell,
             audio_bell,
@@ -2152,6 +2155,36 @@ impl TerminalView {
     fn copy_command(&self, cmd: &str, cx: &mut Context<Self>) {
         if !cmd.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(cmd.to_string()));
+        }
+    }
+
+    /// Exposes the physical session start time.
+    pub fn session_start_time(&self) -> SystemTime {
+        self.session_start_time
+    }
+
+    /// Retrieves the command output text of a specific block by block ID.
+    pub fn get_block_output(&self, block_id: u64) -> Option<String> {
+        let blocks = self.blocks.lock().unwrap();
+        let block = blocks.iter().find(|b| b.id == block_id)?;
+        let start_line = block.output_start?;
+        
+        let t = self.terminal.lock().unwrap();
+        let end_line = block.output_end.unwrap_or_else(|| t.cursor_abs_line());
+        
+        if start_line > end_line {
+            return Some(String::new());
+        }
+        
+        Some(t.text_for_absolute_lines(start_line, end_line))
+    }
+
+    /// Copies the command output of a specific block to the clipboard.
+    pub fn copy_block_output(&self, block_id: u64, cx: &mut Context<Self>) {
+        if let Some(text) = self.get_block_output(block_id) {
+            if !text.is_empty() {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+            }
         }
     }
 
