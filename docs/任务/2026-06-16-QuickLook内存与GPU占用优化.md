@@ -140,3 +140,20 @@ render_rx   → 等外层协调循环 drop render_tx_clone 才关闭
 ### 验证
 
 `cargo check` 通过，`cargo test -p tn-ui` 成功。
+
+
+## 补丁（2026-06-17 续）：PDF 动态自适应行高与 GPU/内存回收增强
+
+### 根因与优化
+
+1. **PDF 页面非标准宽高比产生空隙**：
+   - 在 `uniform_list` 中渲染 PDF 页面时，原先代码写死了容器高度为 `px(1400.)`。如果 PDF 文件的比例不是标准竖向 A4（比如横版的图片 PDF，宽高比只有 0.6），缩放后的页面图像会比容器低得多（如仅 600px）。由于容器垂直方向是 `justify_center().items_center()`，这导致单页上下各有大段白空，相邻页面的空隙叠加高达 800px+。
+   - **优化**：在 pdfium 后台加载成功后，获取第一页的物理宽高（`first_page.width().value` 和 `first_page.height().value`），计算出页面高度比例。在 1000px 宽度基础上计算出自适应的目标高度 `page_height = (1000.0 * ratio).min(1400.0).max(100.0)`。将此高度保存在 `QuickLookData::Pdf` 中，并应用在 `uniform_list` 容器高度及占位元素的高度上。消除了任何非标 PDF 预览时的巨大白边与多余空档。
+
+2. **关闭后 GPU 与内存的回收强化**：
+   - 隐藏/关闭预览窗口走 `close` 流程。为在关闭的瞬间提供最迅速的资源物理释放响应，我们对释放链条做进一步增强。
+   - **优化**：在 `close` 同步方法将 `file_data` 清空并设定 `cancel_token` 完毕的同步工作末尾，立即显式触发一次 `unsafe { mi_collect(true); }`。这可以配合 150ms 延迟纹理驱逐后的第二次 GC，形成双重物理 GC 机制，完美保证极速回缩到基准内存范围。
+
+### 验证
+
+`cargo check` 通过，`cargo test -p tn-ui` 成功。

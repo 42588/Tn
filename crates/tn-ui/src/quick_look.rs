@@ -42,7 +42,7 @@ use crate::editor::motion::{
     CaretMotionInput, CaretMotionState, MotionSnapshot, MotionTrigger,
 };
 use crate::editor::session::DocumentSession;
-use crate::style::{col, cola, float_panel, icon, R_PANEL, UI_SANS};
+use crate::style::{col, cola, float_panel, icon, R_PANEL, UI_SANS, UI_DISPLAY};
 #[cfg(test)]
 use tn_editor::{
     char_to_byte, op_backspace, op_delete, op_delete_range, op_insert, op_insert_multiline,
@@ -910,6 +910,7 @@ enum QuickLookData {
     Pdf {
         pages: Arc<std::sync::Mutex<Vec<Option<Arc<RenderImage>>>>>,
         page_count: usize,
+        page_height: f32,
         render_tx: futures::channel::mpsc::UnboundedSender<usize>,
         requested: Arc<std::sync::Mutex<std::collections::HashSet<usize>>>,
     },
@@ -1808,6 +1809,9 @@ impl QuickLook {
             })
             .detach();
 
+        // 立即物理回收主线程释放的所有资源
+        unsafe { mi_collect(true); }
+
         cx.notify();
     }
 
@@ -1942,7 +1946,17 @@ impl QuickLook {
                         Ok(document) => {
                             let page_count = document.pages().len() as usize;
                             let limit = page_count.min(100); // 宽容到 100 页
-                            let _ = tx.unbounded_send(Ok((limit, None)));
+
+                            let mut ratio = 1.414_f32;
+                            if let Ok(first_page) = document.pages().get(0) {
+                                let w = first_page.width().value;
+                                let h = first_page.height().value;
+                                if w > 0.0 {
+                                    ratio = h / w;
+                                }
+                            }
+                            let page_height = (1000.0 * ratio).min(1400.0).max(100.0);
+                            let _ = tx.unbounded_send(Ok((limit, page_height, None)));
 
                             // 1000px 对速览足够清晰，高度限制为最大 1400px，防止特殊比例 PDF 内存超限。
                             let render_config = PdfRenderConfig::new()
@@ -1998,6 +2012,7 @@ impl QuickLook {
                                             let render_img = RenderImage::new(vec![image::Frame::new(rgba)]);
                                             let _ = tx.unbounded_send(Ok((
                                                 limit,
+                                                page_height,
                                                 Some((i, Arc::new(render_img))),
                                             )));
                                         }
@@ -2032,7 +2047,7 @@ impl QuickLook {
                 let requested_clone = requested.clone();
                 while let Some(msg) = rx.next().await {
                     match msg {
-                        Ok((limit, None)) => {
+                        Ok((limit, page_height, None)) => {
                             let arc = Arc::new(std::sync::Mutex::new(vec![None; limit]));
                             pages_arc = Some(arc.clone());
                             let r_tx = render_tx_clone.clone();
@@ -2044,6 +2059,7 @@ impl QuickLook {
                                 v.file_data = QuickLookData::Pdf {
                                     pages: arc,
                                     page_count: limit,
+                                    page_height,
                                     render_tx: r_tx,
                                     requested: req,
                                 };
@@ -2051,7 +2067,7 @@ impl QuickLook {
                                 cx.notify();
                             });
                         }
-                        Ok((_, Some((i, img)))) => {
+                        Ok((_, _, Some((i, img)))) => {
                             // generation 检查必须在 arc.lock() 之前完成：
                             // 若先写入 pages_arc 再逐出 GPU，CPU 侧 RenderImage
                             // 字节缓冲区仍被 pages_arc 持有，内存不会释放。
@@ -6155,12 +6171,14 @@ impl Render for QuickLook {
         } else if let QuickLookData::Pdf {
             pages,
             page_count,
+            page_height,
             render_tx,
             requested,
         } = &self.file_data
         {
             let pages = pages.clone();
             let page_count = *page_count;
+            let page_height = *page_height;
             let render_tx = render_tx.clone();
             let requested = requested.clone();
             body = body.child(
@@ -6185,7 +6203,7 @@ impl Render for QuickLook {
                                                     gpui::ImageSource::Render(img.clone());
                                                 return div()
                                                     .w_full()
-                                                    .h(px(1400.)) // 固定行高让 uniform_list 计算(只 measure row 0)
+                                                    .h(px(page_height)) // 自适应动态行高
                                                     .bg(gpui::rgb(CODE_BG))
                                                     .flex()
                                                     .justify_center()
@@ -6212,7 +6230,7 @@ impl Render for QuickLook {
                                                 }
                                             }
                                         }
-                                        div().w_full().h(px(1400.)).bg(gpui::rgb(CODE_BG))
+                                        div().w_full().h(px(page_height)).bg(gpui::rgb(CODE_BG))
                                     })
                                     .collect::<Vec<_>>()
                             },
@@ -7265,7 +7283,7 @@ impl Render for QuickLook {
 // 着色器。磷光是唯一生命色(契约),所以正文走文字阶梯 T0/T2、链接走 INFO 蓝,不滥用 PH。
 // ════════════════════════════════════════════════════════════════════════════
 use gpui::{FontStyle, FontWeight, StrikethroughStyle, StyledText, UnderlineStyle};
-use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event as MdEvent, HeadingLevel, Options, Parser, Tag, TagEnd, CodeBlockKind};
 
 /// 该文件是否按 Markdown 渲染(预览态)。
 fn is_markdown_path(p: Option<&std::path::Path>) -> bool {
@@ -7284,6 +7302,7 @@ fn is_markdown_path(p: Option<&std::path::Path>) -> bool {
 struct MdFonts {
     sans: gpui::Font,
     mono: gpui::Font,
+    display: gpui::Font,
 }
 
 /// 行内一段文本的样式(随强调/链接/行内码层叠)。
@@ -7295,6 +7314,7 @@ struct MdStyle {
     strike: bool,
     underline: Option<Hsla>,
     mono: bool,
+    display: bool,
     bg: Option<Hsla>,
 }
 
@@ -7309,7 +7329,6 @@ struct MdCtx<'a> {
     code_bg: Hsla,  // 行内码底 L2
     block_bg: Hsla, // 代码块 / 表头底 L1
     border: Hsla,   // 发丝边 H1
-    quote: Hsla,    // 引用左条 H2
 }
 
 impl MdCtx<'_> {
@@ -7321,6 +7340,7 @@ impl MdCtx<'_> {
             strike: false,
             underline: None,
             mono: false,
+            display: false,
             bg: None,
         }
     }
@@ -7346,6 +7366,8 @@ impl MdInline {
         }
         let mut font = if st.mono {
             fonts.mono.clone()
+        } else if st.display {
+            fonts.display.clone()
         } else {
             fonts.sans.clone()
         };
@@ -7386,7 +7408,7 @@ impl MdInline {
 /// 由于事件流良构,每进入一个行内 Start 压栈、其 End 弹栈,落到栈底的那个 End
 /// 即关闭本块 → 退出。
 fn md_inline<'e>(
-    events: &mut impl Iterator<Item = MdEvent<'e>>,
+    events: &mut dyn Iterator<Item = MdEvent<'e>>,
     ctx: &MdCtx,
     base: MdStyle,
 ) -> MdInline {
@@ -7443,17 +7465,78 @@ fn md_inline<'e>(
 }
 
 /// 把累积的行内缓冲冲刷成一个段落 div(空则不产出)。
-fn md_flush_para(out: &mut Vec<gpui::Div>, inl: &mut MdInline, ctx: &MdCtx) {
+fn md_flush_para_with_task(
+    out: &mut Vec<gpui::Div>,
+    inl: &mut MdInline,
+    ctx: &MdCtx,
+    task_marker: &mut Option<bool>,
+) {
     let taken = std::mem::replace(inl, MdInline::new());
     if let Some(t) = taken.into_text() {
-        out.push(
+        if let Some(done) = task_marker.take() {
+            let checkbox = render_checkbox(done);
+            out.push(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_start()
+                    .gap(px(8.))
+                    .pb(px(8.))
+                    .child(checkbox)
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(13.5))
+                            .line_height(px(21.))
+                            .text_color(ctx.body)
+                            .child(t)
+                    )
+            );
+        } else {
+            out.push(
+                div()
+                    .pb(px(8.))
+                    .text_size(px(13.5))
+                    .line_height(px(21.))
+                    .text_color(ctx.body)
+                    .child(t),
+            );
+        }
+    }
+}
+
+fn render_checkbox(done: bool) -> gpui::Div {
+    let box_wrapper = div()
+        .w(px(18.))
+        .h(px(21.))
+        .flex()
+        .items_center()
+        .justify_center();
+        
+    if done {
+        box_wrapper.child(
             div()
-                .pb(px(8.))
-                .text_size(px(13.5))
-                .line_height(px(21.))
-                .text_color(ctx.body)
-                .child(t),
-        );
+                .w(px(13.))
+                .h(px(13.))
+                .rounded(px(2.))
+                .border_1()
+                .border_color(gpui::rgb(crate::style::PH))
+                .bg(gpui::rgba(crate::style::PH_SOFT))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::style::icon("check", 9., tn_config::Color::new(0x5B, 0xE7, 0xC4)))
+        )
+    } else {
+        box_wrapper.child(
+            div()
+                .w(px(13.))
+                .h(px(13.))
+                .rounded(px(2.))
+                .border_1()
+                .border_color(col(tn_config::Color::new(0x69, 0x74, 0x8E)))
+                .bg(gpui::rgb(crate::style::L2))
+        )
     }
 }
 
@@ -7465,14 +7548,15 @@ fn md_flush_para(out: &mut Vec<gpui::Div>, inl: &mut MdInline, ctx: &MdCtx) {
 /// 维护一个行内样式栈累积 `inl`,遇到真正的块边界(段落 End / 块容器 / 分隔线)
 /// 才 flush。块容器(列表/引用/表/代码块/标题)各自在递归里吃掉自己的 End;落到
 /// 本层 match 到的「非行内 End」即本容器收尾 → flush 并退出。
-fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<gpui::Div> {
+fn md_blocks<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<gpui::Div> {
     let mut out = Vec::new();
     let mut inl = MdInline::new();
     let mut stack = vec![ctx.base()]; // 行内强调/链接样式栈
+    let mut task_marker: Option<bool> = None;
     loop {
         match events.next() {
             None => {
-                md_flush_para(&mut out, &mut inl, ctx);
+                md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                 break;
             }
             Some(MdEvent::End(end)) => match end {
@@ -7485,10 +7569,10 @@ fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) ->
                         stack.pop();
                     }
                 }
-                TagEnd::Paragraph => md_flush_para(&mut out, &mut inl, ctx),
+                TagEnd::Paragraph => md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker),
                 // 其余 End = 关闭本容器(Item / BlockQuote / 顶层不会到这);收尾退出。
                 _ => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     break;
                 }
             },
@@ -7522,35 +7606,40 @@ fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) ->
                     stack.push(s);
                 }
                 // ── 块级开标签:先 flush 当前行内,再产出块 ──
-                Tag::Paragraph => md_flush_para(&mut out, &mut inl, ctx),
+                Tag::Paragraph => md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker),
                 Tag::Heading { level, .. } => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     let mut base = ctx.base();
                     base.weight = FontWeight::BOLD;
+                    base.display = true;
                     let h = md_inline(events, ctx, base);
                     out.push(md_heading(level, h, ctx));
                 }
-                Tag::CodeBlock(_) => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                Tag::CodeBlock(kind) => {
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
+                    let lang = match kind {
+                        CodeBlockKind::Fenced(lang) => lang.to_string(),
+                        CodeBlockKind::Indented => String::new(),
+                    };
                     let lines = md_collect_code(events);
-                    out.push(md_code_block(&lines, ctx));
+                    out.push(md_code_block(&lines, &lang, ctx));
                 }
                 Tag::List(start) => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     out.push(md_list(events, start, ctx));
                 }
                 Tag::BlockQuote(_) => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     let inner = md_blocks(events, ctx);
                     out.push(md_quote(inner, ctx));
                 }
                 Tag::Table(_) => {
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     out.push(md_table(events, ctx));
                 }
                 _ => {
                     // 未建模的块容器(脚注定义等):flush 后递归消费其内容与 End。
-                    md_flush_para(&mut out, &mut inl, ctx);
+                    md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
                     let _ = md_blocks(events, ctx);
                 }
             },
@@ -7565,15 +7654,30 @@ fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) ->
             Some(MdEvent::SoftBreak) => inl.push(" ", *stack.last().unwrap(), &ctx.fonts),
             Some(MdEvent::HardBreak) => inl.push("\n", *stack.last().unwrap(), &ctx.fonts),
             Some(MdEvent::TaskListMarker(done)) => {
-                inl.push(
-                    if done { "☑ " } else { "☐ " },
-                    *stack.last().unwrap(),
-                    &ctx.fonts,
-                );
+                task_marker = Some(done);
             }
             Some(MdEvent::Rule) => {
-                md_flush_para(&mut out, &mut inl, ctx);
-                out.push(div().my(px(10.)).h(px(1.)).bg(ctx.border));
+                md_flush_para_with_task(&mut out, &mut inl, ctx, &mut task_marker);
+                let line_color = ctx.border;
+                out.push(
+                    div()
+                        .my(px(14.))
+                        .relative()
+                        .w_full()
+                        .h(px(1.))
+                        .bg(line_color)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .absolute()
+                                .w(px(5.))
+                                .h(px(5.))
+                                .rounded_full()
+                                .bg(gpui::rgb(crate::style::PH))
+                        )
+                );
             }
             _ => {}
         }
@@ -7583,29 +7687,46 @@ fn md_blocks<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) ->
 
 /// 标题:字号阶梯 + 粗体;h1/h2 加底部发丝边表达层级结构(契约:深度=线,不靠色块)。
 fn md_heading(level: HeadingLevel, inl: MdInline, ctx: &MdCtx) -> gpui::Div {
-    let (size, top, bottom, border) = match level {
-        HeadingLevel::H1 => (22.0, 14.0, 8.0, true),
-        HeadingLevel::H2 => (18.0, 12.0, 6.0, true),
-        HeadingLevel::H3 => (15.5, 10.0, 4.0, false),
-        _ => (13.5, 8.0, 4.0, false),
+    let (size, top, bottom, has_border_b) = match level {
+        HeadingLevel::H1 => (22.0, 18.0, 10.0, true),
+        HeadingLevel::H2 => (18.0, 14.0, 8.0, true),
+        HeadingLevel::H3 => (15.5, 12.0, 6.0, false),
+        _ => (13.5, 10.0, 6.0, false),
     };
     let mut d = div()
         .pt(px(top))
         .pb(px(bottom))
+        .font_family(SharedString::from(crate::style::UI_DISPLAY))
         .text_size(px(size))
         .line_height(px(size * 1.35))
         .text_color(ctx.body);
+
     if let Some(t) = inl.into_text() {
         d = d.child(t);
     }
-    if border {
+    
+    match level {
+        HeadingLevel::H1 => {
+            d = d.border_l(px(3.))
+                 .border_color(gpui::rgba(crate::style::PH_DIM))
+                 .pl(px(10.));
+        }
+        HeadingLevel::H2 => {
+            d = d.border_l(px(2.))
+                 .border_color(gpui::rgba(crate::style::PH_DIM))
+                 .pl(px(8.));
+        }
+        _ => {}
+    }
+
+    if has_border_b {
         d = d.border_b_1().border_color(ctx.border);
     }
     d
 }
 
 /// 收集围栏/缩进代码块的纯文本,按行切分(去掉收尾换行产生的空尾行)。
-fn md_collect_code<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>) -> Vec<String> {
+fn md_collect_code<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>) -> Vec<String> {
     let mut text = String::new();
     loop {
         match events.next() {
@@ -7621,55 +7742,129 @@ fn md_collect_code<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>) -> Vec<St
     lines
 }
 
-/// 代码块:L1 底 + 发丝边 + 圆角,逐行复用文件预览的 `highlight()` 着色器(mono)。
-fn md_code_block(lines: &[String], ctx: &MdCtx) -> gpui::Div {
-    let mut col_div = div().flex().flex_col();
+/// 代码块:L1 底 + 发丝边 + 圆角,顶部添加 Mock 顶栏与语言标识，逐行复用文件预览的 `highlight()` 着色器(mono)。
+fn md_code_block(lines: &[String], lang: &str, ctx: &MdCtx) -> gpui::Div {
+    let make_dot = |c: gpui::Rgba| {
+        div()
+            .w(px(7.))
+            .h(px(7.))
+            .rounded_full()
+            .bg(c)
+    };
+    
+    let dots = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.))
+        .child(make_dot(gpui::rgb(crate::style::T3).into()))
+        .child(make_dot(gpui::rgb(crate::style::T3).into()))
+        .child(make_dot(gpui::rgb(crate::style::T3).into()));
+        
+    let lang_label = lang.to_uppercase();
+    let header_bar = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .px(px(12.))
+        .py(px(6.))
+        .bg(gpui::rgb(crate::style::L2))
+        .border_b_1()
+        .border_color(ctx.border)
+        .child(dots)
+        .when(!lang_label.is_empty(), |d| {
+            d.child(
+                div()
+                    .font_family(SharedString::from(crate::style::UI_DISPLAY))
+                    .text_size(px(crate::style::FS_MICRO))
+                    .text_color(gpui::rgb(crate::style::T2))
+                    .child(SharedString::from(lang_label))
+            )
+        });
+
+    let mut col_div = div().flex().flex_col().px(px(12.)).py(px(8.));
     let mut mono = ctx.base();
     mono.mono = true;
-    for line in lines {
+    
+    let total_lines = lines.len();
+    let num_width = total_lines.to_string().len();
+    
+    for (idx, line) in lines.iter().enumerate() {
+        let line_num = idx + 1;
         let spans = highlight(line);
         let mut inl = MdInline::new();
         if spans.is_empty() {
-            inl.push(" ", mono, &ctx.fonts); // 空行也占一行高
+            inl.push(" ", mono, &ctx.fonts);
         }
         for (txt, tint) in spans {
             let mut s = mono;
             s.color = tint_color(ctx.config, tint).into();
             inl.push(&txt, s, &ctx.fonts);
         }
-        let mut row = div().text_size(px(crate::style::FS_CAPTION)).line_height(px(18.0));
+        
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .text_size(px(crate::style::FS_CAPTION))
+            .line_height(px(18.0));
+            
+        row = row.child(
+            div()
+                .w(px(24. + (num_width.saturating_sub(1) as f32) * 6.5))
+                .flex_none()
+                .font_family(SharedString::from(ctx.config.font().family.clone()))
+                .text_color(gpui::rgb(crate::style::T3))
+                .child(format!("{:>width$}", line_num, width = num_width))
+        );
+        
+        row = row.child(
+            div()
+                .w(px(1.))
+                .h(px(16.))
+                .bg(ctx.border)
+                .mx(px(8.))
+        );
+        
         if let Some(t) = inl.into_text() {
-            row = row.child(t);
+            row = row.child(div().flex_1().child(t));
         }
         col_div = col_div.child(row);
     }
+    
     div()
-        .my(px(8.))
-        .px(px(12.))
-        .py(px(9.))
+        .my(px(10.))
         .rounded(px(crate::style::R_CARD))
         .bg(ctx.block_bg)
         .border_1()
         .border_color(ctx.border)
+        .overflow_hidden()
+        .child(header_bar)
         .child(col_div)
 }
 
-/// 引用块:左侧 2px 竖条 + 缩进 + 次文色,内部是任意块。
+/// 引用块:左侧 3px PH 竖条 + 缩进 + 次文色 + L2背景,内部是任意块。
 fn md_quote(inner: Vec<gpui::Div>, ctx: &MdCtx) -> gpui::Div {
     div()
-        .my(px(6.))
-        .pl(px(12.))
-        .border_l(px(2.))
-        .border_color(ctx.quote)
+        .my(px(10.))
+        .pl(px(16.))
+        .pr(px(12.))
+        .py(px(8.))
+        .rounded(px(crate::style::R_CARD))
+        .bg(gpui::rgb(crate::style::L2))
+        .border_l(px(3.))
+        .border_color(gpui::rgb(crate::style::PH))
         .text_color(ctx.muted)
         .flex()
         .flex_col()
+        .gap(px(6.))
         .children(inner)
 }
 
-/// 列表:逐 Item 渲染「标记 + 内容块」。有序用 `n.`,无序用 `•`。
+/// 列表:预检 TaskList 标志，逐 Item 渲染「标记 + 内容块」。有序用 `n.`,无序用 `•`。
 fn md_list<'e>(
-    events: &mut impl Iterator<Item = MdEvent<'e>>,
+    events: &mut dyn Iterator<Item = MdEvent<'e>>,
     start: Option<u64>,
     ctx: &MdCtx,
 ) -> gpui::Div {
@@ -7679,29 +7874,62 @@ fn md_list<'e>(
         match events.next() {
             None | Some(MdEvent::End(_)) => break,
             Some(MdEvent::Start(Tag::Item)) => {
-                let blocks = md_blocks(events, ctx);
-                let marker = match idx {
-                    Some(n) => format!("{n}."),
-                    None => "•".to_string(),
-                };
-                if let Some(n) = idx.as_mut() {
-                    *n += 1;
+                let mut next_ev = events.next();
+                let mut is_task = false;
+                let mut done = false;
+                if let Some(MdEvent::TaskListMarker(d)) = &next_ev {
+                    is_task = true;
+                    done = *d;
+                    next_ev = events.next();
                 }
-                rows.push(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_start()
-                        .gap(px(8.))
-                        .child(
+                
+                let mut chain = next_ev.into_iter().chain(&mut *events);
+                let blocks = md_blocks(&mut chain as &mut dyn Iterator<Item = MdEvent<'e>>, ctx);
+                
+                let marker_el = if is_task {
+                    render_checkbox(done)
+                } else {
+                    match idx {
+                        Some(n) => {
+                            let text = format!("{n}.");
                             div()
                                 .flex_none()
                                 .min_w(px(18.))
                                 .text_size(px(13.5))
                                 .line_height(px(21.))
                                 .text_color(ctx.muted)
-                                .child(SharedString::from(marker)),
-                        )
+                                .child(SharedString::from(text))
+                        }
+                        None => {
+                            div()
+                                .flex_none()
+                                .w(px(18.))
+                                .h(px(21.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    div()
+                                        .w(px(4.))
+                                        .h(px(4.))
+                                        .bg(gpui::rgba(crate::style::PH_DIM))
+                                        .rounded(px(1.))
+                                )
+                        }
+                    }
+                };
+                
+                if let Some(n) = idx.as_mut() {
+                    *n += 1;
+                }
+                
+                rows.push(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_start()
+                        .gap(px(8.))
+                        .child(marker_el)
                         .child(div().flex_1().min_w(px(0.)).flex().flex_col().children(blocks)),
                 );
             }
@@ -7711,8 +7939,8 @@ fn md_list<'e>(
     div().flex().flex_col().pb(px(6.)).children(rows)
 }
 
-/// 表格:表头 L1 底,逐行发丝边分隔,单元格等分宽。
-fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> gpui::Div {
+/// 表格:表头 L2 底, 斑马纹交替底, 单元格等分宽。
+fn md_table<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> gpui::Div {
     let mut header: Vec<MdInline> = Vec::new();
     let mut rows: Vec<Vec<MdInline>> = Vec::new();
     loop {
@@ -7723,23 +7951,36 @@ fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> 
             _ => {}
         }
     }
-    let mk_row = |cells: Vec<MdInline>, is_head: bool, ctx: &MdCtx| {
+    let mk_row = |cells: Vec<MdInline>, is_head: bool, row_idx: usize, ctx: &MdCtx| {
         let mut r = div()
             .flex()
             .flex_row()
             .border_b_1()
             .border_color(ctx.border);
+            
+        let row_bg = if is_head {
+            Some(gpui::rgb(crate::style::L2))
+        } else if row_idx % 2 == 1 {
+            Some(gpui::rgb(crate::style::L4))
+        } else {
+            None
+        };
+        
+        if let Some(bg) = row_bg {
+            r = r.bg(bg);
+        }
+        
         for c in cells {
             let mut cell = div()
                 .flex_1()
                 .min_w(px(0.))
-                .px(px(9.))
-                .py(px(5.))
+                .px(px(12.))
+                .py(px(8.))
                 .text_size(px(crate::style::FS_BODY))
                 .line_height(px(18.))
                 .text_color(ctx.body);
             if is_head {
-                cell = cell.bg(ctx.block_bg).font_weight(FontWeight::BOLD);
+                cell = cell.font_weight(FontWeight::BOLD);
             }
             if let Some(t) = c.into_text() {
                 cell = cell.child(t);
@@ -7749,7 +7990,7 @@ fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> 
         r
     };
     let mut tbl = div()
-        .my(px(8.))
+        .my(px(12.))
         .rounded(px(crate::style::R_CARD))
         .border_1()
         .border_color(ctx.border)
@@ -7757,16 +7998,16 @@ fn md_table<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> 
         .flex()
         .flex_col();
     if !header.is_empty() {
-        tbl = tbl.child(mk_row(header, true, ctx));
+        tbl = tbl.child(mk_row(header, true, 0, ctx));
     }
-    for row in rows {
-        tbl = tbl.child(mk_row(row, false, ctx));
+    for (i, row) in rows.into_iter().enumerate() {
+        tbl = tbl.child(mk_row(row, false, i, ctx));
     }
     tbl
 }
 
 /// 收集一行(表头/表体)的所有单元格行内内容。
-fn md_row_cells<'e>(events: &mut impl Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<MdInline> {
+fn md_row_cells<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) -> Vec<MdInline> {
     let mut cells = Vec::new();
     loop {
         match events.next() {
@@ -7786,15 +8027,15 @@ fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
         fonts: MdFonts {
             sans: crate::style::with_cjk(UI_SANS),
             mono: crate::style::with_cjk(&config.font().family),
+            display: crate::style::with_cjk(UI_DISPLAY),
         },
         body: gpui::rgb(crate::style::T0).into(),
         muted: gpui::rgb(crate::style::T2).into(),
         link: gpui::rgb(crate::style::INFO).into(),
-        code_fg: gpui::rgb(crate::style::T0).into(),
-        code_bg: gpui::rgb(crate::style::L2).into(),
+        code_fg: gpui::rgb(crate::style::PH).into(),
+        code_bg: gpui::rgb(crate::style::L4).into(),
         block_bg: gpui::rgb(crate::style::L1).into(),
         border: rgba(crate::style::H1).into(),
-        quote: rgba(crate::style::H2).into(),
     };
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -7808,10 +8049,21 @@ fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
         .size_full()
         .overflow_y_scroll()
         .bg(gpui::rgb(CODE_BG))
-        .px(px(18.))
-        .py(px(12.))
+        .px(px(24.))
+        .py(px(20.))
+        .flex()
+        .flex_col()
+        .items_center()
         .font_family(SharedString::from(UI_SANS))
-        .children(blocks)
+        .child(
+            div()
+                .w_full()
+                .max_w(px(720.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .children(blocks)
+        )
 }
 
 #[cfg(test)]
