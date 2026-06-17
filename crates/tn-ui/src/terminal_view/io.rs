@@ -26,7 +26,8 @@ use tn_shell::{BlockEvent, ShellParser};
 
 use super::{
     launch::FileNamespace, CwdChanged, FilesChanged, ProcessExited, SharedWriter, TerminalView,
-    UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, CURSOR_GLIDE_MS, RAIL_WATCH_DEBOUNCE_MS,
+    UsageUpdated, BELL_FLASH_MS, CURSOR_BLINK_MS, RAIL_WATCH_DEBOUNCE_MS,
+    SimpleRng, SparkParticle,
 };
 
 fn command_line_runs_agent(command: &str, registry: &AgentRegistry) -> bool {
@@ -386,12 +387,20 @@ impl TerminalView {
             loop {
                 exec.timer(Duration::from_millis(16)).await;
                 let again = this.update(cx, |v, cx| {
-                    let active = v
+                    v.update_sparks();
+                    v.update_cursor_spring();
+
+                    let active_glide = v
                         .cursor_anim_start
-                        .map(|t| t.elapsed() < Duration::from_millis(CURSOR_GLIDE_MS))
+                        .map(|t| t.elapsed() < Duration::from_millis(super::CURSOR_GLIDE_MS))
                         .unwrap_or(false);
+                    let sparks_active = !v.sparks.is_empty();
+                    let cursor_moving = v.is_cursor_moving();
+
+                    let active = active_glide || sparks_active || cursor_moving;
                     if !active {
                         v.cursor_gliding = false;
+                        v.snap_cursor_to_target();
                     }
                     cx.notify();
                     active
@@ -402,6 +411,90 @@ impl TerminalView {
             }
         })
         .detach();
+    }
+
+    pub(crate) fn emit_sparks(&mut self, x: f32, y: f32, forward: bool) {
+        let mut rng = SimpleRng::new();
+        let num_particles = (rng.next_u32() % 4 + 3) as usize; // 3..=6
+        for _ in 0..num_particles {
+            let vx = if forward {
+                rng.gen_range(15.0, 60.0)
+            } else {
+                rng.gen_range(-60.0, -15.0)
+            };
+            let vy = rng.gen_range(-30.0, 30.0);
+            let life = rng.gen_range(0.6, 1.0);
+            let decay = rng.gen_range(0.08, 0.15);
+            self.sparks.push(SparkParticle {
+                x,
+                y,
+                vx,
+                vy,
+                life,
+                decay,
+            });
+        }
+    }
+
+    fn update_sparks(&mut self) {
+        let dt = 0.016;
+        let drag = 0.88;
+        let gravity = 120.0;
+        let mut i = 0;
+        while i < self.sparks.len() {
+            let p = &mut self.sparks[i];
+            p.life -= p.decay;
+            if p.life <= 0.0 {
+                self.sparks.swap_remove(i);
+            } else {
+                p.vx *= drag;
+                p.vy = p.vy * drag + gravity * dt;
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                i += 1;
+            }
+        }
+    }
+
+    fn update_cursor_spring(&mut self) {
+        let target_px = (
+            super::BODY_PAD_X + self.cursor_cell.1 as f32 * self.cell_width,
+            super::BODY_PAD_Y + self.cursor_cell.0 as f32 * self.line_height,
+        );
+        let dx = target_px.0 - self.cursor_px.0;
+        let dy = target_px.1 - self.cursor_px.1;
+        
+        let dt = 0.016;
+        let stiffness = 450.0;
+        let damping = 26.0;
+        
+        let force_x = stiffness * dx - damping * self.cursor_vel.0;
+        let force_y = stiffness * dy - damping * self.cursor_vel.1;
+        
+        self.cursor_vel.0 += force_x * dt;
+        self.cursor_vel.1 += force_y * dt;
+        
+        self.cursor_px.0 += self.cursor_vel.0 * dt;
+        self.cursor_px.1 += self.cursor_vel.1 * dt;
+    }
+
+    fn is_cursor_moving(&self) -> bool {
+        let target_px = (
+            super::BODY_PAD_X + self.cursor_cell.1 as f32 * self.cell_width,
+            super::BODY_PAD_Y + self.cursor_cell.0 as f32 * self.line_height,
+        );
+        let dx = target_px.0 - self.cursor_px.0;
+        let dy = target_px.1 - self.cursor_px.1;
+        dx.abs() > 0.05 || dy.abs() > 0.05 || self.cursor_vel.0.abs() > 0.1 || self.cursor_vel.1.abs() > 0.1
+    }
+
+    fn snap_cursor_to_target(&mut self) {
+        let target_px = (
+            super::BODY_PAD_X + self.cursor_cell.1 as f32 * self.cell_width,
+            super::BODY_PAD_Y + self.cursor_cell.0 as f32 * self.line_height,
+        );
+        self.cursor_px = target_px;
+        self.cursor_vel = (0.0, 0.0);
     }
 
     /// Poll the PTY child; emit [`ProcessExited`] once, when it exits. ConPTY

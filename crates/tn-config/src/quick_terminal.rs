@@ -161,6 +161,13 @@ pub fn ease_out_cubic(t: f32) -> f32 {
     1.0 - u * u * u
 }
 
+/// Back ease-out: overshoot at the end for an elastic/mechanical settle.
+pub fn ease_out_back(t: f32) -> f32 {
+    let s: f32 = 0.8; // Overshoot scaling: 0.8 gives a tight mechanical lock-in
+    let t = t - 1.0;
+    t * t * ((s + 1.0) * t + s) + 1.0
+}
+
 /// A parsed global hotkey: a set of modifiers plus a single key token. The
 /// platform layer maps `key` to a virtual-key code and the booleans to the
 /// OS modifier bitmask.
@@ -325,6 +332,14 @@ mod tests {
         assert!((ease_out_cubic(0.0)).abs() < 1e-6);
         assert!((ease_out_cubic(1.0) - 1.0).abs() < 1e-6);
         assert!(ease_out_cubic(0.5) > 0.5); // ease-out is ahead of linear early
+    }
+
+    #[test]
+    fn ease_out_back_endpoints() {
+        assert!((ease_out_back(0.0)).abs() < 1e-6);
+        assert!((ease_out_back(1.0) - 1.0).abs() < 1e-6);
+        // ease_out_back(0.9) should overshoot (> 1.0) due to s=0.8
+        assert!(ease_out_back(0.9) > 1.0);
     }
 
     #[test]

@@ -27,7 +27,7 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight, KeyDownEvent,
     MouseButton, Pixels, SharedString, UTF16Selection, Window,
 };
-use tn_config::{ease_out_cubic, lerp_rect, Loaded, Rect};
+use tn_config::{ease_out_cubic, ease_out_back, lerp_rect, Loaded, Rect};
 
 use crate::local_dir_picker::{
     read_local_dirs, windows_virtual_root, LocalDirAction, LocalDirFocus, LocalDirPicker,
@@ -94,6 +94,7 @@ pub struct QuickTerminal {
     /// Launchable profiles (config `[[profiles]]` + installed WSL distros),
     /// resolved once (shares the workspace's discovery).
     launch_profiles: Vec<tn_config::Profile>,
+    slide_progress: Option<f32>,
 }
 
 /// What a launcher tile does when activated. Built from [`launch_entries`] + the
@@ -180,6 +181,7 @@ impl QuickTerminal {
             anim_token: 0,
             transition_at: None,
             launch_profiles,
+            slide_progress: None,
         }
     }
 
@@ -1058,21 +1060,39 @@ impl QuickTerminal {
                 let dur = Duration::from_millis(anim_ms);
                 let start = Instant::now();
                 loop {
-                    if !this
-                        .update(cx, |v, _| v.anim_token == token)
-                        .unwrap_or(false)
-                    {
+                    let mut is_anim_active = false;
+                    let mut progress = 1.0;
+                    let ok = this
+                        .update(cx, |v, cx| {
+                            if v.anim_token != token {
+                                return false;
+                            }
+                            let elapsed = start.elapsed();
+                            progress = if dur.is_zero() {
+                                1.0
+                            } else {
+                                (elapsed.as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0)
+                            };
+                            v.slide_progress = Some(progress);
+                            cx.notify();
+                            is_anim_active = !dur.is_zero() && elapsed < dur;
+                            true
+                        })
+                        .unwrap_or(false);
+                    if !ok {
                         return;
                     }
-                    let elapsed = start.elapsed();
-                    let progress = if dur.is_zero() {
-                        1.0
+                    let eased = if reveal {
+                        ease_out_back(progress)
                     } else {
-                        (elapsed.as_secs_f32() / dur.as_secs_f32()).clamp(0.0, 1.0)
+                        1.0 - ease_out_back(progress)
                     };
-                    let t = if reveal { progress } else { 1.0 - progress };
-                    platform::set_bounds(h, lerp_rect(hidden, shown, ease_out_cubic(t)));
-                    if dur.is_zero() || elapsed >= dur {
+                    platform::set_bounds(h, lerp_rect(hidden, shown, eased));
+                    if !is_anim_active {
+                        let _ = this.update(cx, |v, cx| {
+                            v.slide_progress = None;
+                            cx.notify();
+                        });
                         if !reveal {
                             platform::show(h, false);
                         }
@@ -1120,6 +1140,10 @@ impl QuickTerminal {
     /// (零未绘制区),残影改为**卡内刻线** —— 底缘上方 1px ph-dim 圆角弧线
     /// (启动器 1 道 / 运行态 2 道,·45/·18 与原型同档);真透明可达后再外移。
     fn ghost_frame(&self, inner: Div) -> Div {
+        let progress = self.slide_progress.unwrap_or(1.0);
+        let left_w = 0.5 - 0.5 * progress;
+        let right_w = 0.5 - 0.5 * progress;
+
         // 卡内残影弧:贴底一条 R_WINDOW 高的圆角描边带(底线 + 两角弧 + 角旁
         // 短侧线),只描不填,读作幽灵身后的轮廓残像。
         let echo_arc = |lift: f32, inset: f32, alpha: u32| {
@@ -1147,7 +1171,7 @@ impl QuickTerminal {
                     .absolute()
                     .top(px(0.))
                     .bottom(px(0.))
-                    .left(px(0.))
+                    .left(gpui::relative(left_w))
                     .right(gpui::relative(0.5))
                     .mr(px(-2.))
                     .bg(linear_gradient(
@@ -1162,7 +1186,7 @@ impl QuickTerminal {
                     .top(px(0.))
                     .bottom(px(0.))
                     .left(gpui::relative(0.5))
-                    .right(px(0.))
+                    .right(gpui::relative(right_w))
                     .ml(px(-2.))
                     .bg(linear_gradient(
                         90.,

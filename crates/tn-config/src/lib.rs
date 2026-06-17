@@ -25,7 +25,7 @@ pub use config::{
 };
 pub use paths::{config_dir, config_path, themes_dir};
 pub use quick_terminal::{
-    ease_out_cubic, lerp_rect, parse_hotkey, HotkeySpec, QuickTermPosition, QuickTerminal, Rect,
+    ease_out_cubic, ease_out_back, lerp_rect, parse_hotkey, HotkeySpec, QuickTermPosition, QuickTerminal, Rect,
 };
 pub use theme::{
     AgentColors, Ansi16, Backdrop, Corner, Mode, TerminalColors, Theme, UiColors, WindowChrome,

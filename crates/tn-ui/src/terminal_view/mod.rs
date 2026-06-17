@@ -193,8 +193,8 @@ const COLS: usize = 110;
 /// the glass rim and aligns with the header's text inset. Applied uniformly to the
 /// grid origin, the cursor, mouse hit-testing, AND the cols/rows fit (so the engine
 /// sizes to the *inset* area) — all relative to `content_bounds`.
-const BODY_PAD_X: f32 = 15.0;
-const BODY_PAD_Y: f32 = 11.0;
+pub(super) const BODY_PAD_X: f32 = 15.0;
+pub(super) const BODY_PAD_Y: f32 = 11.0;
 const ACTIVITY_RAIL_W: f32 = 212.0;
 /// Below this pane content width the activity rail (本次改动) is dropped so the agent
 /// body keeps a usable width instead of being squeezed to nothing / visually covered
@@ -576,6 +576,37 @@ impl RailSource {
 #[derive(Clone)]
 struct SidecarConfirm {
     descriptor: AgentDescriptor,
+}#[derive(Clone, Copy, Debug)]
+struct SparkParticle {
+    x: f32,
+    y: f32,
+    vx: f32,
+    vy: f32,
+    life: f32,
+    decay: f32,
+}
+
+struct SimpleRng(u32);
+impl SimpleRng {
+    fn new() -> Self {
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u32;
+        Self(if seed == 0 { 0x12345678 } else { seed })
+    }
+    fn next_u32(&mut self) -> u32 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.0 = x;
+        x
+    }
+    fn gen_range(&mut self, min: f32, max: f32) -> f32 {
+        let val = (self.next_u32() as f64 / u32::MAX as f64) as f32;
+        min + val * (max - min)
+    }
 }
 
 pub struct TerminalView {
@@ -632,6 +663,8 @@ pub struct TerminalView {
     cursor_anim_start: Option<Instant>,
     cursor_action_forward: bool,
     cursor_gliding: bool,
+    cursor_vel: (f32, f32),
+    sparks: Vec<SparkParticle>,
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
     // px) so the thumb tracks under the cursor. `None` when not dragging.
     scrollbar_drag: Option<f32>,
@@ -1159,6 +1192,8 @@ impl TerminalView {
             cursor_anim_start: None,
             cursor_action_forward: true,
             cursor_gliding: false,
+            cursor_vel: (0.0, 0.0),
+            sparks: Vec::new(),
             scrollbar_drag: None,
             agent,
             ghost_chrome: false,
@@ -3022,34 +3057,21 @@ impl Render for TerminalView {
             if focused && small && !first && !force_hide_cursor {
                 self.cursor_anim_start = Some(Instant::now());
                 self.cursor_action_forward = dcol > 0;
+
+                // 击打溅射火花粒子
+                let spark_x = self.cursor_px.0 + if dcol > 0 { 0.0 } else { self.cell_width };
+                let spark_y = self.cursor_px.1 + self.line_height / 2.0;
+                self.emit_sparks(spark_x, spark_y, dcol > 0);
+
                 self.spawn_cursor_glide(cx);
             } else {
                 self.cursor_anim_start = None; // snap
                 self.cursor_px = target_px;
+                self.cursor_vel = (0.0, 0.0);
             }
         }
 
-        // Exponential decay for smooth chasing (replaces fixed duration ease_out)
-        let (mut cur_x, mut cur_y) = self.cursor_px;
-        let dx = target_px.0 - cur_x;
-        let dy = target_px.1 - cur_y;
-
-        if dx.abs() > 0.5 || dy.abs() > 0.5 {
-            // Lerp by a factor per frame. At 60fps, 0.4 is a nice fast ease.
-            cur_x += dx * 0.4;
-            cur_y += dy * 0.4;
-            // When close enough, snap to target
-            if (cur_x - target_px.0).abs() < 0.5 {
-                cur_x = target_px.0;
-            }
-            if (cur_y - target_px.1).abs() < 0.5 {
-                cur_y = target_px.1;
-            }
-        } else {
-            cur_x = target_px.0;
-            cur_y = target_px.1;
-        }
-        self.cursor_px = (cur_x, cur_y);
+        let (cur_x, cur_y) = self.cursor_px;
 
         // Calculate pop/squish animation offsets
         let mut width_offset = 0.0;
@@ -3324,6 +3346,25 @@ impl Render for TerminalView {
                         })),
                 )
                 .when_some(cursor_el, |this, c| this.child(c))
+                .when_some(
+                    (!self.sparks.is_empty()).then(|| {
+                        div()
+                            .absolute()
+                            .size_full()
+                            .children(self.sparks.iter().map(|p| {
+                                let size_val = 1.0 + 1.2 * p.life;
+                                div()
+                                    .absolute()
+                                    .left(px(p.x - size_val / 2.0))
+                                    .top(px(p.y - size_val / 2.0))
+                                    .w(px(size_val))
+                                    .h(px(size_val))
+                                    .rounded(px(size_val / 2.0))
+                                    .bg(rgba((crate::style::PH << 8) | ((p.life * 255.0) as u32 & 0xFF)))
+                            }))
+                    }),
+                    |this, s| this.child(s),
+                )
                 .when_some(ime_preedit, |this, p| this.child(p))
                 .when_some(scrollbar, |this, s| this.child(s))
                 .when_some(bell_overlay, |this, o| this.child(o));
