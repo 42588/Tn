@@ -8041,6 +8041,7 @@ fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
             div()
                 .w_full()
                 .max_w(px(720.))
+                .pb(px(60.)) // 增加底部边距，防止最后一行被底栏/滚动边缘裁切
                 .flex()
                 .flex_col()
                 .gap(px(12.))
