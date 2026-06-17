@@ -27,7 +27,7 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, FontWeight, KeyDownEvent,
     MouseButton, Pixels, SharedString, UTF16Selection, Window,
 };
-use tn_config::{ease_out_cubic, ease_out_back, lerp_rect, Loaded, Rect};
+use tn_config::{ease_out_cubic, ease_out_back, ease_in_back, lerp_rect, Loaded, Rect};
 
 use crate::local_dir_picker::{
     read_local_dirs, windows_virtual_root, LocalDirAction, LocalDirFocus, LocalDirPicker,
@@ -1085,7 +1085,7 @@ impl QuickTerminal {
                     let eased = if reveal {
                         ease_out_back(progress)
                     } else {
-                        1.0 - ease_out_back(progress)
+                        1.0 - ease_in_back(progress)
                     };
                     platform::set_bounds(h, lerp_rect(hidden, shown, eased));
                     if !is_anim_active {

@@ -163,9 +163,15 @@ pub fn ease_out_cubic(t: f32) -> f32 {
 
 /// Back ease-out: overshoot at the end for an elastic/mechanical settle.
 pub fn ease_out_back(t: f32) -> f32 {
-    let s: f32 = 0.8; // Overshoot scaling: 0.8 gives a tight mechanical lock-in
+    let s: f32 = 1.70158; // Standard overshoot for visible physics feedback
     let t = t - 1.0;
     t * t * ((s + 1.0) * t + s) + 1.0
+}
+
+/// Back ease-in: pull back first, then slide forward.
+pub fn ease_in_back(t: f32) -> f32 {
+    let s: f32 = 1.70158;
+    t * t * ((s + 1.0) * t - s)
 }
 
 /// A parsed global hotkey: a set of modifiers plus a single key token. The
@@ -338,8 +344,16 @@ mod tests {
     fn ease_out_back_endpoints() {
         assert!((ease_out_back(0.0)).abs() < 1e-6);
         assert!((ease_out_back(1.0) - 1.0).abs() < 1e-6);
-        // ease_out_back(0.9) should overshoot (> 1.0) due to s=0.8
+        // ease_out_back(0.9) should overshoot (> 1.0) due to s=1.70158
         assert!(ease_out_back(0.9) > 1.0);
+    }
+
+    #[test]
+    fn ease_in_back_endpoints() {
+        assert!((ease_in_back(0.0)).abs() < 1e-6);
+        assert!((ease_in_back(1.0) - 1.0).abs() < 1e-6);
+        // ease_in_back(0.2) should pull back to negative
+        assert!(ease_in_back(0.2) < 0.0);
     }
 
     #[test]
