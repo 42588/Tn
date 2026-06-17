@@ -62,11 +62,21 @@ impl BlockBar {
     /// `now_ms` = 会话时钟当前值(与块事件的 at_ms 同源):运行中的块以
     /// `now − started_at` 给出**实时累加耗时**(SHEET 07-B「运行中耗时实时
     /// 累加,即最朴素的进度仪」;差异总结 1-12)。
+    #[allow(dead_code)]
     pub fn from_model(m: &BlockModel, now_ms: u64) -> Option<Self> {
-        let chosen = match m.current() {
+        Self::from_model_with_override(m, None, now_ms)
+    }
+
+    pub fn from_model_with_override(m: &BlockModel, selected_id: Option<u64>, now_ms: u64) -> Option<Self> {
+        let chosen = if let Some(id) = selected_id {
+            m.iter().find(|b| b.id == id)
+        } else {
+            None
+        };
+        let chosen = chosen.or_else(|| match m.current() {
             Some(c) if c.state == BlockState::Running || c.command.is_some() => Some(c),
             _ => m.last_finished(),
-        };
+        });
         let b: &Block = chosen?;
         let duration_ms = b.duration_ms().or_else(|| {
             (b.state == BlockState::Running)
@@ -230,4 +240,42 @@ pub(crate) fn bar_base(data: &BlockBar, pal: &BarPalette) -> Div {
         );
     }
     row
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tn_blocks::BlockModel;
+    use tn_shell::BlockEvent;
+
+    #[test]
+    fn test_from_model_with_override() {
+        let mut m = BlockModel::new();
+        m.on_event(BlockEvent::PromptStart, 0, 0);
+        m.on_event(BlockEvent::CommandLine("cargo test".into()), 0, 0);
+        m.on_event(BlockEvent::CommandStart, 0, 100);
+        m.on_event(BlockEvent::OutputStart, 1, 120);
+        m.on_event(BlockEvent::CommandFinished { exit: Some(0) }, 5, 200);
+
+        m.on_event(BlockEvent::PromptStart, 6, 300);
+        m.on_event(BlockEvent::CommandLine("git status".into()), 6, 300);
+        m.on_event(BlockEvent::CommandStart, 6, 400);
+
+        let blocks: Vec<_> = m.iter().collect();
+        assert_eq!(blocks.len(), 2);
+        let first_id = blocks[0].id;
+
+        // Without override, it should pick the current/running block (git status)
+        let bar_normal = BlockBar::from_model(&m, 500).unwrap();
+        assert_eq!(bar_normal.command, "git status");
+
+        // With override of first block (cargo test)
+        let bar_overridden = BlockBar::from_model_with_override(&m, Some(first_id), 500).unwrap();
+        assert_eq!(bar_overridden.command, "cargo test");
+        assert_eq!(bar_overridden.exit, Some(0));
+
+        // With override of non-existent block, falls back to normal (git status)
+        let bar_fallback = BlockBar::from_model_with_override(&m, Some(9999), 500).unwrap();
+        assert_eq!(bar_fallback.command, "git status");
+    }
 }

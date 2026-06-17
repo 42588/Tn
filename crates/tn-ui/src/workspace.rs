@@ -896,6 +896,7 @@ pub struct Workspace {
     welcome: Entity<WelcomeView>,
     /// 像素宠物 overlay(特色③)— 全局一只,状态栏上方栖位(SHEET 05)。
     pet: Entity<crate::pet::PetView>,
+    pet_history_open: bool,
     /// Current git branch of the app cwd (status bar), resolved at startup.
     branch: Option<String>,
     /// Fallback focus anchor for the workspace. gpui dispatches keybindings by
@@ -1252,6 +1253,10 @@ impl Workspace {
         let welcome = cx.new(|cx| WelcomeView::new(cx, config.clone(), launch_profiles.clone()));
         // 像素宠物(特色③):全局一只,品种在初始化时一次性决定(固定优先,否则随机)。
         let pet = cx.new(|cx| crate::pet::PetView::new(cx, config.clone()));
+        cx.subscribe(&pet, |ws, _pet, _ev: &crate::pet::PetClicked, cx| {
+            ws.toggle_pet_history(cx);
+        })
+        .detach();
         // Welcome launchpad events: launch a tile, open the SSH connector, or
         // add/edit/delete a custom agent (the in-app agent editor). Shared with
         // `reload_agents` so the recreated launchpad re-attaches identically.
@@ -1287,6 +1292,7 @@ impl Workspace {
             app_menu_open: false,
             welcome,
             pet,
+            pet_history_open: false,
             branch: git_branch(),
             workspace_focus: cx.focus_handle(),
             palette_open: false,
@@ -2021,6 +2027,15 @@ impl Workspace {
         cx.notify();
     }
 
+    fn toggle_pet_history(&mut self, cx: &mut Context<Self>) {
+        let active = self.active;
+        if self.tabs[active].welcome {
+            return;
+        }
+        self.pet_history_open = !self.pet_history_open;
+        cx.notify();
+    }
+
     /// Show/hide the Quick Look overlay (Ctrl+Shift+J). On close, return focus to
     /// the active pane (we have a `window` here, so focus directly).
     fn toggle_quick_look(
@@ -2740,6 +2755,190 @@ impl Workspace {
             );
         }
         bar
+    }
+
+    fn render_pet_history(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        if !self.pet_history_open {
+            return None;
+        }
+        let ui = &self.config.theme.ui;
+        let mono = SharedString::from(self.config.font().family.clone());
+
+        // Get focused pane
+        let active = self.active;
+        let focused_pane_id = self.tabs[active].focused;
+        let pane = self.panes.get(&focused_pane_id)?;
+
+        let blocks = pane.read(cx).blocks();
+        let bm = blocks.lock().unwrap();
+        // Filter out empty command lines, reverse to show newest first.
+        let mut history_cmds: Vec<_> = bm.iter()
+            .filter(|b| b.command.as_ref().map_or(false, |c| !c.is_empty()))
+            .cloned()
+            .collect();
+        history_cmds.reverse();
+
+        // Calculate positions
+        let s = if self.pet.read(cx).on_welcome() { 2.0 } else { 1.0 };
+        const BOX_W: f32 = 100.0;
+        let right_px = self.pet.read(cx).right() + (BOX_W * s) + 12.0;
+        let bottom_px = self.pet.read(cx).bottom();
+
+        let list_content = if history_cmds.is_empty() {
+            div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .h(px(80.))
+                .text_size(px(crate::style::FS_CAPTION))
+                .child("暂无历史命令")
+                .into_any_element()
+        } else {
+            let mut list = div()
+                .id("history-list")
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .overflow_y_scroll();
+
+            for b in history_cmds {
+                let cmd_text = b.command.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let b_id = b.id;
+                
+                // Success indicator icon or text
+                let status_icon = match b.succeeded() {
+                    Some(true) => div().text_color(rgb(crate::style::OK)).child("✓"),
+                    Some(false) => div().text_color(rgb(crate::style::ERR)).child("✕"),
+                    None if b.is_running() => div().text_color(col(ui.accent)).child("⟡"),
+                    _ => div().text_color(rgb(T2)).child("○"),
+                };
+
+                let duration_text = b.duration_ms().map(|ms| {
+                    if ms < 1000 {
+                        format!("{}ms", ms)
+                    } else {
+                        format!("{:.1}s", ms as f64 / 1000.0)
+                    }
+                }).unwrap_or_default();
+
+                let pane_entity = pane.clone();
+                list = list.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .px(px(8.))
+                        .py(px(4.))
+                        .rounded(px(R_CARD))
+                        .hover(|s| s.bg(col(ui.palette_selected)).text_color(rgb(T0)))
+                        .child(status_icon)
+                        .child(
+                            div()
+                                .flex_1()
+                                .font_family(mono.clone())
+                                .text_size(px(crate::style::FS_MICRO))
+                                .text_color(rgb(T1))
+                                .child(cmd_text)
+                        )
+                        .when(!duration_text.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_size(px(crate::style::FS_MICRO))
+                                    .text_color(rgb(T2))
+                                    .child(duration_text)
+                            )
+                        })
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e, _w, cx| {
+                                cx.stop_propagation();
+                                this.pet_history_open = false;
+                                // Scroll the pane to this command block
+                                pane_entity.update(cx, |p, cx| {
+                                    p.select_command_block(b_id, cx);
+                                });
+                                cx.notify();
+                            }),
+                        )
+                );
+            }
+            list.into_any_element()
+        };
+
+        let menu_max_h = (f32::from(window.viewport_size().height) - 80.0).max(200.0).min(300.0);
+
+        let popup = crate::style::float_panel(
+            div()
+                .absolute()
+                .right(px(right_px))
+                .bottom(px(bottom_px))
+                .w(px(320.))
+                .max_h(px(menu_max_h))
+                .flex()
+                .flex_col()
+                .p(px(8.))
+                .rounded(px(R_PANEL))
+                .bg(col(ui.palette_bg))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .pb(px(6.))
+                        .border_b(px(1.))
+                        .border_color(rgba(H1))
+                        .child(
+                            div()
+                                .text_size(px(crate::style::FS_LABEL))
+                                .font_weight(gpui::FontWeight(600.))
+                                .text_color(rgb(T0))
+                                .child("历史命令")
+                        )
+                        .child(
+                            div()
+                                .px(px(2.))
+                                .rounded(px(R_CHIP))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(col(ui.surface_2)))
+                                .child(icon("close", 12., ui.muted))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e, _w, cx| {
+                                        cx.stop_propagation();
+                                        this.pet_history_open = false;
+                                        cx.notify();
+                                    }),
+                                )
+                        )
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .pt(px(4.))
+                        .child(list_content)
+                )
+        );
+
+        Some(
+            div()
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .size_full()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _e, _w, cx| {
+                        this.pet_history_open = false;
+                        cx.notify();
+                    }),
+                )
+                .child(popup)
+        )
     }
 
     /// App menu dropdown (click the Tn brand), or `None` when closed. A click-away
@@ -7447,6 +7646,7 @@ impl Render for Workspace {
                 )
         });
 
+        let pet_history = self.render_pet_history(window, cx);
         let palette = self.render_palette(cx);
         let split_launcher = self.render_split_launcher(cx);
         let layout_manager = self.render_layout_manager(cx);
@@ -7502,6 +7702,7 @@ impl Render for Workspace {
             .child(self.render_status_bar(cx))
             // 像素宠物:状态栏上方 overlay(z 在浮层 scrim 之下)— SHEET 05
             .child(self.pet.clone())
+            .when_some(pet_history, |d, h| d.child(h))
             .when_some(quick_look, |d, q| d.child(q))
             .when_some(palette, |d, p| d.child(p))
             .when_some(split_launcher, |d, s| d.child(s))

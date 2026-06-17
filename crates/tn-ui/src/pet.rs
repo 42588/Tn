@@ -1099,6 +1099,18 @@ pub struct PetView {
 }
 
 impl PetView {
+    pub fn right(&self) -> f32 {
+        self.state.right
+    }
+
+    pub fn bottom(&self) -> f32 {
+        self.state.bottom
+    }
+
+    pub fn on_welcome(&self) -> bool {
+        self.on_welcome
+    }
+
     pub fn new(cx: &mut Context<Self>, cfg: Arc<Loaded>) -> Self {
         let state = PetState::load();
         // 品种在终端初始化时一次性决定:固定优先,否则随机(规则)。
@@ -3604,6 +3616,7 @@ impl Render for PetView {
                                     // 摸头已在长按时处理,松手不再当单击。
                                 } else {
                                     pet.bark(cx); // 原地松手 = 单击互动
+                                    cx.emit(PetClicked);
                                 }
                             }
                             cx.notify();
@@ -3612,6 +3625,10 @@ impl Render for PetView {
             })
     }
 }
+
+pub struct PetClicked;
+
+impl gpui::EventEmitter<PetClicked> for PetView {}
 
 #[cfg(test)]
 mod tests {

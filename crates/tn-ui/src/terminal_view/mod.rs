@@ -608,6 +608,7 @@ pub struct TerminalView {
     pane_width: Rc<RefCell<f32>>,
     // Warp-style command blocks, built from the shell-integration bypass.
     blocks: Arc<Mutex<BlockModel>>,
+    selected_block_id: Option<u64>,
     // The last CWD sent to the workspace/explorer tree (to filter redundant updates).
     last_cwd: Option<String>,
     // Live palette copy (for block-bar colors); kept in sync with the engine.
@@ -1149,6 +1150,7 @@ impl TerminalView {
             content_bounds: Rc::new(RefCell::new(Bounds::default())),
             pane_width: Rc::new(RefCell::new(f32::MAX)),
             blocks,
+            selected_block_id: None,
             last_cwd: None,
             palette,
             selecting: false,
@@ -1858,6 +1860,28 @@ impl TerminalView {
         self.usage.as_ref()
     }
 
+    pub fn blocks(&self) -> Arc<Mutex<BlockModel>> {
+        self.blocks.clone()
+    }
+
+    pub fn select_command_block(&mut self, block_id: u64, cx: &mut Context<Self>) {
+        let block = self.blocks.lock().unwrap().iter().find(|b| b.id == block_id).cloned();
+        if let Some(b) = block {
+            self.selected_block_id = Some(block_id);
+            let line = b.output_start.or(b.input_line).unwrap_or(b.prompt_line);
+            self.scroll_to_abs_line(line, cx);
+        }
+    }
+
+    pub fn scroll_to_abs_line(&mut self, abs_line: u64, cx: &mut Context<Self>) {
+        let mut t = self.terminal.lock().unwrap();
+        let (_, history) = t.scroll_position();
+        let target_offset = history.saturating_sub(abs_line as usize);
+        t.scroll_to_offset(target_offset);
+        drop(t);
+        cx.notify();
+    }
+
     /// This pane's current working directory (from OSC 7 / shell integration),
     /// if known — drives the tab path badge.
     pub fn cwd(&self) -> Option<String> {
@@ -2193,7 +2217,7 @@ impl TerminalView {
             return None; // Terminal apps own the viewport, so shell chrome stays out.
         }
         let now_ms = self.session_clock.elapsed().as_millis() as u64;
-        let data = block_view::BlockBar::from_model(&self.blocks.lock().unwrap(), now_ms)?;
+        let data = block_view::BlockBar::from_model_with_override(&self.blocks.lock().unwrap(), self.selected_block_id, now_ms)?;
         // Chrome tokens (mockup .block uses --fg/--muted/--accent), + ANSI green/red for status.
         let pal =
             block_view::BarPalette::new(self.ui_fg, self.ui_muted, self.ui_accent, &self.palette);
@@ -2339,6 +2363,9 @@ impl TerminalView {
             .round()
             .clamp(0.0, history as f32) as usize;
         self.terminal.lock().unwrap().scroll_to_offset(offset);
+        if offset == 0 {
+            self.selected_block_id = None;
+        }
         cx.notify();
     }
 
@@ -2549,6 +2576,7 @@ impl TerminalView {
                 None => return,
             }
         };
+        self.selected_block_id = None;
         self.send_bytes(&bytes);
         // We handled this key → stop it. This makes gpui mark the WM_KEYDOWN as
         // handled and skip `translate_message`, so no duplicate WM_CHAR reaches the
@@ -2650,6 +2678,10 @@ impl TerminalView {
 
         // (3) Main screen: scroll our scrollback.
         self.terminal.lock().unwrap().scroll(lines.round() as i32);
+        let (new_offset, _) = self.terminal.lock().unwrap().scroll_position();
+        if new_offset == 0 {
+            self.selected_block_id = None;
+        }
         cx.notify();
     }
 }
