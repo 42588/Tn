@@ -3085,13 +3085,13 @@ impl Render for TerminalView {
                 // Parabola: 4 * t * (1 - t) goes 0 -> 1 -> 0
                 let pop = 4.0 * t * (1.0 - t);
                 if self.cursor_action_forward {
-                    // Typing: widen obviously, shrink height obviously
-                    width_offset = self.cell_width * 0.7 * pop;
-                    height_offset = -self.line_height * 0.3 * pop;
+                    // Typing: widen subtly, shrink height subtly (micro-feedback)
+                    width_offset = self.cell_width * 0.22 * pop;
+                    height_offset = -self.line_height * 0.08 * pop;
                 } else {
-                    // Deleting: squeeze width obviously, stretch height obviously
-                    width_offset = -self.cell_width * 0.45 * pop;
-                    height_offset = self.line_height * 0.45 * pop;
+                    // Deleting: squeeze width subtly, stretch height subtly
+                    width_offset = -self.cell_width * 0.15 * pop;
+                    height_offset = self.line_height * 0.15 * pop;
                 }
             }
         }

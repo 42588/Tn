@@ -384,11 +384,16 @@ impl TerminalView {
         self.cursor_gliding = true;
         let exec = cx.background_executor().clone();
         cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+            let mut last_tick = Instant::now();
             loop {
-                exec.timer(Duration::from_millis(16)).await;
+                exec.timer(Duration::from_millis(8)).await;
                 let again = this.update(cx, |v, cx| {
-                    v.update_sparks();
-                    v.update_cursor_spring();
+                    let now = Instant::now();
+                    let dt = now.duration_since(last_tick).as_secs_f32().min(0.08);
+                    last_tick = now;
+
+                    v.update_sparks(dt);
+                    v.update_cursor_spring(dt);
 
                     let active_glide = v
                         .cursor_anim_start
@@ -436,19 +441,20 @@ impl TerminalView {
         }
     }
 
-    fn update_sparks(&mut self) {
-        let dt = 0.016;
-        let drag = 0.88;
+    fn update_sparks(&mut self, dt: f32) {
+        let drag: f32 = 0.88;
         let gravity = 120.0;
+        let drag_factor = drag.powf(dt / 0.016);
+        let decay_factor = dt / 0.016;
         let mut i = 0;
         while i < self.sparks.len() {
             let p = &mut self.sparks[i];
-            p.life -= p.decay;
+            p.life -= p.decay * decay_factor;
             if p.life <= 0.0 {
                 self.sparks.swap_remove(i);
             } else {
-                p.vx *= drag;
-                p.vy = p.vy * drag + gravity * dt;
+                p.vx *= drag_factor;
+                p.vy = p.vy * drag_factor + gravity * dt;
                 p.x += p.vx * dt;
                 p.y += p.vy * dt;
                 i += 1;
@@ -456,7 +462,7 @@ impl TerminalView {
         }
     }
 
-    fn update_cursor_spring(&mut self) {
+    fn update_cursor_spring(&mut self, dt: f32) {
         let target_px = (
             super::BODY_PAD_X + self.cursor_cell.1 as f32 * self.cell_width,
             super::BODY_PAD_Y + self.cursor_cell.0 as f32 * self.line_height,
@@ -464,9 +470,8 @@ impl TerminalView {
         let dx = target_px.0 - self.cursor_px.0;
         let dy = target_px.1 - self.cursor_px.1;
         
-        let dt = 0.016;
-        let stiffness = 450.0;
-        let damping = 26.0;
+        let stiffness = 3600.0;
+        let damping = 90.0;
         
         let force_x = stiffness * dx - damping * self.cursor_vel.0;
         let force_y = stiffness * dy - damping * self.cursor_vel.1;
