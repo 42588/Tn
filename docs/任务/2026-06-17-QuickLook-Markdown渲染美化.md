@@ -2,7 +2,7 @@
 
 - 日期: 2026-06-17
 - 范围: `crates/tn-ui/src/quick_look.rs`
-- 状态: 已完成 · 待真机
+- 状态: 已完成（真机验证通过 · 2026-06-19）
 
 ## 缘起
 
@@ -42,3 +42,7 @@
   test quick_look::tests::markdown_code_fence_collects_lines ... ok
   test quick_look::tests::tight_list_item_emits_inline_events_without_paragraph_wrapper ... ok
   ```
+
+## 真机验证（2026-06-19）
+
+用户真机确认通过：Markdown 各类段落、代码块、任务复选框在真机界面渲染正常，行间距合理。任务收尾，移入 TODO 已完成。
