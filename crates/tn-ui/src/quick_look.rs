@@ -6730,21 +6730,16 @@ impl Render for QuickLook {
             }
 
             let canvas_bounds = self.code_bounds.clone();
-            preview_container = preview_container.child(
-                div()
-                    .flex_1()
-                    .relative()
-                    .overflow_hidden()
-                    .child(
-                        canvas(
-                            move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
-                            |_, _, _, _| {},
-                        )
-                        .absolute()
-                        .size_full(),
+            preview_container = preview_container
+                .child(
+                    canvas(
+                        move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
+                        |_, _, _, _| {},
                     )
-                    .child(pdf_area),
-            );
+                    .absolute()
+                    .size_full(),
+                )
+                .child(pdf_area);
         } else if let QuickLookData::Image { img } = &self.file_data {
             let img_source = gpui::ImageSource::Render(img.clone());
             preview_container = preview_container.child(
