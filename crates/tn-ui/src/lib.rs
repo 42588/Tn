@@ -16,6 +16,7 @@ mod layout;
 mod local_dir_picker;
 mod perf;
 mod pet;
+mod pet_lottie;
 mod platform;
 mod pricing_sync;
 mod quick_look;

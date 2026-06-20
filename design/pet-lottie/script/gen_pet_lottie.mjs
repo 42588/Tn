@@ -1,76 +1,70 @@
-// Tn 宠物 · 像素小狗矢量化重做(换渲染方向:Lottie/Skottie 路径)
+// Tn 宠物 · 像素小狗矢量化重做(换渲染方向:Lottie 路径)
 // ------------------------------------------------------------------
 // 与原型一致:14列×9行 前视像素金毛(grid 取自 crates/tn-ui/src/pet.rs GOLDEN)。
-// 像素身份不变(方块格子、磷光配色),但用 Lottie 把原本逐帧重绘的 dx/dy/缩放
-// 做成连续插值 —— 子像素平滑运动,而格子始终轴对齐(只平移/缩放,不旋转,
-// 与原型动画词汇一致)。一条时间轴演完全套姿态,每段打 marker 供集成层 seek。
+// 像素身份不变(方块格子、磷光配色),只平移/缩放不旋转(与原型动画词汇一致)。
+// 一条时间轴演完全套姿态,每段打 marker 供集成层 seek。
+//
+// 同一套运动,按 config 出两份:
+//   ① player  —— 512×512 + 背景/岗台 + 槽,浏览器预览/审稿
+//   ② runtime —— 100×84(pet.rs box 原生尺度,CELL=6,透明无背景),内嵌进 tn-ui
+//                由纯 Rust mini 播放器逐帧栅格化喂 RenderImage(终端实跑)
 // 运行:node script/gen_pet_lottie.mjs
 import { writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const OUT_DIR = resolve(__dirname, "../public/projects/main-project/scene-1");
 
-const FR = 60, W = 512, H = 512;
+const FR = 60;
+const COLS = 14, ROWS = 9;
 
-// ---- 像素网格(与 pet.rs 一致)----------------------------------
-const COLS = 14, ROWS = 9, CELL = 28;
-const X0 = (W - COLS * CELL) / 2;      // 60
-const Y0 = 168;                         // row8 落在岗台附近
-const cx = (col) => X0 + col * CELL + CELL / 2;
-const cy = (row) => Y0 + row * CELL + CELL / 2;
-const SHELF_Y = Y0 + ROWS * CELL - CELL / 2 + 4; // 岗台线
-
-// GOLDEN 站姿 / 趴姿(直接抄 pet.rs)
-const STAND = [
-  "..............", "....GGGGGG....", "...GGGGGGGG...", "..DDGGGGGGDD..",
-  "..DDGKGGKGDD..", "..DDGGKKGGDD..", "..DDGGGPGGDDGG", "..DDGGGGGGDD..", "....GG..GG....",
-];
-const LIE = [
-  "..............", "..............", "....GGGGGG....", "...GGGGGGGG...",
-  "..DDGKGGKGDD..", "..DDGGKKGGDD..", "..DDGGGPGGDD..", ".GGGGGGGGGGGG.", ".GGGGGGGGGGGGG",
-];
-const EYES = [[5, 4], [8, 4]];          // 眼格(blink/squint 缩放)
-const TAILC = [[12, 6], [13, 6]];       // 尾格(摇尾)
-const LEGL = [[4, 8], [5, 8]];          // 左腿/爪
-const LEGR = [[8, 8], [9, 8]];          // 右腿/爪
-
-// ---- 调色板(像素表沿用)----------------------------------------
+// ---- 调色板(像素字符 → 颜色,移植自 pet.rs pixel_color;运动对全部品种通用)----
 const hex = (h) => { const n = parseInt(h, 16); return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255, 1]; };
 const COL = {
-  G: hex("F2C867"), D: hex("DAA14A"), K: hex("323F49"), P: hex("FFAAAB"),
   heart: hex("F08C98"), zz: hex("69748E"), accent: hex("5BE7C4"),
-  bg: hex("0E1422"), shelf: hex("2A3550"), bubble: hex("232C42"),
+  bg: hex("0E1422"), shelf: hex("2A3550"), bubble: hex("232C42"), biscuit: hex("C99052"),
 };
-const SID = { G: "furColor", D: "furDarkColor" }; // 可换色槽
-const COLOR_OF = { G: COL.G, D: COL.D, K: COL.K, P: COL.P };
+const COLOR_OF = {
+  W: hex("F4F1E1"), P: hex("FFAAAB"), K: hex("323F49"), G: hex("F2C867"), D: hex("DAA14A"),
+  B: hex("303338"), T: hex("C4905E"), R: hex("E36B6B"), A: hex("7EA0F0"), C: hex("C28F6C"),
+  N: hex("965F3E"), U: hex("613922"),
+};
+const SID = { G: "furColor", D: "furDarkColor" }; // 仅金毛挂槽(player 可调);其余品种内联色
+
+// ---- 7 个品种静态像素(站姿网格直接抄 pet.rs;睡觉=站姿改姿态,不另起造型)----------
+// 每品种:rows(9×14)+ eyes + tail + tongue(仅金毛吐舌)+ face(被抬起特征格在 base 的衬底色);
+// legL/legR 由底行(row8)双足自动切分。运动(osc/poseAt)对所有品种完全相同。
+function deriveLegs(rows) {
+  const r = rows[ROWS - 1]; const cols = [];
+  for (let c = 0; c < r.length; c++) if (r[c] !== ".") cols.push(c);
+  const runs = []; let cur = [];
+  for (const c of cols) { if (cur.length && c !== cur[cur.length - 1] + 1) { runs.push(cur); cur = []; } cur.push(c); }
+  if (cur.length) runs.push(cur);
+  const L = runs[0] || [], R = runs[runs.length - 1] || [];
+  return { legL: L.map((c) => [c, ROWS - 1]), legR: R.map((c) => [c, ROWS - 1]) };
+}
+const BREEDS = [
+  { name: "westie",   face: "W", eyes: [[5, 4], [8, 4]], tail: [[11, 6]],          tongue: [],
+    rows: ["....W....W....", "...WPW..WPW...", "...WWWWWWWW...", "...WWWWWWWW...", "...WWKWWKWW...", "...WWWKKWWW...", "...WWWWWWWWW..", "...WWWWWWWW...", "....WW..WW...."] },
+  { name: "golden",   face: "G", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [[7, 6]],
+    rows: ["..............", "....GGGGGG....", "...GGGGGGGG...", "..DDGGGGGGDD..", "..DDGKGGKGDD..", "..DDGGKKGGDD..", "..DDGGGPGGDDGG", "..DDGGGGGGDD..", "....GG..GG...."] },
+  { name: "shepherd", face: "T", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [],
+    rows: ["...BB....BB...", "...BTB..BTB...", "..BBBBBBBBBB..", "..BTTBTTBTTB..", "..BTTKTTKTTB..", "..BBTTKKTTBB..", "..BBBTTTTBBBBB", "..BBBBBBBBBB..", "....TT..TT...."] },
+  { name: "bichon",   face: "W", eyes: [[5, 3], [8, 3]], tail: [[12, 5]],          tongue: [],
+    rows: ["....WWWWWW....", "...WWWWWWWW...", "..WWWWWWWWWW..", "..WWWKWWKWWW..", "..WWPWKKWPWW..", "..WWWWPPWWWWW.", "...WWWWWWWW...", "...WWWWWWWW...", "....WW..WW...."] },
+  { name: "maltese",  face: "W", eyes: [[5, 4], [8, 4]], tail: [[12, 6]],          tongue: [],
+    rows: ["......RR......", ".....RWWR.....", "....WWWWWW....", "...WWWWWWWW...", "..WWWKWWKWWW..", "..WWPWKKWPWW..", "..WWWWWWWWWWW.", "..WWWWWWWWWW..", "...WW....WW..."] },
+  { name: "shihtzu",  face: "W", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [],
+    rows: ["......AA......", ".....AAAA.....", "....WWWWWW....", "..CCWWWWWWCC..", "..CCWKWWKWCC..", "..CCPWKKWPCC..", "..CCWWWWWWCCWW", "..CCWWWWWWCC..", "....WW..WW...."] },
+  { name: "poodle",   face: "N", eyes: [[5, 3], [8, 3]], tail: [],                 tongue: [],
+    rows: ["....NNNNNN....", "...NNNNNNNN...", "..NNNNNNNNNN..", "..UUNKNNKNUU..", "..UUPNKKNPUU..", "..UUNNNNNNUU..", "...UNNNNNNU...", "...UNNNNNNU...", "....NN..NN...."] },
+].map((b) => ({ ...b, ...deriveLegs(b.rows) }));
 
 // ---- Lottie 基元 -------------------------------------------------
 const rect = (cxp, cyp, w, h) => ({ ty: "rc", p: { a: 0, k: [cxp, cyp] }, s: { a: 0, k: [w, h] }, r: { a: 0, k: 0 } });
 const fill = (color, sid, opacity = 100) => ({ ty: "fl", c: sid ? { sid } : { a: 0, k: color }, o: { a: 0, k: opacity } });
-const stroke = (color, width, sid) => ({ ty: "st", c: sid ? { sid } : { a: 0, k: color }, o: { a: 0, k: 100 }, w: { a: 0, k: width }, lc: 2, lj: 2 });
 const grTr = () => ({ ty: "tr", p: { a: 0, k: [0, 0] }, a: { a: 0, k: [0, 0] }, s: { a: 0, k: [100, 100] }, r: { a: 0, k: 0 }, o: { a: 0, k: 100 } });
 const group = (nm, items) => ({ ty: "gr", nm, it: [...items, grTr()] });
-
-// 把若干格子(按颜色批量)做成 shapes 数组。格子放大 1px → 相邻方块重叠,
-// 消除同色分层在交界处的抗锯齿发丝缝(静止时无缝;部件位移时按原型自然错格)。
-function cellsToShapes(cells, size = CELL + 1) {
-  const byCh = new Map();
-  for (const { col, row, ch } of cells) { if (!byCh.has(ch)) byCh.set(ch, []); byCh.get(ch).push([col, row]); }
-  const out = [];
-  for (const [ch, list] of byCh) {
-    const rects = list.map(([c, r]) => rect(cx(c), cy(r), size, size));
-    out.push(group("px_" + ch, [...rects, fill(COLOR_OF[ch], SID[ch])]));
-  }
-  return out;
-}
-// 小像素图案(任意 cell 尺寸,自带颜色)
-function patchShapes(pattern, ox, oy, s, color, sid) {
-  const rects = [];
-  pattern.forEach(([c, r]) => rects.push(rect(ox + c * s + s / 2, oy + r * s + s / 2, s, s)));
-  return [group("patch", [...rects, fill(color, sid)])];
-}
 
 // ---- 烘焙:连续函数 → 关键帧(线性 + 1D 简化)-------------------
 function bakeTrack(fn, dims, total, eps) {
@@ -104,9 +98,11 @@ const TAU = Math.PI * 2;
 
 // ---- 时间轴分段 --------------------------------------------------
 const SEG = [
-  ["peek", 36], ["idle", 132], ["typing", 120], ["running", 132],
-  ["success", 78], ["error", 132], ["hover", 96], ["click", 84],
-  ["play", 132], ["drag", 108], ["sleep", 156],
+  // 循环段统一循环体 120 帧(dur 136 − LOOP_IN 16),子周期整除 → 无缝;一次性段(peek/success/feed)按需定长;spin 自带 80 帧无缝体;sleep 保持已验收时长。
+  ["peek", 36], ["idle", 136], ["typing", 136], ["running", 136],
+  ["success", 90], ["error", 136], ["hover", 136], ["click", 136],
+  ["play", 136], ["drag", 136], ["sleep", 156],
+  ["feed", 132], ["scratch", 136], ["lickpaw", 136], ["spin", 96], ["stretch", 136], ["lookout", 136],
 ];
 let acc = 0;
 const SEGS = SEG.map(([name, dur]) => { const s = { name, start: acc, dur }; acc += dur; return s; });
@@ -114,14 +110,13 @@ const TOTAL = acc;
 const segAt = (f) => { for (let i = SEGS.length - 1; i >= 0; i--) if (f >= SEGS[i].start) return i; return 0; };
 const inState = (f, ...names) => names.includes(SEGS[segAt(f)].name);
 
-// ---- 各状态静态目标姿态(平移/缩放,无旋转)----------------------
+// ---- 姿态(平移/缩放,单位 = CELL28 px;运行时按 SC 缩放)--------
 const REST = {
-  rigDx: 0, rigDy: 0, headDx: 0, headDy: 0,
+  rigDx: 0, rigDy: 0, rigSx: 1, rigSc: 1, headDx: 0, headDy: 0,
   legLDx: 0, legLDy: 0, legRDx: 0, legRDy: 0, tailDx: 0, tailDy: 0, eyeSy: 1,
 };
 const POSE = {
-  peek: { ...REST },
-  idle: { ...REST },
+  peek: { ...REST }, idle: { ...REST },
   typing: { ...REST, headDy: -4, eyeSy: 1.04 },
   running: { ...REST, headDy: -3 },
   success: { ...REST },
@@ -130,87 +125,199 @@ const POSE = {
   click: { ...REST, headDx: 12, headDy: 6 },
   play: { ...REST },
   drag: { ...REST, rigDy: -46, legLDy: 13, legRDy: 13, eyeSy: 1.08 },
-  sleep: { ...REST },
+  sleep: { ...REST, rigDy: 12, eyeSy: 0.16, legLDy: -26, legRDy: -26 }, // 收腿+眯眼+下沉(呼吸在 osc)
+  // ── 投喂 + 活物引擎微动作(osc 驱动细节)──
+  feed: { ...REST }, // 仰头等→接住跳→咀嚼→爱心(饼干为 prop)
+  scratch: { ...REST, headDx: 5, eyeSy: 0.5 }, // 抓痒:歪头眯眼 + 后爪抖(osc)
+  lickpaw: { ...REST, headDy: 9 }, // 舔爪:头低就爪(osc 抬前爪 + 舔)
+  spin: { ...REST }, // 追尾转圈:绕地面小圈兜跑(osc 驱动,不挤压不翻转)
+  stretch: { ...REST }, // 伸懒腰作揖:前低后翘(osc)
+  lookout: { ...REST, headDx: 14, headDy: -3, eyeSy: 1.06 }, // 望屏外:头右上转看
 };
-
-// ---- 振荡 --------------------------------------------------------
 function osc(name, f, w) {
   const d = {}; const t = f / FR;
   switch (name) {
     case "peek": {
+      // 从台下弹出:快速上冲到位 → 轻微过冲 → 阻尼回弹安定(一次性)。
       const seg = SEGS[0]; const p = clamp01((f - seg.start) / seg.dur);
-      const e = easeOut(Math.min(1, p / 0.82)); let rise = (1 - e) * 170;
-      if (p > 0.82) rise += -5 * Math.sin((p - 0.82) / 0.18 * Math.PI);
-      d.rigDy = rise; break;
+      const e = easeOut(Math.min(1, p / 0.66));
+      let rise = (1 - e) * 178;                                                    // 主体上冲(0.66 到位)
+      if (p > 0.66) { const q = (p - 0.66) / 0.34; rise += -12 * Math.sin(Math.PI * q) * Math.exp(-2.2 * q); } // 过冲回弹
+      d.rigDy = rise;
+      d.headDy = (p > 0.5 ? -2.5 * Math.sin(Math.PI * (p - 0.5) / 0.5) : 0) * w;    // 到位时轻抬下巴
+      break;
     }
-    case "idle":
-      d.rigDy = 6 * Math.sin(TAU * t / 2.2) * w;
-      d.tailDy = -10 * Math.sin(TAU * 0.55 * t) * w; break;
-    case "typing":
-      d.headDy = 2 * Math.sin(TAU * 2.6 * t) * w;
-      d.tailDy = -4 * Math.sin(TAU * 1.1 * t) * w; break;
+    case "idle": {
+      // 安静呼吸(2次/循环=60帧)+ 重心轻摆(1次/循环)+ 尾巴慢摇。周期均整除 120 → 无缝。
+      d.rigDy = -4 * Math.sin(TAU * f / 60) * w;          // 胸腔起伏(负=吸气抬升)
+      d.rigDx = 2 * Math.sin(TAU * f / 120) * w;          // 重心左右轻移
+      d.headDy = 1 * Math.sin(TAU * f / 60 + 0.6) * w;    // 头随呼吸轻点
+      d.tailDy = -6 * Math.sin(TAU * f / 30) * w;         // 尾巴慢摇
+      break;
+    }
+    case "typing": {
+      // 前爪交替敲键 + 专注小点头 + 尾轻摆。打字节奏 6拍/循环(20帧)。
+      const tap = TAU * f / 20;
+      d.legLDx = -2 * w; d.legLDy = -6 * Math.max(0, Math.sin(tap)) * w;            // 左爪抬落敲键
+      d.legRDx = 2 * w; d.legRDy = -6 * Math.max(0, Math.sin(tap + Math.PI)) * w;   // 右爪反相敲键
+      d.headDy = 1.5 * Math.sin(tap) * w;                 // 随敲键专注小点头
+      d.tailDy = -3 * Math.sin(TAU * f / 40) * w;
+      break;
+    }
     case "running": {
-      const ph = TAU * 2.4 * t;
-      d.legLDx = 11 * Math.sin(ph) * w; d.legLDy = -10 * Math.max(0, Math.sin(ph)) * w;
-      d.legRDx = 11 * Math.sin(ph + Math.PI) * w; d.legRDy = -10 * Math.max(0, Math.sin(ph + Math.PI)) * w;
-      d.rigDy = -8 * Math.abs(Math.sin(ph)) * w; d.tailDy = -14 * Math.sin(TAU * 3 * t) * w; break;
+      // 清晰奔跑步态:大幅交替蹬腿 + 颠簸 + 尾巴飞甩。步频 6步/循环(20帧)→ 无缝。
+      const ph = TAU * f / 20;
+      d.legLDx = 13 * Math.sin(ph) * w; d.legLDy = -13 * Math.max(0, Math.sin(ph)) * w;
+      d.legRDx = 13 * Math.sin(ph + Math.PI) * w; d.legRDy = -13 * Math.max(0, Math.sin(ph + Math.PI)) * w;
+      d.rigDy = -9 * Math.abs(Math.sin(ph)) * w;          // 腾空颠簸(pose 已含 -3 前压)
+      d.headDy = -2 * Math.abs(Math.sin(ph)) * w;         // 头随步频前压
+      d.tailDy = -14 * Math.sin(TAU * f / 10) * w;        // 尾巴高频飞甩
+      break;
     }
     case "success": {
-      const seg = SEGS[segAt(f)]; const p = clamp01((f - seg.start) / seg.dur); let dy = 0;
-      if (p < 0.16) dy = 6 * (p / 0.16);
-      else if (p < 0.62) { const q = (p - 0.16) / 0.46; dy = -30 * Math.sin(Math.PI * q); }
-      else if (p < 0.78) { const q = (p - 0.62) / 0.16; dy = 5 * Math.sin(Math.PI * q); }
-      d.rigDy = dy * w; d.tailDy = -14 * Math.sin(TAU * 3.4 * t) * w; break;
-    }
-    case "error": d.rigDy = 1.6 * Math.sin(TAU * t / 2.6) * w; break;
-    case "hover": d.tailDy = -11 * Math.sin(TAU * 1.4 * t) * w; break;
-    case "click": {
+      // 蓄力 → 腾空大跳 → 落地 → 小回弹,全程挤压拉伸(sq>0 矮宽 / sq<0 高瘦)+ 狂摇尾。
       const seg = SEGS[segAt(f)]; const p = clamp01((f - seg.start) / seg.dur);
-      d.headDx = 3 * Math.sin(TAU * 2 * t) * w; d.tailDy = -12 * Math.sin(TAU * 2.2 * t) * w;
-      if (p < 0.2) d.headDy = -4 * (p / 0.2) * w; break;
+      let dy = 0, sq = 0;
+      if (p < 0.12) { const q = p / 0.12; dy = 5 * q; sq = 0.5 * q; }                               // 下蹲蓄力(压扁)
+      else if (p < 0.50) { const q = (p - 0.12) / 0.38; dy = -34 * Math.sin(Math.PI * q); sq = -0.4 * Math.sin(Math.PI * q); } // 腾空大跳(拉伸)
+      else if (p < 0.60) { const q = (p - 0.50) / 0.10; dy = 5 * Math.sin(Math.PI * q); sq = 0.6 * Math.sin(Math.PI * q); }    // 落地压扁
+      else if (p < 0.82) { const q = (p - 0.60) / 0.22; dy = -14 * Math.sin(Math.PI * q); sq = -0.18 * Math.sin(Math.PI * q); } // 小回弹
+      d.rigDy = dy * w;
+      d.rigSc = -0.12 * sq * w; d.rigSx = 0.18 * sq * w;   // 落地矮宽 / 腾空高瘦
+      d.tailDy = -16 * Math.sin(TAU * 3.4 * t) * w;        // 狂摇尾庆祝
+      break;
+    }
+    case "error": {
+      // 沮丧:沉重叹气 + 缓慢摇头(no-no)+ 尾巴无力垂摆。周期整除 120 → 无缝。
+      d.rigDy = 1.6 * Math.sin(TAU * f / 120) * w;         // 一次叹气/循环
+      d.headDx = 2.5 * Math.sin(TAU * f / 60) * w;          // 缓慢摇头(2次/循环)
+      d.headDy = 1.2 * Math.sin(TAU * f / 120 + 1) * w;     // 头随叹气起伏
+      d.tailDy = 1.5 * Math.sin(TAU * f / 120) * w;         // 尾巴无力垂摆
+      break;
+    }
+    case "hover": {
+      // 注意到光标:眯眼微笑(pose)+ 开心轻颠 + 欢快摇尾。周期整除 120 → 无缝。
+      d.rigDy = -3 * Math.abs(Math.sin(TAU * f / 40)) * w;   // 开心轻颠(3次/循环)
+      d.headDy = -1.5 * Math.abs(Math.sin(TAU * f / 40)) * w;
+      d.tailDy = -12 * Math.sin(TAU * f / 24) * w;           // 欢快摇尾(5次/循环)
+      break;
+    }
+    case "click": {
+      // 被点一下:好奇歪头(pose)+ 小幅歪头晃 + 摇尾(气泡为 prop)。
+      d.headDx = 2 * Math.sin(TAU * f / 30) * w;             // 好奇歪头小晃
+      d.rigDy = -2 * Math.abs(Math.sin(TAU * f / 30)) * w;
+      d.tailDy = -10 * Math.sin(TAU * f / 20) * w;
+      break;
     }
     case "play": {
-      const ph = TAU * 2.1 * t;
-      d.rigDy = -20 * Math.abs(Math.sin(ph)) * w; d.tailDy = -16 * Math.sin(TAU * 4 * t) * w; break;
+      // 玩耍:连续欢快弹跳,落地挤压(矮宽)+ 狂摇尾。跳频 4跳/循环(30帧)。
+      const ph = TAU * f / 30;
+      const air = Math.abs(Math.sin(ph));
+      d.rigDy = -22 * air * w;                               // 弹跳
+      d.rigSc = -0.10 * (1 - air) * w; d.rigSx = 0.14 * (1 - air) * w; // 落地压扁
+      d.headDy = -3 * air * w;                               // 头随腾空抬
+      d.tailDy = -16 * Math.sin(TAU * f / 12) * w;           // 狂摇尾
+      break;
     }
-    case "drag":
-      d.rigDx = 9 * Math.sin(TAU * 0.6 * t) * w;
-      d.legLDx = 6 * Math.sin(TAU * 0.9 * t) * w; d.legRDx = 6 * Math.sin(TAU * 0.9 * t + 0.5) * w;
-      d.legLDy = 4 * Math.sin(TAU * 0.9 * t + 1) * w; d.legRDy = 4 * Math.sin(TAU * 0.9 * t + 1.4) * w; break;
+    case "drag": {
+      // 被拎起悬空:钟摆式摇晃 + 四爪无重力乱蹬 + 尾巴飘。周期整除 120 → 无缝。
+      d.rigDx = 10 * Math.sin(TAU * f / 60) * w;             // 钟摆摇晃(2次/循环)
+      d.headDy = 2 * Math.sin(TAU * f / 60) * w;             // 头随摆动
+      d.legLDx = 6 * Math.sin(TAU * f / 30) * w; d.legLDy = 4 * Math.sin(TAU * f / 30 + 1) * w;        // 前爪乱蹬
+      d.legRDx = 6 * Math.sin(TAU * f / 30 + 0.7) * w; d.legRDy = 4 * Math.sin(TAU * f / 30 + 1.6) * w; // 后爪乱蹬
+      d.tailDy = 6 * Math.sin(TAU * f / 40) * w;             // 尾巴无重力飘
+      break;
+    }
     case "sleep": d.rigDy = 5 * Math.sin(TAU * t / 3.2) * w; break;
+    case "feed": {
+      // 仰头期待 → 起跳接住 → 落地压扁 → 咀嚼 → 满足摇尾冒心(饼干/心为 prop)。
+      const seg = SEGS[segAt(f)]; const p = clamp01((f - seg.start) / seg.dur);
+      if (p < 0.18) { d.headDy = -8 * easeOut(p / 0.18) * w; d.tailDy = -6 * Math.sin(TAU * 2 * t) * w; }                          // 仰头期待 + 期待摇尾
+      else if (p < 0.30) { const q = (p - 0.18) / 0.12; d.rigDy = -20 * Math.sin(Math.PI * q) * w; d.headDy = -8 * (1 - q) * w; }  // 起跳接住
+      else if (p < 0.40) { const q = (p - 0.30) / 0.10; d.rigDy = 4 * Math.sin(Math.PI * q) * w; d.rigSc = -0.10 * Math.sin(Math.PI * q) * w; d.rigSx = 0.14 * Math.sin(Math.PI * q) * w; } // 落地压扁
+      else if (p < 0.62) { d.headDy = 3 * Math.abs(Math.sin(TAU * 8 * t)) * w; d.rigDy = 1.5 * Math.abs(Math.sin(TAU * 8 * t)) * w; d.tailDy = -9 * Math.sin(TAU * 3 * t) * w; } // 咀嚼(头身同嚼)
+      else { d.rigDy = -4 * Math.abs(Math.sin(TAU * 3 * t)) * w; d.tailDy = -15 * Math.sin(TAU * 3.5 * t) * w; }                    // 满足轻颠 + 狂摇尾
+      break;
+    }
+    case "scratch": {
+      // 抓痒:歪头眯眼(pose)+ 后腿伸出身下高频快抖 + 身子随挠轻颤。15次/循环(8帧)→ 无缝。
+      const ph = TAU * f / 8;
+      d.legRDy = (6 + 5 * Math.sin(ph)) * w;            // 后腿伸出快抖(向下=露出)
+      d.legRDx = 4 * Math.sin(ph) * w;
+      d.rigDx = 1.2 * Math.sin(ph) * w;                 // 身子随抓轻颤
+      d.headDx = 2 * Math.sin(TAU * f / 24) * w;        // 头随痒处轻歪
+      break;
+    }
+    case "lickpaw": {
+      // 舔爪:低头凑爪(pose)+ 前爪抬到嘴边轻动 + 随舔轻点头。6次/循环(20帧)→ 无缝。
+      const lk = TAU * f / 20;
+      d.legLDy = (-3 + 2 * Math.sin(lk)) * w; d.legLDx = -2 * w;   // 前爪略抬内收并随舔轻动
+      d.headDy = 1.5 * Math.sin(lk) * w;                          // 头随舔轻点(低头由 pose 提供)
+      d.tailDy = -4 * Math.sin(TAU * f / 40) * w;
+      break;
+    }
+    case "spin": {
+      // 兜圈跑(追尾):绕地面小椭圆跑一整圈,远处抬高+缩小=纵深;
+      // 不做水平挤压/镜像翻转(那会把像素挤成一条线,正是旧版「很丑」的根因)。
+      // 周期 80 帧 = 运行时循环体长度 → 跨循环点无缝。
+      const ph = TAU * f / 80;                       // 一圈/80帧
+      const dep = (1 - Math.cos(ph)) / 2;            // 0=身前(近) 1=身后(远)
+      const gait = TAU * f / 20;                     // 步频:每圈 4 步
+      const bob = Math.abs(Math.sin(TAU * f / 10));  // 跑动颠簸
+      d.rigDx = 44 * Math.sin(ph) * w;               // 水平绕圈(始终满宽)
+      d.rigDy = (-24 * dep - 4 * bob) * w;           // 远处明显抬高 + 颠簸
+      d.rigSc = -0.22 * dep * w;                     // 远小近大(叠加到 base rigSc=1)
+      d.legLDx = 8 * Math.sin(gait) * w; d.legLDy = -8 * Math.max(0, Math.sin(gait)) * w;
+      d.legRDx = 8 * Math.sin(gait + Math.PI) * w; d.legRDy = -8 * Math.max(0, Math.sin(gait + Math.PI)) * w;
+      d.headDx = -4 * Math.sin(ph) * w;              // 头朝圈心轻倾(入弯)
+      d.tailDx = 4 * Math.sin(ph) * w; d.tailDy = -10 * Math.sin(gait) * w; // 尾外甩 + 飘
+      break;
+    }
+    case "stretch": {
+      // 作揖伸懒腰:前身下压+前爪前伸,后臀翘起,然后还原。整段一次平滑起落(首尾归零)→ 无缝。
+      const e = (1 - Math.cos(TAU * f / 120)) / 2;   // 0→1→0 平滑(一次/循环)
+      d.headDy = 8 * e * w; d.legLDy = 9 * e * w; d.legLDx = -6 * e * w;               // 前低 + 前爪前伸
+      d.legRDy = -5 * e * w; d.tailDy = -10 * e * w;                                   // 后臀翘 + 翘尾
+      d.rigDx = -3 * e * w;                                                            // 重心前移
+      break;
+    }
+    case "lookout": {
+      // 望屏外:扭头(pose)+ 缓慢扫视 + 踮脚张望 + 好奇轻摇尾。周期整除 120 → 无缝。
+      d.headDx = 2 * Math.sin(TAU * f / 60) * w;            // 缓慢扫视(2次/循环)
+      d.headDy = -1 * Math.abs(Math.sin(TAU * f / 60)) * w;
+      d.rigDy = -1.5 * Math.abs(Math.sin(TAU * f / 120)) * w; // 踮脚张望
+      d.tailDy = -5 * Math.sin(TAU * f / 40) * w;           // 好奇轻摇尾
+      break;
+    }
   }
   return d;
 }
-
 function poseAt(f) {
   const i = segAt(f); const seg = SEGS[i];
-  const cur = POSE[seg.name]; const prev = i > 0 ? POSE[SEGS[i - 1].name] : REST;
+  // 运行时按状态机跳段进入(非顺序播放),入场一律从 REST(idle)缓入,避免闪现
+  // 时间轴上「前一段」的姿态。
+  const cur = POSE[seg.name]; const prev = REST;
   const tDur = Math.min(14, seg.dur * 0.32);
   const blend = easeInOut((f - seg.start) / tDur);
   const base = {}; for (const k of Object.keys(REST)) base[k] = lerp(prev[k], cur[k], blend);
   const o = osc(seg.name, f, blend);
   const P = { ...base }; for (const k of Object.keys(o)) P[k] = (P[k] || 0) + o[k];
-  if (base.eyeSy > 0.6) { // 眨眼:睁眼态周期性瞬闭
+  if (base.eyeSy > 0.6) {
     const ph = f % 84;
     if (ph < 7) { const tri = 1 - Math.abs(ph - 3) / 3.5; P.eyeSy = base.eyeSy * (1 - 0.92 * clamp01(tri)); }
   }
   return P;
 }
-
-// 站姿/趴姿交叉淡入(sleep 段切换)
-function sleepBlend(f) {
-  if (!inState(f, "sleep")) return 0;
-  const seg = SEGS[segAt(f)]; const p = f - seg.start; const fade = 8;
-  if (p < fade) return p / fade;
-  if (p > seg.dur - fade) return Math.max(0, (seg.dur - p) / fade);
-  return 1;
+// 睡觉藏舌:入睡 12 帧内把粉舌淡出(其余时刻满显)。
+function tongueOp(f) {
+  if (!inState(f, "sleep")) return 100;
+  const seg = SEGS[segAt(f)];
+  return (1 - clamp01((f - seg.start) / 12)) * 100;
 }
-const standOp = (f) => [(1 - sleepBlend(f)) * 100];
-const lieOp = (f) => [sleepBlend(f) * 100];
-
-// ---- 道具轨迹 ----------------------------------------------------
 function heartTrack(f, period, phase) {
-  if (!inState(f, "success", "hover", "play")) return { o: 0, dy: 0, s: 100 };
+  if (!inState(f, "success", "hover", "play", "feed")) return { o: 0, dy: 0, s: 100 };
+  // feed:只在「爱心收尾」段(>52%)冒心
+  if (inState(f, "feed")) { const s = SEGS[segAt(f)]; if ((f - s.start) / s.dur < 0.52) return { o: 0, dy: 0, s: 100 }; }
   const cyc = (((f + phase) % period) / period);
   const o = cyc < 0.18 ? cyc / 0.18 : 1 - (cyc - 0.18) / 0.82;
   return { o: clamp01(o) * 100, dy: -50 * cyc, s: 70 + 40 * Math.min(1, cyc * 3) };
@@ -221,152 +328,191 @@ function zzTrack(f, period, phase) {
   const o = cyc < 0.2 ? cyc / 0.2 : 1 - (cyc - 0.2) / 0.8;
   return { o: clamp01(o) * 90, dy: -44 * cyc, s: 60 + 55 * cyc };
 }
-
-// =================================================================
-//  组装(显式 z 序)
-// =================================================================
-const IND = { rig: 100 };
-const STORE = new Map();
-const add = (nm, l) => STORE.set(nm, l);
-const ksOf = ({ p, a, s, o }) => ({ o: o || stat(100), r: stat(0), p, a, s: s || stat([100, 100, 100]) });
-function layer(nm, ind, parent, anchor, shapes, tr = {}) {
-  return { ty: 4, nm, ind, parent: parent ?? undefined, ip: 0, op: TOTAL, st: 0,
-    ks: ksOf({ p: tr.p || stat([anchor[0], anchor[1], 0]), a: stat([anchor[0], anchor[1], 0]), s: tr.s, o: tr.o }), shapes };
-}
-function nullL(nm, ind, parent, anchor, tr = {}) {
-  return { ty: 3, nm, ind, parent: parent ?? undefined, ip: 0, op: TOTAL, st: 0, sw: 1, sh: 1, sc: "#000000",
-    ks: ksOf({ p: tr.p || stat([anchor[0], anchor[1], 0]), a: stat([anchor[0], anchor[1], 0]), s: tr.s, o: tr.o }) };
-}
-
-// 把 STAND 网格按部件归类
-const eyeSet = new Set(EYES.map(([c, r]) => c + "," + r));
-const tailSet = new Set(TAILC.map(([c, r]) => c + "," + r));
-const legLSet = new Set(LEGL.map(([c, r]) => c + "," + r));
-const legRSet = new Set(LEGR.map(([c, r]) => c + "," + r));
-// 分解策略:整只毛色轮廓 = 单层 base(无内部接缝);只有"深色特征"(眼/口/鼻)
-// 与腿/尾作为覆盖层在其上平移。头部"动作"= 深色特征在实心金底上滑动 → 看作
-// 瞥眼/歪头,永不露底缝(金底始终在后兜底)。
-const parts = { base: [], face: [], eyes: [], legL: [], legR: [], tail: [] };
-STAND.forEach((line, row) => {
-  [...line].forEach((ch, col) => {
-    if (ch === ".") return; const key = col + "," + row;
-    if (legLSet.has(key)) { parts.legL.push({ col, row, ch }); return; }
-    if (legRSet.has(key)) { parts.legR.push({ col, row, ch }); return; }
-    if (tailSet.has(key)) { parts.tail.push({ col, row, ch }); return; }
-    if (eyeSet.has(key)) { parts.eyes.push({ col, row, ch }); parts.base.push({ col, row, ch: "G" }); return; } // 眼后补金底
-    if (ch === "K" || ch === "P") { parts.face.push({ col, row, ch }); parts.base.push({ col, row, ch: "G" }); return; } // 口/鼻 = 随头偏移
-    parts.base.push({ col, row, ch });
-  });
-});
-
-// 各部件锚点(由格子重心算,稳健)
-const avg = (cells, fn) => cells.reduce((s, c) => s + fn(c), 0) / cells.length;
-const eyeAnchor = [avg(parts.eyes, (c) => cx(c.col)), avg(parts.eyes, (c) => cy(c.row))];
-const faceAnchor = [avg(parts.face, (c) => cx(c.col)), avg(parts.face, (c) => cy(c.row))];
-const legLAnchor = [avg(parts.legL, (c) => cx(c.col)), cy(8)];
-const legRAnchor = [avg(parts.legR, (c) => cx(c.col)), cy(8)];
-const tailAnchor = [avg(parts.tail, (c) => cx(c.col)), cy(6)];
-
-// 背景 + 岗台(world)
-add("background", layer("background", 1, null, [256, 256], [group("bg", [rect(256, 256, W, H), fill(COL.bg, "bgColor")])]));
-add("shelf", layer("shelf", 2, null, [256, SHELF_Y], [
-  group("line", [rect(256, SHELF_Y, 392, 2), fill(COL.shelf)]),
-], { o: stat(100) }));
-// 岗台磷光段(typing/running 变亮 = 活信号)
-add("shelfph", layer("shelfph", 3, null, [148, SHELF_Y], [group("ph", [rect(148, SHELF_Y, 84, 2), fill(COL.accent, "accentColor")])],
-  { o: anim((f) => { const on = inState(f, "typing", "running"); const b = SEGS[segAt(f)].name === "running" ? 95 : 80; return [on ? b * (0.7 + 0.3 * Math.sin(TAU * 1.6 * f / FR)) : 42]; }, 1, TOTAL, [1.2]) }));
-
-// 站姿层(全部 parent = rig)
-add("base", layer("base", 14, IND.rig, [256, 256], cellsToShapes(parts.base), { o: anim(standOp, 1, TOTAL, [2]) }));
-add("tail", layer("tail", 13, IND.rig, tailAnchor, cellsToShapes(parts.tail),
-  { p: anim((f) => { const P = poseAt(f); return [tailAnchor[0] + P.tailDx, tailAnchor[1] + P.tailDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]), o: anim(standOp, 1, TOTAL, [2]) }));
-add("legL", layer("legL", 15, IND.rig, legLAnchor, cellsToShapes(parts.legL),
-  { p: anim((f) => { const P = poseAt(f); return [legLAnchor[0] + P.legLDx, legLAnchor[1] + P.legLDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]), o: anim(standOp, 1, TOTAL, [2]) }));
-add("legR", layer("legR", 16, IND.rig, legRAnchor, cellsToShapes(parts.legR),
-  { p: anim((f) => { const P = poseAt(f); return [legRAnchor[0] + P.legRDx, legRAnchor[1] + P.legRDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]), o: anim(standOp, 1, TOTAL, [2]) }));
-// 深色特征覆盖层(在金底上平移 = 头部表情/歪头)
-add("face", layer("face", 11, IND.rig, faceAnchor, cellsToShapes(parts.face),
-  { p: anim((f) => { const P = poseAt(f); return [faceAnchor[0] + P.headDx, faceAnchor[1] + P.headDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]), o: anim(standOp, 1, TOTAL, [2]) }));
-add("eyes", layer("eyes", 10, IND.rig, eyeAnchor, cellsToShapes(parts.eyes),
-  { p: anim((f) => { const P = poseAt(f); return [eyeAnchor[0] + P.headDx, eyeAnchor[1] + P.headDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]),
-    s: anim((f) => [100, poseAt(f).eyeSy * 100, 100], 3, TOTAL, [0.4, 1, 0.4]), o: anim(standOp, 1, TOTAL, [2]) }));
-
-// 趴姿(sleep,单层;眼格画成闭合细线)
-{
-  const lieCells = [];
-  LIE.forEach((line, row) => [...line].forEach((ch, col) => { if (ch !== "." && !(eyeSet.has(col + "," + row) && ch === "K")) lieCells.push({ col, row, ch }); }));
-  const shapes = cellsToShapes(lieCells);
-  // 闭眼细线(眼格)
-  shapes.unshift(group("lie_eyes", [...EYES.map(([c, r]) => rect(cx(c), cy(r) + 8, CELL, 6)), fill(COL.K)]));
-  add("lie", layer("lie", 12, IND.rig, [256, 256], shapes, { o: anim(lieOp, 1, TOTAL, [2]) }));
-}
-
-// 根 null
-add("rig", nullL("rig", IND.rig, null, [256, SHELF_Y], {
-  p: anim((f) => { const P = poseAt(f); return [256 + P.rigDx, SHELF_Y + P.rigDy, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]),
-}));
-
-// 道具:像素爱心
 const HEART = [[1, 0], [3, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [1, 3], [2, 3], [3, 3], [2, 4]];
-function heartLayer(nm, ind, bx, by, period, phase, onlyPlay) {
-  const s = 9; const w = 5 * s, h = 5 * s;
-  return layer(nm, ind, IND.rig, [bx, by], patchShapes(HEART, bx - w / 2, by - h / 2, s, COL.heart),
-    { o: anim((f) => { const t = heartTrack(f, period, phase); return [onlyPlay && !inState(f, "play") ? 0 : t.o]; }, 1, TOTAL, [2]),
-      p: anim((f) => [bx, by + heartTrack(f, period, phase).dy, 0], 3, TOTAL, [0.5, 0.5, 0.5]),
-      s: anim((f) => { const v = heartTrack(f, period, phase).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]) });
-}
-add("heartA", heartLayer("heartA", 30, 230, 150, 40, 0, false));
-add("heartB", heartLayer("heartB", 31, 286, 150, 40, 20, true));
-
-// 道具:像素 Z
 const Z4 = [[0, 0], [1, 0], [2, 0], [3, 0], [2, 1], [1, 2], [0, 3], [1, 3], [2, 3], [3, 3]];
 const Z3 = [[0, 0], [1, 0], [2, 0], [1, 1], [0, 2], [1, 2], [2, 2]];
-function zzLayer(nm, ind, bx, by, pat, s, period, phase) {
-  const w = (pat === Z4 ? 4 : 3) * s, h = (pat === Z4 ? 4 : 3) * s;
-  return layer(nm, ind, IND.rig, [bx, by], patchShapes(pat, bx - w / 2, by - h / 2, s, COL.zz),
-    { o: anim((f) => [zzTrack(f, period, phase).o], 1, TOTAL, [2]),
-      p: anim((f) => [bx, by + zzTrack(f, period, phase).dy, 0], 3, TOTAL, [0.5, 0.5, 0.5]),
-      s: anim((f) => { const v = zzTrack(f, period, phase).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]) });
-}
-add("zzBig", zzLayer("zzBig", 32, 300, 188, Z4, 8, 96, 0));
-add("zzSmall", zzLayer("zzSmall", 33, 332, 168, Z3, 7, 96, 48));
-
-// 道具:bark 气泡(像素「!」)
-{
-  const bubO = (f) => { if (!inState(f, "click")) return 0; const s = SEGS[segAt(f)]; const p = clamp01((f - s.start) / s.dur); return p < 0.12 ? (p / 0.12) * 100 : p < 0.7 ? 100 : (1 - (p - 0.7) / 0.3) * 100; };
-  add("bubble", layer("bubble", 34, IND.rig, [330, 150], [
-    group("bg", [rect(330, 150, 44, 36), fill(COL.bubble)]),
-    group("bar", [rect(330, 146, 6, 14), fill(COL.accent, "accentColor")]),
-    group("dot", [rect(330, 160, 6, 6), fill(COL.accent, "accentColor")]),
-  ], { o: anim((f) => [bubO(f)], 1, TOTAL, [2]) }));
-}
-
-// ---- 显式 z 序(前 → 后;rig/null 末尾)----
-const ORDER = ["bubble", "zzSmall", "zzBig", "heartB", "heartA",
-  "eyes", "face", "base", "tail", "legL", "legR", "lie",
-  "shelfph", "shelf", "background", "rig"];
-const layers = ORDER.map((n) => { const l = STORE.get(n); if (!l) throw new Error("missing " + n); return l; });
 
 const markers = SEGS.map((s) => ({ tm: s.start, cm: s.name, dr: s.dur }));
 const slots = {
-  bgColor: { p: { a: 0, k: COL.bg } },
-  furColor: { p: { a: 0, k: COL.G } },
-  furDarkColor: { p: { a: 0, k: COL.D } },
-  accentColor: { p: { a: 0, k: COL.accent } },
+  bgColor: { p: { a: 0, k: COL.bg } }, furColor: { p: { a: 0, k: COLOR_OF.G } },
+  furDarkColor: { p: { a: 0, k: COLOR_OF.D } }, accentColor: { p: { a: 0, k: COL.accent } },
 };
-const doc = { v: "5.7.0", fr: FR, ip: 0, op: TOTAL, w: W, h: H, nm: "Tn pixel pet — GOLDEN (full poses)", ddd: 0, assets: [], markers, slots, layers };
 
-mkdirSync(OUT_DIR, { recursive: true });
-writeFileSync(resolve(OUT_DIR, "lottie.json"), JSON.stringify(doc));
-writeFileSync(resolve(OUT_DIR, "controls.json"), JSON.stringify({
+// =================================================================
+//  build(CFG):同一套运动出一份 Lottie
+//  CFG = { W,H,CELL,Y0pad?, bg(bool), name }
+// =================================================================
+function build(CFG, breed) {
+  const { CELL, W, H, bg } = CFG;
+  const X0 = (W - COLS * CELL) / 2;
+  const Y0 = bg ? Math.round((H - ROWS * CELL) / 2 + CELL) : (H - 10 / 6 * CELL - ROWS * CELL); // runtime: 贴 pet.rs SPRITE_Y
+  const cx = (col) => X0 + col * CELL + CELL / 2;
+  const cy = (row) => Y0 + row * CELL + CELL / 2;
+  const SHELF_Y = Y0 + ROWS * CELL - CELL / 2 + Math.round(CELL / 7);
+  const SC = CELL / 28; // 运动缩放(姿态值以 CELL28 px 写就)
+
+  const cellsToShapes = (cells) => {
+    const byCh = new Map();
+    for (const { col, row, ch } of cells) { if (!byCh.has(ch)) byCh.set(ch, []); byCh.get(ch).push([col, row]); }
+    const out = [];
+    const sz = CELL + Math.max(0.8, CELL * 0.04); // 放大消同色分层抗锯齿缝
+    for (const [ch, list] of byCh) out.push(group("px_" + ch, [...list.map(([c, r]) => rect(cx(c), cy(r), sz, sz)), fill(COLOR_OF[ch], SID[ch])]));
+    return out;
+  };
+  const patchShapes = (pat, ox, oy, s, color, sid) => [group("patch", [...pat.map(([c, r]) => rect(ox + c * s + s / 2, oy + r * s + s / 2, s, s)), fill(color, sid)])];
+
+  const IND = { rig: 100 };
+  const STORE = new Map();
+  const add = (nm, l) => STORE.set(nm, l);
+  const ksOf = ({ p, a, s, o }) => ({ o: o || stat(100), r: stat(0), p, a, s: s || stat([100, 100, 100]) });
+  const Lyr = (nm, ind, parent, anchor, shapes, tr = {}) => ({
+    ty: 4, nm, ind, parent: parent ?? undefined, ip: 0, op: TOTAL, st: 0,
+    ks: ksOf({ p: tr.p || stat([anchor[0], anchor[1], 0]), a: stat([anchor[0], anchor[1], 0]), s: tr.s, o: tr.o }), shapes,
+  });
+  const Null = (nm, ind, parent, anchor, tr = {}) => ({
+    ty: 3, nm, ind, parent: parent ?? undefined, ip: 0, op: TOTAL, st: 0, sw: 1, sh: 1, sc: "#000000",
+    ks: ksOf({ p: tr.p || stat([anchor[0], anchor[1], 0]), a: stat([anchor[0], anchor[1], 0]), s: tr.s, o: tr.o }),
+  });
+
+  // 部件归类:base 轮廓 + 抬起的特征层(眼/口鼻/舌)+ 腿/尾覆盖层。
+  // 被抬起的格(随头/眨眼动)在 base 补「面部衬底色 FB」,防止平移时露出背景缝。
+  // 睡觉 = 站姿改姿态(收腿+眯眼+藏舌+呼吸),不切造型/不交叉淡入(淡入正是睡着闪烁根因)。
+  const eyeSet = new Set(breed.eyes.map(([c, r]) => c + "," + r));
+  const tailSet = new Set(breed.tail.map(([c, r]) => c + "," + r));
+  const legLSet = new Set(breed.legL.map(([c, r]) => c + "," + r));
+  const legRSet = new Set(breed.legR.map(([c, r]) => c + "," + r));
+  const tongueSet = new Set(breed.tongue.map(([c, r]) => c + "," + r));
+  const FB = breed.face; // 面部衬底色字符
+  const parts = { base: [], face: [], eyes: [], tongue: [], legL: [], legR: [], tail: [] };
+  breed.rows.forEach((line, row) => [...line].forEach((ch, col) => {
+    if (ch === ".") return; const key = col + "," + row;
+    if (legLSet.has(key)) return parts.legL.push({ col, row, ch });
+    if (legRSet.has(key)) return parts.legR.push({ col, row, ch });
+    if (tailSet.has(key)) return parts.tail.push({ col, row, ch });
+    if (eyeSet.has(key)) { parts.eyes.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
+    if (tongueSet.has(key)) { parts.tongue.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
+    if (ch === "K") { parts.face.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
+    parts.base.push({ col, row, ch });
+  }));
+  const avg = (cells, fn) => cells.reduce((s, c) => s + fn(c), 0) / cells.length;
+  const eyeAnchor = [avg(parts.eyes, (c) => cx(c.col)), avg(parts.eyes, (c) => cy(c.row))];
+  const faceAnchor = [avg(parts.face, (c) => cx(c.col)), avg(parts.face, (c) => cy(c.row))];
+  const tongueAnchor = [avg(parts.tongue, (c) => cx(c.col)), avg(parts.tongue, (c) => cy(c.row))];
+  const legLAnchor = [avg(parts.legL, (c) => cx(c.col)), cy(ROWS - 1)];
+  const legRAnchor = [avg(parts.legR, (c) => cx(c.col)), cy(ROWS - 1)];
+  const tailAnchor = parts.tail.length ? [avg(parts.tail, (c) => cx(c.col)), avg(parts.tail, (c) => cy(c.row))] : [0, 0];
+  const cxc = (W - 0) / 2; // 箱心 x
+
+  // 背景/岗台(仅 player)
+  if (bg) {
+    add("background", Lyr("background", 1, null, [W / 2, H / 2], [group("bg", [rect(W / 2, H / 2, W, H), fill(COL.bg, "bgColor")])]));
+    add("shelf", Lyr("shelf", 2, null, [cxc, SHELF_Y], [group("line", [rect(cxc, SHELF_Y, COLS * CELL, 2), fill(COL.shelf)])]));
+    add("shelfph", Lyr("shelfph", 3, null, [cx(1.5), SHELF_Y], [group("ph", [rect(cx(1.5), SHELF_Y, 3 * CELL, 2), fill(COL.accent, "accentColor")])],
+      { o: anim((f) => { const on = inState(f, "typing", "running"); const b = SEGS[segAt(f)].name === "running" ? 95 : 80; return [on ? b * (0.7 + 0.3 * Math.sin(TAU * 1.6 * f / FR)) : 42]; }, 1, TOTAL, [1.2]) }));
+  }
+
+  // 站姿层(始终不透明;睡觉只改姿态,不切层)
+  add("base", Lyr("base", 14, IND.rig, [cxc, H / 2], cellsToShapes(parts.base)));
+  if (parts.tail.length) add("tail", Lyr("tail", 13, IND.rig, tailAnchor, cellsToShapes(parts.tail),
+    { p: anim((f) => { const P = poseAt(f); return [tailAnchor[0] + P.tailDx * SC, tailAnchor[1] + P.tailDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
+  add("legL", Lyr("legL", 15, IND.rig, legLAnchor, cellsToShapes(parts.legL),
+    { p: anim((f) => { const P = poseAt(f); return [legLAnchor[0] + P.legLDx * SC, legLAnchor[1] + P.legLDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
+  add("legR", Lyr("legR", 16, IND.rig, legRAnchor, cellsToShapes(parts.legR),
+    { p: anim((f) => { const P = poseAt(f); return [legRAnchor[0] + P.legRDx * SC, legRAnchor[1] + P.legRDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
+  add("face", Lyr("face", 11, IND.rig, faceAnchor, cellsToShapes(parts.face),
+    { p: anim((f) => { const P = poseAt(f); return [faceAnchor[0] + P.headDx * SC, faceAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
+  // 舌(粉 P):睡觉淡出(藏舌)—— 仅吐舌品种(金毛)有此层
+  if (parts.tongue.length) add("tongue", Lyr("tongue", 12, IND.rig, tongueAnchor, cellsToShapes(parts.tongue),
+    { p: anim((f) => { const P = poseAt(f); return [tongueAnchor[0] + P.headDx * SC, tongueAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+      o: anim((f) => [tongueOp(f)], 1, TOTAL, [2]) }));
+  add("eyes", Lyr("eyes", 10, IND.rig, eyeAnchor, cellsToShapes(parts.eyes),
+    { p: anim((f) => { const P = poseAt(f); return [eyeAnchor[0] + P.headDx * SC, eyeAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+      s: anim((f) => [100, poseAt(f).eyeSy * 100, 100], 3, TOTAL, [0.4, 1, 0.4]) }));
+
+  // 根 null(全局升降/拖拽悬空)
+  add("rig", Null("rig", IND.rig, null, [cxc, SHELF_Y], {
+    p: anim((f) => { const P = poseAt(f); return [cxc + P.rigDx * SC, SHELF_Y + P.rigDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+    s: anim((f) => { const P = poseAt(f); return [P.rigSx * P.rigSc * 100, P.rigSc * 100, 100]; }, 3, TOTAL, [0.5, 0.5, 0.5]), // 追尾转圈:纵深缩放(rigSc),无水平挤压
+  }));
+
+  // 道具:像素爱心 / Z / bark 气泡(位置以格坐标,随尺度走)
+  const heartLayer = (nm, ind, gcol, grow, period, phase, onlyPlay) => {
+    const s = 1.8 * CELL / 5; const bx = cx(gcol), by = cy(grow); const w = 5 * s;
+    return Lyr(nm, ind, IND.rig, [bx, by], patchShapes(HEART, bx - w / 2, by - w / 2, s, COL.heart), {
+      o: anim((f) => { const tr = heartTrack(f, period, phase); return [onlyPlay && !inState(f, "play") ? 0 : tr.o]; }, 1, TOTAL, [2]),
+      p: anim((f) => [bx, by + heartTrack(f, period, phase).dy * SC, 0], 3, TOTAL, [0.3, 0.3, 0.3]),
+      s: anim((f) => { const v = heartTrack(f, period, phase).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]),
+    });
+  };
+  add("heartA", heartLayer("heartA", 30, 6, -1.1, 40, 0, false));
+  add("heartB", heartLayer("heartB", 31, 8, -1.1, 40, 20, true));
+  const zzLayer = (nm, ind, gcol, grow, pat, cells, period, phase) => {
+    const s = 1.3 * CELL / 4; const bx = cx(gcol), by = cy(grow); const w = cells * s;
+    return Lyr(nm, ind, IND.rig, [bx, by], patchShapes(pat, bx - w / 2, by - w / 2, s, COL.zz), {
+      o: anim((f) => [zzTrack(f, period, phase).o], 1, TOTAL, [2]),
+      p: anim((f) => [bx, by + zzTrack(f, period, phase).dy * SC, 0], 3, TOTAL, [0.3, 0.3, 0.3]),
+      s: anim((f) => { const v = zzTrack(f, period, phase).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]),
+    });
+  };
+  add("zzBig", zzLayer("zzBig", 32, 7.5, -1.2, Z4, 4, 96, 0));
+  add("zzSmall", zzLayer("zzSmall", 33, 9.2, -2, Z3, 3, 96, 48));
+  {
+    const bw = 1.6 * CELL, bh = 1.3 * CELL; const bx = cx(10.5), by = cy(-1.4);
+    const bubO = (f) => { if (!inState(f, "click")) return 0; const s = SEGS[segAt(f)]; const p = clamp01((f - s.start) / s.dur); return p < 0.12 ? (p / 0.12) * 100 : p < 0.7 ? 100 : (1 - (p - 0.7) / 0.3) * 100; };
+    add("bubble", Lyr("bubble", 34, IND.rig, [bx, by], [
+      group("b", [rect(bx, by, bw, bh), fill(COL.bubble)]),
+      group("bar", [rect(bx, by - bh * 0.12, bw * 0.14, bh * 0.42), fill(COL.accent, "accentColor")]),
+      group("dot", [rect(bx, by + bh * 0.3, bw * 0.14, bh * 0.18), fill(COL.accent, "accentColor")]),
+    ], { o: anim((f) => [bubO(f)], 1, TOTAL, [2]) }));
+  }
+  // 投喂饼干:从右上抛物线落到嘴边,接住即「吃掉」(消失)
+  {
+    const bs = 1.1 * CELL; const sx = cx(11), sy = cy(-2), ex = cx(7), ey = cy(5);
+    const biscuit = (f) => {
+      if (!inState(f, "feed")) return { o: 0, x: sx, y: sy };
+      const s = SEGS[segAt(f)]; const q = (f - s.start) / s.dur;
+      if (q > 0.30) return { o: 0, x: ex, y: ey };
+      const u = clamp01(q / 0.30);
+      return { o: 100, x: lerp(sx, ex, u), y: lerp(sy, ey, u) - CELL * 2.2 * u * (1 - u) };
+    };
+    add("biscuit", Lyr("biscuit", 35, IND.rig, [sx, sy], [group("bk", [rect(sx, sy, bs, bs * 0.8), fill(COL.biscuit)])], {
+      o: anim((f) => [biscuit(f).o], 1, TOTAL, [2]),
+      p: anim((f) => { const b = biscuit(f); return [b.x, b.y, 0]; }, 3, TOTAL, [0.4, 0.4, 0.4]),
+    }));
+  }
+
+  let ORDER = ["bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "base", "tail", "legL", "legR"];
+  if (bg) ORDER = [...ORDER, "shelfph", "shelf", "background"];
+  ORDER = [...ORDER, "rig"];
+  const layers = ORDER.map((n) => STORE.get(n)).filter(Boolean); // tongue/tail 等空层按品种缺省
+
+  return { v: "5.7.0", fr: FR, ip: 0, op: TOTAL, w: W, h: H, nm: "Tn pixel pet — " + breed.name, ddd: 0, assets: [], markers, slots, layers };
+}
+
+// ---- 出两份 ------------------------------------------------------
+const PLAYER_DIR = resolve(__dirname, "../public/projects/main-project/scene-1");
+const RUNTIME_DIR = resolve(__dirname, "../../../crates/tn-ui/assets/pet");
+mkdirSync(PLAYER_DIR, { recursive: true });
+mkdirSync(RUNTIME_DIR, { recursive: true });
+
+const sz = (o) => (JSON.stringify(o).length / 1024).toFixed(0);
+const goldenBreed = BREEDS.find((b) => b.name === "golden");
+
+// ① player —— 金毛 showcase(512×512 + 背景/岗台 + 槽),浏览器预览/审稿
+const player = build({ CELL: 28, W: 512, H: 512, bg: true }, goldenBreed);
+writeFileSync(resolve(PLAYER_DIR, "lottie.json"), JSON.stringify(player));
+writeFileSync(resolve(PLAYER_DIR, "controls.json"), JSON.stringify({
   controls: [
-    { sid: "bgColor", label: "背景海拔" },
-    { sid: "furColor", label: "毛色(主 G)" },
-    { sid: "furDarkColor", label: "毛色(垂耳 D)" },
-    { sid: "accentColor", label: "磷光强调色" },
+    { sid: "bgColor", label: "背景海拔" }, { sid: "furColor", label: "毛色(主 G)" },
+    { sid: "furDarkColor", label: "毛色(垂耳 D)" }, { sid: "accentColor", label: "磷光强调色" },
   ],
 }, null, 2));
+console.log(`player  512px  layers=${player.layers.length}  size=${sz(player)}KB  (golden showcase)`);
 
-const kf = JSON.stringify(doc).match(/"t":/g)?.length || 0;
-console.log(`OK  op=${TOTAL}f (${(TOTAL / FR).toFixed(1)}s)  layers=${layers.length}  keyframes≈${kf}  size=${(JSON.stringify(doc).length / 1024).toFixed(0)}KB`);
+// ② runtime —— 7 个品种各一份(100×84,pet.rs box 原生尺度;终端按 breed 选用)
+for (const breed of BREEDS) {
+  const runtime = build({ CELL: 6, W: 100, H: 84, bg: false }, breed); // = pet.rs box(BOX_W/BOX_H/CELL/SPRITE_Y)
+  writeFileSync(resolve(RUNTIME_DIR, breed.name + ".json"), JSON.stringify(runtime));
+  console.log(`runtime ${breed.name.padEnd(9)} ${runtime.w}x${runtime.h}  layers=${runtime.layers.length}  size=${sz(runtime)}KB`);
+}
 console.log("markers:", markers.map((m) => `${m.cm}@${m.tm}`).join("  "));

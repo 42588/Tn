@@ -16,13 +16,15 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
-    canvas, div, fill, point, prelude::*, px, rgb, rgba, size, Bounds, Context, ElementInputHandler,
-    EntityInputHandler, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    Pixels, Point, SharedString, UTF16Selection, Window,
+    canvas, div, fill, img, point, prelude::*, px, rgb, rgba, size, Bounds, Context,
+    ElementInputHandler, EntityInputHandler, ImageSource, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, Point, RenderImage, SharedString, UTF16Selection, Window,
 };
+
+use crate::pet_lottie::PetLottie;
 use serde::{Deserialize, Serialize};
 use tn_config::Loaded;
 
@@ -1096,6 +1098,17 @@ pub struct PetView {
     focus: gpui::FocusHandle,
     /// 下一帧需要抓取焦点(浮层刚打开)。
     grab_focus: bool,
+    // ── Lottie 渲染(换渲染方向:像素小狗改由内嵌 mini 播放器逐帧栅格化喂
+    //    RenderImage;None = 解析失败,回退原 quad 直绘)──
+    lottie: Option<PetLottie>,
+    /// 当前播放的段名(state→marker;变化即跳到段首)。
+    lottie_seg: String,
+    /// 段内播放头(帧;按真实 dt 推进,looping 段循环,one-shot 段保持末帧)。
+    lottie_frame: f32,
+    /// 上次渲染时刻(算 dt)。
+    lottie_last: Option<Instant>,
+    /// 上一帧 RenderImage(下次渲染前驱逐其 GPU 纹理,避免显存累积)。
+    lottie_img: Option<Arc<RenderImage>>,
 }
 
 impl PetView {
@@ -1171,6 +1184,11 @@ impl PetView {
             name_marked: None,
             focus: cx.focus_handle(),
             grab_focus: false,
+            lottie: Self::lottie_for(breed),
+            lottie_seg: String::new(),
+            lottie_frame: 0.0,
+            lottie_last: None,
+            lottie_img: None,
         };
         let mut view = view;
         // 首次启用宠物 → 一次性领养卡(规则 0)。老用户(adopted=false 但已有
@@ -1192,6 +1210,29 @@ impl PetView {
             }
         })
         .detach();
+        // Lottie 平滑重绘 ~30fps:仅在「可见 + 非 reduced motion」时 notify(隐藏/
+        // 静帧时不空转上传)。播放头推进与帧栅格化在 render() 内按真实 dt 进行。
+        if view.lottie.is_some() {
+            let exec2 = cx.background_executor().clone();
+            cx.spawn(async move |this, cx| loop {
+                exec2.timer(Duration::from_millis(33)).await;
+                let ok = this
+                    .update(cx, |pet, cx| {
+                        let animate = pet.motion_on()
+                            && pet.state.enabled
+                            && pet.state.visible
+                            && !(pet.state.welcome_only && !pet.on_welcome);
+                        if animate {
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !ok {
+                    break;
+                }
+            })
+            .detach();
+        }
         // 初次现身:已领养老用户走每日见面入场;未领养则等领养落定后再入场。
         if view.motion_on() {
             if view.state.adopted {
@@ -1207,6 +1248,119 @@ impl PetView {
     /// reduced motion:`[editor] animations = "off"` → 全静帧(可访问性规则)。
     fn motion_on(&self) -> bool {
         self.cfg.config.editor.animations != tn_config::EditorAnimations::Off
+    }
+
+    /// 当前应播放的 Lottie 段名(state → marker)。优先级与 ctx 推导一致;
+    /// 探头入场覆盖一切;歪头(click)与连败陪伴(就近趴下)单独识别。
+    /// Lottie 暂未覆盖 Feed/微动作 → 回退 idle(v1 限制)。
+    /// 按品种取对应 Lottie(像素身份各异,运动完全通用 —— 同一套生成器逐品种出 JSON)。
+    fn lottie_for(breed: Breed) -> Option<PetLottie> {
+        let json = match breed {
+            Breed::Westie => include_str!("../assets/pet/westie.json"),
+            Breed::Golden => include_str!("../assets/pet/golden.json"),
+            Breed::Shepherd => include_str!("../assets/pet/shepherd.json"),
+            Breed::Bichon => include_str!("../assets/pet/bichon.json"),
+            Breed::Maltese => include_str!("../assets/pet/maltese.json"),
+            Breed::ShihTzu => include_str!("../assets/pet/shihtzu.json"),
+            Breed::Poodle => include_str!("../assets/pet/poodle.json"),
+        };
+        PetLottie::parse(json).ok()
+    }
+
+    fn lottie_segment(&self) -> &'static str {
+        if self.peeking() {
+            return "peek";
+        }
+        if now_ms() < self.tilt_until_ms {
+            return "click";
+        }
+        if self.companion_lie {
+            return "sleep";
+        }
+        match self.ctx {
+            PetContext::Drag => "drag",
+            PetContext::Play => "play",
+            PetContext::Error => "error",
+            PetContext::Success => "success",
+            PetContext::Running => "running",
+            PetContext::Typing => "typing",
+            PetContext::Hover => "hover",
+            PetContext::Sleep => "sleep",
+            PetContext::Feed => "feed", // 小饼干:抛接 → 咀嚼 → 爱心(饼干为 prop)
+            // Idle 上叠加的活物引擎微动作(规则 C)各有专属段;竖耳金毛垂耳不触发。
+            PetContext::Idle => match self.micro {
+                Some(Micro::Scratch) => "scratch",
+                Some(Micro::Lick) => "lickpaw",
+                Some(Micro::Spin) => "spin",
+                Some(Micro::LookAway) => "lookout",
+                Some(Micro::Stretch) => "stretch",
+                Some(Micro::EarPerk) | None => "idle",
+            },
+        }
+    }
+
+    /// 推进播放头并把当前帧栅格化为 `RenderImage`(直通 alpha → BGRA)。
+    /// `scale` = 设备像素 / 逻辑单位。None = 无可用 Lottie(回退 quad 直绘)。
+    fn lottie_image(
+        &mut self,
+        scale: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Arc<RenderImage>> {
+        self.lottie.as_ref()?;
+        let seg = self.lottie_segment().to_string();
+        // 取段帧区间(先借后放,免与下方可变借用打架)。
+        let (start, dur, fr) = {
+            let lot = self.lottie.as_ref().unwrap();
+            let m = lot.marker(&seg).or_else(|| lot.marker("idle"))?;
+            (m.start, m.dur, lot.fr)
+        };
+        if self.lottie_seg != seg {
+            self.lottie_seg = seg.clone();
+            self.lottie_frame = start; // 切段:跳到段首
+        }
+        if self.motion_on() {
+            let now = Instant::now();
+            let dt = self
+                .lottie_last
+                .map(|t| (now - t).as_secs_f32().min(0.1))
+                .unwrap_or(0.0);
+            self.lottie_last = Some(now);
+            self.lottie_frame += dt * fr;
+            let end = start + dur;
+            if self.lottie_frame >= end {
+                // peek/success/feed 为一次性序列:保持末帧,等状态机自然切回(不重放抛接)
+                if matches!(seg.as_str(), "peek" | "success" | "feed") {
+                    self.lottie_frame = end - 0.5;
+                } else {
+                    // 循环回到「入场过渡之后」(LOOP_IN),不重放从上个状态切入的
+                    // 那段缓动 —— 否则每圈都会闪回上个姿态(如 drag 抬起)造成跳动。
+                    // LOOP_IN 须 ≥ 生成器 poseAt 的过渡帧(min(14,dur*.32))与
+                    // sleep 交叉淡入(8)中的较大者。
+                    const LOOP_IN: f32 = 16.0;
+                    let loop_in = start + LOOP_IN.min(dur * 0.5);
+                    let body = (end - loop_in).max(1.0);
+                    self.lottie_frame = loop_in + (self.lottie_frame - loop_in).rem_euclid(body);
+                }
+            }
+        } else {
+            self.lottie_frame = start; // reduced motion:静帧
+        }
+
+        let (mut rgba, w, h) = {
+            let lot = self.lottie.as_ref().unwrap();
+            lot.render_rgba(self.lottie_frame, scale)
+        };
+        for px4 in rgba.chunks_exact_mut(4) {
+            px4.swap(0, 2); // RGBA → BGRA(GPUI RenderImage 字节序)
+        }
+        let frame = image::Frame::new(image::RgbaImage::from_raw(w, h, rgba)?);
+        let img_rc = Arc::new(RenderImage::new(vec![frame]));
+        if let Some(old) = self.lottie_img.take() {
+            cx.drop_image(old, Some(window)); // 驱逐上一帧 GPU 纹理,免显存累积
+        }
+        self.lottie_img = Some(img_rc.clone());
+        Some(img_rc)
     }
 
     /// 当前可见帧的指纹:任何影响绘制的状态变化都改变它(空闲时恒定 → 零重绘)。
@@ -1956,6 +2110,8 @@ impl PetView {
     /// 零失去焦虑、无送别弹窗。
     fn pick_breed(&mut self, b: Breed, cx: &mut Context<Self>) {
         self.breed = b;
+        self.lottie = Self::lottie_for(b); // 换品种 → 换像素资产(运动通用)
+        self.lottie_seg = String::new();
         self.state.fixed_breed = Some(b); // 显式选择 = 固定品种(入用户配置)
         self.state.save();
         self.peek(cx); // 新狗探头入场
@@ -2008,6 +2164,8 @@ impl PetView {
     /// 完成领养(规则 0):落定品种 + 名字,写档案首见日,关卡并入场。
     fn adopt(&mut self, cx: &mut Context<Self>) {
         self.breed = self.adopt_breed;
+        self.lottie = Self::lottie_for(self.adopt_breed); // 换品种 → 换像素资产(运动通用)
+        self.lottie_seg = String::new();
         self.state.fixed_breed = Some(self.adopt_breed);
         if let Some(raw) = self.name_editing.take() {
             let name: String = raw.trim().chars().take(8).collect();
@@ -3045,46 +3203,59 @@ impl Render for PetView {
             (vh - box_h - 44.0).max(STATUSBAR_H + 2.0),
         );
 
-        let cells = self.frame_cells();
         let dragging = self.drag.is_some();
-        // 探头进行中:岗台线以下裁切(SHEET 05-E「从岗台线后升起」)。
-        let peek_clip = self.peeking();
 
-        // ── 小狗本体(canvas 逐 quad 直绘;格距/偏移随形态 ×s) ──
-        let sprite = canvas(
-            |_b, _w, _cx| {},
-            move |bounds, _state, window, _cx| {
-                let cell = CELL * s;
-                let ox = f32::from(bounds.origin.x) + SPRITE_X * s;
-                let oy = f32::from(bounds.origin.y) + SPRITE_Y * s;
-                // 岗台线(雪碧图底缘):探头时线下不画。
-                let shelf = oy + 9.0 * cell;
-                for (x, y, color, dx, dy, ws, hs) in &cells {
-                    let w = cell * ws;
-                    let mut h = cell * hs;
-                    let qx = ox + *x as f32 * cell + dx * s + (cell - w) * 0.5;
-                    let qy = oy + *y as f32 * cell + dy * s + (cell - h) * 0.5;
-                    if peek_clip {
-                        if qy >= shelf {
-                            continue;
+        // ── 小狗本体 ──
+        // 主路径:内嵌 mini Lottie 播放器逐帧栅格化 → RenderImage(换渲染方向)。
+        // 渲染缩放 = 形态×DPI(设备像素 1:1,像素清晰)。
+        let scale = (s * window.scale_factor()).clamp(1.0, 8.0);
+        let body: gpui::AnyElement = if let Some(img_rc) = self.lottie_image(scale, window, cx) {
+            img(ImageSource::Render(img_rc))
+                .absolute()
+                .top(px(0.))
+                .left(px(0.))
+                .w(px(box_w))
+                .h(px(box_h))
+                .into_any_element()
+        } else {
+            // 回退:Lottie 解析失败时,原 quad 逐格直绘(格距/偏移随形态 ×s)。
+            let cells = self.frame_cells();
+            let peek_clip = self.peeking();
+            canvas(
+                |_b, _w, _cx| {},
+                move |bounds, _state, window, _cx| {
+                    let cell = CELL * s;
+                    let ox = f32::from(bounds.origin.x) + SPRITE_X * s;
+                    let oy = f32::from(bounds.origin.y) + SPRITE_Y * s;
+                    let shelf = oy + 9.0 * cell;
+                    for (x, y, color, dx, dy, ws, hs) in &cells {
+                        let w = cell * ws;
+                        let mut h = cell * hs;
+                        let qx = ox + *x as f32 * cell + dx * s + (cell - w) * 0.5;
+                        let qy = oy + *y as f32 * cell + dy * s + (cell - h) * 0.5;
+                        if peek_clip {
+                            if qy >= shelf {
+                                continue;
+                            }
+                            h = h.min(shelf - qy);
                         }
-                        h = h.min(shelf - qy);
+                        window.paint_quad(fill(
+                            Bounds {
+                                origin: point(px(qx), px(qy)),
+                                size: size(px(w), px(h)),
+                            },
+                            rgb(*color),
+                        ));
                     }
-                    window.paint_quad(fill(
-                        Bounds {
-                            origin: point(px(qx), px(qy)),
-                            size: size(px(w), px(h)),
-                        },
-                        rgb(*color),
-                    ));
-                }
-            },
-        )
-        .absolute()
-        .top(px(0.))
-        .left(px(0.))
-        .right(px(0.))
-        .bottom(px(0.));
+                },
+            )
+            .absolute()
+            .top(px(0.))
+            .left(px(0.))
+            .right(px(0.))
+            .bottom(px(0.))
+            .into_any_element()
+        };
 
 
         // ── 岗台:1px h1 发丝,左 28px 磷光点睛(SHEET 05 SPEC) ──
@@ -3164,7 +3335,7 @@ impl Render for PetView {
             .bottom(px(bottom))
             .w(px(box_w))
             .h(px(box_h))
-            .child(sprite)
+            .child(body)
             .child(shelf)
             .when_some(welcome_label, |d, l| d.child(l))
             .when_some(bubble, |d, b| d.child(b))

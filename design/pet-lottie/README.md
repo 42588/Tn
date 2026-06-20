@@ -1,9 +1,13 @@
-# 宠物动画 · 像素小狗矢量化重做(Lottie / Skottie 探索)
+# 宠物动画 · 像素小狗矢量化重做(Lottie 路径,已接入终端)
 
-> 状态:**原型探索**(换渲染方向)。代表犬 = 金毛,全套上下文姿态已出可播放原件。
-> 这是对「三大特色之一 · 像素宠物」的渲染方向探索 —— 把原本 GPUI 逐帧重绘的
-> 像素狗,改用 Lottie(Bodymovin)在 skia/Skottie 上做**连续插值**播放。
-> 尚未接入产品;落地与否、是否引入 skia 渲染层,见下文「待定夺」。
+> 状态:**已落地**(2026-06-20)。全部 **7 个品种** × 全套 **17 段动画**已接入终端运行时。
+> 这是「三大特色之一 · 像素宠物」的渲染重做 —— 把原本 GPUI 逐帧重绘的像素狗,改用
+> Lottie(Bodymovin)做**连续插值**播放,像素身份不变(只平移/缩放不旋转)。
+>
+> **未引入 skia**:运行时由自写的**纯 Rust mini 播放器** [`crates/tn-ui/src/pet_lottie.rs`](../../crates/tn-ui/src/pet_lottie.rs)
+> 逐帧栅格化(矩形 + 填充 + 变换 + 线性关键帧 + 单层父子 + 解析式抗锯齿),喂给 GPUI
+> `RenderImage`,无 cmake/GPU 依赖。`design/pet-lottie` 下的官方 skia 播放器仅作浏览器审稿用。
+> 生成器逐品种出一份运行时 JSON(`crates/tn-ui/assets/pet/<breed>.json`),`pet.rs` 按 `breed` 选用。
 
 ## 这是什么
 
@@ -16,9 +20,13 @@
 - **磷光纪律**:大面积不透明海拔;强调色 `#5BE7C4` 只给「活信号」(岗台磷光段在
   typing/running 变亮),毛色为暖金,无装饰 glow。
 
-## 全套姿态(一条时间轴顺序演完,每段打 marker)
+## 全套姿态(一条时间轴顺序演完,每段打 marker;运行时按状态机跳段)
 
 `peek → idle → typing → running → success → error → hover → click → play → drag → sleep`
+`→ feed(投喂) → scratch(抓痒) → lickpaw(舔爪) → spin(追尾兜圈) → stretch(伸懒腰) → lookout(望屏外)`
+
+> 循环段周期均**锁到运行时循环体长度的整除数**(无缝循环,跨循环点不跳帧);
+> success/play/feed 落地用**挤压拉伸**(矮宽↔高瘦);spin = 绕地面小圈兜跑(纵深缩放,不做水平挤压)。
 
 | 段       | 画法(平移/缩放)                                                  |
 | -------- | ----------------------------------------------------------------- |
@@ -54,8 +62,9 @@
 npx degit diffusionstudio/lottie .
 npm install                       # postinstall 会把 canvaskit.wasm 拷进 public/
 
-# 2) 生成/更新动画(自写生成器,产物落到播放器的 scene-1)
-node script/gen_pet_lottie.mjs    # → public/projects/main-project/scene-1/{lottie.json,controls.json}
+# 2) 生成/更新动画(自写生成器,一跑同时出 player 审稿件 + 7 份运行时资产)
+node script/gen_pet_lottie.mjs    # → 审稿:public/projects/main-project/scene-1/{lottie.json,controls.json}(金毛)
+                                  # → 运行时:crates/tn-ui/assets/pet/<breed>.json ×7(终端实跑)
 
 # 3) 起播放器,浏览器开预览
 npm run dev                       # http://localhost:3030/main-project/scene-1
@@ -64,9 +73,14 @@ npm run dev                       # http://localhost:3030/main-project/scene-1
 
 入库的只有:`script/gen_pet_lottie.mjs`、生成的 `lottie.json` / `controls.json`、本 README。
 
-## 待定夺(落地前)
+## 已落地(as-built)
 
-- 是否真的把宠物渲染从 GPUI quad 切到 skia/Skottie(引擎取舍、体积、与磷光契约的一致性)。
-- 其余 6 个品种(西高地/德牧/比熊/马尔济斯/西施/泰迪):生成器已按「网格 + 部件坐标」
-  泛化,补品种 = 填 `rows/lie_rows/eyes/tail/leg` 即可,本轮先只做金毛代表犬。
-- 投喂/微动作/工作共情等完整规则尚未覆盖(本轮聚焦核心 11 姿态)。
+- **渲染路径已定**:不切 skia,运行时用纯 Rust mini 播放器栅格化(见顶部说明);GPUI quad 直绘作回退。
+- **7 品种全覆盖**:生成器按「网格 + 部件坐标」泛化,`BREEDS` 表逐品种出运行时 JSON;
+  运动(`osc`/`poseAt`)对所有品种完全相同,只有像素网格/配色/部件锚点不同。`pet.rs::lottie_for(breed)` 选用,换品种即换皮。
+- **投喂 + 微动作已覆盖**:feed/scratch/lickpaw/spin/stretch/lookout 全部接入,接 `pet.rs` 状态机(Feed 上下文、活物引擎 Micro)。
+
+## 后续可选增强
+
+- **立耳 perk**:竖耳品种(西高地/德牧)的耳朵目前作为 base 静态渲染,未随 typing/警觉抖动。
+- 运动轨迹在各品种间字节级重复(锚点不同),如需可抽出共享运动轨道减小体积。
