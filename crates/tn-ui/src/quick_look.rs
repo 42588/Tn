@@ -6627,7 +6627,9 @@ impl Render for QuickLook {
                 page_count,
                 move |range, _window, _cx| {
                     if let Some(first_visible) = range.clone().next() {
-                        pdf_current_page_clone.set(first_visible);
+                        if pdf_current_page_clone.get() != first_visible {
+                            pdf_current_page_clone.set(first_visible);
+                        }
                     }
                     let pages_lock = pages.lock().ok();
                     range
@@ -6733,7 +6735,6 @@ impl Render for QuickLook {
                     .flex_1()
                     .relative()
                     .overflow_hidden()
-                    .child(pdf_area)
                     .child(
                         canvas(
                             move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
@@ -6741,7 +6742,8 @@ impl Render for QuickLook {
                         )
                         .absolute()
                         .size_full(),
-                    ),
+                    )
+                    .child(pdf_area),
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
             let img_source = gpui::ImageSource::Render(img.clone());
