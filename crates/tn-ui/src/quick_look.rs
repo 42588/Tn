@@ -1919,8 +1919,13 @@ impl QuickLook {
                     if is_md {
                         if trimmed.starts_with('#') {
                             let level = trimmed.chars().take_while(|&c| c == '#').count();
-                            let title = trimmed[level..].trim().to_string();
+                            let mut title = trimmed[level..].trim().to_string();
                             if level >= 1 && level <= 6 && !title.is_empty() {
+                                let mut chars: Vec<char> = title.chars().collect();
+                                if chars.len() > 26 {
+                                    chars.truncate(24);
+                                    title = chars.into_iter().collect::<String>() + "…";
+                                }
                                 items.push(OutlineItem {
                                     label: title,
                                     indent: level.saturating_sub(1),
@@ -1929,18 +1934,20 @@ impl QuickLook {
                             }
                         }
                     } else {
-                        if trimmed.starts_with("fn ")
-                            || trimmed.starts_with("pub fn ")
-                            || trimmed.starts_with("impl ")
+                        let matched = trimmed.starts_with("impl ")
+                            || trimmed.starts_with("pub impl ")
                             || trimmed.starts_with("struct ")
                             || trimmed.starts_with("pub struct ")
                             || trimmed.starts_with("enum ")
                             || trimmed.starts_with("pub enum ")
+                            || trimmed.starts_with("trait ")
+                            || trimmed.starts_with("pub trait ")
                             || trimmed.starts_with("class ")
-                            || trimmed.starts_with("def ")
+                            || trimmed.starts_with("pub class ")
                             || trimmed.starts_with("interface ")
-                            || trimmed.starts_with("type ")
-                        {
+                            || trimmed.starts_with("pub interface ");
+
+                        if matched {
                             let mut label = trimmed.to_string();
                             if let Some(i) = label.find('{') {
                                 label = label[..i].trim().to_string();
@@ -1948,16 +1955,14 @@ impl QuickLook {
                             if let Some(i) = label.find(':') {
                                 label = label[..i].trim().to_string();
                             }
+                            let mut chars: Vec<char> = label.chars().collect();
+                            if chars.len() > 26 {
+                                chars.truncate(24);
+                                label = chars.into_iter().collect::<String>() + "…";
+                            }
                             items.push(OutlineItem {
                                 label,
                                 indent: 0,
-                                target: OutlineTarget::Line(idx),
-                            });
-                        } else if trimmed.contains("TODO") || trimmed.contains("FIXME") {
-                            let label = trimmed.to_string();
-                            items.push(OutlineItem {
-                                label,
-                                indent: 1,
                                 target: OutlineTarget::Line(idx),
                             });
                         }
@@ -7246,7 +7251,7 @@ impl Render for QuickLook {
                 let target = item.target.clone();
                 let is_md = is_md;
 
-                let row = div()
+                let mut row = div()
                     .flex()
                     .items_center()
                     .h(px(22.))
@@ -7264,15 +7269,16 @@ impl Render for QuickLook {
                         rgba(crate::style::PH_SOFT)
                     } else {
                         gpui::rgba(0x00000000)
-                    })
-                    .hover(|s| {
-                        if active {
-                            s
-                        } else {
-                            s.bg(gpui::rgb(crate::style::L4))
-                                .text_color(gpui::rgb(crate::style::T0))
-                        }
-                    })
+                    });
+
+                if !active {
+                    row = row.hover(|s| {
+                        s.bg(gpui::rgb(crate::style::L4))
+                            .text_color(gpui::rgb(crate::style::T0))
+                    });
+                }
+
+                let row = row
                     .on_mouse_down(
                         MouseButton::Left,
                         move |_ev: &MouseDownEvent, _w, app| {
@@ -7285,7 +7291,7 @@ impl Render for QuickLook {
                                     }
                                     OutlineTarget::Line(l) => {
                                         if !this.editing && is_md {
-                                            this.editing = true;
+                                            this.enter_edit();
                                         }
                                         if this.editing {
                                             this.edit.place_cursor(l, 0, false);
