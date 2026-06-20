@@ -27,8 +27,8 @@ use gpui::{
     canvas, div, fill, point, prelude::*, px, rgba, size, uniform_list, App, AsyncApp, Bounds,
     ClipboardItem, ContentMask, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Hsla, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    RenderImage, Rgba, ScrollStrategy, ScrollWheelEvent, SharedString, Subscription, TextRun,
-    UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
+    RenderImage, Rgba, ScrollHandle, ScrollStrategy, ScrollWheelEvent, SharedString, Subscription,
+    TextRun, UTF16Selection, UniformListScrollHandle, WeakEntity, Window,
 };
 use tn_config::Loaded;
 use tn_pty::remote_cmd::SshCommandService;
@@ -1504,6 +1504,8 @@ pub struct QuickLook {
     file_jump_highlight: Option<usize>,
     /// Virtualized code list scroll position (kept across frames per gpui).
     scroll: UniformListScrollHandle,
+    md_scroll: ScrollHandle,
+    md_blocks_map: Option<Vec<usize>>,
     /// Grab focus in the next render (focusing in an event/open callback doesn't
     /// land — the overlay isn't rendered yet; see 踩过的坑).
     needs_focus: bool,
@@ -1609,6 +1611,8 @@ impl QuickLook {
             )),
             file_jump_highlight: None,
             scroll: UniformListScrollHandle::default(),
+            md_scroll: ScrollHandle::new(),
+            md_blocks_map: None,
             needs_focus: false,
             rail_pos: None,
             focus_handle: cx.focus_handle(),
@@ -1867,6 +1871,8 @@ impl QuickLook {
         self.diff_dirty = !is_remote;
         self.diff_loading = false;
         self.scroll = UniformListScrollHandle::default();
+        self.md_scroll = ScrollHandle::new();
+        self.md_blocks_map = None;
         self.needs_focus = true;
         self.find_open = false;
         self.file_highlight_cache.borrow_mut().clear();
@@ -1971,6 +1977,61 @@ impl QuickLook {
             }
         }
         items
+    }
+
+    fn compute_md_blocks_map(&self) -> Vec<usize> {
+        let lines_ref;
+        let lines: &[String] = if self.editing {
+            lines_ref = self.edit.lines();
+            &lines_ref.borrow()
+        } else {
+            match &self.file_data {
+                QuickLookData::Text { lines, .. } => lines.as_slice(),
+                _ => &[],
+            }
+        };
+        let source = lines.join("\n");
+        let mut opts = Options::empty();
+        opts.insert(Options::ENABLE_TABLES);
+        opts.insert(Options::ENABLE_STRIKETHROUGH);
+        opts.insert(Options::ENABLE_TASKLISTS);
+        opts.insert(Options::ENABLE_FOOTNOTES);
+        let parser = Parser::new_ext(&source, opts);
+        let mut block_lines = Vec::new();
+        let mut depth: usize = 0;
+        for (event, range) in parser.into_offset_iter() {
+            match event {
+                MdEvent::Start(tag) => {
+                    if depth == 0 {
+                        let is_block = matches!(
+                            tag,
+                            Tag::Paragraph
+                                | Tag::Heading { .. }
+                                | Tag::CodeBlock(_)
+                                | Tag::List(_)
+                                | Tag::BlockQuote(_)
+                                | Tag::Table(_)
+                        );
+                        if is_block {
+                            let line_idx = source[..range.start].chars().filter(|&c| c == '\n').count();
+                            block_lines.push(line_idx);
+                        }
+                    }
+                    depth += 1;
+                }
+                MdEvent::End(_) => {
+                    depth = depth.saturating_sub(1);
+                }
+                MdEvent::Rule => {
+                    if depth == 0 {
+                        let line_idx = source[..range.start].chars().filter(|&c| c == '\n').count();
+                        block_lines.push(line_idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+        block_lines
     }
 
     /// Open `path`: read its text off the **background** thread, default to the File
@@ -6777,7 +6838,7 @@ impl Render for QuickLook {
             && is_markdown_path(self.path.as_deref())
         {
             // Markdown 预览态:直接渲染排版(Enter 进编辑切回自绘编辑器,Esc 回预览)。
-            preview_container = preview_container.child(markdown_view(&self.config, &lines));
+            preview_container = preview_container.child(markdown_view(&self.config, &lines, &self.md_scroll));
         } else if should_self_paint_diff(self.el_render, editing, tab, &self.file_data) {
             // TnE-13: Diff tab now uses the same self-painted canvas/prepaint path
             // as File preview. `TN_QL_LEGACY=1` still falls through to the old list.
@@ -7288,21 +7349,36 @@ impl Render for QuickLook {
                                     }
                                     OutlineTarget::Line(l) => {
                                         if !this.editing && is_md {
-                                            this.enter_edit();
-                                        }
-                                        if this.editing {
-                                            this.edit.place_cursor(l, 0, false);
-                                            this.cursor = this.edit.cursor();
+                                            if this.md_blocks_map.is_none() {
+                                                this.md_blocks_map = Some(this.compute_md_blocks_map());
+                                            }
+                                            if let Some(map) = &this.md_blocks_map {
+                                                let mut best_idx = 0;
+                                                let mut min_diff = usize::MAX;
+                                                for (idx, &line_idx) in map.iter().enumerate() {
+                                                    let diff = (line_idx as isize - l as isize).abs() as usize;
+                                                    if diff < min_diff {
+                                                        min_diff = diff;
+                                                        best_idx = idx;
+                                                    }
+                                                }
+                                                this.md_scroll.scroll_to_top_of_item(best_idx);
+                                            }
                                         } else {
-                                            this.cursor = (l, 0);
-                                            this.sel_anchor = None;
+                                            if this.editing {
+                                                this.edit.place_cursor(l, 0, false);
+                                                this.cursor = this.edit.cursor();
+                                            } else {
+                                                this.cursor = (l, 0);
+                                                this.sel_anchor = None;
+                                            }
+                                            if this.el_render {
+                                                this.el_center_file_cursor(this.cursor);
+                                            } else {
+                                                this.scroll.scroll_to_item(l, ScrollStrategy::Center);
+                                            }
+                                            this.snap_caret_motion();
                                         }
-                                        if this.el_render {
-                                            this.el_center_file_cursor(this.cursor);
-                                        } else {
-                                            this.scroll.scroll_to_item(l, ScrollStrategy::Center);
-                                        }
-                                        this.snap_caret_motion();
                                     }
                                 }
                                 cx.notify();
@@ -8693,7 +8769,7 @@ fn md_row_cells<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) 
 }
 
 /// Markdown 预览视图:解析整篇 → 块元素,装进可纵向滚动的浮板正文区。
-fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
+fn markdown_view(config: &Loaded, lines: &[String], scroll_handle: &ScrollHandle) -> impl IntoElement {
     let source = lines.join("\n");
     let ctx = MdCtx {
         config,
@@ -8717,27 +8793,27 @@ fn markdown_view(config: &Loaded, lines: &[String]) -> impl IntoElement {
     opts.insert(Options::ENABLE_FOOTNOTES);
     let mut events = Parser::new_ext(&source, opts);
     let blocks = md_blocks(&mut events, &ctx);
+    let wrapped_blocks = blocks.into_iter().map(|b| {
+        div()
+            .w_full()
+            .flex()
+            .justify_center()
+            .child(b.w_full().max_w(px(720.)))
+    });
     div()
         .id("ql-md")
         .size_full()
         .overflow_y_scroll()
+        .track_scroll(scroll_handle)
         .bg(gpui::rgb(CODE_BG))
         .px(px(24.))
         .py(px(20.))
+        .pb(px(60.)) // 增加底部边距，防止最后一行被底栏/滚动边缘裁切
         .flex()
         .flex_col()
-        .items_center()
+        .gap(px(12.))
         .font_family(SharedString::from(UI_SANS))
-        .child(
-            div()
-                .w_full()
-                .max_w(px(720.))
-                .pb(px(60.)) // 增加底部边距，防止最后一行被底栏/滚动边缘裁切
-                .flex()
-                .flex_col()
-                .gap(px(12.))
-                .children(blocks)
-        )
+        .children(wrapped_blocks)
 }
 
 #[cfg(test)]
