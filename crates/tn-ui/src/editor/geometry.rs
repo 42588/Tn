@@ -246,7 +246,11 @@ pub fn paged_scroll_thumb(
         return None;
     }
     let track_h = (viewport_h - VSCROLL_INSET * 2.0).max(1.0);
-    let thumb_h = (track_h / page_count as f32 * track_h).clamp(VSCROLL_MIN_THUMB, track_h);
+    // One page ≈ one viewport, so the thumb spans `1 / page_count` of the track
+    // (clamped to a usable minimum). NOTE: this is page-fraction, *not* the text
+    // path's `track_h / content_h * track_h` — that extra `* track_h` here would
+    // blow the thumb up to the full track height (the giant-bar bug).
+    let thumb_h = (track_h / page_count as f32).clamp(VSCROLL_MIN_THUMB, track_h);
     let usable = (track_h - thumb_h).max(1.0);
     let fraction = (current_page as f32 / (page_count - 1) as f32).clamp(0.0, 1.0);
     let thumb_y = VSCROLL_INSET + fraction * usable;

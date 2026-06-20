@@ -6604,6 +6604,9 @@ impl Render for QuickLook {
                                         .flex()
                                         .justify_center()
                                         .items_center()
+                                        // 左右留 12px 暗边,给右侧细滚动条让出轨道,
+                                        // 避免 thumb 压住页面最右一列文字。
+                                        .px(px(12.))
                                         .child(
                                             gpui::img(img_source)
                                                 .max_w_full()
