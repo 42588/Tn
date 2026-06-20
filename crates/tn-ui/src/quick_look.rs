@@ -8736,35 +8736,110 @@ fn md_heading_outline(lines: &[String]) -> Vec<OutlineItem> {
     items
 }
 
-/// Lightweight code-declaration outline: top-of-line `struct` / `enum` / `impl` /
-/// `trait` / `class` / `interface` (each with an optional `pub ` prefix).
+/// Lightweight code-declaration outline. Surfaces top-of-line declarations
+/// (`fn` / `struct` / `enum` / `trait` / `impl` / `mod` / `type` / `const` /
+/// `static` / `class` / `interface` / `function` / …, each with optional
+/// `pub`/`async`/`unsafe`/… qualifiers) and **derives nesting from the source
+/// indentation** so e.g. methods sit under their `impl`. This is a heuristic, not
+/// a real parser — good enough for navigation without language-specific machinery.
 fn code_decl_outline(lines: &[String]) -> Vec<OutlineItem> {
-    const KEYWORDS: [&str; 6] = ["impl", "struct", "enum", "trait", "class", "interface"];
-    let mut items = Vec::new();
+    const KEYWORDS: [&str; 16] = [
+        "fn", "struct", "enum", "trait", "impl", "mod", "type", "union", "const",
+        "static", "macro_rules", "class", "interface", "function", "def", "func",
+    ];
+    // Strip leading visibility/qualifier words so `pub(crate) async fn` → `fn …`.
+    fn strip_mods(s: &str) -> &str {
+        const MODS: [&str; 5] = ["pub", "async", "unsafe", "default", "extern"];
+        let mut s = s;
+        loop {
+            let t = s.trim_start();
+            let mut advanced = false;
+            for m in MODS {
+                if let Some(rest) = t.strip_prefix(m) {
+                    if rest.is_empty()
+                        || rest.starts_with(|c: char| c.is_whitespace() || c == '(' || c == '"')
+                    {
+                        let mut r = rest.trim_start();
+                        // pub(crate) / pub(super) / extern "C": skip the group.
+                        if let Some(inner) = r.strip_prefix('(') {
+                            if let Some(i) = inner.find(')') {
+                                r = &inner[i + 1..];
+                            }
+                        } else if let Some(inner) = r.strip_prefix('"') {
+                            if let Some(i) = inner.find('"') {
+                                r = &inner[i + 1..];
+                            }
+                        }
+                        s = r;
+                        advanced = true;
+                        break;
+                    }
+                }
+            }
+            if !advanced {
+                return t;
+            }
+        }
+    }
+    // A keyword is a declaration only when the next char isn't an identifier char
+    // (so `fn ` matches but `function` doesn't match `fn`); `<`/`!` allow `impl<T>`
+    // and `macro_rules!`.
+    fn is_decl(head: &str, kw: &str) -> bool {
+        match head.strip_prefix(kw) {
+            None => false,
+            Some(rest) => match rest.chars().next() {
+                None => true,
+                Some(c) => c.is_whitespace() || c == '<' || c == '!',
+            },
+        }
+    }
+    // Leading-whitespace column (tab = 4) → drives the nesting stack.
+    fn indent_col(line: &str) -> usize {
+        let mut col = 0;
+        for c in line.chars() {
+            match c {
+                ' ' => col += 1,
+                '\t' => col += 4,
+                _ => break,
+            }
+        }
+        col
+    }
+
+    // Pass 1: collect matched declarations with their indentation column + label.
+    let mut raw: Vec<(usize, usize, String)> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
-        let head = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
-        let matched = KEYWORDS.iter().any(|kw| {
-            head.strip_prefix(kw)
-                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
-        });
-        if !matched {
+        let head = strip_mods(trimmed);
+        if !KEYWORDS.iter().any(|kw| is_decl(head, kw)) {
             continue;
         }
-        let mut label = trimmed.to_string();
-        if let Some(i) = label.find('{') {
-            label = label[..i].trim().to_string();
+        // Trim the signature at the first body/param/value/terminator delimiter.
+        let cut = trimmed.find(['{', '(', '=', ';']);
+        let mut label = match cut {
+            Some(i) => trimmed[..i].trim_end(),
+            None => trimmed,
         }
-        if let Some(i) = label.find(':') {
-            label = label[..i].trim().to_string();
-        }
+        .to_string();
         let chars: Vec<char> = label.chars().collect();
         if chars.len() > 26 {
             label = chars.into_iter().take(24).collect::<String>() + "…";
         }
+        raw.push((idx, indent_col(line), label));
+    }
+
+    // Pass 2: turn indentation columns into nesting levels via an ancestor stack.
+    let mut stack: Vec<usize> = Vec::new();
+    let mut items = Vec::with_capacity(raw.len());
+    for (idx, col, label) in raw {
+        while stack.last().is_some_and(|&top| col <= top) {
+            stack.pop();
+        }
+        let level = stack.len();
+        stack.push(col);
         items.push(OutlineItem {
             label,
-            indent: 0,
+            indent: level,
             target: OutlineTarget::Line(idx),
         });
     }
@@ -8924,6 +8999,37 @@ mod tests {
         assert_eq!(
             labels,
             vec!["pub struct Foo", "impl Foo", "enum Color", "interface Iface"]
+        );
+    }
+
+    #[test]
+    fn code_outline_nests_methods_under_impl_by_indentation() {
+        let lines = buf(&[
+            "pub struct Foo {",            // 0
+            "    bar: u32,",               // not a decl
+            "}",
+            "impl Foo {",                  // 0
+            "    pub fn new() -> Self {",  // 1 (under impl)
+            "        let x = 1;",          // not a decl
+            "    }",
+            "    async fn helper(&self) {", // 1
+            "    }",
+            "}",
+            "fn free_fn() {}",             // 0
+        ]);
+        let got: Vec<(usize, String)> = code_decl_outline(&lines)
+            .into_iter()
+            .map(|i| (i.indent, i.label))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, "pub struct Foo".to_string()),
+                (0, "impl Foo".to_string()),
+                (1, "pub fn new".to_string()),
+                (1, "async fn helper".to_string()),
+                (0, "fn free_fn".to_string()),
+            ]
         );
     }
 
