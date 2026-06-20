@@ -29,6 +29,12 @@ pub const HSCROLL_INSET: f32 = 6.0;
 /// Minimum horizontal-scrollbar thumb width.
 pub const HSCROLL_MIN_THUMB: f32 = 36.0;
 
+/// Inner inset of the vertical scrollbar track (top == bottom).
+pub const VSCROLL_INSET: f32 = 6.0;
+
+/// Minimum vertical-scrollbar thumb height.
+pub const VSCROLL_MIN_THUMB: f32 = 36.0;
+
 /// Fixed cell metrics shared by every geometry computation.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Metrics {
@@ -172,6 +178,59 @@ pub fn follow_h_offset(
         off = caret_x - viewport_w + margin;
     }
     off.clamp(0.0, max_off)
+}
+
+/// Vertical scrollbar thumb geometry within its track.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VScrollThumb {
+    /// Usable track height (viewport minus both insets).
+    pub track_h: f32,
+    /// Thumb height (proportional to viewport/content, clamped to a minimum).
+    pub thumb_h: f32,
+    /// Thumb top edge y, relative to the track origin (already includes inset).
+    pub thumb_y: f32,
+}
+
+/// Compute the vertical thumb geometry.
+pub fn v_scroll_thumb(content_h: f32, viewport_h: f32, scroll_y: f32) -> Option<VScrollThumb> {
+    let max_scroll_dist = (content_h - viewport_h).max(0.0);
+    if max_scroll_dist <= 0.0 || viewport_h <= 0.0 {
+        return None;
+    }
+    let track_h = (viewport_h - VSCROLL_INSET * 2.0).max(1.0);
+    let thumb_h = (track_h / content_h * track_h).clamp(VSCROLL_MIN_THUMB, track_h);
+    // scroll_y is <= 0.0. The fraction of scroll is (-scroll_y) / max_scroll_dist.
+    let fraction = (-scroll_y / max_scroll_dist).clamp(0.0, 1.0);
+    let thumb_y = VSCROLL_INSET + fraction * (track_h - thumb_h);
+    Some(VScrollThumb {
+        track_h,
+        thumb_h,
+        thumb_y,
+    })
+}
+
+/// Inverse of the vertical thumb geometry: given a drag of the thumb to `cursor_y`
+/// (absolute mouse y), with `grab` the pointer's offset within the thumb at grab time and
+/// `track_top` the track origin y, return the new vertical scroll offset (<= 0).
+pub fn v_offset_from_drag(
+    cursor_y: f32,
+    track_top: f32,
+    grab: f32,
+    content_h: f32,
+    viewport_h: f32,
+) -> f32 {
+    let max_scroll_dist = (content_h - viewport_h).max(0.0);
+    if max_scroll_dist <= 0.0 || viewport_h <= 0.0 {
+        return 0.0;
+    }
+    let thumb = match v_scroll_thumb(content_h, viewport_h, 0.0) {
+        Some(t) => t,
+        None => return 0.0,
+    };
+    let usable = (thumb.track_h - thumb.thumb_h).max(1.0);
+    let thumb_top = (cursor_y - track_top - VSCROLL_INSET - grab).clamp(0.0, usable);
+    let fraction = thumb_top / usable;
+    -fraction * max_scroll_dist
 }
 
 /// Horizontal scrollbar thumb geometry within its track.
@@ -372,5 +431,38 @@ mod tests {
             caret_abs_x(40.0, "ab", 2, M),
             40.0 + CODE_GUTTER + 2.0 * 8.0
         );
+    }
+
+    #[test]
+    fn v_scroll_thumb_and_drag_are_inverse() {
+        let content_h: f32 = 1000.0;
+        let viewport_h: f32 = 200.0;
+        let max_scroll_dist = (content_h - viewport_h).max(0.0);
+
+        let t0 = v_scroll_thumb(content_h, viewport_h, 0.0).unwrap();
+        assert_eq!(t0.thumb_y, VSCROLL_INSET);
+        assert!(t0.thumb_h >= VSCROLL_MIN_THUMB);
+
+        let usable = (t0.track_h - t0.thumb_h).max(1.0);
+        let track_top = 25.0;
+        let at_end = v_offset_from_drag(
+            track_top + VSCROLL_INSET + usable,
+            track_top,
+            0.0,
+            content_h,
+            viewport_h,
+        );
+        assert!((at_end - (-max_scroll_dist)).abs() < 0.001);
+
+        let at_start = v_offset_from_drag(
+            track_top + VSCROLL_INSET,
+            track_top,
+            0.0,
+            content_h,
+            viewport_h,
+        );
+        assert_eq!(at_start, 0.0);
+
+        assert!(v_scroll_thumb(100.0, 100.0, 0.0).is_none());
     }
 }

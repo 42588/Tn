@@ -1533,6 +1533,7 @@ pub struct QuickLook {
     hscroll_px: f32,
     hscroll_drag: Option<f32>,
     hscroll_content_w: f32,
+    vscroll_drag: Option<f32>,
     caret_motion: CaretMotionState,
     motion_cleanup_pending: bool,
     /// 编辑态横向 caret-follow 的去抖:只在光标**变化**时跟随一次,否则手动拖横滚条会被
@@ -1618,6 +1619,7 @@ impl QuickLook {
             hscroll_px: 0.0,
             hscroll_drag: None,
             hscroll_content_w: 0.0,
+            vscroll_drag: None,
             caret_motion: CaretMotionState::default(),
             motion_cleanup_pending: false,
             last_follow_cursor: None,
@@ -1841,6 +1843,7 @@ impl QuickLook {
         self.edit_drag = false;
         self.hscroll_px = 0.0; // 新文件从最左开始
         self.el_scroll_y = 0.0; // 自绘路径:新文件从顶部开始
+        self.vscroll_drag = None;
         self.last_follow_cursor = None;
         self.dirty = false;
         self.file_data = QuickLookData::None;
@@ -3053,12 +3056,50 @@ impl QuickLook {
                 // Left-drag → extend selection; release-elsewhere fallback ends the drag
                 // (mouse_up can be missed if the pointer leaves the overlay — 踩过的坑).
                 if ev.pressed_button != Some(MouseButton::Left) {
+                    let mut changed = false;
                     if this.edit_drag {
                         this.edit_drag = false;
+                        changed = true;
                     }
                     if this.hscroll_drag.is_some() {
                         this.hscroll_drag = None;
+                        changed = true;
                     }
+                    if this.vscroll_drag.is_some() {
+                        this.vscroll_drag = None;
+                        changed = true;
+                    }
+                    if changed {
+                        cx.notify();
+                    }
+                    return;
+                }
+                // Dragging the vertical scrollbar thumb takes precedence.
+                if let Some(grab) = this.vscroll_drag {
+                    let (top, vh) = {
+                        let b = this.code_bounds.borrow();
+                        (f32::from(b.origin.y), f32::from(b.size.height))
+                    };
+                    let lines_ref;
+                    let lines: &[String] = if editing {
+                        lines_ref = this.edit.lines();
+                        &lines_ref.borrow()
+                    } else {
+                        match &this.file_data {
+                            QuickLookData::Text { lines, .. } => lines.as_slice(),
+                            _ => &[],
+                        }
+                    };
+                    let content_h = lines.len() as f32 * ROW_H;
+                    this.el_scroll_y = crate::editor::geometry::v_offset_from_drag(
+                        f32::from(ev.position.y),
+                        top,
+                        grab,
+                        content_h,
+                        vh,
+                    );
+                    this.snap_caret_motion();
+                    cx.notify();
                     return;
                 }
                 // Dragging the horizontal scrollbar thumb takes precedence over text drag.
@@ -3146,9 +3187,10 @@ impl QuickLook {
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(move |this, _ev: &MouseUpEvent, _w, cx| {
-                    if this.edit_drag || this.hscroll_drag.is_some() {
+                    if this.edit_drag || this.hscroll_drag.is_some() || this.vscroll_drag.is_some() {
                         this.edit_drag = false;
                         this.hscroll_drag = None;
+                        this.vscroll_drag = None;
                         this.snap_caret_motion();
                         cx.notify();
                     }
@@ -3273,6 +3315,59 @@ impl QuickLook {
                         }),
                     ),
             )
+            // Vertical scrollbar hit strip (transparent, ~14px wide, right). The
+            // visible thin thumb is painted in the canvas; this strip makes it
+            // draggable. Down on the thumb → grab; down on the track → jump there.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(px(14.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            let (top, vh) = {
+                                let b = this.code_bounds.borrow();
+                                (f32::from(b.origin.y), f32::from(b.size.height))
+                            };
+                            let lines_ref;
+                            let lines: &[String] = if editing {
+                                lines_ref = this.edit.lines();
+                                &lines_ref.borrow()
+                            } else {
+                                match &this.file_data {
+                                    QuickLookData::Text { lines, .. } => lines.as_slice(),
+                                    _ => &[],
+                                }
+                            };
+                            let content_h = lines.len() as f32 * ROW_H;
+                            let vthumb = match crate::editor::geometry::v_scroll_thumb(content_h, vh, this.el_scroll_y) {
+                                Some(vt) => vt,
+                                None => return,
+                            };
+                            let rel = f32::from(ev.position.y) - top; // y within the track
+                            let grab =
+                                if rel >= vthumb.thumb_y && rel <= vthumb.thumb_y + vthumb.thumb_h {
+                                    rel - vthumb.thumb_y // grab the thumb where clicked
+                                } else {
+                                    // Click on the empty track → jump so the thumb centers here.
+                                    vthumb.thumb_h / 2.0
+                                };
+                            this.el_scroll_y = crate::editor::geometry::v_offset_from_drag(
+                                f32::from(ev.position.y),
+                                top,
+                                grab,
+                                content_h,
+                                vh,
+                            );
+                            this.vscroll_drag = Some(grab);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
     }
 
     /// Self-painted read-only Diff tab. This keeps Diff on the same canvas/prepaint
@@ -3356,9 +3451,31 @@ impl QuickLook {
                         this.hscroll_drag = None;
                         changed = true;
                     }
+                    if this.vscroll_drag.is_some() {
+                        this.vscroll_drag = None;
+                        changed = true;
+                    }
                     if changed {
                         cx.notify();
                     }
+                    return;
+                }
+                // Dragging the vertical scrollbar thumb takes precedence.
+                if let Some(grab) = this.vscroll_drag {
+                    let (top, vh) = {
+                        let b = this.code_bounds.borrow();
+                        (f32::from(b.origin.y), f32::from(b.size.height))
+                    };
+                    let content_h = total as f32 * ROW_H;
+                    this.el_scroll_y = crate::editor::geometry::v_offset_from_drag(
+                        f32::from(ev.position.y),
+                        top,
+                        grab,
+                        content_h,
+                        vh,
+                    );
+                    this.snap_caret_motion();
+                    cx.notify();
                     return;
                 }
                 if let Some(grab) = this.hscroll_drag {
@@ -3401,6 +3518,9 @@ impl QuickLook {
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
                     let mut changed = this.hscroll_drag.take().is_some();
+                    if this.vscroll_drag.take().is_some() {
+                        changed = true;
+                    }
                     if this.edit_drag {
                         this.edit_drag = false;
                         changed = true;
@@ -3477,6 +3597,49 @@ impl QuickLook {
                             );
                             this.hscroll_content_w = content_w;
                             this.hscroll_drag = Some(grab);
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            )
+            // Vertical scrollbar hit strip (transparent, ~14px wide, right). The
+            // visible thin thumb is painted in the canvas; this strip makes it
+            // draggable. Down on the thumb → grab; down on the track → jump there.
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .right_0()
+                    .w(px(14.))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, ev: &MouseDownEvent, _w, cx| {
+                            let (top, vh) = {
+                                let b = this.code_bounds.borrow();
+                                (f32::from(b.origin.y), f32::from(b.size.height))
+                            };
+                            let content_h = total as f32 * ROW_H;
+                            let vthumb = match crate::editor::geometry::v_scroll_thumb(content_h, vh, this.el_scroll_y) {
+                                Some(vt) => vt,
+                                None => return,
+                            };
+                            let rel = f32::from(ev.position.y) - top; // y within the track
+                            let grab =
+                                if rel >= vthumb.thumb_y && rel <= vthumb.thumb_y + vthumb.thumb_h {
+                                    rel - vthumb.thumb_y // grab the thumb where clicked
+                                } else {
+                                    // Click on the empty track → jump so the thumb centers here.
+                                    vthumb.thumb_h / 2.0
+                                };
+                            this.el_scroll_y = crate::editor::geometry::v_offset_from_drag(
+                                f32::from(ev.position.y),
+                                top,
+                                grab,
+                                content_h,
+                                vh,
+                            );
+                            this.vscroll_drag = Some(grab);
                             cx.notify();
                             cx.stop_propagation();
                         }),
@@ -4589,6 +4752,58 @@ impl QuickLook {
                 return;
             }
             match key {
+                "home" if self.tab == Tab::File || self.tab == Tab::Diff => {
+                    self.el_scroll_y = 0.0;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "end" if self.tab == Tab::File || self.tab == Tab::Diff => {
+                    let vh = f32::from(self.code_bounds.borrow().size.height);
+                    let content_h = match self.tab {
+                        Tab::File => {
+                            let lines = match &self.file_data {
+                                QuickLookData::Text { lines, .. } => lines.as_slice(),
+                                _ => &[],
+                            };
+                            lines.len() as f32 * ROW_H
+                        }
+                        Tab::Diff => {
+                            diff_render_rows(&self.diff).len() as f32 * ROW_H
+                        }
+                    };
+                    let vmin = (vh - content_h).min(0.0);
+                    self.el_scroll_y = vmin;
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "pageup" if self.tab == Tab::File => {
+                    let vh = f32::from(self.code_bounds.borrow().size.height);
+                    let content_h = {
+                        let lines = match &self.file_data {
+                            QuickLookData::Text { lines, .. } => lines.as_slice(),
+                            _ => &[],
+                        };
+                        lines.len() as f32 * ROW_H
+                    };
+                    let vmin = (vh - content_h).min(0.0);
+                    self.el_scroll_y = (self.el_scroll_y + vh).clamp(vmin, 0.0);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "pagedown" if self.tab == Tab::File => {
+                    let vh = f32::from(self.code_bounds.borrow().size.height);
+                    let content_h = {
+                        let lines = match &self.file_data {
+                            QuickLookData::Text { lines, .. } => lines.as_slice(),
+                            _ => &[],
+                        };
+                        lines.len() as f32 * ROW_H
+                    };
+                    let vmin = (vh - content_h).min(0.0);
+                    self.el_scroll_y = (self.el_scroll_y - vh).clamp(vmin, 0.0);
+                    cx.stop_propagation();
+                    cx.notify();
+                }
                 "enter" if self.tab == Tab::Diff => {
                     self.goto_diff_target(cx);
                     cx.stop_propagation();
@@ -5447,6 +5662,17 @@ fn paint_file_preview(
         };
         window.paint_quad(fill(rect, thumb_color));
     }
+
+    // Vertical scrollbar thumb (thin, near the right edge).
+    let content_h = lines.len() as f32 * ROW_H;
+    if let Some(vthumb) = crate::editor::geometry::v_scroll_thumb(content_h, vh, scroll_y) {
+        let thumb_color: Hsla = cola(ui.muted, 0.45).into();
+        let rect = Bounds {
+            origin: point(px(left + vw - 5.0), px(top + vthumb.thumb_y)),
+            size: size(px(3.0), px(vthumb.thumb_h)),
+        };
+        window.paint_quad(fill(rect, thumb_color));
+    }
 }
 
 fn paint_diff_preview(
@@ -5620,6 +5846,17 @@ fn paint_diff_preview(
         let rect = Bounds {
             origin: point(px(left + thumb.thumb_x), px(top + vh - 5.0)),
             size: size(px(thumb.thumb_w), px(3.0)),
+        };
+        window.paint_quad(fill(rect, thumb_color));
+    }
+
+    // Vertical scrollbar thumb (thin, near the right edge).
+    let content_h = rows.len() as f32 * ROW_H;
+    if let Some(vthumb) = crate::editor::geometry::v_scroll_thumb(content_h, vh, scroll_y) {
+        let thumb_color: Hsla = cola(th.ui.muted, 0.45).into();
+        let rect = Bounds {
+            origin: point(px(left + vw - 5.0), px(top + vthumb.thumb_y)),
+            size: size(px(3.0), px(vthumb.thumb_h)),
         };
         window.paint_quad(fill(rect, thumb_color));
     }
