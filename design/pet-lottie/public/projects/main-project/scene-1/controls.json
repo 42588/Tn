@@ -1,0 +1,20 @@
+{
+  "controls": [
+    {
+      "sid": "bgColor",
+      "label": "背景海拔"
+    },
+    {
+      "sid": "furColor",
+      "label": "毛色(主 G)"
+    },
+    {
+      "sid": "furDarkColor",
+      "label": "毛色(垂耳 D)"
+    },
+    {
+      "sid": "accentColor",
+      "label": "磷光强调色"
+    }
+  ]
+}

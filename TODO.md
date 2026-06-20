@@ -28,6 +28,7 @@ _(空)所有任务已完成,移入下方「已完成」。_
 | 任务 | 状态 | 详情 | 下一步 |
 | ---- | ---- | ---- | ------ |
 | 命令历史与检索模块（点 1 + 点 2） | 设计稿·待实现 | [命令历史与检索索引](docs/命令历史与检索/README.md) · [设计方案](docs/命令历史与检索/设计方案.md) | 调研报告点 1（Atuin 式持久化结构化命令历史）+ 点 2（fzf/zoxide 式统一模糊检索入口）的落地设计稿已成文并入库，登记新模块。**Phase 1**：`rusqlite`(bundled) 历史库 + 命令完成/cwd 变化落库接线 + 历史面板升级（session/dir/global 三档作用域 + exit/time 过滤 + 跳回 scrollback 输出）。**Phase 2**：命令面板升级为统一 picker（fzf 子集语法 + `nucleo` 匹配 + 右侧预览 + 历史/文件/目录(frecency)/分支/布局多源）。开放待定见设计方案 §7（独立 crate 取舍、去重默认、热键并存、是否导入既有 shell 历史）。 |
+| 宠物动画 · 像素小狗矢量化重做（Lottie 探索） | 原型·待定夺 | [design/pet-lottie/README](design/pet-lottie/README.md) · [宠物索引](docs/宠物/README.md) | **换渲染方向探索**：像素金毛(网格 1:1 取自 `pet.rs` GOLDEN，站姿+趴姿)改用 Lottie/Skottie 连续插值播放，像素身份不变、只平移/缩放不旋转(与原型动画词汇一致)，磷光纪律照守(强调色仅给岗台活信号)。代表犬金毛**全套 11 姿态**(peek/idle/typing/running/success/error/hover/click/play/drag/sleep)已出可播放原件，每段打 marker，4 个可换色槽。关键解法=单层金底轮廓+深色特征覆盖层平移(无接缝/无露底)。**自写生成器 `script/gen_pet_lottie.mjs`** 已泛化(补品种=填 rows/eyes/tail/leg)。官方播放器本地 scaffold 不入库。**待定夺**:是否真切到 skia 渲染层、其余 6 品种、投喂/微动作等完整规则。 |
 
 ## 已完成
 
