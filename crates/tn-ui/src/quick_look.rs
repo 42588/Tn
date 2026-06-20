@@ -927,6 +927,7 @@ struct PreviewPayload {
     data: QuickLookData,
     format: Option<TextFormat>,
     guard: Option<FileGuard>,
+    size: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1271,6 +1272,7 @@ fn preview_payload_from_bytes(
             data: QuickLookData::Binary { size },
             format: None,
             guard,
+            size: Some(size),
         };
     }
     let peek_len = PEEK_SIZE.min(bytes.len());
@@ -1279,6 +1281,7 @@ fn preview_payload_from_bytes(
             data: QuickLookData::Binary { size },
             format: None,
             guard,
+            size: Some(size),
         };
     }
     let Some(decoded) = decode_text_bytes(&bytes, ext) else {
@@ -1286,6 +1289,7 @@ fn preview_payload_from_bytes(
             data: QuickLookData::Binary { size },
             format: None,
             guard,
+            size: Some(size),
         };
     };
     let mut line_iter = decoded.lines.into_iter();
@@ -1301,6 +1305,7 @@ fn preview_payload_from_bytes(
         },
         format: Some(decoded.format),
         guard,
+        size: Some(size),
     }
 }
 
@@ -1433,6 +1438,7 @@ pub struct QuickLook {
     config: Arc<Loaded>,
     root: PathBuf,
     path: Option<PathBuf>,
+    file_size: Option<u64>,
     tab: Tab,
     file_data: QuickLookData,
     diff: Rc<Vec<DiffLine>>,
@@ -1564,6 +1570,7 @@ impl QuickLook {
             config,
             root,
             path: None,
+            file_size: None,
             tab: Tab::File,
             file_data: QuickLookData::None,
             diff: Rc::new(Vec::new()),
@@ -1775,6 +1782,7 @@ impl QuickLook {
 
         // --- MEMORY CAPACITY RELEASE ---
         self.path = None;
+        self.file_size = None;
         self.file_data = QuickLookData::None;
         self.edit = QuickLookEditState::default();
         self.diff = Rc::new(Vec::new());
@@ -1820,6 +1828,7 @@ impl QuickLook {
         self.evict_assets_deferred(cx);
 
         self.path = Some(path.clone());
+        self.file_size = None;
         self.root = path
             .parent()
             .map(std::path::Path::to_path_buf)
@@ -1880,6 +1889,7 @@ impl QuickLook {
         }
 
         self.reset_for_open(path.clone(), false, cx);
+        self.file_size = std::fs::metadata(&path).ok().map(|m| m.len());
         let cancel_token = self.cancel_token.clone();
 
         // ── Async: bump generation + switch to Loading → skeleton renders ──
@@ -2192,6 +2202,7 @@ impl QuickLook {
                             evict_render_image(&Arc::new(img), cx);
                             return;
                         }
+                        v.file_size = std::fs::metadata(&path_clone).ok().map(|m| m.len());
                         v.file_data = QuickLookData::Image { img: Arc::new(img) };
                         v.loading_state = LoadingState::Ready;
                         cx.notify();
@@ -2203,9 +2214,9 @@ impl QuickLook {
                     if v.generation != gen {
                         return;
                     }
-                    v.file_data = QuickLookData::Binary {
-                        size: std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0),
-                    };
+                    let sz = std::fs::metadata(&path_clone).map(|m| m.len()).unwrap_or(0);
+                    v.file_size = Some(sz);
+                    v.file_data = QuickLookData::Binary { size: sz };
                     v.loading_state = LoadingState::Ready;
                     cx.notify();
                 });
@@ -2221,6 +2232,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
                     exec_debounce.timer(std::time::Duration::from_millis(100)).await;
@@ -2229,6 +2241,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
                     let meta = std::fs::metadata(&path).ok();
@@ -2260,6 +2273,7 @@ impl QuickLook {
                                             data: QuickLookData::None,
                                             format: None,
                                             guard: None,
+                                            size: None,
                                         };
                                     }
                                     lines.push(line.to_string());
@@ -2272,6 +2286,7 @@ impl QuickLook {
                                     },
                                     format: None,
                                     guard: None,
+                                    size: Some(size),
                                 };
                             }
                         } else {
@@ -2290,6 +2305,7 @@ impl QuickLook {
                                                 data: QuickLookData::None,
                                                 format: None,
                                                 guard: None,
+                                                size: None,
                                             };
                                         }
                                         cells.push(
@@ -2313,6 +2329,7 @@ impl QuickLook {
                                     },
                                     format: None,
                                     guard: None,
+                                    size: Some(size),
                                 };
                             }
                         }
@@ -2323,6 +2340,7 @@ impl QuickLook {
                             data: QuickLookData::Binary { size },
                             format: None,
                             guard: None,
+                            size: Some(size),
                         };
                     }
 
@@ -2331,6 +2349,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
 
@@ -2347,6 +2366,7 @@ impl QuickLook {
                         data: QuickLookData::Binary { size },
                         format: None,
                         guard: None,
+                        size: Some(size),
                     }
                 })
                 .await;
@@ -2360,6 +2380,7 @@ impl QuickLook {
                 if v.generation != gen {
                     return;
                 }
+                v.file_size = res.size;
                 v.file_data = res.data;
                 v.text_format = res.format;
                 v.opened_guard = res.guard;
@@ -2423,6 +2444,7 @@ impl QuickLook {
             id: id.clone(),
         };
         self.reset_for_open(display_path, true, cx);
+        self.file_size = size;
         self.remote_source = Some(source);
         self.generation = self.generation.wrapping_add(1);
         let gen = self.generation;
@@ -2441,6 +2463,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
                     exec_debounce.timer(std::time::Duration::from_millis(100)).await;
@@ -2449,6 +2472,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
                     let stat = remote_fs.stat_file(&cfg, &remote_path).ok();
@@ -2459,6 +2483,7 @@ impl QuickLook {
                             data: QuickLookData::None,
                             format: None,
                             guard: None,
+                            size: None,
                         };
                     }
                     match bytes {
@@ -2472,6 +2497,7 @@ impl QuickLook {
                             },
                             format: None,
                             guard: None,
+                            size: declared_size,
                         },
                     }
                 })
@@ -2480,6 +2506,7 @@ impl QuickLook {
                 if v.generation != gen {
                     return;
                 }
+                v.file_size = data.size;
                 v.file_data = data.data;
                 v.text_format = data.format;
                 v.opened_guard = data.guard;
@@ -3563,6 +3590,7 @@ impl QuickLook {
                 let update = save_state_after_success(false, false);
                 self.dirty = update.dirty;
                 self.edit.mark_clean();
+                self.file_size = Some(guard.size);
                 self.opened_guard = Some(guard);
                 self.text_format = Some(format);
                 self.file_data = QuickLookData::Text {
@@ -3618,6 +3646,7 @@ impl QuickLook {
                 let update = save_state_after_success(false, false);
                 self.dirty = update.dirty;
                 self.edit.mark_clean();
+                self.file_size = Some(guard.size);
                 self.opened_guard = Some(guard);
                 self.text_format = Some(format);
                 self.file_data = QuickLookData::Text {
@@ -3717,6 +3746,7 @@ impl QuickLook {
                         let update = save_state_after_success(true, v.remote_diff_file.is_some());
                         v.dirty = update.dirty;
                         v.edit.mark_clean();
+                        v.file_size = Some(guard.size);
                         v.opened_guard = Some(guard);
                         v.file_data = QuickLookData::Text {
                             lines: Arc::new(lines),
@@ -5946,6 +5976,7 @@ impl Render for QuickLook {
             QuickLookData::Text { lines, .. } => Some(format!("{} L", lines.len())),
             _ => None,
         };
+        let size_label = self.file_size.map(human_size);
         let show_meta = !self.editing && self.tab == Tab::File;
 
         // SHEET 03 float-head:高 38 · L4 顶面 · 底 1px h1 · mono 12。
@@ -6004,6 +6035,9 @@ impl Render for QuickLook {
             .when(show_meta, |mut d| {
                 if let Some(e) = ext_label.clone() {
                     d = d.child(meta_chip(e));
+                }
+                if let Some(s) = size_label.clone() {
+                    d = d.child(meta_chip(s));
                 }
                 if let Some(f) = format_label.clone() {
                     d = d.child(meta_chip(f));
