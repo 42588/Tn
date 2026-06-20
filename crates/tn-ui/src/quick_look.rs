@@ -7292,11 +7292,16 @@ impl Render for QuickLook {
                                         }
                                         if this.editing {
                                             this.edit.place_cursor(l, 0, false);
+                                            this.cursor = this.edit.cursor();
                                         } else {
                                             this.cursor = (l, 0);
                                             this.sel_anchor = None;
                                         }
-                                        this.scroll.scroll_to_item(l, ScrollStrategy::Center);
+                                        if this.el_render {
+                                            this.el_center_file_cursor(this.cursor);
+                                        } else {
+                                            this.scroll.scroll_to_item(l, ScrollStrategy::Center);
+                                        }
                                         this.snap_caret_motion();
                                     }
                                 }
