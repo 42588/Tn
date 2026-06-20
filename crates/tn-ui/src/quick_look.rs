@@ -2058,7 +2058,7 @@ impl QuickLook {
                     match pdfium.load_pdf_from_file(&path_clone, None) {
                         Ok(document) => {
                             let page_count = document.pages().len() as usize;
-                            let limit = page_count.min(100); // 宽容到 100 页
+                            let limit = page_count; // 显示 PDF 文件的全部页面
 
                             let mut ratio = 1.414_f32;
                             if let Ok(first_page) = document.pages().get(0) {
