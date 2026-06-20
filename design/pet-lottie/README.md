@@ -79,8 +79,10 @@ npm run dev                       # http://localhost:3030/main-project/scene-1
 - **7 品种全覆盖**:生成器按「网格 + 部件坐标」泛化,`BREEDS` 表逐品种出运行时 JSON;
   运动(`osc`/`poseAt`)对所有品种完全相同,只有像素网格/配色/部件锚点不同。`pet.rs::lottie_for(breed)` 选用,换品种即换皮。
 - **投喂 + 微动作已覆盖**:feed/scratch/lickpaw/spin/stretch/lookout 全部接入,接 `pet.rs` 状态机(Feed 上下文、活物引擎 Micro)。
+- **立耳 perk 已接入**:竖耳品种(西高地/德牧)的耳尖单列一层(`earDy` 通道),typing/hover/lookout/`earperk`
+  微动作时立起 + 耳尖抖动,error 时耷下;`base` 留同色兜底,平移不露缝。垂耳品种无耳层 → 自动空操作。
+  新增 `earperk` 段,`pet.rs::lottie_segment` 把 `Micro::EarPerk` 映射到它。
 
 ## 后续可选增强
 
-- **立耳 perk**:竖耳品种(西高地/德牧)的耳朵目前作为 base 静态渲染,未随 typing/警觉抖动。
 - 运动轨迹在各品种间字节级重复(锚点不同),如需可抽出共享运动轨道减小体积。

@@ -1294,7 +1294,8 @@ impl PetView {
                 Some(Micro::Spin) => "spin",
                 Some(Micro::LookAway) => "lookout",
                 Some(Micro::Stretch) => "stretch",
-                Some(Micro::EarPerk) | None => "idle",
+                Some(Micro::EarPerk) => "earperk", // 立耳品种竖耳;垂耳品种无耳层 → 视觉等同 idle
+                None => "idle",
             },
         }
     }

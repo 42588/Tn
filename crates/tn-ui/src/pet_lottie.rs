@@ -383,6 +383,39 @@ mod tests {
         }
     }
 
+    /// 立耳品种竖耳验收:西高地/德牧 在 idle(静)/typing(立)/earperk(强立+抖)/lookout(警觉)/error(耷)
+    /// 的耳尖高度对比。垂耳金毛作对照(应无变化)。
+    #[test]
+    fn renders_ear_perk_check() {
+        let asset_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pet");
+        let breeds = ["westie", "shepherd", "golden"];
+        let poses = ["idle", "typing", "earperk", "lookout", "error"];
+        let scale = 6.0;
+        let (_, w, h) = {
+            let json = std::fs::read_to_string(asset_dir.join("westie.json")).unwrap();
+            PetLottie::parse(&json).unwrap().render_rgba(0.0, scale)
+        };
+        let mut sheet = image::RgbaImage::new(w * poses.len() as u32, h * breeds.len() as u32);
+        for (ri, b) in breeds.iter().enumerate() {
+            let json = std::fs::read_to_string(asset_dir.join(format!("{b}.json"))).unwrap();
+            let pet = PetLottie::parse(&json).expect("parse breed");
+            for (ci, pose) in poses.iter().enumerate() {
+                let m = pet.marker(pose).unwrap();
+                let f = m.start + m.dur * 0.5;
+                let (rgba, fw, fh) = pet.render_rgba(f, scale);
+                let frame = image::RgbaImage::from_raw(fw, fh, rgba).unwrap();
+                for y in 0..fh.min(h) {
+                    for x in 0..fw.min(w) {
+                        sheet.put_pixel(ci as u32 * w + x, ri as u32 * h + y, *frame.get_pixel(x, y));
+                    }
+                }
+            }
+        }
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/pet-lottie");
+        let _ = std::fs::create_dir_all(&out);
+        sheet.save(out.join("_rs_ear_perk.png")).unwrap();
+    }
+
     /// 七品种总览:每行一个品种,列为代表性姿态。确认像素身份保留 + 运动通用 + 各品种 JSON 可解析。
     #[test]
     fn renders_all_breeds_sheet() {

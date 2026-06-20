@@ -44,11 +44,11 @@ function deriveLegs(rows) {
   return { legL: L.map((c) => [c, ROWS - 1]), legR: R.map((c) => [c, ROWS - 1]) };
 }
 const BREEDS = [
-  { name: "westie",   face: "W", eyes: [[5, 4], [8, 4]], tail: [[11, 6]],          tongue: [],
+  { name: "westie",   face: "W", eyes: [[5, 4], [8, 4]], tail: [[11, 6]],          tongue: [], ears: [[4, 0], [9, 0]],
     rows: ["....W....W....", "...WPW..WPW...", "...WWWWWWWW...", "...WWWWWWWW...", "...WWKWWKWW...", "...WWWKKWWW...", "...WWWWWWWWW..", "...WWWWWWWW...", "....WW..WW...."] },
   { name: "golden",   face: "G", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [[7, 6]],
     rows: ["..............", "....GGGGGG....", "...GGGGGGGG...", "..DDGGGGGGDD..", "..DDGKGGKGDD..", "..DDGGKKGGDD..", "..DDGGGPGGDDGG", "..DDGGGGGGDD..", "....GG..GG...."] },
-  { name: "shepherd", face: "T", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [],
+  { name: "shepherd", face: "T", eyes: [[5, 4], [8, 4]], tail: [[12, 6], [13, 6]], tongue: [], ears: [[3, 0], [4, 0], [9, 0], [10, 0]],
     rows: ["...BB....BB...", "...BTB..BTB...", "..BBBBBBBBBB..", "..BTTBTTBTTB..", "..BTTKTTKTTB..", "..BBTTKKTTBB..", "..BBBTTTTBBBBB", "..BBBBBBBBBB..", "....TT..TT...."] },
   { name: "bichon",   face: "W", eyes: [[5, 3], [8, 3]], tail: [[12, 5]],          tongue: [],
     rows: ["....WWWWWW....", "...WWWWWWWW...", "..WWWWWWWWWW..", "..WWWKWWKWWW..", "..WWPWKKWPWW..", "..WWWWPPWWWWW.", "...WWWWWWWW...", "...WWWWWWWW...", "....WW..WW...."] },
@@ -103,6 +103,7 @@ const SEG = [
   ["success", 90], ["error", 136], ["hover", 136], ["click", 136],
   ["play", 136], ["drag", 136], ["sleep", 156],
   ["feed", 132], ["scratch", 136], ["lickpaw", 136], ["spin", 96], ["stretch", 136], ["lookout", 136],
+  ["earperk", 136],
 ];
 let acc = 0;
 const SEGS = SEG.map(([name, dur]) => { const s = { name, start: acc, dur }; acc += dur; return s; });
@@ -112,27 +113,29 @@ const inState = (f, ...names) => names.includes(SEGS[segAt(f)].name);
 
 // ---- 姿态(平移/缩放,单位 = CELL28 px;运行时按 SC 缩放)--------
 const REST = {
-  rigDx: 0, rigDy: 0, rigSx: 1, rigSc: 1, headDx: 0, headDy: 0,
+  rigDx: 0, rigDy: 0, rigSx: 1, rigSc: 1, headDx: 0, headDy: 0, earDy: 0,
   legLDx: 0, legLDy: 0, legRDx: 0, legRDy: 0, tailDx: 0, tailDy: 0, eyeSy: 1,
 };
+// earDy 负 = 立耳(耳尖上扬);只有立耳品种(西高地/德牧)有耳层,垂耳品种无层 → 自动空操作。
 const POSE = {
   peek: { ...REST }, idle: { ...REST },
-  typing: { ...REST, headDy: -4, eyeSy: 1.04 },
-  running: { ...REST, headDy: -3 },
-  success: { ...REST },
-  error: { ...REST, rigDy: 8, headDy: 5, eyeSy: 0.28, tailDy: 10 },
-  hover: { ...REST, eyeSy: 0.26, headDy: -2 },
+  typing: { ...REST, headDy: -4, eyeSy: 1.04, earDy: -14 }, // 专注 → 立耳
+  running: { ...REST, headDy: -3, earDy: -8 },               // 奔跑耳后扬
+  success: { ...REST, earDy: -10 },
+  error: { ...REST, rigDy: 8, headDy: 5, eyeSy: 0.28, tailDy: 10, earDy: 8 }, // 沮丧 → 耷耳
+  hover: { ...REST, eyeSy: 0.26, headDy: -2, earDy: -12 },   // 注意到光标 → 立耳
   click: { ...REST, headDx: 12, headDy: 6 },
-  play: { ...REST },
+  play: { ...REST, earDy: -8 },
   drag: { ...REST, rigDy: -46, legLDy: 13, legRDy: 13, eyeSy: 1.08 },
   sleep: { ...REST, rigDy: 12, eyeSy: 0.16, legLDy: -26, legRDy: -26 }, // 收腿+眯眼+下沉(呼吸在 osc)
   // ── 投喂 + 活物引擎微动作(osc 驱动细节)──
-  feed: { ...REST }, // 仰头等→接住跳→咀嚼→爱心(饼干为 prop)
+  feed: { ...REST, earDy: -6 }, // 仰头等→接住跳→咀嚼→爱心(饼干为 prop)
   scratch: { ...REST, headDx: 5, eyeSy: 0.5 }, // 抓痒:歪头眯眼 + 后爪抖(osc)
   lickpaw: { ...REST, headDy: 9 }, // 舔爪:头低就爪(osc 抬前爪 + 舔)
   spin: { ...REST }, // 追尾转圈:绕地面小圈兜跑(osc 驱动,不挤压不翻转)
   stretch: { ...REST }, // 伸懒腰作揖:前低后翘(osc)
-  lookout: { ...REST, headDx: 14, headDy: -3, eyeSy: 1.06 }, // 望屏外:头右上转看
+  lookout: { ...REST, headDx: 14, headDy: -3, eyeSy: 1.06, earDy: -18 }, // 望屏外:扭头 + 警觉立耳
+  earperk: { ...REST, earDy: -22, eyeSy: 1.05 }, // 竖耳微动作:警觉立耳 + 耳尖抖(osc)
 };
 function osc(name, f, w) {
   const d = {}; const t = f / FR;
@@ -162,6 +165,7 @@ function osc(name, f, w) {
       d.legRDx = 2 * w; d.legRDy = -6 * Math.max(0, Math.sin(tap + Math.PI)) * w;   // 右爪反相敲键
       d.headDy = 1.5 * Math.sin(tap) * w;                 // 随敲键专注小点头
       d.tailDy = -3 * Math.sin(TAU * f / 40) * w;
+      d.earDy = -1.5 * Math.abs(Math.sin(TAU * f / 30)) * w; // 耳尖随敲键轻抖(立耳品种)
       break;
     }
     case "running": {
@@ -282,11 +286,19 @@ function osc(name, f, w) {
       break;
     }
     case "lookout": {
-      // 望屏外:扭头(pose)+ 缓慢扫视 + 踮脚张望 + 好奇轻摇尾。周期整除 120 → 无缝。
+      // 望屏外:扭头(pose)+ 缓慢扫视 + 踮脚张望 + 好奇轻摇尾 + 耳尖随警觉轻抖。周期整除 120 → 无缝。
       d.headDx = 2 * Math.sin(TAU * f / 60) * w;            // 缓慢扫视(2次/循环)
       d.headDy = -1 * Math.abs(Math.sin(TAU * f / 60)) * w;
       d.rigDy = -1.5 * Math.abs(Math.sin(TAU * f / 120)) * w; // 踮脚张望
       d.tailDy = -5 * Math.sin(TAU * f / 40) * w;           // 好奇轻摇尾
+      d.earDy = -2 * Math.abs(Math.sin(TAU * f / 20)) * w;  // 耳尖警觉轻抖(立耳品种)
+      break;
+    }
+    case "earperk": {
+      // 竖耳微动作:双耳立起(pose)+ 耳尖快速抖动 + 偶尔歪头听声(立耳品种才有耳层)。
+      d.earDy = -3 * Math.abs(Math.sin(TAU * f / 15)) * w;  // 耳尖抖(8次/循环)
+      d.headDx = 2.5 * Math.sin(TAU * f / 60) * w;          // 歪头循声
+      d.tailDy = -4 * Math.sin(TAU * f / 40) * w;
       break;
     }
   }
@@ -382,13 +394,15 @@ function build(CFG, breed) {
   const legLSet = new Set(breed.legL.map(([c, r]) => c + "," + r));
   const legRSet = new Set(breed.legR.map(([c, r]) => c + "," + r));
   const tongueSet = new Set(breed.tongue.map(([c, r]) => c + "," + r));
+  const earSet = new Set((breed.ears || []).map(([c, r]) => c + "," + r));
   const FB = breed.face; // 面部衬底色字符
-  const parts = { base: [], face: [], eyes: [], tongue: [], legL: [], legR: [], tail: [] };
+  const parts = { base: [], face: [], eyes: [], tongue: [], ears: [], legL: [], legR: [], tail: [] };
   breed.rows.forEach((line, row) => [...line].forEach((ch, col) => {
     if (ch === ".") return; const key = col + "," + row;
     if (legLSet.has(key)) return parts.legL.push({ col, row, ch });
     if (legRSet.has(key)) return parts.legR.push({ col, row, ch });
     if (tailSet.has(key)) return parts.tail.push({ col, row, ch });
+    if (earSet.has(key)) { parts.ears.push({ col, row, ch }); parts.base.push({ col, row, ch }); return; } // 耳尖单列(立耳),base 同色兜底防露缝
     if (eyeSet.has(key)) { parts.eyes.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
     if (tongueSet.has(key)) { parts.tongue.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
     if (ch === "K") { parts.face.push({ col, row, ch }); parts.base.push({ col, row, ch: FB }); return; }
@@ -401,6 +415,7 @@ function build(CFG, breed) {
   const legLAnchor = [avg(parts.legL, (c) => cx(c.col)), cy(ROWS - 1)];
   const legRAnchor = [avg(parts.legR, (c) => cx(c.col)), cy(ROWS - 1)];
   const tailAnchor = parts.tail.length ? [avg(parts.tail, (c) => cx(c.col)), avg(parts.tail, (c) => cy(c.row))] : [0, 0];
+  const earAnchor = parts.ears.length ? [avg(parts.ears, (c) => cx(c.col)), avg(parts.ears, (c) => cy(c.row))] : [0, 0];
   const cxc = (W - 0) / 2; // 箱心 x
 
   // 背景/岗台(仅 player)
@@ -428,6 +443,9 @@ function build(CFG, breed) {
   add("eyes", Lyr("eyes", 10, IND.rig, eyeAnchor, cellsToShapes(parts.eyes),
     { p: anim((f) => { const P = poseAt(f); return [eyeAnchor[0] + P.headDx * SC, eyeAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
       s: anim((f) => [100, poseAt(f).eyeSy * 100, 100], 3, TOTAL, [0.4, 1, 0.4]) }));
+  // 耳尖(立耳品种):随头动 + earDy 立起/耷下(base 已留同色兜底,平移不露缝)
+  if (parts.ears.length) add("ears", Lyr("ears", 9, IND.rig, earAnchor, cellsToShapes(parts.ears),
+    { p: anim((f) => { const P = poseAt(f); return [earAnchor[0] + P.headDx * SC, earAnchor[1] + (P.headDy + P.earDy) * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
 
   // 根 null(全局升降/拖拽悬空)
   add("rig", Null("rig", IND.rig, null, [cxc, SHELF_Y], {
@@ -481,7 +499,7 @@ function build(CFG, breed) {
     }));
   }
 
-  let ORDER = ["bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "base", "tail", "legL", "legR"];
+  let ORDER = ["bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "ears", "base", "tail", "legL", "legR"];
   if (bg) ORDER = [...ORDER, "shelfph", "shelf", "background"];
   ORDER = [...ORDER, "rig"];
   const layers = ORDER.map((n) => STORE.get(n)).filter(Boolean); // tongue/tail 等空层按品种缺省
