@@ -8736,20 +8736,42 @@ fn md_heading_outline(lines: &[String]) -> Vec<OutlineItem> {
     items
 }
 
-/// Lightweight code-declaration outline. Surfaces top-of-line declarations
-/// (`fn` / `struct` / `enum` / `trait` / `impl` / `mod` / `type` / `const` /
-/// `static` / `class` / `interface` / `function` / …, each with optional
-/// `pub`/`async`/`unsafe`/… qualifiers) and **derives nesting from the source
-/// indentation** so e.g. methods sit under their `impl`. This is a heuristic, not
-/// a real parser — good enough for navigation without language-specific machinery.
+/// Lightweight code-declaration outline, language-agnostic by design:
+///
+/// - **Keyword-prefixed decls** (Rust `fn`/`struct`/`enum`/`trait`/`impl`/`mod`/
+///   `type`/`const`/`static`/`macro_rules`, Python `def`/`class`, Go `func`,
+///   JS/TS `function`/`class`, C/C++ `struct`/`enum`/`union`), after stripping
+///   visibility/qualifier words (`pub`/`public`/`private`/`protected`/`async`/…).
+/// - **Brace-language functions/methods without a keyword** (C functions, Java/C++
+///   methods like `int main(...)` / `public int get()`) via a signature-shape
+///   heuristic, gated on the line actually opening a block (`{` here or on the
+///   next line) so plain calls/expressions aren't mistaken for decls.
+/// - **Nesting** is derived from source indentation (methods sit under their
+///   `impl`/`class`), via an ancestor stack.
+///
+/// A heuristic, not a parser: it can miss keyword-less constructors without a
+/// modifier, multi-line return-type signatures, and header-only prototypes.
 fn code_decl_outline(lines: &[String]) -> Vec<OutlineItem> {
     const KEYWORDS: [&str; 16] = [
         "fn", "struct", "enum", "trait", "impl", "mod", "type", "union", "const",
         "static", "macro_rules", "class", "interface", "function", "def", "func",
     ];
-    // Strip leading visibility/qualifier words so `pub(crate) async fn` → `fn …`.
+    // Control-flow / non-decl leading words that also take `(`, so they don't get
+    // mistaken for function signatures.
+    const CTRL: [&str; 22] = [
+        "if", "else", "for", "while", "loop", "match", "switch", "case", "default",
+        "do", "return", "catch", "throw", "new", "delete", "sizeof", "goto", "using",
+        "namespace", "template", "with", "await",
+    ];
+    // Strip leading visibility/qualifier words so `pub(crate) async fn` → `fn …` and
+    // `public abstract class` → `class …`. NOTE: `static`/`const` are intentionally
+    // NOT stripped — they're real decl keywords in Rust (and surfacing C/Java static
+    // members is acceptable).
     fn strip_mods(s: &str) -> &str {
-        const MODS: [&str; 5] = ["pub", "async", "unsafe", "default", "extern"];
+        const MODS: [&str; 10] = [
+            "pub", "public", "private", "protected", "final", "abstract", "async",
+            "unsafe", "default", "extern",
+        ];
         let mut s = s;
         loop {
             let t = s.trim_start();
@@ -8805,22 +8827,62 @@ fn code_decl_outline(lines: &[String]) -> Vec<OutlineItem> {
         }
         col
     }
+    // Keyword-less function/method signature (C/Java/C++): `<type…> name(…)` whose
+    // block opens here (`{`) or on the next line (Allman). `next_trimmed` is the next
+    // line, used to detect the Allman brace.
+    fn looks_like_fn_def(trimmed: &str, next_trimmed: Option<&str>) -> bool {
+        let opens_block = trimmed.trim_end().ends_with('{')
+            || next_trimmed.is_some_and(|n| n.starts_with('{'));
+        if !opens_block {
+            return false;
+        }
+        // Reduce to the signature: drop a trailing `{`, then any trailing qualifier
+        // words (C++ `const`/`override`/`noexcept`, Java `throws X`) so we end at `)`.
+        let mut sig = trimmed.trim_end();
+        if let Some(s) = sig.strip_suffix('{') {
+            sig = s.trim_end();
+        }
+        let sig = sig.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c.is_whitespace());
+        if !sig.ends_with(')') {
+            return false;
+        }
+        let Some(open) = sig.find('(') else {
+            return false;
+        };
+        let before = sig[..open].trim_end();
+        // The char right before `(` must be an identifier (the function name).
+        if !before.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+            return false;
+        }
+        // Identifier words before `(`: a definition has ≥2 (return type + name),
+        // which excludes plain calls `foo(...)` (1 word).
+        let words: Vec<&str> = before
+            .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        words.len() >= 2 && !CTRL.contains(&words[0])
+    }
 
     // Pass 1: collect matched declarations with their indentation column + label.
     let mut raw: Vec<(usize, usize, String)> = Vec::new();
     for (idx, line) in lines.iter().enumerate() {
         let trimmed = line.trim();
         let head = strip_mods(trimmed);
-        if !KEYWORDS.iter().any(|kw| is_decl(head, kw)) {
+        let next_trimmed = lines.get(idx + 1).map(|l| l.trim());
+        let matched = KEYWORDS.iter().any(|kw| is_decl(head, kw))
+            || looks_like_fn_def(trimmed, next_trimmed);
+        if !matched {
             continue;
         }
-        // Trim the signature at the first body/param/value/terminator delimiter.
+        // Trim the signature at the first body/param/value/terminator delimiter,
+        // then drop a trailing `:` (Python `class Foo:` / `def f():`).
         let cut = trimmed.find(['{', '(', '=', ';']);
-        let mut label = match cut {
-            Some(i) => trimmed[..i].trim_end(),
+        let sliced = match cut {
+            Some(i) => &trimmed[..i],
             None => trimmed,
-        }
-        .to_string();
+        };
+        let sliced = sliced.trim_end().trim_end_matches(':').trim_end();
+        let mut label = sliced.to_string();
         let chars: Vec<char> = label.chars().collect();
         if chars.len() > 26 {
             label = chars.into_iter().take(24).collect::<String>() + "…";
@@ -9029,6 +9091,70 @@ mod tests {
                 (1, "pub fn new".to_string()),
                 (1, "async fn helper".to_string()),
                 (0, "fn free_fn".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn code_outline_handles_java_methods_and_fields() {
+        // Java: `class` via keyword (after stripping `public`); methods have no
+        // keyword → caught by the signature heuristic; fields are skipped.
+        let java = buf(&[
+            "public class Service {",       // 0
+            "    private int count;",       // field → skipped
+            "    public int getCount() {",  // 1
+            "        return count;",
+            "    }",
+            "}",
+        ]);
+        let got: Vec<(usize, String)> = code_decl_outline(&java)
+            .into_iter()
+            .map(|i| (i.indent, i.label))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, "public class Service".to_string()),
+                (1, "public int getCount".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn code_outline_handles_c_struct_and_allman_function() {
+        // C: struct via keyword; function with the brace on the NEXT line (Allman).
+        let c = buf(&[
+            "struct Point {",     // 0
+            "    int x;",
+            "};",
+            "int main(int argc)", // 0 (brace on next line)
+            "{",
+            "    return 0;",
+            "}",
+        ]);
+        let labels: Vec<String> = code_decl_outline(&c).into_iter().map(|i| i.label).collect();
+        assert_eq!(labels, vec!["struct Point".to_string(), "int main".to_string()]);
+    }
+
+    #[test]
+    fn code_outline_handles_python_indented_methods() {
+        // Python: def/class via keyword; trailing ':' trimmed; methods nest by indent.
+        let py = buf(&[
+            "class Animal:",        // 0
+            "    def speak(self):", // 1
+            "        pass",
+            "def main():",          // 0
+        ]);
+        let got: Vec<(usize, String)> = code_decl_outline(&py)
+            .into_iter()
+            .map(|i| (i.indent, i.label))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (0, "class Animal".to_string()),
+                (1, "def speak".to_string()),
+                (0, "def main".to_string()),
             ]
         );
     }
