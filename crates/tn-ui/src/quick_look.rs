@@ -7167,19 +7167,36 @@ impl Render for QuickLook {
         let show_outline = self.tab == Tab::File && !outline_items.is_empty();
 
         let body = if show_outline {
+            let is_pdf = matches!(self.file_data, QuickLookData::Pdf { .. });
+            // PDF 页码("Page N")很短,不必占宽栏;文本大纲标题较长,留宽一些。
+            let outline_w = if is_pdf { 132.0 } else { 200.0 };
+            let outline_count = outline_items.len();
+            let mono_family = SharedString::from(self.config.font().family.clone());
             let sidebar_header = div()
                 .flex()
                 .items_center()
-                .h(px(32.))
-                .px(px(12.))
+                .justify_between()
+                .h(px(30.))
+                .px(px(10.))
                 .border_b(px(1.))
                 .border_color(rgba(crate::style::H1))
                 .bg(gpui::rgb(crate::style::L4))
-                .font_family(UI_SANS)
-                .text_size(px(11.))
-                .font_weight(gpui::FontWeight::BOLD)
-                .text_color(gpui::rgb(crate::style::T2))
-                .child("OUTLINE");
+                .child(
+                    div()
+                        .font_family(UI_SANS)
+                        .text_size(px(10.))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(gpui::rgb(crate::style::T2))
+                        .child(if is_pdf { "PAGES" } else { "OUTLINE" }),
+                )
+                .child(
+                    // 总数角标:结构字符色 + mono,弱存在感,给栏一点信息密度。
+                    div()
+                        .font_family(mono_family.clone())
+                        .text_size(px(10.))
+                        .text_color(gpui::rgb(crate::style::T3))
+                        .child(SharedString::from(outline_count.to_string())),
+                );
 
             let mut list_container = div()
                 .id("outline_list")
@@ -7208,7 +7225,12 @@ impl Render for QuickLook {
                     .px(px(8.))
                     .ml(px(indent_px))
                     .rounded(px(crate::style::R_CHIP))
-                    .font_family(UI_SANS)
+                    // PDF 页码用 mono,数字纵向对齐成一列;文本大纲用 sans。
+                    .font_family(if is_pdf {
+                        mono_family.clone()
+                    } else {
+                        SharedString::from(UI_SANS)
+                    })
                     .text_size(px(crate::style::FS_MICRO))
                     .text_color(if active {
                         gpui::rgb(crate::style::PH)
@@ -7287,26 +7309,27 @@ impl Render for QuickLook {
                         div()
                             .flex()
                             .items_center()
-                            .gap(px(4.))
-                            .when(active, |d| {
-                                d.child(
-                                    div()
-                                        .w(px(4.))
-                                        .h(px(4.))
-                                        .rounded(px(2.))
-                                        .bg(gpui::rgb(crate::style::PH))
-                                )
-                            })
+                            .gap(px(6.))
                             .child(
+                                // 固定 4px 圆点槽:活动项亮磷光点,否则透明占位,
+                                // 让所有标签左缘对齐(不再因有无圆点而错位)。
                                 div()
-                                    .child(item.label.clone())
+                                    .w(px(4.))
+                                    .h(px(4.))
+                                    .rounded(px(2.))
+                                    .bg(if active {
+                                        gpui::rgb(crate::style::PH)
+                                    } else {
+                                        gpui::rgba(0x00000000)
+                                    }),
                             )
+                            .child(div().child(item.label.clone()))
                     );
                 list_container = list_container.child(row);
             }
 
             let outline_sidebar = div()
-                .w(px(200.))
+                .w(px(outline_w))
                 .flex_none()
                 .flex()
                 .flex_col()
