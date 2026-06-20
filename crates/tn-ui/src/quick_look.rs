@@ -900,6 +900,19 @@ pub enum QuickLookEvent {
     RemoteChangesDirty,
 }
 
+#[derive(Clone, Debug)]
+struct OutlineItem {
+    label: String,
+    indent: usize,
+    target: OutlineTarget,
+}
+
+#[derive(Clone, Debug)]
+enum OutlineTarget {
+    Line(usize),
+    Page(usize),
+}
+
 #[derive(Clone)]
 enum QuickLookData {
     None,
@@ -1534,6 +1547,7 @@ pub struct QuickLook {
     hscroll_drag: Option<f32>,
     hscroll_content_w: f32,
     vscroll_drag: Option<f32>,
+    pdf_current_page: Rc<std::cell::Cell<usize>>,
     caret_motion: CaretMotionState,
     motion_cleanup_pending: bool,
     /// 编辑态横向 caret-follow 的去抖:只在光标**变化**时跟随一次,否则手动拖横滚条会被
@@ -1620,6 +1634,7 @@ impl QuickLook {
             hscroll_drag: None,
             hscroll_content_w: 0.0,
             vscroll_drag: None,
+            pdf_current_page: Rc::new(std::cell::Cell::new(0)),
             caret_motion: CaretMotionState::default(),
             motion_cleanup_pending: false,
             last_follow_cursor: None,
@@ -1844,6 +1859,7 @@ impl QuickLook {
         self.hscroll_px = 0.0; // 新文件从最左开始
         self.el_scroll_y = 0.0; // 自绘路径:新文件从顶部开始
         self.vscroll_drag = None;
+        self.pdf_current_page.set(0);
         self.last_follow_cursor = None;
         self.dirty = false;
         self.file_data = QuickLookData::None;
@@ -1871,6 +1887,85 @@ impl QuickLook {
         self.cancel_token
             .store(true, std::sync::atomic::Ordering::Relaxed);
         self.cancel_token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    }
+
+    fn get_outline(&self) -> Vec<OutlineItem> {
+        let mut items = Vec::new();
+        match &self.file_data {
+            QuickLookData::Pdf { page_count, .. } => {
+                let page_count = *page_count;
+                for i in 0..page_count {
+                    items.push(OutlineItem {
+                        label: format!("Page {}", i + 1),
+                        indent: 0,
+                        target: OutlineTarget::Page(i),
+                    });
+                }
+            }
+            _ => {
+                let is_md = is_markdown_path(self.path.as_deref());
+                let lines_ref;
+                let lines: &[String] = if self.editing {
+                    lines_ref = self.edit.lines();
+                    &lines_ref.borrow()
+                } else {
+                    match &self.file_data {
+                        QuickLookData::Text { lines, .. } => lines.as_slice(),
+                        _ => &[],
+                    }
+                };
+                for (idx, line) in lines.iter().enumerate() {
+                    let trimmed = line.trim();
+                    if is_md {
+                        if trimmed.starts_with('#') {
+                            let level = trimmed.chars().take_while(|&c| c == '#').count();
+                            let title = trimmed[level..].trim().to_string();
+                            if level >= 1 && level <= 6 && !title.is_empty() {
+                                items.push(OutlineItem {
+                                    label: title,
+                                    indent: level.saturating_sub(1),
+                                    target: OutlineTarget::Line(idx),
+                                });
+                            }
+                        }
+                    } else {
+                        if trimmed.starts_with("fn ")
+                            || trimmed.starts_with("pub fn ")
+                            || trimmed.starts_with("impl ")
+                            || trimmed.starts_with("struct ")
+                            || trimmed.starts_with("pub struct ")
+                            || trimmed.starts_with("enum ")
+                            || trimmed.starts_with("pub enum ")
+                            || trimmed.starts_with("class ")
+                            || trimmed.starts_with("def ")
+                            || trimmed.starts_with("interface ")
+                            || trimmed.starts_with("type ")
+                        {
+                            let mut label = trimmed.to_string();
+                            if let Some(i) = label.find('{') {
+                                label = label[..i].trim().to_string();
+                            }
+                            if let Some(i) = label.find(':') {
+                                label = label[..i].trim().to_string();
+                            }
+                            items.push(OutlineItem {
+                                label,
+                                indent: 0,
+                                target: OutlineTarget::Line(idx),
+                            });
+                        } else if trimmed.contains("TODO") || trimmed.contains("FIXME") {
+                            let label = trimmed.to_string();
+                            items.push(OutlineItem {
+                                label,
+                                indent: 1,
+                                target: OutlineTarget::Line(idx),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        items
     }
 
     /// Open `path`: read its text off the **background** thread, default to the File
@@ -4323,6 +4418,36 @@ impl QuickLook {
         cx.notify();
     }
 
+    fn on_vscroll_move_pdf(&mut self, cursor_y: f32, cx: &mut Context<Self>) {
+        let (page_count, _page_height) = match &self.file_data {
+            QuickLookData::Pdf { page_count, page_height, .. } => (*page_count, *page_height),
+            _ => return,
+        };
+        if page_count <= 1 {
+            return;
+        }
+        let viewport_h = f32::from(self.code_bounds.borrow().size.height);
+        if viewport_h <= 0.0 {
+            return;
+        }
+        let track_top = f32::from(self.code_bounds.borrow().origin.y);
+        let grab = self.vscroll_drag.unwrap_or(0.0);
+
+        let inset = 6.0_f32;
+        let track_h = (viewport_h - inset * 2.0).max(1.0);
+        let thumb_h = (track_h / page_count as f32 * track_h).clamp(36.0, track_h);
+
+        let usable = (track_h - thumb_h).max(1.0);
+        let rel = cursor_y - track_top - inset;
+        let thumb_top = (rel - grab).clamp(0.0, usable);
+        let fraction = thumb_top / usable;
+        let page_idx = (fraction * page_count.saturating_sub(1) as f32).round() as usize;
+
+        self.pdf_current_page.set(page_idx);
+        self.scroll.scroll_to_item(page_idx, ScrollStrategy::Top);
+        cx.notify();
+    }
+
     // ── clipboard ──
 
     fn copy(&mut self, cx: &mut Context<Self>) {
@@ -4753,54 +4878,82 @@ impl QuickLook {
             }
             match key {
                 "home" if self.tab == Tab::File || self.tab == Tab::Diff => {
-                    self.el_scroll_y = 0.0;
+                    if self.tab == Tab::File && matches!(self.file_data, QuickLookData::Pdf { .. }) {
+                        self.pdf_current_page.set(0);
+                        self.scroll.scroll_to_item(0, ScrollStrategy::Top);
+                    } else {
+                        self.el_scroll_y = 0.0;
+                    }
                     cx.stop_propagation();
                     cx.notify();
                 }
                 "end" if self.tab == Tab::File || self.tab == Tab::Diff => {
-                    let vh = f32::from(self.code_bounds.borrow().size.height);
-                    let content_h = match self.tab {
-                        Tab::File => {
+                    if self.tab == Tab::File {
+                        if let QuickLookData::Pdf { page_count, .. } = &self.file_data {
+                            let end_page = page_count.saturating_sub(1);
+                            self.pdf_current_page.set(end_page);
+                            self.scroll.scroll_to_item(end_page, ScrollStrategy::Top);
+                        } else {
+                            let vh = f32::from(self.code_bounds.borrow().size.height);
+                            let content_h = {
+                                let lines = match &self.file_data {
+                                    QuickLookData::Text { lines, .. } => lines.as_slice(),
+                                    _ => &[],
+                                };
+                                lines.len() as f32 * ROW_H
+                            };
+                            let vmin = (vh - content_h).min(0.0);
+                            self.el_scroll_y = vmin;
+                        }
+                    } else {
+                        let vh = f32::from(self.code_bounds.borrow().size.height);
+                        let content_h = diff_render_rows(&self.diff).len() as f32 * ROW_H;
+                        let vmin = (vh - content_h).min(0.0);
+                        self.el_scroll_y = vmin;
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }
+                "pageup" if self.tab == Tab::File => {
+                    if let QuickLookData::Pdf { .. } = &self.file_data {
+                        let curr = self.pdf_current_page.get();
+                        let prev = curr.saturating_sub(1);
+                        self.pdf_current_page.set(prev);
+                        self.scroll.scroll_to_item(prev, ScrollStrategy::Top);
+                    } else {
+                        let vh = f32::from(self.code_bounds.borrow().size.height);
+                        let content_h = {
                             let lines = match &self.file_data {
                                 QuickLookData::Text { lines, .. } => lines.as_slice(),
                                 _ => &[],
                             };
                             lines.len() as f32 * ROW_H
-                        }
-                        Tab::Diff => {
-                            diff_render_rows(&self.diff).len() as f32 * ROW_H
-                        }
-                    };
-                    let vmin = (vh - content_h).min(0.0);
-                    self.el_scroll_y = vmin;
-                    cx.stop_propagation();
-                    cx.notify();
-                }
-                "pageup" if self.tab == Tab::File => {
-                    let vh = f32::from(self.code_bounds.borrow().size.height);
-                    let content_h = {
-                        let lines = match &self.file_data {
-                            QuickLookData::Text { lines, .. } => lines.as_slice(),
-                            _ => &[],
                         };
-                        lines.len() as f32 * ROW_H
-                    };
-                    let vmin = (vh - content_h).min(0.0);
-                    self.el_scroll_y = (self.el_scroll_y + vh).clamp(vmin, 0.0);
+                        let vmin = (vh - content_h).min(0.0);
+                        self.el_scroll_y = (self.el_scroll_y + vh).clamp(vmin, 0.0);
+                    }
                     cx.stop_propagation();
                     cx.notify();
                 }
                 "pagedown" if self.tab == Tab::File => {
-                    let vh = f32::from(self.code_bounds.borrow().size.height);
-                    let content_h = {
-                        let lines = match &self.file_data {
-                            QuickLookData::Text { lines, .. } => lines.as_slice(),
-                            _ => &[],
+                    if let QuickLookData::Pdf { page_count, .. } = &self.file_data {
+                        let page_count = *page_count;
+                        let curr = self.pdf_current_page.get();
+                        let next = (curr + 1).min(page_count.saturating_sub(1));
+                        self.pdf_current_page.set(next);
+                        self.scroll.scroll_to_item(next, ScrollStrategy::Top);
+                    } else {
+                        let vh = f32::from(self.code_bounds.borrow().size.height);
+                        let content_h = {
+                            let lines = match &self.file_data {
+                                QuickLookData::Text { lines, .. } => lines.as_slice(),
+                                _ => &[],
+                            };
+                            lines.len() as f32 * ROW_H
                         };
-                        lines.len() as f32 * ROW_H
-                    };
-                    let vmin = (vh - content_h).min(0.0);
-                    self.el_scroll_y = (self.el_scroll_y - vh).clamp(vmin, 0.0);
+                        let vmin = (vh - content_h).min(0.0);
+                        self.el_scroll_y = (self.el_scroll_y - vh).clamp(vmin, 0.0);
+                    }
                     cx.stop_propagation();
                     cx.notify();
                 }
@@ -6409,7 +6562,7 @@ impl Render for QuickLook {
             line_count
         };
         // ── body condition chain ────────────────────────────────────────────
-        let mut body = div()
+        let mut preview_container = div()
             .relative()
             .flex_1()
             .min_h(px(0.))
@@ -6422,7 +6575,7 @@ impl Render for QuickLook {
             // 不渲染占位符
         } else if let QuickLookData::Binary { size } = &self.file_data {
             let size_str = human_size(*size);
-            body = body.child(
+            preview_container = preview_container.child(
                 div()
                     .flex_1()
                     .flex()
@@ -6452,68 +6605,142 @@ impl Render for QuickLook {
             let page_height = *page_height;
             let render_tx = render_tx.clone();
             let requested = requested.clone();
-            body = body.child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .bg(gpui::rgb(CODE_BG))
-                    .child(
-                        uniform_list(
-                            "pdf_scroll_container",
-                            page_count,
-                            move |range, _window, _cx| {
-                                let pages_lock = pages.lock().ok();
-                                range
-                                    .map(|i| {
-                                        // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
-                                        // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
-                                        // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
-                                        if let Some(lock) = &pages_lock {
-                                            if let Some(img) = &lock[i] {
-                                                let img_source =
-                                                    gpui::ImageSource::Render(img.clone());
-                                                return div()
-                                                    .w_full()
-                                                    .h(px(page_height)) // 自适应动态行高
-                                                    .bg(gpui::rgb(CODE_BG))
-                                                    .flex()
-                                                    .justify_center()
-                                                    .items_center()
-                                                    .child(
-                                                        gpui::img(img_source)
-                                                            .max_w_full()
-                                                            .max_h_full()
-                                                            .w_auto()
-                                                            .h_auto()
-                                                            .object_fit(gpui::ObjectFit::ScaleDown),
-                                                    );
-                                            }
-                                        }
-                                        // 当前页尚未渲染 → 按需触发后台渲染（懒加载）
-                                        if let Ok(mut req) = requested.lock() {
-                                            if !req.contains(&i) {
-                                                req.insert(i);
-                                                let _ = render_tx.unbounded_send(i);
-                                                // 预取下一页，提前解码减少翻页等待
-                                                if i + 1 < page_count && !req.contains(&(i + 1)) {
-                                                    req.insert(i + 1);
-                                                    let _ = render_tx.unbounded_send(i + 1);
-                                                }
-                                            }
-                                        }
-                                        div().w_full().h(px(page_height)).bg(gpui::rgb(CODE_BG))
-                                    })
-                                    .collect::<Vec<_>>()
+
+            let pdf_current_page_clone = self.pdf_current_page.clone();
+
+            let viewport_h = f32::from(self.code_bounds.borrow().size.height);
+            let track_top = f32::from(self.code_bounds.borrow().origin.y);
+
+            let mut pdf_area = div()
+                .flex_1()
+                .relative()
+                .overflow_hidden()
+                .bg(gpui::rgb(CODE_BG));
+
+            let list = uniform_list(
+                "pdf_scroll_container",
+                page_count,
+                move |range, _window, _cx| {
+                    if let Some(first_visible) = range.clone().next() {
+                        pdf_current_page_clone.set(first_visible);
+                    }
+                    let pages_lock = pages.lock().ok();
+                    range
+                        .map(|i| {
+                            // 暗 gutter(同外层 viewer 色),页面图居中铺满高度 → 竖向不留白
+                            // (修「开头/页间大段白空」),横向余量是暗 gutter(非刺眼白边);
+                            // 去掉 .p_4() 白边框。未解码占位也用暗色,无白闪。
+                            if let Some(lock) = &pages_lock {
+                                if let Some(img) = &lock[i] {
+                                    let img_source =
+                                        gpui::ImageSource::Render(img.clone());
+                                    return div()
+                                        .w_full()
+                                        .h(px(page_height)) // 自适应动态行高
+                                        .bg(gpui::rgb(CODE_BG))
+                                        .flex()
+                                        .justify_center()
+                                        .items_center()
+                                        .child(
+                                            gpui::img(img_source)
+                                                .max_w_full()
+                                                .max_h_full()
+                                                .w_auto()
+                                                .h_auto()
+                                                .object_fit(gpui::ObjectFit::ScaleDown),
+                                        );
+                                }
+                            }
+                            // 当前页尚未渲染 → 按需触发后台渲染（懒加载）
+                            if let Ok(mut req) = requested.lock() {
+                                if !req.contains(&i) {
+                                    req.insert(i);
+                                    let _ = render_tx.unbounded_send(i);
+                                    // 预取下一页，提前解码减少翻页等待
+                                    if i + 1 < page_count && !req.contains(&(i + 1)) {
+                                        req.insert(i + 1);
+                                        let _ = render_tx.unbounded_send(i + 1);
+                                    }
+                                }
+                            }
+                            div().w_full().h(px(page_height)).bg(gpui::rgb(CODE_BG))
+                        })
+                        .collect::<Vec<_>>()
+                },
+            )
+            .track_scroll(self.scroll.clone())
+            .w_full()
+            .h_full();
+
+            pdf_area = pdf_area.child(list);
+
+            if page_count > 1 && viewport_h > 0.0 {
+                let current_page = self.pdf_current_page.get();
+                let inset = 6.0_f32;
+                let track_h = (viewport_h - inset * 2.0).max(1.0);
+                let thumb_h = (track_h / page_count as f32 * track_h).clamp(36.0, track_h);
+                let usable = (track_h - thumb_h).max(1.0);
+
+                let fraction = if page_count > 1 {
+                    current_page as f32 / page_count.saturating_sub(1) as f32
+                } else {
+                    0.0
+                };
+                let thumb_y = inset + fraction * usable;
+                let thumb_bg = gpui::rgb(crate::style::PH_DIM);
+                let ent = cx.entity().downgrade();
+
+                pdf_area = pdf_area.child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(px(14.))
+                        .bg(gpui::rgba(0x00000000))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            move |ev: &MouseDownEvent, _w, app| {
+                                let grab = f32::from(ev.position.y) - (track_top + thumb_y);
+                                let _ = ent.update(app, |this, cx| {
+                                    this.vscroll_drag = Some(grab);
+                                    cx.notify();
+                                });
+                                app.stop_propagation();
                             },
                         )
-                        .track_scroll(self.scroll.clone())
-                        .w_full()
-                        .h_full(),
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(thumb_y))
+                                .right(px(4.))
+                                .w(px(3.))
+                                .h(px(thumb_h))
+                                .rounded(px(2.))
+                                .bg(thumb_bg),
+                        ),
+                );
+            }
+
+            let canvas_bounds = self.code_bounds.clone();
+            preview_container = preview_container.child(
+                div()
+                    .flex_1()
+                    .relative()
+                    .overflow_hidden()
+                    .child(pdf_area)
+                    .child(
+                        canvas(
+                            move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
+                            |_, _, _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
                     ),
             );
         } else if let QuickLookData::Image { img } = &self.file_data {
             let img_source = gpui::ImageSource::Render(img.clone());
-            body = body.child(
+            preview_container = preview_container.child(
                 div()
                     .w_full()
                     .h_full()
@@ -6533,7 +6760,7 @@ impl Render for QuickLook {
         } else if self.tab == Tab::Diff && self.diff_loading {
             // 不渲染占位符
         } else if !editing && tab == Tab::Diff && self.diff.is_empty() {
-            body = body.child(
+            preview_container = preview_container.child(
                 div()
                     .flex_1()
                     .min_h(px(0.))
@@ -6548,11 +6775,11 @@ impl Render for QuickLook {
             && is_markdown_path(self.path.as_deref())
         {
             // Markdown 预览态:直接渲染排版(Enter 进编辑切回自绘编辑器,Esc 回预览)。
-            body = body.child(markdown_view(&self.config, &lines));
+            preview_container = preview_container.child(markdown_view(&self.config, &lines));
         } else if should_self_paint_diff(self.el_render, editing, tab, &self.file_data) {
             // TnE-13: Diff tab now uses the same self-painted canvas/prepaint path
             // as File preview. `TN_QL_LEGACY=1` still falls through to the old list.
-            body = body.child(self.diff_element(cx));
+            preview_container = preview_container.child(self.diff_element(cx));
         } else if self.el_render
             && tab == Tab::File
             && matches!(self.file_data, QuickLookData::Text { .. })
@@ -6562,7 +6789,7 @@ impl Render for QuickLook {
             // and the live editor both render here; the old list branch below is the
             // emergency fallback for File/Diff. caret-follow ran at the top of
             // render (before the immutable borrows here).
-            body = body.child(self.file_element(cx));
+            preview_container = preview_container.child(self.file_element(cx));
         } else {
             let _sel_anchor = sel.as_ref().map(|s| s.0);
             // Longest line's display width (cols), computed BEFORE the list closure
@@ -6924,7 +7151,7 @@ impl Render for QuickLook {
                 }
                 area.into_any_element()
             };
-            body = body
+            preview_container = preview_container
                 .child(
                     canvas(
                         move |bounds, _w, _cx| *canvas_bounds.borrow_mut() = bounds,
@@ -6952,6 +7179,181 @@ impl Render for QuickLook {
                             .child(SharedString::from(format!("… 仅显示前 {MAX_LINES} 行"))),
                     )
                 })
+        };
+
+        // 大纲大纲项提取
+        let outline_items = self.get_outline();
+
+        // 查找当前 active 大纲项
+        let mut active_idx = None;
+        if let Some(OutlineTarget::Line(_)) = outline_items.first().map(|item| &item.target) {
+            let cursor_line = self.cursor.0;
+            for (i, item) in outline_items.iter().enumerate() {
+                if let OutlineTarget::Line(l) = item.target {
+                    if cursor_line >= l {
+                        active_idx = Some(i);
+                    } else {
+                        break;
+                    }
+                }
+            }
+        } else if let Some(OutlineTarget::Page(_)) = outline_items.first().map(|item| &item.target) {
+            let current_page = self.pdf_current_page.get();
+            for (i, item) in outline_items.iter().enumerate() {
+                if let OutlineTarget::Page(p) = item.target {
+                    if current_page == p {
+                        active_idx = Some(i);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let show_outline = self.tab == Tab::File && !outline_items.is_empty();
+
+        let body = if show_outline {
+            let sidebar_header = div()
+                .flex()
+                .items_center()
+                .h(px(32.))
+                .px(px(12.))
+                .border_b(px(1.))
+                .border_color(rgba(crate::style::H1))
+                .bg(gpui::rgb(crate::style::L4))
+                .font_family(UI_SANS)
+                .text_size(px(11.))
+                .font_weight(gpui::FontWeight::BOLD)
+                .text_color(gpui::rgb(crate::style::T2))
+                .child("OUTLINE");
+
+            let mut list_container = div()
+                .id("outline_list")
+                .flex_1()
+                .overflow_y_scroll()
+                .py(px(6.))
+                .px(px(6.))
+                .flex()
+                .flex_col()
+                .gap(px(1.));
+
+            let is_md = is_markdown_path(self.path.as_deref());
+
+            for (idx, item) in outline_items.iter().enumerate() {
+                let active = active_idx == Some(idx);
+                let indent_px = (item.indent * 12) as f32;
+
+                let ent = cx.entity().downgrade();
+                let target = item.target.clone();
+                let is_md = is_md;
+
+                let row = div()
+                    .flex()
+                    .items_center()
+                    .h(px(22.))
+                    .px(px(8.))
+                    .ml(px(indent_px))
+                    .rounded(px(crate::style::R_CHIP))
+                    .font_family(UI_SANS)
+                    .text_size(px(crate::style::FS_MICRO))
+                    .text_color(if active {
+                        gpui::rgb(crate::style::PH)
+                    } else {
+                        gpui::rgb(crate::style::T1)
+                    })
+                    .bg(if active {
+                        rgba(crate::style::PH_SOFT)
+                    } else {
+                        gpui::rgba(0x00000000)
+                    })
+                    .hover(|s| {
+                        if active {
+                            s
+                        } else {
+                            s.bg(gpui::rgb(crate::style::L4))
+                                .text_color(gpui::rgb(crate::style::T0))
+                        }
+                    })
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        move |_ev: &MouseDownEvent, _w, app| {
+                            let target = target.clone();
+                            let _ = ent.update(app, |this, cx| {
+                                match target {
+                                    OutlineTarget::Page(p) => {
+                                        this.pdf_current_page.set(p);
+                                        this.scroll.scroll_to_item(p, ScrollStrategy::Top);
+                                    }
+                                    OutlineTarget::Line(l) => {
+                                        if !this.editing && is_md {
+                                            this.editing = true;
+                                        }
+                                        if this.editing {
+                                            this.edit.place_cursor(l, 0, false);
+                                        } else {
+                                            this.cursor = (l, 0);
+                                            this.sel_anchor = None;
+                                        }
+                                        this.scroll.scroll_to_item(l, ScrollStrategy::Center);
+                                        this.snap_caret_motion();
+                                    }
+                                }
+                                cx.notify();
+                            });
+                            app.stop_propagation();
+                        },
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .when(active, |d| {
+                                d.child(
+                                    div()
+                                        .w(px(4.))
+                                        .h(px(4.))
+                                        .rounded(px(2.))
+                                        .bg(gpui::rgb(crate::style::PH))
+                                )
+                            })
+                            .child(
+                                div()
+                                    .child(item.label.clone())
+                            )
+                    );
+                list_container = list_container.child(row);
+            }
+
+            let outline_sidebar = div()
+                .w(px(220.))
+                .flex_none()
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .border_l(px(1.))
+                .border_color(rgba(crate::style::H1))
+                .bg(gpui::rgb(crate::style::L2))
+                .child(sidebar_header)
+                .child(list_container);
+
+            div()
+                .flex_1()
+                .min_h(px(0.))
+                .flex()
+                .flex_row()
+                .overflow_hidden()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w(px(0.))
+                        .flex()
+                        .flex_col()
+                        .overflow_hidden()
+                        .child(preview_container)
+                )
+                .child(outline_sidebar)
+        } else {
+            preview_container
         };
 
         // ── .qlfoot footer:键帽 + 操作提示(预览态)──
@@ -7496,6 +7898,13 @@ impl Render for QuickLook {
                         this.hscroll_drag = None;
                         cx.notify();
                     }
+                } else if this.vscroll_drag.is_some() {
+                    if ev.pressed_button == Some(MouseButton::Left) {
+                        this.on_vscroll_move_pdf(f32::from(ev.position.y), cx);
+                    } else {
+                        this.vscroll_drag = None;
+                        cx.notify();
+                    }
                 } else if this.edit_drag && ev.pressed_button != Some(MouseButton::Left) {
                     // 文本拖选时鼠标移出行/浮层后松开,行 move 收不到 → 这里兜底结束拖选。
                     this.edit_drag = false;
@@ -7511,6 +7920,9 @@ impl Render for QuickLook {
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseUpEvent, _w, cx| {
                     let mut changed = this.hscroll_drag.take().is_some();
+                    if this.vscroll_drag.take().is_some() {
+                        changed = true;
+                    }
                     if this.edit_drag {
                         this.edit_drag = false; // end text drag-selection
                         changed = true;
