@@ -233,6 +233,51 @@ pub fn v_offset_from_drag(
     -fraction * max_scroll_dist
 }
 
+/// Vertical scrollbar thumb geometry for a **paged** viewer (PDF), where the thumb
+/// height is proportional to `1 / page_count` (one "row" per page) and its position
+/// to `current_page`. Mirrors the text [`v_scroll_thumb`] but in page space rather
+/// than pixel-content space. Returns `None` when there is nothing to scroll.
+pub fn paged_scroll_thumb(
+    page_count: usize,
+    viewport_h: f32,
+    current_page: usize,
+) -> Option<VScrollThumb> {
+    if page_count <= 1 || viewport_h <= 0.0 {
+        return None;
+    }
+    let track_h = (viewport_h - VSCROLL_INSET * 2.0).max(1.0);
+    let thumb_h = (track_h / page_count as f32 * track_h).clamp(VSCROLL_MIN_THUMB, track_h);
+    let usable = (track_h - thumb_h).max(1.0);
+    let fraction = (current_page as f32 / (page_count - 1) as f32).clamp(0.0, 1.0);
+    let thumb_y = VSCROLL_INSET + fraction * usable;
+    Some(VScrollThumb {
+        track_h,
+        thumb_h,
+        thumb_y,
+    })
+}
+
+/// Inverse of [`paged_scroll_thumb`]: given a drag of the thumb to `cursor_y`
+/// (absolute mouse y), with `grab` the pointer's offset within the thumb at grab
+/// time and `track_top` the track origin y, return the target page index.
+pub fn paged_page_from_drag(
+    cursor_y: f32,
+    track_top: f32,
+    grab: f32,
+    page_count: usize,
+    viewport_h: f32,
+) -> usize {
+    let thumb = match paged_scroll_thumb(page_count, viewport_h, 0) {
+        Some(t) => t,
+        None => return 0,
+    };
+    let usable = (thumb.track_h - thumb.thumb_h).max(1.0);
+    let rel = cursor_y - track_top - VSCROLL_INSET;
+    let thumb_top = (rel - grab).clamp(0.0, usable);
+    let fraction = thumb_top / usable;
+    (fraction * (page_count - 1) as f32).round() as usize
+}
+
 /// Horizontal scrollbar thumb geometry within its track.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HScrollThumb {
@@ -464,5 +509,47 @@ mod tests {
         assert_eq!(at_start, 0.0);
 
         assert!(v_scroll_thumb(100.0, 100.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn paged_scroll_thumb_and_drag_are_inverse() {
+        let page_count = 50usize;
+        let viewport_h = 200.0f32;
+
+        // At page 0 the thumb sits at the top inset; thumb honors the minimum.
+        let t0 = paged_scroll_thumb(page_count, viewport_h, 0).unwrap();
+        assert_eq!(t0.thumb_y, VSCROLL_INSET);
+        assert!(t0.thumb_h >= VSCROLL_MIN_THUMB);
+
+        let usable = (t0.track_h - t0.thumb_h).max(1.0);
+        let track_top = 25.0;
+        // Dragging the thumb (grab=0) to the bottom of the usable range → last page.
+        let at_end = paged_page_from_drag(
+            track_top + VSCROLL_INSET + usable,
+            track_top,
+            0.0,
+            page_count,
+            viewport_h,
+        );
+        assert_eq!(at_end, page_count - 1);
+        // Dragging back to the start → page 0.
+        let at_start =
+            paged_page_from_drag(track_top + VSCROLL_INSET, track_top, 0.0, page_count, viewport_h);
+        assert_eq!(at_start, 0);
+
+        // Round-trip: the thumb position for the last page maps back to it.
+        let t_last = paged_scroll_thumb(page_count, viewport_h, page_count - 1).unwrap();
+        let back = paged_page_from_drag(
+            track_top + t_last.thumb_y,
+            track_top,
+            0.0,
+            page_count,
+            viewport_h,
+        );
+        assert_eq!(back, page_count - 1);
+
+        // Degenerate: a single page (or zero) has no scrollable range.
+        assert!(paged_scroll_thumb(1, viewport_h, 0).is_none());
+        assert_eq!(paged_page_from_drag(999.0, 0.0, 0.0, 1, viewport_h), 0);
     }
 }

@@ -28,3 +28,15 @@
 - **PDF页数限制优化**：修复了 PDF 预览默认限制在 100 页导致超长 PDF 文件显示不全的问题。现已将加载上限修改为文档实际的 `page_count`，在 LRU（最长 8 页）驱逐策略下，系统能保持安全低内存并支持任意长度 PDF。
 - **Markdown 预览跳转优化**：实现了 Markdown 文件在大纲点击时的直接跳转滚动。在 `markdown_view` 的滚动容器上挂载了 `ScrollHandle`，点击大纲时通过计算最近块的源行号执行 `scroll_to_top_of_item` 进行精准的非编辑态跳转，解决了点击大纲会强制进入编辑态的问题。
 
+## 复审与修复（2026-06-20 二轮）
+
+对三项 Quick Look 改动做了代码审计 + 自动化测试（`cargo test -p tn-ui --lib` 全绿、`cargo clippy` exit 0、新代码零警告）。审计发现的问题全部修复（均为低危/瑕疵，无崩溃、无编译问题）：
+
+1. **【#1 Markdown 大纲误判代码块内 `#`】** `get_outline` 的 md 分支原先逐行 `starts_with('#')`，会把 ``` / ~~~ 围栏代码块里的 `# 注释` 当成标题。抽出纯函数 `md_heading_outline`，加入围栏状态跟踪（按 `` ` ``/`~` 标记成对开合，围栏内整段忽略）。新增单测 `md_outline_skips_headings_inside_code_fences`。
+2. **【#2 md 预览态大纲高亮滞留】** `active_idx` 按 `cursor.0` 计算，但 md 预览点击只滚动 `md_scroll`、不动光标，导致点击项不高亮。修复：md 预览点击大纲时同步 `cursor=(l,0)` + `sel_anchor=None`（该 caret 在 md 预览不绘制，仅供高亮定位）。
+3. **【#3 md 跳转块索引对齐】** 将 `compute_md_blocks_map` 内联解析抽成纯函数 `md_block_src_lines`（parser 驱动、天然防围栏），明确其与 `md_blocks` 顶层块发射顺序一一对应的不变量，并加单测 `md_block_src_lines_records_top_level_block_lines` 锁定边界。
+4. **【#4 PDF 滚动条数学硬编码 + 无测试 + 宽度偏差】** 把 PDF 翻页滚动条的 thumb 几何与拖拽反算抽成 `editor::geometry::paged_scroll_thumb` / `paged_page_from_drag`（复用 `VSCROLL_INSET`/`VSCROLL_MIN_THUMB` 常量，消除内联 `6.0`/`36.0`），渲染与 `on_vscroll_move_pdf` 两处共用，新增逆运算单测 `paged_scroll_thumb_and_drag_are_inverse`；大纲栏宽度 220px → 200px 对齐设计稿。
+5. 顺带把代码大纲提取抽为纯函数 `code_decl_outline`（`pub ` 前缀 + 关键字 + 空白判定，等价于原 prefix 列表但更稳），新增单测 `code_outline_matches_decls_with_optional_pub`。
+
+**测试**：`cargo test -p tn-ui --lib` 216 passed / 0 failed（含 4 个新增用例）；`cargo clippy -p tn-ui --lib` exit 0，改动文件零新增警告。**真机交互验证（拖滚动条/点大纲/翻长 PDF）仍待用户在 GUI 下确认。**
+

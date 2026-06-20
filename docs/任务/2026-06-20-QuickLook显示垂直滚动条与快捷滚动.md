@@ -24,3 +24,7 @@
 ## 验证结果
 1. **单元测试验证**：在 `crates/tn-ui/src/editor/geometry.rs` 中新增的 `v_scroll_thumb_and_drag_are_inverse` 测试涵盖了所有滚动缩放计算和拖拽逆向反算。通过 `cargo test -p tn-ui --lib` 确认 211 个用例全数通过。
 2. **构建与排版**：整个 workspace 的编译和 cargo check 均正常无 warnings/errors，滚动条与 Phosphor 设计语言在逻辑上契合良好。
+
+## 复审（2026-06-20 二轮）
+
+代码审计确认：新增的 Home/End/PageUp/PageDown 仅在**只读 `else` 分支**生效，编辑态仍走 `move_cursor`/`page` 移动光标，未劫持编辑态按键；文本/Diff 垂直滚动条复用已测的 `geometry::v_scroll_thumb` 逆运算。**无问题，未改动。**（PDF 翻页滚动条的内联数学问题在「大纲树与PDF滚动」任务的二轮修复中一并处理。）

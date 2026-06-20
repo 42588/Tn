@@ -39,3 +39,7 @@
 
 运行 `cargo test -p tn-ui --lib` 通过所有测试（210 passed, 0 failed）。
 已验证文件大小在本地/远程加载和保存更新阶段的流动均完全正确，并在 QuickLook 顶部 header 区域成功以 `meta_chip` 方式呈现在扩展名与编码格式之间。
+
+## 复审（2026-06-20 二轮）
+
+代码审计确认数据流闭环：`open()` 在 `reset_for_open` 后用 `fs::metadata` 同步兜底设置 `file_size`，覆盖文本/图片/PDF/二进制全路径；远程走 `declared_size`；保存后用 `FileGuard.size` 回写。**无问题，未改动。**

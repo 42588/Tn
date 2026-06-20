@@ -1896,87 +1896,30 @@ impl QuickLook {
     }
 
     fn get_outline(&self) -> Vec<OutlineItem> {
-        let mut items = Vec::new();
-        match &self.file_data {
-            QuickLookData::Pdf { page_count, .. } => {
-                let page_count = *page_count;
-                for i in 0..page_count {
-                    items.push(OutlineItem {
-                        label: format!("Page {}", i + 1),
-                        indent: 0,
-                        target: OutlineTarget::Page(i),
-                    });
-                }
-            }
-            _ => {
-                let is_md = is_markdown_path(self.path.as_deref());
-                let lines_ref;
-                let lines: &[String] = if self.editing {
-                    lines_ref = self.edit.lines();
-                    &lines_ref.borrow()
-                } else {
-                    match &self.file_data {
-                        QuickLookData::Text { lines, .. } => lines.as_slice(),
-                        _ => &[],
-                    }
-                };
-                for (idx, line) in lines.iter().enumerate() {
-                    let trimmed = line.trim();
-                    if is_md {
-                        if trimmed.starts_with('#') {
-                            let level = trimmed.chars().take_while(|&c| c == '#').count();
-                            let mut title = trimmed[level..].trim().to_string();
-                            if level >= 1 && level <= 6 && !title.is_empty() {
-                                let mut chars: Vec<char> = title.chars().collect();
-                                if chars.len() > 26 {
-                                    chars.truncate(24);
-                                    title = chars.into_iter().collect::<String>() + "…";
-                                }
-                                items.push(OutlineItem {
-                                    label: title,
-                                    indent: level.saturating_sub(1),
-                                    target: OutlineTarget::Line(idx),
-                                });
-                            }
-                        }
-                    } else {
-                        let matched = trimmed.starts_with("impl ")
-                            || trimmed.starts_with("pub impl ")
-                            || trimmed.starts_with("struct ")
-                            || trimmed.starts_with("pub struct ")
-                            || trimmed.starts_with("enum ")
-                            || trimmed.starts_with("pub enum ")
-                            || trimmed.starts_with("trait ")
-                            || trimmed.starts_with("pub trait ")
-                            || trimmed.starts_with("class ")
-                            || trimmed.starts_with("pub class ")
-                            || trimmed.starts_with("interface ")
-                            || trimmed.starts_with("pub interface ");
-
-                        if matched {
-                            let mut label = trimmed.to_string();
-                            if let Some(i) = label.find('{') {
-                                label = label[..i].trim().to_string();
-                            }
-                            if let Some(i) = label.find(':') {
-                                label = label[..i].trim().to_string();
-                            }
-                            let mut chars: Vec<char> = label.chars().collect();
-                            if chars.len() > 26 {
-                                chars.truncate(24);
-                                label = chars.into_iter().collect::<String>() + "…";
-                            }
-                            items.push(OutlineItem {
-                                label,
-                                indent: 0,
-                                target: OutlineTarget::Line(idx),
-                            });
-                        }
-                    }
-                }
-            }
+        if let QuickLookData::Pdf { page_count, .. } = &self.file_data {
+            return (0..*page_count)
+                .map(|i| OutlineItem {
+                    label: format!("Page {}", i + 1),
+                    indent: 0,
+                    target: OutlineTarget::Page(i),
+                })
+                .collect();
         }
-        items
+        let lines_ref;
+        let lines: &[String] = if self.editing {
+            lines_ref = self.edit.lines();
+            &lines_ref.borrow()
+        } else {
+            match &self.file_data {
+                QuickLookData::Text { lines, .. } => lines.as_slice(),
+                _ => &[],
+            }
+        };
+        if is_markdown_path(self.path.as_deref()) {
+            md_heading_outline(lines)
+        } else {
+            code_decl_outline(lines)
+        }
     }
 
     fn compute_md_blocks_map(&self) -> Vec<usize> {
@@ -1990,48 +1933,7 @@ impl QuickLook {
                 _ => &[],
             }
         };
-        let source = lines.join("\n");
-        let mut opts = Options::empty();
-        opts.insert(Options::ENABLE_TABLES);
-        opts.insert(Options::ENABLE_STRIKETHROUGH);
-        opts.insert(Options::ENABLE_TASKLISTS);
-        opts.insert(Options::ENABLE_FOOTNOTES);
-        let parser = Parser::new_ext(&source, opts);
-        let mut block_lines = Vec::new();
-        let mut depth: usize = 0;
-        for (event, range) in parser.into_offset_iter() {
-            match event {
-                MdEvent::Start(tag) => {
-                    if depth == 0 {
-                        let is_block = matches!(
-                            tag,
-                            Tag::Paragraph
-                                | Tag::Heading { .. }
-                                | Tag::CodeBlock(_)
-                                | Tag::List(_)
-                                | Tag::BlockQuote(_)
-                                | Tag::Table(_)
-                        );
-                        if is_block {
-                            let line_idx = source[..range.start].chars().filter(|&c| c == '\n').count();
-                            block_lines.push(line_idx);
-                        }
-                    }
-                    depth += 1;
-                }
-                MdEvent::End(_) => {
-                    depth = depth.saturating_sub(1);
-                }
-                MdEvent::Rule => {
-                    if depth == 0 {
-                        let line_idx = source[..range.start].chars().filter(|&c| c == '\n').count();
-                        block_lines.push(line_idx);
-                    }
-                }
-                _ => {}
-            }
-        }
-        block_lines
+        md_block_src_lines(&lines.join("\n"))
     }
 
     /// Open `path`: read its text off the **background** thread, default to the File
@@ -4485,8 +4387,8 @@ impl QuickLook {
     }
 
     fn on_vscroll_move_pdf(&mut self, cursor_y: f32, cx: &mut Context<Self>) {
-        let (page_count, _page_height) = match &self.file_data {
-            QuickLookData::Pdf { page_count, page_height, .. } => (*page_count, *page_height),
+        let page_count = match &self.file_data {
+            QuickLookData::Pdf { page_count, .. } => *page_count,
             _ => return,
         };
         if page_count <= 1 {
@@ -4498,16 +4400,9 @@ impl QuickLook {
         }
         let track_top = f32::from(self.code_bounds.borrow().origin.y);
         let grab = self.vscroll_drag.unwrap_or(0.0);
-
-        let inset = 6.0_f32;
-        let track_h = (viewport_h - inset * 2.0).max(1.0);
-        let thumb_h = (track_h / page_count as f32 * track_h).clamp(36.0, track_h);
-
-        let usable = (track_h - thumb_h).max(1.0);
-        let rel = cursor_y - track_top - inset;
-        let thumb_top = (rel - grab).clamp(0.0, usable);
-        let fraction = thumb_top / usable;
-        let page_idx = (fraction * page_count.saturating_sub(1) as f32).round() as usize;
+        let page_idx = crate::editor::geometry::paged_page_from_drag(
+            cursor_y, track_top, grab, page_count, viewport_h,
+        );
 
         self.pdf_current_page.set(page_idx);
         self.scroll.scroll_to_item(page_idx, ScrollStrategy::Top);
@@ -6742,19 +6637,13 @@ impl Render for QuickLook {
 
             pdf_area = pdf_area.child(list);
 
-            if page_count > 1 && viewport_h > 0.0 {
-                let current_page = self.pdf_current_page.get();
-                let inset = 6.0_f32;
-                let track_h = (viewport_h - inset * 2.0).max(1.0);
-                let thumb_h = (track_h / page_count as f32 * track_h).clamp(36.0, track_h);
-                let usable = (track_h - thumb_h).max(1.0);
-
-                let fraction = if page_count > 1 {
-                    current_page as f32 / page_count.saturating_sub(1) as f32
-                } else {
-                    0.0
-                };
-                let thumb_y = inset + fraction * usable;
+            if let Some(vthumb) = crate::editor::geometry::paged_scroll_thumb(
+                page_count,
+                viewport_h,
+                self.pdf_current_page.get(),
+            ) {
+                let thumb_y = vthumb.thumb_y;
+                let thumb_h = vthumb.thumb_h;
                 let thumb_bg = gpui::rgb(crate::style::PH_DIM);
                 let ent = cx.entity().downgrade();
 
@@ -7364,6 +7253,11 @@ impl Render for QuickLook {
                                                 }
                                                 this.md_scroll.scroll_to_top_of_item(best_idx);
                                             }
+                                            // Keep the clicked heading highlighted: the
+                                            // active-item math reads `cursor.0` (the md
+                                            // preview never paints this caret).
+                                            this.cursor = (l, 0);
+                                            this.sel_anchor = None;
                                         } else {
                                             if this.editing {
                                                 this.edit.place_cursor(l, 0, false);
@@ -7409,7 +7303,7 @@ impl Render for QuickLook {
             }
 
             let outline_sidebar = div()
-                .w(px(220.))
+                .w(px(200.))
                 .flex_none()
                 .flex()
                 .flex_col()
@@ -8768,6 +8662,129 @@ fn md_row_cells<'e>(events: &mut dyn Iterator<Item = MdEvent<'e>>, ctx: &MdCtx) 
     cells
 }
 
+/// Markdown heading outline (`#`..`######`) for the side panel. **Skips fenced
+/// code blocks** (``` / ~~~) so that `#` comment lines inside a code block aren't
+/// mistaken for headings.
+fn md_heading_outline(lines: &[String]) -> Vec<OutlineItem> {
+    let mut items = Vec::new();
+    let mut fence: Option<char> = None; // '`' or '~' while inside a fenced code block
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        // Toggle fenced-code state on ``` / ~~~ markers; the fence line is not a heading.
+        let fence_char = if trimmed.starts_with("```") {
+            Some('`')
+        } else if trimmed.starts_with("~~~") {
+            Some('~')
+        } else {
+            None
+        };
+        if let Some(fc) = fence_char {
+            match fence {
+                None => fence = Some(fc),
+                Some(open) if open == fc => fence = None,
+                Some(_) => {} // a different marker inside a fence is just content
+            }
+            continue;
+        }
+        if fence.is_some() || !trimmed.starts_with('#') {
+            continue;
+        }
+        let level = trimmed.chars().take_while(|&c| c == '#').count();
+        if !(1..=6).contains(&level) {
+            continue;
+        }
+        let mut title = trimmed[level..].trim().to_string();
+        if title.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = title.chars().collect();
+        if chars.len() > 26 {
+            title = chars.into_iter().take(24).collect::<String>() + "…";
+        }
+        items.push(OutlineItem {
+            label: title,
+            indent: level.saturating_sub(1),
+            target: OutlineTarget::Line(idx),
+        });
+    }
+    items
+}
+
+/// Lightweight code-declaration outline: top-of-line `struct` / `enum` / `impl` /
+/// `trait` / `class` / `interface` (each with an optional `pub ` prefix).
+fn code_decl_outline(lines: &[String]) -> Vec<OutlineItem> {
+    const KEYWORDS: [&str; 6] = ["impl", "struct", "enum", "trait", "class", "interface"];
+    let mut items = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let head = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+        let matched = KEYWORDS.iter().any(|kw| {
+            head.strip_prefix(kw)
+                .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+        });
+        if !matched {
+            continue;
+        }
+        let mut label = trimmed.to_string();
+        if let Some(i) = label.find('{') {
+            label = label[..i].trim().to_string();
+        }
+        if let Some(i) = label.find(':') {
+            label = label[..i].trim().to_string();
+        }
+        let chars: Vec<char> = label.chars().collect();
+        if chars.len() > 26 {
+            label = chars.into_iter().take(24).collect::<String>() + "…";
+        }
+        items.push(OutlineItem {
+            label,
+            indent: 0,
+            target: OutlineTarget::Line(idx),
+        });
+    }
+    items
+}
+
+/// Source line index of each **top-level** Markdown block, in document order. Mirrors
+/// the block list `md_blocks` renders (one entry per Paragraph / Heading / CodeBlock /
+/// List / BlockQuote / Table / Rule), so an outline click can `scroll_to_top_of_item`
+/// to the nearest block. Parser-driven ⇒ already fence-aware.
+fn md_block_src_lines(source: &str) -> Vec<usize> {
+    let mut opts = Options::empty();
+    opts.insert(Options::ENABLE_TABLES);
+    opts.insert(Options::ENABLE_STRIKETHROUGH);
+    opts.insert(Options::ENABLE_TASKLISTS);
+    opts.insert(Options::ENABLE_FOOTNOTES);
+    let parser = Parser::new_ext(source, opts);
+    let mut block_lines = Vec::new();
+    let mut depth: usize = 0;
+    let line_of = |byte: usize| source[..byte].bytes().filter(|&b| b == b'\n').count();
+    for (event, range) in parser.into_offset_iter() {
+        match event {
+            MdEvent::Start(tag) => {
+                if depth == 0
+                    && matches!(
+                        tag,
+                        Tag::Paragraph
+                            | Tag::Heading { .. }
+                            | Tag::CodeBlock(_)
+                            | Tag::List(_)
+                            | Tag::BlockQuote(_)
+                            | Tag::Table(_)
+                    )
+                {
+                    block_lines.push(line_of(range.start));
+                }
+                depth += 1;
+            }
+            MdEvent::End(_) => depth = depth.saturating_sub(1),
+            MdEvent::Rule if depth == 0 => block_lines.push(line_of(range.start)),
+            _ => {}
+        }
+    }
+    block_lines
+}
+
 /// Markdown 预览视图:解析整篇 → 块元素,装进可纵向滚动的浮板正文区。
 fn markdown_view(config: &Loaded, lines: &[String], scroll_handle: &ScrollHandle) -> impl IntoElement {
     let source = lines.join("\n");
@@ -8833,6 +8850,62 @@ mod tests {
         assert!(!is_markdown_path(Some(Path::new("main.rs"))));
         assert!(!is_markdown_path(Some(Path::new("LICENSE"))));
         assert!(!is_markdown_path(None));
+    }
+
+    #[test]
+    fn md_outline_skips_headings_inside_code_fences() {
+        let lines = buf(&[
+            "# Title",
+            "```bash",
+            "# not a heading (shell comment)",
+            "echo hi",
+            "```",
+            "## Real Section",
+            "~~~",
+            "# also inside a fence",
+            "~~~",
+            "### End",
+        ]);
+        let items = md_heading_outline(&lines);
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // The two `#` lines inside ``` / ~~~ fences must NOT be treated as headings.
+        assert_eq!(labels, vec!["Title", "Real Section", "End"]);
+        // indent == level - 1.
+        assert_eq!(
+            items.iter().map(|i| i.indent).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        // Targets point at the heading's source line.
+        assert!(matches!(items[1].target, OutlineTarget::Line(5)));
+    }
+
+    #[test]
+    fn code_outline_matches_decls_with_optional_pub() {
+        let lines = buf(&[
+            "pub struct Foo {",
+            "    field: u32,",
+            "}",
+            "impl Foo {",
+            "enum Color { Red }",
+            "// struct in a comment",
+            "let s = \"struct not here\";",
+            "interface Iface {",
+        ]);
+        let labels: Vec<String> = code_decl_outline(&lines)
+            .into_iter()
+            .map(|i| i.label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec!["pub struct Foo", "impl Foo", "enum Color", "interface Iface"]
+        );
+    }
+
+    #[test]
+    fn md_block_src_lines_records_top_level_block_lines() {
+        // Heading@0, paragraph@2, fenced code@4, list@8.
+        let src = "# H1\n\npara one\n\n```\ncode\n```\n\n- a\n- b\n";
+        assert_eq!(md_block_src_lines(src), vec![0, 2, 4, 8]);
     }
 
     #[test]
