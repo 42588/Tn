@@ -69,18 +69,33 @@ const group = (nm, items) => ({ ty: "gr", nm, it: [...items, grTr()] });
 // ---- 烘焙:连续函数 → 关键帧(线性 + 1D 简化)-------------------
 function bakeTrack(fn, dims, total, eps) {
   const raw = []; for (let f = 0; f <= total; f++) raw.push({ t: f, v: fn(f) });
-  const kept = [raw[0]];
-  for (let i = 1; i < raw.length - 1; i++) {
-    const prev = kept[kept.length - 1], next = raw[i + 1], curr = raw[i];
-    const span = next.t - prev.t; let drop = true;
-    for (let d = 0; d < dims; d++) {
-      const pred = span === 0 ? prev.v[d] : prev.v[d] + (next.v[d] - prev.v[d]) * (curr.t - prev.t) / span;
-      if (Math.abs(pred - curr.v[d]) > eps[d]) { drop = false; break; }
-    }
-    if (!drop) kept.push(curr);
+  // 段边界阶跃修正:poseAt/zzTrack 等按 inState 在段边界处「跳值」(如睡觉→投喂,眯眼 eyeSy
+  // 0.16→1、Zz 不透明度→0)。整数取样会把这一跳摊成「边界前一整帧」的斜坡;而循环段运行时
+  // 回卷点在 end 之前,会渲染到这段斜坡 →「半睁眼/Zz 忽暗」抽搐。故在每个边界前 1e-3 帧补一个
+  // 「本段值」采样,把跳变收窄到 1e-3 帧(回卷点 < end,永不命中)。
+  if (typeof SEGS !== "undefined") {
+    for (let i = 1; i < SEGS.length; i++) { const b = SEGS[i].start; if (b > 0 && b < total) raw.push({ t: b - 1e-3, v: fn(b - 1e-3) }); }
+    raw.sort((a, c) => a.t - c.t);
   }
-  kept.push(raw[raw.length - 1]);
-  return kept.map((k) => ({ t: k.t, s: k.v.slice() }));
+  // 误差有界化简:锚点→候选末点连一条直线,只有「区间内每一点都在 eps 内」才丢弃中间点。
+  // (旧版只比对相邻点,慢速微动(睡觉呼吸 ~0.05px/帧)会被整段抹平成直线 → 回卷处跳变抽搐。)
+  const MAXRUN = 240; // 纯静止段封顶,避免 O(n²) 退化
+  const keptIdx = [0]; let anchor = 0;
+  for (let i = 2; i < raw.length; i++) {
+    const A = raw[anchor], B = raw[i], span = B.t - A.t;
+    let ok = span <= MAXRUN;
+    for (let j = anchor + 1; j < i && ok; j++) {
+      const C = raw[j];
+      for (let d = 0; d < dims; d++) {
+        const pred = span === 0 ? A.v[d] : A.v[d] + (B.v[d] - A.v[d]) * (C.t - A.t) / span;
+        if (Math.abs(pred - C.v[d]) > eps[d]) { ok = false; break; }
+      }
+    }
+    if (!ok) { anchor = i - 1; keptIdx.push(anchor); }
+  }
+  const last = raw.length - 1;
+  if (keptIdx[keptIdx.length - 1] !== last) keptIdx.push(last);
+  return keptIdx.map((idx) => ({ t: raw[idx].t, s: raw[idx].v.slice() }));
 }
 const anim = (fn, dims, total, eps) => {
   const k = bakeTrack(fn, dims, total, eps);
@@ -233,7 +248,7 @@ function osc(name, f, w) {
       d.tailDy = 6 * Math.sin(TAU * f / 40) * w;             // 尾巴无重力飘
       break;
     }
-    case "sleep": d.rigDy = 5 * Math.sin(TAU * t / 3.2) * w; break;
+    case "sleep": d.rigDy = 5 * Math.sin(TAU * f / 140) * w; break; // 慢呼吸:周期 140=循环体长 → 无缝(192 不整除会抽搐)
     case "feed": {
       // 仰头期待 → 起跳接住 → 落地压扁 → 咀嚼 → 满足摇尾冒心(饼干/心为 prop)。
       const seg = SEGS[segAt(f)]; const p = clamp01((f - seg.start) / seg.dur);
@@ -478,8 +493,9 @@ function build(CFG, breed) {
       s: anim((f) => { const v = zzTrack(f, period, phase).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]),
     });
   };
-  add("zzBig", zzLayer("zzBig", 32, 7.5, -1.2, Z4, 4, 96, 0));
-  add("zzSmall", zzLayer("zzSmall", 33, 9.2, -2, Z3, 3, 96, 48));
+  // Zz 周期 70 整除睡觉循环体 140(96 不整除会在循环回卷处让 Zz 跳变=抽搐)。
+  add("zzBig", zzLayer("zzBig", 32, 7.5, -1.2, Z4, 4, 70, 0));
+  add("zzSmall", zzLayer("zzSmall", 33, 9.2, -2, Z3, 3, 70, 35));
   {
     const bw = 1.6 * CELL, bh = 1.3 * CELL; const bx = cx(10.5), by = cy(-1.4);
     const bubO = (f) => { if (!inState(f, "click")) return 0; const s = SEGS[segAt(f)]; const p = clamp01((f - s.start) / s.dur); return p < 0.12 ? (p / 0.12) * 100 : p < 0.7 ? 100 : (1 - (p - 0.7) / 0.3) * 100; };
