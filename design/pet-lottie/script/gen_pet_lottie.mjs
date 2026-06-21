@@ -160,13 +160,16 @@ function osc(name, f, w) {
   const d = {}; const t = f / FR;
   switch (name) {
     case "peek": {
-      // 从台下弹出:快速上冲到位 → 轻微过冲 → 阻尼回弹安定(一次性)。
+      // 史诗登场:从台下猛窜起(快冲)→ 过冲 → 落定压一下 + 扬尘 → 阻尼回弹安定(一次性)。
       const seg = SEGS[0]; const p = clamp01((f - seg.start) / seg.dur);
-      const e = easeOut(Math.min(1, p / 0.66));
-      let rise = (1 - e) * 178;                                                    // 主体上冲(0.66 到位)
-      if (p > 0.66) { const q = (p - 0.66) / 0.34; rise += -12 * Math.sin(Math.PI * q) * Math.exp(-2.2 * q); } // 过冲回弹
+      const e = easeOut(Math.min(1, p / 0.58));
+      let rise = (1 - e) * 188, sq = 0;                                            // 主体上冲(0.58 到位,更猛)
+      if (p > 0.58) { const q = (p - 0.58) / 0.42; rise += -14 * Math.sin(Math.PI * q) * Math.exp(-2.0 * q); // 过冲回弹
+        sq = 0.4 * Math.sin(Math.PI * Math.min(1, q / 0.3)) * Math.exp(-2.5 * q); }                          // 落定压一下
       d.rigDy = rise;
-      d.headDy = (p > 0.5 ? -2.5 * Math.sin(Math.PI * (p - 0.5) / 0.5) : 0) * w;    // 到位时轻抬下巴
+      d.rigSc = -0.12 * sq * w; d.rigSx = 0.18 * sq * w;
+      d.earSy = (p > 0.5 ? 0.35 * Math.exp(-3 * (p - 0.5)) : 0) * w;               // 冒头时耳朵警觉一立
+      d.headDy = (p > 0.5 ? -2.5 * Math.sin(Math.PI * (p - 0.5) / 0.5) : 0) * w;
       break;
     }
     case "idle": {
@@ -188,13 +191,16 @@ function osc(name, f, w) {
       break;
     }
     case "running": {
-      // 清晰奔跑步态:大幅交替蹬腿 + 颠簸 + 尾巴飞甩。步频 6步/循环(20帧)→ 无缝。
+      // 清晰奔跑步态:大幅交替蹬腿 + 颠簸 + 触地压扁/腾空拉伸 + 尾巴飞甩。步频 6步/循环(20帧)→ 无缝。
       const ph = TAU * f / 20;
+      const bounce = Math.abs(Math.sin(ph));               // 0 触地 1 腾空
       d.legLDx = 13 * Math.sin(ph) * w; d.legLDy = -13 * Math.max(0, Math.sin(ph)) * w;
       d.legRDx = 13 * Math.sin(ph + Math.PI) * w; d.legRDy = -13 * Math.max(0, Math.sin(ph + Math.PI)) * w;
-      d.rigDy = -9 * Math.abs(Math.sin(ph)) * w;          // 腾空颠簸(pose 已含 -3 前压)
-      d.headDy = -2 * Math.abs(Math.sin(ph)) * w;         // 头随步频前压
-      d.tailDy = -14 * Math.sin(TAU * f / 10) * w;        // 尾巴高频飞甩
+      d.rigDy = -9 * bounce * w;                           // 腾空颠簸(pose 已含 -3 前压)
+      const sq = 0.14 - 0.24 * bounce;                     // 触地压扁(+0.14)/ 腾空拉伸(-0.10)
+      d.rigSc = -0.10 * sq * w; d.rigSx = 0.15 * sq * w;
+      d.headDy = -2 * bounce * w;                          // 头随步频前压
+      d.tailDy = -14 * Math.sin(TAU * f / 10) * w;         // 尾巴高频飞甩
       break;
     }
     case "success": {
@@ -239,12 +245,14 @@ function osc(name, f, w) {
       break;
     }
     case "play": {
-      // 玩耍:连续欢快弹跳,落地挤压(矮宽)+ 狂摇尾。跳频 4跳/循环(30帧)。
-      const ph = TAU * f / 30;
-      const air = Math.abs(Math.sin(ph));
-      d.rigDy = -22 * air * w;                               // 弹跳
-      d.rigSc = -0.10 * (1 - air) * w; d.rigSx = 0.14 * (1 - air) * w; // 落地压扁
-      d.headDy = -3 * air * w;                               // 头随腾空抬
+      // 史诗玩耍:连续弹跳,每跳 触地压扁(矮宽)→ 腾空拉伸(高瘦)+ 耳朵上扬 + 狂摇尾 + 落地扬尘。
+      const cyc = (f % 30) / 30;                              // 一跳周期(4跳/循环,30帧)
+      const up = 24 * Math.sin(Math.PI * cyc);               // 抛物线弹跳
+      const sq = 0.42 * Math.cos(TAU * cyc);                 // 触地 +0.42 压扁 / 顶 -0.42 拉伸
+      d.rigDy = -up * w;
+      d.rigSc = -0.12 * sq * w; d.rigSx = 0.18 * sq * w;
+      d.earSy = 0.3 * Math.sin(Math.PI * cyc) * w;           // 腾空耳朵上扬
+      d.headDy = -2 * Math.sin(Math.PI * cyc) * w;           // 头随腾空抬
       d.tailDy = -16 * Math.sin(TAU * f / 12) * w;           // 狂摇尾
       break;
     }
@@ -374,6 +382,8 @@ function shadowK(f) {
 function dustAge(f) {
   if (inState(f, "success")) { const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur; if (p >= 0.50 && p < 0.66) return (p - 0.50) / 0.16; }
   if (inState(f, "feed")) { const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur; if (p >= 0.33 && p < 0.47) return (p - 0.33) / 0.14; }
+  if (inState(f, "play")) { const cyc = (f % 30) / 30; if (cyc < 0.34) return cyc / 0.34; }      // 每跳落地都扬尘(周期 30)
+  if (inState(f, "peek")) { const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur; if (p >= 0.58 && p < 0.82) return (p - 0.58) / 0.24; } // 窜出落定扬尘
   return -1;
 }
 function dustPuff(f, side) { // side -1 左 / +1 右:落地瞬间在脚边迸出,外扩+上飘+变大+淡出
