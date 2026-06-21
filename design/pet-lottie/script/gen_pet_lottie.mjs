@@ -113,29 +113,30 @@ const inState = (f, ...names) => names.includes(SEGS[segAt(f)].name);
 
 // ---- 姿态(平移/缩放,单位 = CELL28 px;运行时按 SC 缩放)--------
 const REST = {
-  rigDx: 0, rigDy: 0, rigSx: 1, rigSc: 1, headDx: 0, headDy: 0, earDy: 0,
+  rigDx: 0, rigDy: 0, rigSx: 1, rigSc: 1, headDx: 0, headDy: 0, earSy: 1,
   legLDx: 0, legLDy: 0, legRDx: 0, legRDy: 0, tailDx: 0, tailDy: 0, eyeSy: 1,
 };
-// earDy 负 = 立耳(耳尖上扬);只有立耳品种(西高地/德牧)有耳层,垂耳品种无层 → 自动空操作。
+// earSy = 耳尖纵向缩放(>1 立耳变高,锚定在耳根 → 只长高、不平移,永远黏在头上不会飞出去)。
+// 只有立耳品种(西高地/德牧)有耳层;垂耳品种无层 → 自动空操作。耳层位置只随 headDx/headDy(与眼/口同步)。
 const POSE = {
   peek: { ...REST }, idle: { ...REST },
-  typing: { ...REST, headDy: -4, eyeSy: 1.04, earDy: -14 }, // 专注 → 立耳
-  running: { ...REST, headDy: -3, earDy: -8 },               // 奔跑耳后扬
-  success: { ...REST, earDy: -10 },
-  error: { ...REST, rigDy: 8, headDy: 5, eyeSy: 0.28, tailDy: 10, earDy: 8 }, // 沮丧 → 耷耳
-  hover: { ...REST, eyeSy: 0.26, headDy: -2, earDy: -12 },   // 注意到光标 → 立耳
+  typing: { ...REST, headDy: -4, eyeSy: 1.04, earSy: 1.32 }, // 专注 → 立耳
+  running: { ...REST, headDy: -3, earSy: 1.12 },
+  success: { ...REST, earSy: 1.18 },
+  error: { ...REST, rigDy: 8, headDy: 5, eyeSy: 0.28, tailDy: 10 }, // 沮丧:耳不立(放松)
+  hover: { ...REST, eyeSy: 0.26, headDy: -2, earSy: 1.3 },   // 注意到光标 → 立耳
   click: { ...REST, headDx: 12, headDy: 6 },
-  play: { ...REST, earDy: -8 },
+  play: { ...REST, earSy: 1.18 },
   drag: { ...REST, rigDy: -46, legLDy: 13, legRDy: 13, eyeSy: 1.08 },
   sleep: { ...REST, rigDy: 12, eyeSy: 0.16, legLDy: -26, legRDy: -26 }, // 收腿+眯眼+下沉(呼吸在 osc)
   // ── 投喂 + 活物引擎微动作(osc 驱动细节)──
-  feed: { ...REST, earDy: -6 }, // 仰头等→接住跳→咀嚼→爱心(饼干为 prop)
+  feed: { ...REST, earSy: 1.12 }, // 仰头等→接住跳→咀嚼→爱心(饼干为 prop)
   scratch: { ...REST, headDx: 5, eyeSy: 0.5 }, // 抓痒:歪头眯眼 + 后爪抖(osc)
   lickpaw: { ...REST, headDy: 9 }, // 舔爪:头低就爪(osc 抬前爪 + 舔)
   spin: { ...REST }, // 追尾转圈:绕地面小圈兜跑(osc 驱动,不挤压不翻转)
   stretch: { ...REST }, // 伸懒腰作揖:前低后翘(osc)
-  lookout: { ...REST, headDx: 14, headDy: -3, eyeSy: 1.06, earDy: -18 }, // 望屏外:扭头 + 警觉立耳
-  earperk: { ...REST, earDy: -22, eyeSy: 1.05 }, // 竖耳微动作:警觉立耳 + 耳尖抖(osc)
+  lookout: { ...REST, headDx: 14, headDy: -3, eyeSy: 1.06, earSy: 1.4 }, // 望屏外:扭头(耳随头平移)+ 警觉立耳
+  earperk: { ...REST, earSy: 1.58, eyeSy: 1.05 }, // 竖耳微动作:强立耳 + 耳尖抖(osc)
 };
 function osc(name, f, w) {
   const d = {}; const t = f / FR;
@@ -165,7 +166,7 @@ function osc(name, f, w) {
       d.legRDx = 2 * w; d.legRDy = -6 * Math.max(0, Math.sin(tap + Math.PI)) * w;   // 右爪反相敲键
       d.headDy = 1.5 * Math.sin(tap) * w;                 // 随敲键专注小点头
       d.tailDy = -3 * Math.sin(TAU * f / 40) * w;
-      d.earDy = -1.5 * Math.abs(Math.sin(TAU * f / 30)) * w; // 耳尖随敲键轻抖(立耳品种)
+      d.earSy = 0.06 * Math.abs(Math.sin(TAU * f / 30)) * w; // 耳尖随敲键轻抖(立耳品种)
       break;
     }
     case "running": {
@@ -291,13 +292,13 @@ function osc(name, f, w) {
       d.headDy = -1 * Math.abs(Math.sin(TAU * f / 60)) * w;
       d.rigDy = -1.5 * Math.abs(Math.sin(TAU * f / 120)) * w; // 踮脚张望
       d.tailDy = -5 * Math.sin(TAU * f / 40) * w;           // 好奇轻摇尾
-      d.earDy = -2 * Math.abs(Math.sin(TAU * f / 20)) * w;  // 耳尖警觉轻抖(立耳品种)
+      d.earSy = 0.08 * Math.abs(Math.sin(TAU * f / 20)) * w;  // 耳尖警觉轻抖(立耳品种)
       break;
     }
     case "earperk": {
       // 竖耳微动作:双耳立起(pose)+ 耳尖快速抖动 + 偶尔歪头听声(立耳品种才有耳层)。
-      d.earDy = -3 * Math.abs(Math.sin(TAU * f / 15)) * w;  // 耳尖抖(8次/循环)
-      d.headDx = 2.5 * Math.sin(TAU * f / 60) * w;          // 歪头循声
+      d.earSy = 0.12 * Math.abs(Math.sin(TAU * f / 15)) * w;  // 耳尖抖(8次/循环,变高)
+      d.headDx = 2.5 * Math.sin(TAU * f / 60) * w;            // 歪头循声
       d.tailDy = -4 * Math.sin(TAU * f / 40) * w;
       break;
     }
@@ -415,7 +416,10 @@ function build(CFG, breed) {
   const legLAnchor = [avg(parts.legL, (c) => cx(c.col)), cy(ROWS - 1)];
   const legRAnchor = [avg(parts.legR, (c) => cx(c.col)), cy(ROWS - 1)];
   const tailAnchor = parts.tail.length ? [avg(parts.tail, (c) => cx(c.col)), avg(parts.tail, (c) => cy(c.row))] : [0, 0];
-  const earAnchor = parts.ears.length ? [avg(parts.ears, (c) => cx(c.col)), avg(parts.ears, (c) => cy(c.row))] : [0, 0];
+  // 耳锚定在「耳根」(最低耳格的下缘)→ earSy 纵向缩放只让耳尖向上长高,耳根不动(不会飞)。
+  const earAnchor = parts.ears.length
+    ? [avg(parts.ears, (c) => cx(c.col)), cy(Math.max(...parts.ears.map((c) => c.row))) + CELL / 2]
+    : [0, 0];
   const cxc = (W - 0) / 2; // 箱心 x
 
   // 背景/岗台(仅 player)
@@ -443,9 +447,11 @@ function build(CFG, breed) {
   add("eyes", Lyr("eyes", 10, IND.rig, eyeAnchor, cellsToShapes(parts.eyes),
     { p: anim((f) => { const P = poseAt(f); return [eyeAnchor[0] + P.headDx * SC, eyeAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
       s: anim((f) => [100, poseAt(f).eyeSy * 100, 100], 3, TOTAL, [0.4, 1, 0.4]) }));
-  // 耳尖(立耳品种):随头动 + earDy 立起/耷下(base 已留同色兜底,平移不露缝)
+  // 耳尖(立耳品种):位置只随头动(headDx/headDy,与眼/口同步,永不脱离头部);
+  // 立耳 = earSy 纵向缩放(锚在耳根 → 只向上长高)。base 留同色兜底,缩放不露缝。
   if (parts.ears.length) add("ears", Lyr("ears", 9, IND.rig, earAnchor, cellsToShapes(parts.ears),
-    { p: anim((f) => { const P = poseAt(f); return [earAnchor[0] + P.headDx * SC, earAnchor[1] + (P.headDy + P.earDy) * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]) }));
+    { p: anim((f) => { const P = poseAt(f); return [earAnchor[0] + P.headDx * SC, earAnchor[1] + P.headDy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+      s: anim((f) => [100, poseAt(f).earSy * 100, 100], 3, TOTAL, [0.4, 1, 0.4]) }));
 
   // 根 null(全局升降/拖拽悬空)
   add("rig", Null("rig", IND.rig, null, [cxc, SHELF_Y], {
