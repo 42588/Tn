@@ -23,6 +23,7 @@ const hex = (h) => { const n = parseInt(h, 16); return [((n >> 16) & 255) / 255,
 const COL = {
   heart: hex("F08C98"), zz: hex("69748E"), accent: hex("5BE7C4"),
   bg: hex("0E1422"), shelf: hex("2A3550"), bubble: hex("232C42"), biscuit: hex("C99052"),
+  shadow: hex("04060B"), dust: hex("9BA4B4"), // 接地阴影(近黑冷,暗终端上才有对比)/ 像素扬尘(冷灰)
 };
 const COLOR_OF = {
   W: hex("F4F1E1"), P: hex("FFAAAB"), K: hex("323F49"), G: hex("F2C867"), D: hex("DAA14A"),
@@ -106,8 +107,10 @@ const stat = (v) => ({ a: 0, k: v });
 
 // ---- 缓动 --------------------------------------------------------
 const clamp01 = (x) => Math.max(0, Math.min(1, x));
+const clamp = (x, lo, hi) => Math.max(lo, Math.min(hi, x));
 const easeInOut = (t) => { t = clamp01(t); return t * t * (3 - 2 * t); };
 const easeOut = (t) => { t = clamp01(t); return 1 - Math.pow(1 - t, 3); };
+const easeIn = (t) => { t = clamp01(t); return t * t * t; };
 const lerp = (a, b, t) => a + (b - a) * t;
 const TAU = Math.PI * 2;
 
@@ -195,16 +198,22 @@ function osc(name, f, w) {
       break;
     }
     case "success": {
-      // 蓄力 → 腾空大跳 → 落地 → 小回弹,全程挤压拉伸(sq>0 矮宽 / sq<0 高瘦)+ 狂摇尾。
+      // 史诗庆祝(迪士尼分镜):蓄力下蹲 → 爆发拉伸起跳 → 滞空(减速悬停)→ 重落地压扁(分量)
+      // → 渐弱回弹安定。耳朵起跳上扬、头领先、尾巴狂摇 + 起跳/落地的甩尾跟随。
       const seg = SEGS[segAt(f)]; const p = clamp01((f - seg.start) / seg.dur);
-      let dy = 0, sq = 0;
-      if (p < 0.12) { const q = p / 0.12; dy = 5 * q; sq = 0.5 * q; }                               // 下蹲蓄力(压扁)
-      else if (p < 0.50) { const q = (p - 0.12) / 0.38; dy = -34 * Math.sin(Math.PI * q); sq = -0.4 * Math.sin(Math.PI * q); } // 腾空大跳(拉伸)
-      else if (p < 0.60) { const q = (p - 0.50) / 0.10; dy = 5 * Math.sin(Math.PI * q); sq = 0.6 * Math.sin(Math.PI * q); }    // 落地压扁
-      else if (p < 0.82) { const q = (p - 0.60) / 0.22; dy = -14 * Math.sin(Math.PI * q); sq = -0.18 * Math.sin(Math.PI * q); } // 小回弹
-      d.rigDy = dy * w;
-      d.rigSc = -0.12 * sq * w; d.rigSx = 0.18 * sq * w;   // 落地矮宽 / 腾空高瘦
-      d.tailDy = -16 * Math.sin(TAU * 3.4 * t) * w;        // 狂摇尾庆祝
+      let up = 0, sq = 0; // up 正=离地;sq 正=压扁(矮宽)
+      if (p < 0.15) { const q = easeOut(p / 0.15); up = -7 * q; sq = 0.62 * q; }                                  // ① 蓄力下蹲(聚气压扁)
+      else if (p < 0.24) { const q = easeIn((p - 0.15) / 0.09); up = lerp(-7, 28, q); sq = lerp(0.62, -0.5, q); }  // ② 爆发起跳(高瘦拉伸)
+      else if (p < 0.38) { const q = easeOut((p - 0.24) / 0.14); up = lerp(28, 40, q); sq = lerp(-0.5, -0.05, q); } // ③ 升顶减速(滞空)
+      else if (p < 0.50) { const q = easeIn((p - 0.38) / 0.12); up = lerp(40, 0, q); sq = lerp(-0.05, 0.1, q); }   // ④ 加速下坠
+      else if (p < 0.57) { const q = (p - 0.50) / 0.07; up = lerp(0, -6, Math.sin(Math.PI * q)); sq = 0.74 * Math.sin(Math.PI * q); } // ⑤ 重落地压扁(分量!)
+      else if (p < 0.73) { const q = (p - 0.57) / 0.16; up = 16 * Math.sin(Math.PI * q); sq = -0.22 * Math.sin(Math.PI * q); }        // ⑥ 回弹一(高瘦)
+      else if (p < 0.85) { const q = (p - 0.73) / 0.12; up = -3 * Math.sin(Math.PI * q); sq = 0.24 * Math.sin(Math.PI * q); }         // ⑦ 落定小压
+      d.rigDy = -up * w;
+      d.rigSc = -0.12 * sq * w; d.rigSx = 0.18 * sq * w;
+      d.earSy = (p > 0.15 && p < 0.55 ? 0.35 * Math.sin(Math.PI * clamp01((p - 0.15) / 0.4)) : 0) * w; // 起跳~滞空耳朵上扬
+      d.headDy = (p > 0.15 && p < 0.5 ? -3 : p >= 0.5 && p < 0.57 ? 4 : 0) * w;                         // 头领先(起跳上抬/落地下压)
+      d.tailDy = (-16 * Math.sin(TAU * 3.4 * t) - 10 * Math.sin(Math.PI * clamp01((p - 0.15) / 0.12))) * w; // 狂摇 + 起跳甩尾跟随
       break;
     }
     case "error": {
@@ -356,7 +365,31 @@ function zzTrack(f, period, phase) {
   const o = cyc < 0.2 ? cyc / 0.2 : 1 - (cyc - 0.2) / 0.8;
   return { o: clamp01(o) * 90, dy: -44 * cyc, s: 60 + 55 * cyc };
 }
+// 接地阴影随抬升量(-rigDy)缩放+变淡:腾空越高越小越淡,下压(rigDy>0)略胀 → 重量/接地感。
+function shadowK(f) {
+  const lift = -poseAt(f).rigDy; // 正 = 离地
+  return { sx: clamp(1 - lift / 58, 0.34, 1.18), op: clamp(1 - lift / 46, 0.22, 1.12) };
+}
+// 落地扬尘:返回最近一次落地后的进度 age∈[0,1)(否则 -1)。接 success/feed 的落地点。
+function dustAge(f) {
+  if (inState(f, "success")) { const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur; if (p >= 0.50 && p < 0.66) return (p - 0.50) / 0.16; }
+  if (inState(f, "feed")) { const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur; if (p >= 0.33 && p < 0.47) return (p - 0.33) / 0.14; }
+  return -1;
+}
+function dustPuff(f, side) { // side -1 左 / +1 右:落地瞬间在脚边迸出,外扩+上飘+变大+淡出
+  const a = dustAge(f); if (a < 0) return { o: 0, dx: 0, dy: 0, s: 50 };
+  const o = a < 0.22 ? a / 0.22 : 1 - (a - 0.22) / 0.78;
+  return { o: clamp01(o) * 68, dx: side * (3 + 9 * a), dy: -2 - 7 * a, s: 50 + 95 * a };
+}
 const HEART = [[1, 0], [3, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [1, 3], [2, 3], [3, 3], [2, 4]];
+// 接地阴影:9×3 扁像素椭圆(比站姿宽,两侧露出可见;中行最宽)。
+const SHADOW = [
+  [2, 0], [3, 0], [4, 0], [5, 0], [6, 0],
+  [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [5, 1], [6, 1], [7, 1], [8, 1],
+  [2, 2], [3, 2], [4, 2], [5, 2], [6, 2],
+];
+// 落地扬尘:小团像素。
+const PUFF = [[1, 0], [0, 1], [1, 1], [2, 1], [1, 2]];
 const Z4 = [[0, 0], [1, 0], [2, 0], [3, 0], [2, 1], [1, 2], [0, 3], [1, 3], [2, 3], [3, 3]];
 const Z3 = [[0, 0], [1, 0], [2, 0], [1, 1], [0, 2], [1, 2], [2, 2]];
 
@@ -474,6 +507,33 @@ function build(CFG, breed) {
     s: anim((f) => { const P = poseAt(f); return [P.rigSx * P.rigSc * 100, P.rigSc * 100, 100]; }, 3, TOTAL, [0.5, 0.5, 0.5]), // 追尾转圈:纵深缩放(rigSc),无水平挤压
   }));
 
+  // 接地阴影:不挂 rig(留在地面),随抬升量缩放变淡、随 rigDx 横移 —— 重量/接地感的地基。
+  // 比站姿宽(两侧露出可见)、压扁、压低到爪线之下,深色高不透明 → 暗终端上也看得见。
+  {
+    const ssz = CELL * 0.92, sw = 9, sh = 3;
+    const fx = cxc, fy = bg ? SHELF_Y - Math.round(CELL * 0.05) : cy(ROWS - 1) + CELL * 0.72;
+    add("shadow", Lyr("shadow", 8, null, [fx, fy],
+      patchShapes(SHADOW, fx - sw * ssz / 2, fy - sh * ssz / 2, ssz, COL.shadow), {
+        p: anim((f) => [fx + poseAt(f).rigDx * SC, fy, 0], 3, TOTAL, [0.3, 0.3, 0.3]),
+        s: anim((f) => { const k = shadowK(f); return [k.sx * 100, k.sx * 60, 100]; }, 3, TOTAL, [0.5, 0.5, 0.5]), // Y 压扁成薄水洼
+        o: anim((f) => [70 * shadowK(f).op], 1, TOTAL, [1]),
+      }));
+  }
+  // 落地扬尘:脚边左右各一团,落地瞬间迸出(不挂 rig,留在落点)。
+  {
+    const dsz = CELL * 0.5, pw = 3 * dsz;
+    const fy = bg ? SHELF_Y - Math.round(CELL * 0.2) : cy(ROWS - 1) + CELL * 0.4;
+    for (const side of [-1, 1]) {
+      const nm = side < 0 ? "dustL" : "dustR"; const bx = cxc + side * CELL * 1.7;
+      add(nm, Lyr(nm, side < 0 ? 6 : 7, null, [bx, fy],
+        patchShapes(PUFF, bx - pw / 2, fy - pw / 2, dsz, COL.dust), {
+          o: anim((f) => [dustPuff(f, side).o], 1, TOTAL, [2]),
+          p: anim((f) => { const d = dustPuff(f, side); return [bx + d.dx * SC, fy + d.dy * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+          s: anim((f) => { const v = dustPuff(f, side).s; return [v, v, 100]; }, 3, TOTAL, [0.6, 0.6, 0.6]),
+        }));
+    }
+  }
+
   // 道具:像素爱心 / Z / bark 气泡(位置以格坐标,随尺度走)
   const heartLayer = (nm, ind, gcol, grow, period, phase, onlyPlay) => {
     const s = 1.8 * CELL / 5; const bx = cx(gcol), by = cy(grow); const w = 5 * s;
@@ -521,7 +581,7 @@ function build(CFG, breed) {
     }));
   }
 
-  let ORDER = ["bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "ears", "base", "tail", "legL", "legR"];
+  let ORDER = ["dustL", "dustR", "bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "ears", "base", "tail", "legL", "legR", "shadow"];
   if (bg) ORDER = [...ORDER, "shelfph", "shelf", "background"];
   ORDER = [...ORDER, "rig"];
   const layers = ORDER.map((n) => STORE.get(n)).filter(Boolean); // tongue/tail 等空层按品种缺省

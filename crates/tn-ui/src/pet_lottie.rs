@@ -383,6 +383,73 @@ mod tests {
         }
     }
 
+    /// 接地阴影验收:golden success 整段 12 帧(腾空时影子应缩小变淡、落地胀大),
+    /// 末尾补 idle/drag/sleep 静态参照(drag 悬空影子最小、sleep 下压影子最大)。
+    #[test]
+    fn renders_shadow_check() {
+        let asset_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/pet");
+        let json = std::fs::read_to_string(asset_dir.join("golden.json")).unwrap();
+        let pet = PetLottie::parse(&json).expect("parse");
+        let scale = 5.0;
+        let cols = 12u32;
+        let (_, w, h) = pet.render_rgba(0.0, scale);
+        let refs = ["idle", "drag", "sleep"];
+        // 暗终端底色合成(直通 alpha over),才能真实判断阴影在暗背景上是否可见。
+        let bg = [14u8, 20, 34, 255];
+        let mut sheet = image::RgbaImage::from_pixel(w * cols, h * 2, image::Rgba(bg));
+        let blit = |sheet: &mut image::RgbaImage, frame: &image::RgbaImage, ox: u32, oy: u32| {
+            for y in 0..frame.height().min(h) {
+                for x in 0..frame.width().min(w) {
+                    let s = frame.get_pixel(x, y).0; let a = s[3] as f32 / 255.0;
+                    let mut out = [0u8; 4];
+                    for c in 0..3 { out[c] = (s[c] as f32 * a + bg[c] as f32 * (1.0 - a)).round() as u8; }
+                    out[3] = 255;
+                    sheet.put_pixel(ox + x, oy + y, image::Rgba(out));
+                }
+            }
+        };
+        let succ = pet.marker("success").unwrap();
+        for ci in 0..cols {
+            let f = succ.start + succ.dur * (ci as f32) / (cols as f32);
+            let (rgba, fw, fh) = pet.render_rgba(f, scale);
+            let frame = image::RgbaImage::from_raw(fw, fh, rgba).unwrap();
+            blit(&mut sheet, &frame, ci * w, 0);
+        }
+        for (ci, name) in refs.iter().enumerate() {
+            let m = pet.marker(name).unwrap();
+            let (rgba, fw, fh) = pet.render_rgba(m.start + m.dur * 0.5, scale);
+            let frame = image::RgbaImage::from_raw(fw, fh, rgba).unwrap();
+            blit(&mut sheet, &frame, ci as u32 * w, h);
+        }
+        let out = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../design/pet-lottie");
+        let _ = std::fs::create_dir_all(&out);
+        sheet.save(out.join("_rs_shadow.png")).unwrap();
+
+        // 高分辨率单帧放大:idle / success 落地(p0.54)/ drag,看清阴影质感。
+        let zs = 11.0;
+        let (_, zw, zh) = pet.render_rgba(0.0, zs);
+        let zframes: [(f32, &str); 3] = [
+            (pet.marker("idle").unwrap().start as f32 + 50.0, "idle"),
+            (succ.start + succ.dur * 0.54, "land"),
+            (pet.marker("drag").unwrap().start as f32 + 50.0, "drag"),
+        ];
+        let mut zoom = image::RgbaImage::from_pixel(zw * 3, zh, image::Rgba(bg));
+        for (ci, (f, _)) in zframes.iter().enumerate() {
+            let (rgba, fw, fh) = pet.render_rgba(*f, zs);
+            let s = image::RgbaImage::from_raw(fw, fh, rgba).unwrap();
+            for y in 0..fh.min(zh) {
+                for x in 0..fw.min(zw) {
+                    let px = s.get_pixel(x, y).0; let a = px[3] as f32 / 255.0;
+                    let mut o = [0u8; 4];
+                    for c in 0..3 { o[c] = (px[c] as f32 * a + bg[c] as f32 * (1.0 - a)).round() as u8; }
+                    o[3] = 255;
+                    zoom.put_pixel(ci as u32 * zw + x, y, image::Rgba(o));
+                }
+            }
+        }
+        zoom.save(out.join("_rs_shadow_zoom.png")).unwrap();
+    }
+
     /// 立耳品种竖耳验收:西高地/德牧 在 idle(静)/typing(立)/earperk(强立+抖)/lookout(警觉)/error(耷)
     /// 的耳尖高度对比。垂耳金毛作对照(应无变化)。
     #[test]
