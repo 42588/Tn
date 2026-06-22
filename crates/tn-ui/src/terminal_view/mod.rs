@@ -3079,18 +3079,20 @@ impl Render for TerminalView {
             None
         } else {
             let t0 = self.perf.enabled().then(Instant::now); // zero-cost when TN_PERF off
-            let snap = self.terminal.lock().unwrap().snapshot();
-            let rows = Rc::new(snap.row_runs());
+            // Single-pass per-frame extraction: render_frame builds the row runs +
+            // cursor/scroll straight from the grid, without snapshot()'s intermediate
+            // `Vec<SnapshotCell>` + second scatter (≈ halves the per-rebuild allocs).
+            let frame = self.terminal.lock().unwrap().render_frame();
             self.render_cache = Some(RenderCache {
                 generation,
-                rows,
-                cursor: snap.cursor,
-                cursor_shape: snap.cursor_shape,
-                cursor_visible: snap.cursor_visible,
-                scroll_offset: snap.scroll_offset,
-                scroll_history: snap.scroll_history,
-                fg: snap.fg,
-                bg: snap.bg,
+                rows: Rc::new(frame.rows),
+                cursor: frame.cursor,
+                cursor_shape: frame.cursor_shape,
+                cursor_visible: frame.cursor_visible,
+                scroll_offset: frame.scroll_offset,
+                scroll_history: frame.scroll_history,
+                fg: frame.fg,
+                bg: frame.bg,
             });
             t0.map(|t| t.elapsed())
         };

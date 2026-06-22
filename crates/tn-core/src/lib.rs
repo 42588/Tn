@@ -227,7 +227,7 @@ pub struct SnapshotCell {
 /// A contiguous run of cells sharing fg/bg/style — the unit the renderer draws
 /// (one styled box of text), so it doesn't emit one element per cell. Style is
 /// exposed as plain bools so the UI needn't depend on alacritty's `Flags`.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CellRun {
     pub text: smol_str::SmolStr,
     pub fg: Rgb,
@@ -370,7 +370,10 @@ impl TerminalSnapshot {
     /// `Vec<CellRun>` is one visible row, left to right.
     pub fn row_runs(&self) -> Vec<Vec<CellRun>> {
         // Reconstruct a rows x cols grid (display_iter already yields every
-        // visible cell, but missing slots fall back to default blanks).
+        // visible cell, but missing slots fall back to default blanks), then batch
+        // it into runs. The engine's `render_frame` builds the same flat grid
+        // straight from `renderable_content` (no intermediate `cells` Vec) and
+        // calls the same `build_runs` — see that for the per-frame fast path.
         let blank = SnapshotCell {
             row: 0,
             col: 0,
@@ -379,78 +382,80 @@ impl TerminalSnapshot {
             bg: self.bg,
             flags: Flags::empty(),
         };
-        // One flat rows*cols buffer instead of a Vec-of-Vecs. The old shape was
-        // `self.rows + 1` separate heap allocations rebuilt on every new-output
-        // frame (this runs once per generation bump — see the render cache); the
-        // flat buffer is a single allocation with better locality for the scatter
-        // + row scan below. Semantics are identical (same blank padding, same
-        // out-of-range guard).
         let mut grid = vec![blank; self.rows * self.cols];
         for cell in &self.cells {
             if cell.row < self.rows && cell.col < self.cols {
                 grid[cell.row * self.cols + cell.col] = *cell;
             }
         }
-        let mut out = Vec::with_capacity(self.rows);
-        let mut current_text = String::with_capacity(256);
-        for r in 0..self.rows {
-            let row = &grid[r * self.cols..(r + 1) * self.cols];
-            let mut runs: Vec<CellRun> = Vec::new();
-            current_text.clear();
-            let mut last_wide = false;
-            for cell in row {
-                if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
-                    || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
-                {
-                    continue;
-                }
-                let ch = if cell.c == '\0' { ' ' } else { cell.c };
-                let wide = cell.flags.contains(Flags::WIDE_CHAR);
-                let span = if wide { 2 } else { 1 };
-                let bold = cell.flags.contains(Flags::BOLD);
-                let italic = cell.flags.contains(Flags::ITALIC);
-                let underline = cell.flags.contains(Flags::UNDERLINE);
-
-                let merge = if let Some(r) = runs.last() {
-                    !wide
-                        && !last_wide
-                        && r.fg == cell.fg
-                        && r.bg == cell.bg
-                        && r.bold == bold
-                        && r.italic == italic
-                        && r.underline == underline
-                } else {
-                    false
-                };
-
-                if merge {
-                    current_text.push(ch);
-                    runs.last_mut().unwrap().cols += span;
-                } else {
-                    if let Some(r) = runs.last_mut() {
-                        r.text = smol_str::SmolStr::new(&current_text);
-                    }
-                    current_text.clear();
-                    current_text.push(ch);
-                    runs.push(CellRun {
-                        text: smol_str::SmolStr::default(),
-                        fg: cell.fg,
-                        bg: cell.bg,
-                        bold,
-                        italic,
-                        underline,
-                        cols: span,
-                    });
-                }
-                last_wide = wide;
-            }
-            if let Some(r) = runs.last_mut() {
-                r.text = smol_str::SmolStr::new(&current_text);
-            }
-            out.push(runs);
-        }
-        out
+        build_runs(&grid, self.rows, self.cols)
     }
+}
+
+/// Batch a flat row-major `rows*cols` cell grid into per-row style runs (the unit
+/// the renderer draws). Shared by [`TerminalSnapshot::row_runs`] and the engine's
+/// per-frame [`Terminal::render_frame`] so both produce byte-identical runs. A
+/// single flat buffer (not a Vec-of-Vecs) keeps this one allocation per call.
+fn build_runs(grid: &[SnapshotCell], rows: usize, cols: usize) -> Vec<Vec<CellRun>> {
+    let mut out = Vec::with_capacity(rows);
+    let mut current_text = String::with_capacity(256);
+    for r in 0..rows {
+        let row = &grid[r * cols..(r + 1) * cols];
+        let mut runs: Vec<CellRun> = Vec::new();
+        current_text.clear();
+        let mut last_wide = false;
+        for cell in row {
+            if cell.flags.contains(Flags::WIDE_CHAR_SPACER)
+                || cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+            {
+                continue;
+            }
+            let ch = if cell.c == '\0' { ' ' } else { cell.c };
+            let wide = cell.flags.contains(Flags::WIDE_CHAR);
+            let span = if wide { 2 } else { 1 };
+            let bold = cell.flags.contains(Flags::BOLD);
+            let italic = cell.flags.contains(Flags::ITALIC);
+            let underline = cell.flags.contains(Flags::UNDERLINE);
+
+            let merge = if let Some(r) = runs.last() {
+                !wide
+                    && !last_wide
+                    && r.fg == cell.fg
+                    && r.bg == cell.bg
+                    && r.bold == bold
+                    && r.italic == italic
+                    && r.underline == underline
+            } else {
+                false
+            };
+
+            if merge {
+                current_text.push(ch);
+                runs.last_mut().unwrap().cols += span;
+            } else {
+                if let Some(r) = runs.last_mut() {
+                    r.text = smol_str::SmolStr::new(&current_text);
+                }
+                current_text.clear();
+                current_text.push(ch);
+                runs.push(CellRun {
+                    text: smol_str::SmolStr::default(),
+                    fg: cell.fg,
+                    bg: cell.bg,
+                    bold,
+                    italic,
+                    underline,
+                    cols: span,
+                });
+            }
+            last_wide = wide;
+        }
+        if let Some(r) = runs.last_mut() {
+            r.text = smol_str::SmolStr::new(&current_text);
+        }
+        out.push(runs);
+    }
+    out
 }
 
 /// Terminal mode bits that affect how keystrokes are encoded into bytes.
@@ -593,6 +598,39 @@ pub struct Terminal {
     swap_in_flight: std::sync::Arc<std::sync::atomic::AtomicBool>,
     swap_result: std::sync::Arc<std::sync::Mutex<Option<std::path::PathBuf>>>,
     swap_gen: u64,
+}
+
+/// The renderer's per-frame payload: batched per-row style runs plus cursor /
+/// scroll metadata. Produced by [`Terminal::render_frame`] in a single pass.
+/// Mirrors the renderable subset of [`TerminalSnapshot`] (it deliberately omits
+/// the raw `cells`, which only `snapshot` consumers — text/url/search — need).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RenderFrame {
+    pub rows: Vec<Vec<CellRun>>,
+    pub cursor: (usize, usize),
+    pub cursor_shape: CursorShape,
+    pub cursor_visible: bool,
+    pub scroll_offset: usize,
+    pub scroll_history: usize,
+    pub fg: Rgb,
+    pub bg: Rgb,
+}
+
+impl RenderFrame {
+    /// Build a frame from a static snapshot (the agent-transcript swap path, where
+    /// the engine serves a frozen [`TerminalSnapshot`] instead of the live grid).
+    fn from_snapshot(s: &TerminalSnapshot) -> Self {
+        Self {
+            rows: s.row_runs(),
+            cursor: s.cursor,
+            cursor_shape: s.cursor_shape,
+            cursor_visible: s.cursor_visible,
+            scroll_offset: s.scroll_offset,
+            scroll_history: s.scroll_history,
+            fg: s.fg,
+            bg: s.bg,
+        }
+    }
 }
 
 impl Terminal {
@@ -991,6 +1029,115 @@ impl Terminal {
     }
 
     /// Build an immutable snapshot of the visible grid.
+    /// Resolve one cell's `(fg, bg)` to RGB, applying the same rules everywhere:
+    /// palette lookup, the legacy-conhost black-bg → default-bg normalization,
+    /// INVERSE swap, then selection override. Shared by [`Self::snapshot`] and
+    /// [`Self::render_frame`] so they never drift.
+    fn resolve_fg_bg(
+        &self,
+        cell_fg: Color,
+        cell_bg: Color,
+        flags: Flags,
+        colors: &Colors,
+        selected: bool,
+    ) -> (Rgb, Rgb) {
+        let mut fg = self.palette.resolve(cell_fg, colors);
+        let mut bg = self.palette.resolve(cell_bg, colors);
+        // Legacy conhost (ConPTY) expresses the console's *default* background as an
+        // explicit ANSI black (`ESC[40m`); blank or just-deleted PSReadLine input
+        // cells then carry it. When the theme's black differs from the terminal
+        // background, those cells render as a stray light band (用户报「输入一行再
+        // 删除后的浅白色遮罩」). Treat a *black background* as the default background
+        // — the near-universal `color0 ≈ background` convention — so it blends and
+        // the renderer's "skip default bg" path drops it. Black *foreground* is
+        // untouched (dark text still draws).
+        let bg_is_black = match cell_bg {
+            Color::Named(n) => n as usize == 0, // NamedColor::Black
+            Color::Indexed(0) => true,
+            _ => false,
+        };
+        if bg_is_black {
+            bg = self.palette.bg;
+        }
+        if flags.contains(Flags::INVERSE) {
+            std::mem::swap(&mut fg, &mut bg);
+        }
+        // Selected cells take the theme's selection colors (baked in, so the run
+        // batcher groups them and the renderer needs no selection logic).
+        if selected {
+            fg = self.palette.selection_fg;
+            bg = self.palette.selection_bg;
+        }
+        (fg, bg)
+    }
+
+    /// The per-frame render path: produce the batched per-row [`CellRun`]s plus
+    /// cursor / scroll metadata in **one pass**, building a single flat `rows*cols`
+    /// grid straight from `renderable_content` — i.e. without [`snapshot`]'s
+    /// intermediate `Vec<SnapshotCell>` and without a second scatter. The UI calls
+    /// this once per generation bump (see the render cache); the result is
+    /// byte-identical to `snapshot().row_runs()` (proved by a unit test).
+    ///
+    /// [`snapshot`]: Self::snapshot
+    pub fn render_frame(&self) -> RenderFrame {
+        if let Some(snap) = &self.swapped_snapshot {
+            return RenderFrame::from_snapshot(snap);
+        }
+        let content = self.term.renderable_content();
+        let offset = content.display_offset as i32;
+        let colors = content.colors;
+        let selection = content.selection;
+        let rows = self.size.rows;
+        let cols = self.size.cols;
+        let blank = SnapshotCell {
+            row: 0,
+            col: 0,
+            c: ' ',
+            fg: self.palette.fg,
+            bg: self.palette.bg,
+            flags: Flags::empty(),
+        };
+        let mut grid = vec![blank; rows * cols];
+        for indexed in content.display_iter {
+            let point = indexed.point;
+            let row = point.line.0 + offset;
+            if row < 0 {
+                continue;
+            }
+            let row = row as usize;
+            let col = indexed.point.column.0;
+            if row >= rows || col >= cols {
+                continue;
+            }
+            let cell = indexed.cell;
+            let selected = selection.as_ref().is_some_and(|s| s.contains(point));
+            let (fg, bg) = self.resolve_fg_bg(cell.fg, cell.bg, cell.flags, colors, selected);
+            grid[row * cols + col] = SnapshotCell {
+                row,
+                col,
+                c: cell.c,
+                fg,
+                bg,
+                flags: cell.flags,
+            };
+        }
+        let cur = content.cursor.point;
+        let cursor_row = (cur.line.0 + offset).max(0) as usize;
+        let cursor_visible = content.display_offset == 0
+            && self.term.mode().contains(TermMode::SHOW_CURSOR)
+            && content.cursor.shape != CursorShape::Hidden;
+        RenderFrame {
+            rows: build_runs(&grid, rows, cols),
+            cursor: (cursor_row, cur.column.0),
+            cursor_shape: content.cursor.shape,
+            cursor_visible,
+            scroll_offset: content.display_offset,
+            scroll_history: self.term.grid().history_size(),
+            fg: self.palette.fg,
+            bg: self.palette.bg,
+        }
+    }
+
     pub fn snapshot(&self) -> TerminalSnapshot {
         if let Some(snap) = &self.swapped_snapshot {
             return *snap.clone();
@@ -1009,33 +1156,8 @@ impl Terminal {
                 continue;
             }
             let cell = indexed.cell;
-            let mut fg = self.palette.resolve(cell.fg, colors);
-            let mut bg = self.palette.resolve(cell.bg, colors);
-            // Legacy conhost (ConPTY) expresses the console's *default* background
-            // as an explicit ANSI black (`ESC[40m`); blank or just-deleted PSReadLine
-            // input cells then carry it. When the theme's black differs from the
-            // terminal background, those cells render as a stray light band (用户报
-            // 「输入一行再删除后的浅白色遮罩」). Treat a *black background* as the
-            // default background — the near-universal `color0 ≈ background`
-            // convention — so it blends and the renderer's "skip default bg" path
-            // drops it. Black as a *foreground* is untouched (dark text still draws).
-            let bg_is_black = match cell.bg {
-                Color::Named(n) => n as usize == 0, // NamedColor::Black
-                Color::Indexed(0) => true,
-                _ => false,
-            };
-            if bg_is_black {
-                bg = self.palette.bg;
-            }
-            if cell.flags.contains(Flags::INVERSE) {
-                std::mem::swap(&mut fg, &mut bg);
-            }
-            // Selected cells take the theme's selection colors (baked in, so the
-            // run batcher groups them and the renderer needs no selection logic).
-            if selection.as_ref().is_some_and(|s| s.contains(point)) {
-                fg = self.palette.selection_fg;
-                bg = self.palette.selection_bg;
-            }
+            let selected = selection.as_ref().is_some_and(|s| s.contains(point));
+            let (fg, bg) = self.resolve_fg_bg(cell.fg, cell.bg, cell.flags, colors, selected);
             cells.push(SnapshotCell {
                 row: row as usize,
                 col: indexed.point.column.0,
@@ -1824,5 +1946,32 @@ mod tests {
             snap.to_text().contains("line1999"),
             "viewport shows the most recent output"
         );
+    }
+
+    #[test]
+    fn render_frame_matches_snapshot_then_row_runs() {
+        // render_frame is the per-frame fast path; it must stay byte-identical to
+        // the snapshot()+row_runs() it replaces. Drive colors, bold, wide CJK,
+        // INVERSE and a live selection so every resolution branch is exercised.
+        let mut t = Terminal::new(GridSize::new(10, 40));
+        t.advance(b"\x1b[31mred\x1b[0m plain \x1b[1;34mbold blue\x1b[0m\r\n");
+        t.advance("宽字CJK mixed text\r\n".as_bytes());
+        t.advance(b"\x1b[7minverse\x1b[0m tail\r\n");
+        t.selection_start(1, 0);
+        t.selection_update(2, 6);
+
+        let frame = t.render_frame();
+        let snap = t.snapshot();
+        assert_eq!(
+            frame.rows,
+            snap.row_runs(),
+            "render_frame runs must equal snapshot().row_runs()"
+        );
+        assert_eq!(frame.cursor, snap.cursor);
+        assert_eq!(frame.cursor_shape, snap.cursor_shape);
+        assert_eq!(frame.cursor_visible, snap.cursor_visible);
+        assert_eq!(frame.scroll_offset, snap.scroll_offset);
+        assert_eq!(frame.scroll_history, snap.scroll_history);
+        assert_eq!((frame.fg, frame.bg), (snap.fg, snap.bg));
     }
 }

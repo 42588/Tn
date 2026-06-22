@@ -38,11 +38,19 @@ fn bench_advance(c: &mut Criterion) {
 fn bench_render_data(c: &mut Criterion) {
     let mut t = Terminal::new(GridSize::new(40, 120));
     t.advance(&sample_output(200));
-    // The full per-frame extraction the renderer runs: snapshot + run batching.
+    // The old two-step extraction: snapshot (allocates a cells Vec) + row_runs
+    // (rebuilds a flat grid). Kept as a baseline to compare against render_frame.
     c.bench_function("snapshot_and_row_runs_40x120", |b| {
         b.iter(|| {
             let snap = t.snapshot();
             black_box(snap.row_runs());
+        });
+    });
+    // The single-pass path the UI actually uses now: one flat grid straight from
+    // renderable_content, no intermediate cells Vec.
+    c.bench_function("render_frame_40x120", |b| {
+        b.iter(|| {
+            black_box(t.render_frame());
         });
     });
 }
