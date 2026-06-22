@@ -906,6 +906,13 @@ impl TerminalView {
         );
         let size = GridSize::new(ROWS, COLS);
         let pty_size = PtySize::new(size.rows as u16, size.cols as u16);
+        // Measure the foreground-blocking portion of the spawn (this whole `new`
+        // runs inside the GPUI click/key callback). For a local pane that's
+        // `openpty` + `CreateProcess`; for SSH `SshBackend::spawn` only starts the
+        // session thread and returns (connect/auth are async). The child shell's
+        // own first-prompt latency happens *after* this and is NOT counted here.
+        // See docs/质量保障/性能分析报告.md §3.2. Logged under `tn::spawn`.
+        let spawn_t0 = Instant::now();
         // Pick the backend: a remote SSH session, or a local ConPTY. A bad
         // profile must NOT crash the app — pane construction runs inside GPUI's
         // window callback (non-unwinding), so a spawn panic aborts the whole
@@ -966,6 +973,13 @@ impl TerminalView {
                 fallback_pwsh(pty_size)
             }))
         };
+        tracing::info!(
+            target: "tn::spawn",
+            program = %launch.program,
+            ssh = launch.ssh.is_some(),
+            elapsed_ms = spawn_t0.elapsed().as_secs_f64() * 1000.0,
+            "pane backend spawn returned (foreground-blocking portion; child first-prompt is async after this)",
+        );
         // Starts false: the first read's false->true transition sends the first
         // wake. SSH backend-only events use the same path so password/TOFU cards
         // appear even when no terminal bytes arrive.
