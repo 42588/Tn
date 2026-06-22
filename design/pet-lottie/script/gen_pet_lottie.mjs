@@ -391,6 +391,24 @@ function dustPuff(f, side) { // side -1 左 / +1 右:落地瞬间在脚边迸出
   const o = a < 0.22 ? a / 0.22 : 1 - (a - 0.22) / 0.78;
   return { o: clamp01(o) * 68, dx: side * (3 + 9 * a), dy: -2 - 7 * a, s: 50 + 95 * a };
 }
+// 成功彩屑:起跳瞬间从身上抛撒,扇形上抛 + 重力下落 + 翻滚(宽度脉动)+ 淡出。
+// 磷光纪律:彩屑非「活信号」→ 只用暖色(金/白/粉/橙),不用强调色。
+const CONFETTI_COL = [hex("F2C867"), hex("F4F1E1"), hex("FFAAAB"), hex("DAA14A"), hex("F08C98")];
+const CONFETTI_N = 11;
+function confettiPiece(f, i) {
+  if (!inState(f, "success")) return { o: 0, x: 0, y: 0, sx: 70 };
+  const s = SEGS[segAt(f)]; const p = (f - s.start) / s.dur;
+  const t0 = 0.24, life = 0.56;
+  if (p < t0 || p > t0 + life) return { o: 0, x: 0, y: 0, sx: 70 };
+  const a = (p - t0) / life;                                  // 0..1 寿命
+  const ang = -Math.PI / 2 + ((i / (CONFETTI_N - 1)) - 0.5) * 2.7; // 扇形向上散开
+  const spd = 78 + ((i * 7) % 5) * 20;                        // 大初速(CELL28;×SC 后才有可见铺散)
+  const x = Math.cos(ang) * spd * a;
+  const y = Math.sin(ang) * spd * a + 175 * a * a;            // 上抛 + 重力下落
+  const o = a < 0.12 ? a / 0.12 : 1 - (a - 0.12) / 0.88;
+  const sx = 45 + 75 * Math.abs(Math.sin(TAU * (a * 3 + i * 0.6))); // 翻滚:宽度脉动
+  return { o: clamp01(o) * 100, x, y, sx };
+}
 const HEART = [[1, 0], [3, 0], [0, 1], [1, 1], [2, 1], [3, 1], [4, 1], [0, 2], [1, 2], [2, 2], [3, 2], [4, 2], [1, 3], [2, 3], [3, 3], [2, 4]];
 // 接地阴影:9×3 扁像素椭圆(比站姿宽,两侧露出可见;中行最宽)。
 const SHADOW = [
@@ -543,6 +561,19 @@ function build(CFG, breed) {
         }));
     }
   }
+  // 成功彩屑:每片一层,从身上方抛撒。
+  {
+    const csz = CELL * 0.68, bx = cxc, by = cy(1);
+    for (let i = 0; i < CONFETTI_N; i++) {
+      const col = CONFETTI_COL[i % CONFETTI_COL.length];
+      add("conf" + i, Lyr("conf" + i, 50 + i, null, [bx, by],
+        [group("c", [rect(bx, by, csz, csz), fill(col)])], {
+          o: anim((f) => [confettiPiece(f, i).o], 1, TOTAL, [2]),
+          p: anim((f) => { const c = confettiPiece(f, i); return [bx + c.x * SC, by + c.y * SC, 0]; }, 3, TOTAL, [0.3, 0.3, 0.3]),
+          s: anim((f) => { const c = confettiPiece(f, i); return [c.sx, 70, 100]; }, 3, TOTAL, [0.8, 0.8, 0.8]),
+        }));
+    }
+  }
 
   // 道具:像素爱心 / Z / bark 气泡(位置以格坐标,随尺度走)
   const heartLayer = (nm, ind, gcol, grow, period, phase, onlyPlay) => {
@@ -591,7 +622,8 @@ function build(CFG, breed) {
     }));
   }
 
-  let ORDER = ["dustL", "dustR", "bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "ears", "base", "tail", "legL", "legR", "shadow"];
+  const confNames = Array.from({ length: CONFETTI_N }, (_, i) => "conf" + i);
+  let ORDER = [...confNames, "dustL", "dustR", "bubble", "biscuit", "zzSmall", "zzBig", "heartB", "heartA", "eyes", "face", "tongue", "ears", "base", "tail", "legL", "legR", "shadow"];
   if (bg) ORDER = [...ORDER, "shelfph", "shelf", "background"];
   ORDER = [...ORDER, "rig"];
   const layers = ORDER.map((n) => STORE.get(n)).filter(Boolean); // tongue/tail 等空层按品种缺省

@@ -429,9 +429,9 @@ mod tests {
         let zs = 11.0;
         let (_, zw, zh) = pet.render_rgba(0.0, zs);
         let zframes: [(f32, &str); 3] = [
-            (pet.marker("idle").unwrap().start as f32 + 50.0, "idle"),
-            (succ.start + succ.dur * 0.54, "land"),
-            (pet.marker("drag").unwrap().start as f32 + 50.0, "drag"),
+            (succ.start + succ.dur * 0.34, "burst"),
+            (succ.start + succ.dur * 0.52, "land"),
+            (succ.start + succ.dur * 0.70, "fall"),
         ];
         let mut zoom = image::RgbaImage::from_pixel(zw * 3, zh, image::Rgba(bg));
         for (ci, (f, _)) in zframes.iter().enumerate() {
