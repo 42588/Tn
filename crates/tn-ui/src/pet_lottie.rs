@@ -210,10 +210,27 @@ impl PetLottie {
     }
 
     /// 渲染 `frame`,`scale` = 渲染像素 / 逻辑单位(取整裁剪取 ceil)。返回直通 alpha 的 RGBA8。
+    /// 一次性分配 scratch;动画热路径请改用 [`Self::render_rgba_into`] 复用缓冲。
     pub fn render_rgba(&self, frame: f32, scale: f32) -> (Vec<u8>, u32, u32) {
+        let mut scratch = Vec::new();
+        self.render_rgba_into(frame, scale, &mut scratch)
+    }
+
+    /// 同 [`Self::render_rgba`],但复用调用方持有的 f32 累积缓冲 `scratch`,免去每帧
+    /// `pw*ph*4` floats 的堆分配 churn(P2-1);输出与 `render_rgba` 逐字节相同。
+    pub fn render_rgba_into(
+        &self,
+        frame: f32,
+        scale: f32,
+        scratch: &mut Vec<f32>,
+    ) -> (Vec<u8>, u32, u32) {
         let pw = (self.w * scale).ceil() as u32;
         let ph = (self.h * scale).ceil() as u32;
-        let mut buf = vec![0f32; (pw * ph * 4) as usize]; // 直通 alpha 累积
+        let n = (pw * ph * 4) as usize;
+        // 复用容量,整体置零(等价于旧 `vec![0f32; n]`,但不每帧重新分配)。
+        scratch.clear();
+        scratch.resize(n, 0.0);
+        let buf = scratch.as_mut_slice(); // 直通 alpha 累积
 
         // 后→前(layers[0] 最前)
         for layer in self.layers.iter().rev() {
@@ -255,13 +272,13 @@ impl PetLottie {
                     let x1 = (tsx * (r.cx + r.w * 0.5) + tox) * scale;
                     let y0 = (tsy * (r.cy - r.h * 0.5) + toy) * scale;
                     let y1 = (tsy * (r.cy + r.h * 0.5) + toy) * scale;
-                    blend_rect(&mut buf, pw, ph, x0, x1, y0, y1, col, alpha);
+                    blend_rect(buf, pw, ph, x0, x1, y0, y1, col, alpha);
                 }
             }
         }
 
-        // f32 直通 → u8 RGBA
-        let mut out = vec![0u8; (pw * ph * 4) as usize];
+        // f32 直通 → u8 RGBA(out 必为新分配:交给 RenderImage 持有,不可复用)
+        let mut out = vec![0u8; n];
         for i in 0..(pw * ph) as usize {
             for c in 0..4 {
                 out[i * 4 + c] = (buf[i * 4 + c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
@@ -366,6 +383,28 @@ mod tests {
     use super::*;
 
     const GOLDEN: &str = include_str!("../assets/pet/golden.json");
+
+    #[test]
+    fn render_rgba_into_reuses_scratch_byte_identically() {
+        let pet = PetLottie::parse(GOLDEN).expect("parse");
+        let scale = 4.0;
+        let m = pet.marker("running").unwrap();
+        let frame = m.start + m.dur * 0.4;
+        let (baseline, bw, bh) = pet.render_rgba(frame, scale);
+
+        // A pre-dirtied, wrong-sized scratch must still produce identical output
+        // (the clear+resize zeroing is correct), and a second reuse too.
+        let mut scratch = vec![123.456f32; 7];
+        let (first, w1, h1) = pet.render_rgba_into(frame, scale, &mut scratch);
+        assert_eq!((w1, h1), (bw, bh));
+        assert_eq!(first, baseline, "first reuse must match render_rgba");
+        let (second, _, _) = pet.render_rgba_into(frame, scale, &mut scratch);
+        assert_eq!(second, baseline, "second reuse (warm scratch) must match too");
+        // A different frame on the same warm scratch must differ from the first.
+        let other = pet.marker("sleep").unwrap();
+        let (diff, _, _) = pet.render_rgba_into(other.start, scale, &mut scratch);
+        assert_ne!(diff, baseline, "a different frame must not alias stale buffer");
+    }
 
     #[test]
     fn renders_states_to_png() {

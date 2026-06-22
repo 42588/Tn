@@ -1109,6 +1109,8 @@ pub struct PetView {
     lottie_last: Option<Instant>,
     /// 上一帧 RenderImage(下次渲染前驱逐其 GPU 纹理,避免显存累积)。
     lottie_img: Option<Arc<RenderImage>>,
+    /// 复用的 f32 栅格化累积缓冲(P2-1:免去每帧 ~pw*ph*4 floats 的分配 churn)。
+    lottie_scratch: Vec<f32>,
 }
 
 impl PetView {
@@ -1189,6 +1191,7 @@ impl PetView {
             lottie_frame: 0.0,
             lottie_last: None,
             lottie_img: None,
+            lottie_scratch: Vec::new(),
         };
         let mut view = view;
         // 首次启用宠物 → 一次性领养卡(规则 0)。老用户(adopted=false 但已有
@@ -1349,8 +1352,15 @@ impl PetView {
         }
 
         let (mut rgba, w, h) = {
-            let lot = self.lottie.as_ref().unwrap();
-            lot.render_rgba(self.lottie_frame, scale)
+            // 取出 scratch 复用(免与 self.lottie 的不可变借用打架),用毕放回。
+            let mut scratch = std::mem::take(&mut self.lottie_scratch);
+            let r = self
+                .lottie
+                .as_ref()
+                .unwrap()
+                .render_rgba_into(self.lottie_frame, scale, &mut scratch);
+            self.lottie_scratch = scratch;
+            r
         };
         for px4 in rgba.chunks_exact_mut(4) {
             px4.swap(0, 2); // RGBA → BGRA(GPUI RenderImage 字节序)
