@@ -134,7 +134,7 @@ pub use launch::FileNamespace;
 pub use launch::LaunchSpec;
 pub use launch::ShellIntegration;
 
-/// Cached per-frame render data (see docs/修复与优化/基础性能与审查勘误.md), keyed by the engine's
+/// Cached per-frame render data (see docs/质量保障/性能分析报告.md), keyed by the engine's
 /// [`generation`](tn_core::Terminal::generation). A repaint that changed nothing
 /// the grid renders (the ~530ms cursor blink, an unfocused-pane notify) reuses
 /// this instead of rebuilding the snapshot + run batches. `rows` is `Rc` so the
@@ -781,7 +781,7 @@ pub struct TerminalView {
     // root cause of "终端无法输入中文" (only ASCII `key_char` reached `encode_key`).
     ime_marked: Option<String>,
     // Cached render data + the engine generation it was built from (see
-    // docs/修复与优化/基础性能与审查勘误.md). Reused when a repaint changed nothing
+    // docs/质量保障/性能分析报告.md). Reused when a repaint changed nothing
     // renderable (cursor blink).
     render_cache: Option<RenderCache>,
     // Opt-in render instrumentation (TN_PERF): render rate + cache hit-rate +

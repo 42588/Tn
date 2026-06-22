@@ -379,15 +379,22 @@ impl TerminalSnapshot {
             bg: self.bg,
             flags: Flags::empty(),
         };
-        let mut grid = vec![vec![blank; self.cols]; self.rows];
+        // One flat rows*cols buffer instead of a Vec-of-Vecs. The old shape was
+        // `self.rows + 1` separate heap allocations rebuilt on every new-output
+        // frame (this runs once per generation bump — see the render cache); the
+        // flat buffer is a single allocation with better locality for the scatter
+        // + row scan below. Semantics are identical (same blank padding, same
+        // out-of-range guard).
+        let mut grid = vec![blank; self.rows * self.cols];
         for cell in &self.cells {
             if cell.row < self.rows && cell.col < self.cols {
-                grid[cell.row][cell.col] = *cell;
+                grid[cell.row * self.cols + cell.col] = *cell;
             }
         }
         let mut out = Vec::with_capacity(self.rows);
         let mut current_text = String::with_capacity(256);
-        for row in grid {
+        for r in 0..self.rows {
+            let row = &grid[r * self.cols..(r + 1) * self.cols];
             let mut runs: Vec<CellRun> = Vec::new();
             current_text.clear();
             let mut last_wide = false;

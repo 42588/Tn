@@ -1,4 +1,4 @@
-//! Opt-in render instrumentation. See docs/修复与优化/基础性能与审查勘误.md.
+//! Opt-in render instrumentation. See docs/质量保障/性能分析报告.md.
 //!
 //! A view wraps one [`PerfStats`] and calls [`record`](PerfStats::record) once
 //! per render, saying whether it reused cached render data and (on a rebuild)

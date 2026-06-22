@@ -124,7 +124,7 @@ pub(crate) fn short_cwd(p: &str) -> String {
 
 /// The current git branch of the app's cwd, if it's a repo (for the status bar).
 /// Returns `None` both when not in a repo (silent — expected) and when `git`
-/// can't be spawned (logged once — likely not installed / PATH). See docs/修复与优化/智能体活动栏与正文显示.md.
+/// can't be spawned (logged once — likely not installed / PATH).
 fn git_branch() -> Option<String> {
     let cwd = std::env::current_dir().ok()?;
     let out = match std::process::Command::new("git")
@@ -955,7 +955,7 @@ pub struct Workspace {
     /// the overlay is rendered) doesn't reliably land, so keys leaked to the
     /// terminal underneath; we focus it in render where the element exists.
     palette_needs_focus: bool,
-    /// Opt-in render instrumentation (TN_PERF, see docs/修复与优化/基础性能与审查勘误.md): how often the
+    /// Opt-in render instrumentation (TN_PERF, see docs/质量保障/性能分析报告.md): how often the
     /// workspace chrome re-renders and how long it takes. Panes are embedded as
     /// entities, so terminal output frames don't trigger this — only the
     /// workspace's own notifies (usage updates, tab/split/focus, palette) do.
