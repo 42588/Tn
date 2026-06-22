@@ -832,6 +832,31 @@ mod tests {
     }
 
     #[test]
+    fn launch_rows_query_filters_and_keeps_wsl_card_for_distro_names() {
+        let profiles = vec![
+            prof("pwsh", ProfileKind::Shell, None, None, Some("powershell.exe")),
+            prof("Ubuntu", ProfileKind::Wsl, Some("Ubuntu"), None, None),
+            prof("Debian", ProfileKind::Wsl, Some("Debian"), None, None),
+            prof("box", ProfileKind::Ssh, None, Some("h"), None),
+        ];
+        // Empty query → everything: pwsh + WSL card + SSH placeholder.
+        assert_eq!(launch_rows(&profiles, false, "").len(), 3);
+        // Filter to a shell name.
+        let pw = launch_rows(&profiles, false, "pw");
+        assert!(matches!(pw.as_slice(), [LaunchRow::Profile(0)]));
+        // Typing a distro name keeps the WSL drill card (documented "don't hide the
+        // way in"), even though the distro isn't itself a root-level row.
+        let deb = launch_rows(&profiles, false, "debian");
+        assert!(matches!(deb.as_slice(), [LaunchRow::DrillWsl]));
+        // "ssh" surfaces only the SSH placeholder.
+        let ssh = launch_rows(&profiles, false, "ssh");
+        assert!(matches!(ssh.as_slice(), [LaunchRow::SshPrompt]));
+        // Drilled into the WSL sublist, the query filters distro names directly.
+        let drill = launch_rows(&profiles, true, "ub");
+        assert!(matches!(drill.as_slice(), [LaunchRow::Profile(1)]));
+    }
+
+    #[test]
     fn title_case_hotkey_capitalizes_each_token() {
         assert_eq!(title_case_hotkey("ctrl+alt+space"), "Ctrl+Alt+Space");
         assert_eq!(
