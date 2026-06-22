@@ -748,3 +748,37 @@ impl TerminalView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{fmt_reset, short_chip};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn fmt_reset_unknown_and_past_say_imminent() {
+        assert_eq!(fmt_reset(None), "重置 ~即将");
+        let past = SystemTime::now() - Duration::from_secs(3600);
+        assert_eq!(fmt_reset(Some(past)), "重置 ~即将");
+    }
+
+    #[test]
+    fn fmt_reset_future_formats_hours_and_minutes() {
+        // +2h with a 30s cushion so time elapsed during the call can't drop a minute.
+        let future = SystemTime::now() + Duration::from_secs(2 * 3600 + 30);
+        assert_eq!(fmt_reset(Some(future)), "重置 ~2h00m 后");
+    }
+
+    #[test]
+    fn short_chip_trims_and_passes_through_when_short() {
+        assert_eq!(short_chip("  hi  ", 8), "hi");
+        assert_eq!(short_chip("exact", 5), "exact");
+    }
+
+    #[test]
+    fn short_chip_truncates_with_ellipsis_counting_chars() {
+        // ASCII: keep max-1 chars + '…' = max chars total.
+        assert_eq!(short_chip("hello world", 5), "hell…");
+        // CJK counted per char, not per display column.
+        assert_eq!(short_chip("你好世界一二三", 5), "你好世界…");
+    }
+}

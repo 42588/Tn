@@ -1769,4 +1769,60 @@ mod tests {
         assert_eq!(t.text_for_absolute_lines(1, 2), "line 2\nline 3");
         assert_eq!(t.text_for_absolute_lines(0, 2), "line 1\nline 2\nline 3");
     }
+
+    #[test]
+    fn row_runs_fills_gaps_and_ignores_out_of_range() {
+        // A hand-built snapshot exercises row_runs in isolation (it's what the
+        // flat rows*cols buffer rewrite touched): a missing cell must render as a
+        // blank, an out-of-viewport cell must be dropped, and same-style cells
+        // (including the blank) must merge into a single run spanning every column.
+        let fg = Rgb::new(200, 200, 200);
+        let bg = Rgb::new(10, 10, 10);
+        let cell = |row, col, c| SnapshotCell {
+            row,
+            col,
+            c,
+            fg,
+            bg,
+            flags: Flags::empty(),
+        };
+        let snap = TerminalSnapshot {
+            rows: 2,
+            cols: 3,
+            fg,
+            bg,
+            cells: vec![
+                cell(0, 0, 'a'),
+                // (0, 1) intentionally absent -> blank
+                cell(0, 2, 'b'),
+                cell(5, 0, 'x'), // row out of range -> ignored
+            ],
+            ..Default::default()
+        };
+        let runs = snap.row_runs();
+        assert_eq!(runs.len(), 2, "one inner vec per row");
+        let text = |r: &Vec<CellRun>| r.iter().map(|x| x.text.as_str()).collect::<String>();
+        assert_eq!(text(&runs[0]), "a b", "gap fills with a blank, same style merges");
+        assert_eq!(text(&runs[1]), "   ", "an all-blank row stays full width");
+        let cols0: usize = runs[0].iter().map(|r| r.cols).sum();
+        assert_eq!(cols0, 3, "runs cover the full grid width");
+    }
+
+    #[test]
+    fn large_scrollback_retains_history_and_shows_latest_viewport() {
+        let mut t = Terminal::with_scrollback(GridSize::new(5, 20), 10_000);
+        for i in 0..2000 {
+            t.advance(format!("line{i}\r\n").as_bytes());
+        }
+        let snap = t.snapshot();
+        assert_eq!(snap.rows, 5);
+        assert!(
+            snap.scroll_history > 0,
+            "2000 lines into a 5-row grid must retain scrollback"
+        );
+        assert!(
+            snap.to_text().contains("line1999"),
+            "viewport shows the most recent output"
+        );
+    }
 }
