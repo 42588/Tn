@@ -49,6 +49,16 @@ pub(crate) type PaneId = u64;
 const AGENT_DIR_PANEL_H: f32 = 500.0;
 const AGENT_DIR_RECENTS_H: f32 = 158.0;
 const AGENT_DIR_LIST_H: f32 = 176.0;
+const PET_HISTORY_PANEL_W: f32 = 320.0;
+const PET_HISTORY_PET_BOX_W: f32 = 100.0;
+const PET_HISTORY_GAP: f32 = 12.0;
+const PET_HISTORY_SAFE_PAD: f32 = 12.0;
+const PET_HISTORY_VERTICAL_CLEARANCE: f32 = 80.0;
+const PET_HISTORY_MAX_H: f32 = 300.0;
+const PET_HISTORY_BASE_H: f32 = 48.0;
+const PET_HISTORY_EMPTY_H: f32 = PET_HISTORY_BASE_H + 80.0;
+const PET_HISTORY_ROW_H: f32 = 26.0;
+const PET_HISTORY_ROW_GAP: f32 = 2.0;
 
 // 磷光 Phosphor tokens + helpers(col/cola/plate/float_panel/focus_brackets/icon)
 // live in `crate::style` — single source of truth(规范 docs/设计/磷光设计语言.md)。
@@ -104,6 +114,74 @@ pub(crate) fn human_tokens(n: u64) -> String {
         format!("{}K", n / 1_000)
     } else {
         n.to_string()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PetHistoryLayoutInput {
+    viewport_w: f32,
+    viewport_h: f32,
+    pet_left: f32,
+    pet_bottom: f32,
+    pet_scale: f32,
+    history_count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PetHistoryPopupLayout {
+    left: f32,
+    bottom: f32,
+    w: f32,
+    h: f32,
+    #[cfg(test)]
+    scrolls: bool,
+}
+
+fn pet_history_popup_layout(input: PetHistoryLayoutInput) -> PetHistoryPopupLayout {
+    let available_w = (input.viewport_w - PET_HISTORY_SAFE_PAD * 2.0).max(1.0);
+    let w = PET_HISTORY_PANEL_W.min(available_w);
+
+    let row_gaps = input.history_count.saturating_sub(1) as f32 * PET_HISTORY_ROW_GAP;
+    let desired_h = if input.history_count == 0 {
+        PET_HISTORY_EMPTY_H
+    } else {
+        PET_HISTORY_BASE_H + input.history_count as f32 * PET_HISTORY_ROW_H + row_gaps
+    };
+    let viewport_h_bound = (input.viewport_h - PET_HISTORY_SAFE_PAD * 2.0).max(1.0);
+    let chrome_h_bound = (input.viewport_h - PET_HISTORY_VERTICAL_CLEARANCE).max(1.0);
+    let max_h = PET_HISTORY_MAX_H.min(viewport_h_bound).min(chrome_h_bound);
+    let h = desired_h.min(max_h).max(1.0);
+
+    let box_w = PET_HISTORY_PET_BOX_W * input.pet_scale;
+    let pet_right = input.pet_left + box_w;
+    let left_candidate = input.pet_left - PET_HISTORY_GAP - w;
+    let right_candidate = pet_right + PET_HISTORY_GAP;
+    let min_left = PET_HISTORY_SAFE_PAD.min((input.viewport_w - w).max(0.0));
+    let max_left = (input.viewport_w - PET_HISTORY_SAFE_PAD - w).max(min_left);
+    let left_fits = left_candidate >= PET_HISTORY_SAFE_PAD;
+    let right_fits = right_candidate + w <= input.viewport_w - PET_HISTORY_SAFE_PAD;
+    let left_space = input.pet_left - PET_HISTORY_SAFE_PAD - PET_HISTORY_GAP;
+    let right_space = input.viewport_w - PET_HISTORY_SAFE_PAD - pet_right - PET_HISTORY_GAP;
+    let raw_left = if left_fits {
+        left_candidate
+    } else if right_fits || right_space > left_space {
+        right_candidate
+    } else {
+        left_candidate
+    };
+    let left = raw_left.clamp(min_left, max_left);
+
+    let min_bottom = PET_HISTORY_SAFE_PAD.min((input.viewport_h - h).max(0.0));
+    let max_bottom = (input.viewport_h - PET_HISTORY_SAFE_PAD - h).max(min_bottom);
+    let bottom = input.pet_bottom.clamp(min_bottom, max_bottom);
+
+    PetHistoryPopupLayout {
+        left,
+        bottom,
+        w,
+        h,
+        #[cfg(test)]
+        scrolls: desired_h > h + 0.5,
     }
 }
 
@@ -2783,17 +2861,29 @@ impl Workspace {
         let blocks = pane.read(cx).blocks();
         let bm = blocks.lock().unwrap();
         // Filter out empty command lines, reverse to show newest first.
-        let mut history_cmds: Vec<_> = bm.iter()
+        let mut history_cmds: Vec<_> = bm
+            .iter()
             .filter(|b| b.command.as_ref().map_or(false, |c| !c.is_empty()))
             .cloned()
             .collect();
         history_cmds.reverse();
 
-        // Calculate positions
-        let s = if self.pet.read(cx).on_welcome() { 2.0 } else { 1.0 };
-        const BOX_W: f32 = 100.0;
-        let right_px = self.pet.read(cx).right() + (BOX_W * s) + 12.0;
-        let bottom_px = self.pet.read(cx).bottom();
+        let s = if self.pet.read(cx).on_welcome() {
+            2.0
+        } else {
+            1.0
+        };
+        let viewport_w = f32::from(window.viewport_size().width);
+        let viewport_h = f32::from(window.viewport_size().height);
+        let pet_left = viewport_w - self.pet.read(cx).right() - PET_HISTORY_PET_BOX_W * s;
+        let layout = pet_history_popup_layout(PetHistoryLayoutInput {
+            viewport_w,
+            viewport_h,
+            pet_left,
+            pet_bottom: self.pet.read(cx).bottom(),
+            pet_scale: s,
+            history_count: history_cmds.len(),
+        });
 
         let list_content = if history_cmds.is_empty() {
             div()
@@ -2810,15 +2900,20 @@ impl Workspace {
                 .flex_1()
                 .flex()
                 .flex_col()
+                .min_h(px(0.))
                 .gap(px(2.))
                 .overflow_y_scroll();
 
             let session_start_time = pane.read(cx).session_start_time();
 
             for b in history_cmds {
-                let cmd_text = b.command.as_ref().map(|s| s.to_string()).unwrap_or_default();
+                let cmd_text = b
+                    .command
+                    .as_ref()
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
                 let b_id = b.id;
-                
+
                 // Success indicator icon or text
                 let status_icon = match b.succeeded() {
                     Some(true) => div().text_color(rgb(crate::style::OK)).child("✓"),
@@ -2827,19 +2922,25 @@ impl Workspace {
                     _ => div().text_color(rgb(T2)).child("○"),
                 };
 
-                let duration_text = b.duration_ms().map(|ms| {
-                    if ms < 1000 {
-                        format!("{}ms", ms)
-                    } else {
-                        format!("{:.1}s", ms as f64 / 1000.0)
-                    }
-                }).unwrap_or_default();
+                let duration_text = b
+                    .duration_ms()
+                    .map(|ms| {
+                        if ms < 1000 {
+                            format!("{}ms", ms)
+                        } else {
+                            format!("{:.1}s", ms as f64 / 1000.0)
+                        }
+                    })
+                    .unwrap_or_default();
 
-                let time_text = b.started_at.map(|ms| {
-                    let time = session_start_time + std::time::Duration::from_millis(ms);
-                    let dt: chrono::DateTime<chrono::Local> = time.into();
-                    dt.format("%H:%M:%S").to_string()
-                }).unwrap_or_else(|| "--:--:--".to_string());
+                let time_text = b
+                    .started_at
+                    .map(|ms| {
+                        let time = session_start_time + std::time::Duration::from_millis(ms);
+                        let dt: chrono::DateTime<chrono::Local> = time.into();
+                        dt.format("%H:%M:%S").to_string()
+                    })
+                    .unwrap_or_else(|| "--:--:--".to_string());
 
                 let pane_entity = pane.clone();
                 let pane_entity_for_copy = pane.clone();
@@ -2868,7 +2969,7 @@ impl Workspace {
                                     div()
                                         .text_size(px(crate::style::FS_MICRO))
                                         .text_color(rgb(T2))
-                                        .child(format!("[{}]", time_text))
+                                        .child(format!("[{}]", time_text)),
                                 )
                                 .child(
                                     div()
@@ -2876,8 +2977,8 @@ impl Workspace {
                                         .font_family(mono.clone())
                                         .text_size(px(crate::style::FS_MICRO))
                                         .text_color(rgb(T1))
-                                        .child(cmd_text)
-                                )
+                                        .child(cmd_text),
+                                ),
                         )
                         .child(
                             div()
@@ -2890,7 +2991,7 @@ impl Workspace {
                                         div()
                                             .text_size(px(crate::style::FS_MICRO))
                                             .text_color(rgb(T2))
-                                            .child(duration_text)
+                                            .child(duration_text),
                                     )
                                 })
                                 .when(has_output, |d| {
@@ -2905,15 +3006,17 @@ impl Workspace {
                                             .child("复制输出")
                                             .on_mouse_down(
                                                 MouseButton::Left,
-                                                cx.listener(move |_this, _e: &MouseDownEvent, _w, cx| {
-                                                    cx.stop_propagation();
-                                                    pane_entity_for_copy.update(cx, |p, cx| {
-                                                        p.copy_block_output(b_id, cx);
-                                                    });
-                                                })
-                                            )
+                                                cx.listener(
+                                                    move |_this, _e: &MouseDownEvent, _w, cx| {
+                                                        cx.stop_propagation();
+                                                        pane_entity_for_copy.update(cx, |p, cx| {
+                                                            p.copy_block_output(b_id, cx);
+                                                        });
+                                                    },
+                                                ),
+                                            ),
                                     )
-                                })
+                                }),
                         )
                         .on_mouse_down(
                             MouseButton::Left,
@@ -2927,93 +3030,91 @@ impl Workspace {
                                 });
                                 cx.notify();
                             }),
-                        )
+                        ),
                 );
             }
             list.into_any_element()
         };
 
-        let menu_max_h = (f32::from(window.viewport_size().height) - 80.0).max(200.0).min(300.0);
-
         let popup = div()
             .track_focus(&self.pet_history_focus)
-            .on_key_down(
-                cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
-                    if ev.keystroke.key == "escape" {
-                        this.pet_history_open = false;
-                        this.pet_history_closed_needs_refocus = true;
-                        cx.notify();
-                    }
-                })
-            )
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
+                if ev.keystroke.key == "escape" {
+                    this.pet_history_open = false;
+                    this.pet_history_closed_needs_refocus = true;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|_, _ev, _w, cx| cx.stop_propagation()),
             )
+            .on_scroll_wheel(cx.listener(|_t, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                cx.stop_propagation();
+            }))
             .absolute()
-            .right(px(right_px))
-            .bottom(px(bottom_px))
-            .w(px(320.))
-            .max_h(px(menu_max_h))
+            .left(px(layout.left))
+            .bottom(px(layout.bottom))
+            .w(px(layout.w))
+            .h(px(layout.h))
             .flex()
             .flex_col()
-            .child(
-                crate::style::float_panel(
-                    div()
-                        .size_full()
-                        .flex()
-                        .flex_col()
-                        .p(px(8.))
-                        .rounded(px(R_PANEL - 1.))
-                        .bg(col(ui.palette_bg))
-                        .overflow_hidden()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .pb(px(6.))
-                                .border_b(px(1.))
-                                .border_color(rgba(H1))
-                                .child(
-                                    div()
-                                        .text_size(px(crate::style::FS_LABEL))
-                                        .font_weight(gpui::FontWeight(600.))
-                                        .text_color(rgb(T0))
-                                        .child("历史命令")
-                                )
-                                .child(
-                                    div()
-                                        .px(px(2.))
-                                        .rounded(px(R_CHIP))
-                                        .flex()
-                                        .items_center()
-                                        .justify_center()
-                                        .hover(|s| s.bg(col(ui.surface_2)))
-                                        .child(icon("close", 12., ui.muted))
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _e, _w, cx| {
-                                                cx.stop_propagation();
-                                                this.pet_history_open = false;
-                                                this.pet_history_closed_needs_refocus = true;
-                                                cx.notify();
-                                            }),
-                                        )
-                                )
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .flex()
-                                .flex_col()
-                                .min_h(px(0.))
-                                .pt(px(4.))
-                                .child(list_content)
-                        )
-                )
-            );
+            .child(crate::style::float_panel(
+                div()
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .p(px(8.))
+                    .rounded(px(R_PANEL - 1.))
+                    .bg(col(ui.palette_bg))
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .pb(px(6.))
+                            .border_b(px(1.))
+                            .border_color(rgba(H1))
+                            .child(
+                                div()
+                                    .text_size(px(crate::style::FS_LABEL))
+                                    .font_weight(gpui::FontWeight(600.))
+                                    .text_color(rgb(T0))
+                                    .child("历史命令"),
+                            )
+                            .child(
+                                div()
+                                    .px(px(2.))
+                                    .rounded(px(R_CHIP))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(col(ui.surface_2)))
+                                    .child(icon("close", 12., ui.muted))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|this, _e, _w, cx| {
+                                            cx.stop_propagation();
+                                            this.pet_history_open = false;
+                                            this.pet_history_closed_needs_refocus = true;
+                                            cx.notify();
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .h(px((layout.h - PET_HISTORY_BASE_H).max(1.0)))
+                            .min_h(px(0.))
+                            .pt(px(4.))
+                            .child(list_content),
+                    ),
+            ));
 
         Some(
             div()
@@ -3029,7 +3130,10 @@ impl Workspace {
                         cx.notify();
                     }),
                 )
-                .child(popup)
+                .on_scroll_wheel(cx.listener(|_ws, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                    cx.stop_propagation();
+                }))
+                .child(popup),
         )
     }
 
@@ -8173,6 +8277,52 @@ mod tests {
         assert!(!workspace_overlay_freezes_pane_focus(
             false, false, false, false, false, false, false, false
         ));
+    }
+
+    #[test]
+    fn pet_history_layout_bounds_long_history_and_flips_near_edges() {
+        let right_edge = pet_history_popup_layout(PetHistoryLayoutInput {
+            viewport_w: 420.0,
+            viewport_h: 360.0,
+            pet_left: 330.0,
+            pet_bottom: 12.0,
+            pet_scale: 1.0,
+            history_count: 40,
+        });
+
+        assert!(right_edge.scrolls);
+        assert!(right_edge.h <= 280.0);
+        assert!(right_edge.left >= 12.0);
+        assert!(right_edge.left + right_edge.w <= 408.0);
+        assert!(
+            right_edge.left < 330.0,
+            "right-edge pets should open the panel to the left"
+        );
+
+        let left_edge = pet_history_popup_layout(PetHistoryLayoutInput {
+            viewport_w: 420.0,
+            viewport_h: 360.0,
+            pet_left: 8.0,
+            pet_bottom: 12.0,
+            pet_scale: 1.0,
+            history_count: 8,
+        });
+
+        assert!(left_edge.left >= 12.0);
+        assert!(left_edge.left > 8.0, "left-edge pets should open to the right");
+        assert!(left_edge.left + left_edge.w <= 408.0);
+
+        let top_edge = pet_history_popup_layout(PetHistoryLayoutInput {
+            viewport_w: 420.0,
+            viewport_h: 360.0,
+            pet_left: 180.0,
+            pet_bottom: 310.0,
+            pet_scale: 1.0,
+            history_count: 20,
+        });
+
+        assert!(top_edge.bottom >= 12.0);
+        assert!(top_edge.bottom + top_edge.h <= 348.0);
     }
 
     #[test]
