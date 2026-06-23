@@ -62,6 +62,28 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn blend_rgba_overlay(dst: &mut [u8], src: &[u8]) {
+    for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        let sa = s[3] as f32 / 255.0;
+        if sa <= 0.0 {
+            continue;
+        }
+        let da = d[3] as f32 / 255.0;
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= 0.0 {
+            d.fill(0);
+            continue;
+        }
+        for c in 0..3 {
+            let sc = s[c] as f32 / 255.0;
+            let dc = d[c] as f32 / 255.0;
+            let out = (sc * sa + dc * da * (1.0 - sa)) / out_a;
+            d[c] = (out.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        }
+        d[3] = (out_a.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    }
+}
+
 /// 本地时间(年/月/日/时)。每日见面、时段问候和羁绊档案都按**本地自然日**,
 /// 故走 OS 本地时区(Windows: `GetLocalTime`),不用 UTC —— 否则 UTC+8 用户的
 /// 「新的一天」会卡在早上 8 点。
@@ -798,6 +820,13 @@ impl Toy {
     }
 }
 
+fn toy_lottie_json(toy: Toy) -> &'static str {
+    match toy {
+        Toy::Ball => include_str!("../assets/pet/toy_ball.json"),
+        Toy::Bone => include_str!("../assets/pet/toy_bone.json"),
+    }
+}
+
 /// 用户主动亲密互动类型(规则 G/H:喂养 favorite_interaction 计数)。
 #[derive(Clone, Copy)]
 enum Affection {
@@ -1151,6 +1180,10 @@ pub struct PetView {
     lottie_img: Option<Arc<RenderImage>>,
     /// 复用的 f32 栅格化累积缓冲(P2-1:免去每帧 ~pw*ph*4 floats 的分配 churn)。
     lottie_scratch: Vec<f32>,
+    /// 当前玩具的透明 Lottie 道具层(按 `state.toy` 懒加载,叠加到主体帧)。
+    toy_lottie: Option<(Toy, PetLottie)>,
+    /// 玩具层复用的 f32 栅格化缓冲。
+    toy_lottie_scratch: Vec<f32>,
 }
 
 impl PetView {
@@ -1233,6 +1266,8 @@ impl PetView {
             lottie_last: None,
             lottie_img: None,
             lottie_scratch: Vec::new(),
+            toy_lottie: None,
+            toy_lottie_scratch: Vec::new(),
         };
         let mut view = view;
         // 首次启用宠物 → 一次性领养卡(规则 0)。老用户(adopted=false 但已有
@@ -1309,6 +1344,10 @@ impl PetView {
             Breed::Poodle => include_str!("../assets/pet/poodle.json"),
         };
         PetLottie::parse(json).ok()
+    }
+
+    fn toy_lottie_for(toy: Toy) -> Option<PetLottie> {
+        PetLottie::parse(toy_lottie_json(toy)).ok()
     }
 
     fn lottie_segment(&self) -> &'static str {
@@ -1403,6 +1442,29 @@ impl PetView {
             self.lottie_scratch = scratch;
             r
         };
+        if let Some(toy) = self.state.toy {
+            let needs_reload = self
+                .toy_lottie
+                .as_ref()
+                .map(|(active, _)| *active != toy)
+                .unwrap_or(true);
+            if needs_reload {
+                self.toy_lottie = Self::toy_lottie_for(toy).map(|lottie| (toy, lottie));
+                self.toy_lottie_scratch.clear();
+            }
+            if let Some((_, toy_lottie)) = &self.toy_lottie {
+                let mut scratch = std::mem::take(&mut self.toy_lottie_scratch);
+                let (toy_rgba, toy_w, toy_h) =
+                    toy_lottie.render_rgba_into(self.lottie_frame, scale, &mut scratch);
+                self.toy_lottie_scratch = scratch;
+                if toy_w == w && toy_h == h {
+                    blend_rgba_overlay(&mut rgba, &toy_rgba);
+                }
+            }
+        } else if self.toy_lottie.is_some() {
+            self.toy_lottie = None;
+            self.toy_lottie_scratch.clear();
+        }
         for px4 in rgba.chunks_exact_mut(4) {
             px4.swap(0, 2); // RGBA → BGRA(GPUI RenderImage 字节序)
         }
@@ -1438,6 +1500,12 @@ impl PetView {
         h = h * 2 + b(self.call_until_ms > now);
         h = h * 2 + b(self.settle_until_ms > now);
         h = h * 2 + b(self.extra_heart_until_ms > now);
+        h = h * 3
+            + match self.state.toy {
+                None => 0,
+                Some(Toy::Ball) => 1,
+                Some(Toy::Bone) => 2,
+            };
         h
     }
 
@@ -1927,6 +1995,10 @@ impl PetView {
     fn set_toy(&mut self, toy: Option<Toy>, cx: &mut Context<Self>) {
         self.state.toy = toy; // toy_choice(规则 H)
         self.state.save();
+        if toy.is_none() {
+            self.toy_lottie = None;
+            self.toy_lottie_scratch.clear();
+        }
         self.toy_menu_open = false;
         self.menu_open = false;
         cx.notify();
@@ -3998,6 +4070,58 @@ mod tests {
 
         assert_eq!(clicks.single_mouse_up(), PetClickIntent::PendingSingle(3));
         assert_eq!(clicks.confirm_pending(3), PetClickIntent::Single);
+    }
+
+    #[test]
+    fn toy_lottie_assets_render_and_move_in_play_segment() {
+        for toy in [Toy::Ball, Toy::Bone] {
+            let lottie = PetLottie::parse(toy_lottie_json(toy)).expect("parse toy lottie");
+            assert_eq!((lottie.w, lottie.h), (BOX_W, BOX_H));
+
+            let idle = lottie.marker("idle").expect("idle marker");
+            let play = lottie.marker("play").expect("play marker");
+            let (idle_rgba, _, _) = lottie.render_rgba(idle.start + idle.dur * 0.5, 1.0);
+            let (play_rgba, _, _) = lottie.render_rgba(play.start + play.dur * 0.25, 1.0);
+
+            let idle_bounds = alpha_bounds(&idle_rgba, BOX_W as u32, BOX_H as u32)
+                .expect("idle toy must be visible");
+            let play_bounds = alpha_bounds(&play_rgba, BOX_W as u32, BOX_H as u32)
+                .expect("play toy must be visible");
+            assert_ne!(idle_bounds, play_bounds, "{toy:?} play frame should move the prop");
+        }
+    }
+
+    #[test]
+    fn toy_lottie_overlay_alpha_blends_without_erasing_base_frame() {
+        let mut base = vec![10, 20, 30, 255, 0, 0, 0, 0];
+        let overlay = vec![110, 220, 30, 128, 250, 40, 50, 255];
+
+        blend_rgba_overlay(&mut base, &overlay);
+
+        assert_eq!(base[3], 255, "opaque base pixel stays opaque");
+        assert!(base[0] > 10 && base[1] > 20, "overlay color contributes to base");
+        assert_eq!(&base[4..8], &[250, 40, 50, 255], "transparent base receives toy pixel");
+    }
+
+    fn alpha_bounds(rgba: &[u8], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+        let mut min_x = w;
+        let mut min_y = h;
+        let mut max_x = 0;
+        let mut max_y = 0;
+        let mut any = false;
+        for y in 0..h {
+            for x in 0..w {
+                let a = rgba[((y * w + x) * 4 + 3) as usize];
+                if a > 8 {
+                    any = true;
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        any.then_some((min_x, min_y, max_x, max_y))
     }
 
     /// 垂耳犬不得对「竖耳听声」赋权(规则 C:0 = 不做该动作),否则会触发
