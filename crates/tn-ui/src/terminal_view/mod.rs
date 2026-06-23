@@ -737,9 +737,9 @@ pub struct TerminalView {
     // Global starting usage-pill mode (`[general].billing_mode`); per-agent override
     // is resolved on demand from `config` by AgentId.
     billing_mode: tn_config::BillingMode,
-    // Live per-pane usage-pill display mode ($ / % / tokens). Starts from the
-    // config default for this pane's agent (auto-resolved via usage_display) and
-    // is cycled in memory when the user clicks the pill — independent per pane.
+    // Resolved usage billing preference for this pane's agent. The header's right
+    // chip is token-only now, but the value is still derived so existing config
+    // remains accepted and future quota surfaces can read the same preference.
     usage_mode: tn_config::BillingMode,
     // 额度面板:clicking the usage readout opens a popover with windowed spend
     // (5h/日/周, from `tn_ai::usage_windows`, aggregated across all Claude sessions —
@@ -3170,9 +3170,8 @@ impl Render for TerminalView {
         let ime_entity = cx.entity();
         self.ensure_block_ticker(cx); // RUN 实时耗时走表(SHEET 07-B)
         let block_bar = self.render_block_bar(cx);
-        // Pane header (agent pill / shell chip). The pill's click handler needs a
-        // handle to THIS pane to cycle usage_mode at event time, so pass a weak
-        // ref (cheap; the pane outlives its own render).
+        // Pane header (agent pill / shell chip). Header click handlers update this
+        // pane at event time through a weak ref, never during render.
         let header = self.render_pane_header(cx.entity().downgrade());
         // 窄面板自适应:正文(agent 主内容)永远优先。pane 太窄就收起活动栏,把整宽
         // 让给正文,避免 248px rail 把正文挤到不可用 / 视觉上遮挡。门限基于上一帧测到的

@@ -1,9 +1,6 @@
-//! How a pane's usage pill is displayed — cost (`$`), context (`%`), or token
-//! throughput — chosen **per pane**. The live mode lives on each `TerminalView`
-//! (`usage_mode`); clicking the pill cycles it in memory, independently of every
-//! other pane. This module is pure + stateless: it only computes a pane's
-//! *starting* mode from config and the next mode on a click — no globals, no I/O
-//! beyond the one auth probe `auto` needs.
+//! Resolve the configured starting mode for a pane's usage readout. The header now
+//! keeps the right chip token-only, but the config still accepts the existing
+//! billing-mode fields so older user config remains harmless.
 
 use tn_config::BillingMode;
 
@@ -30,28 +27,9 @@ pub(crate) fn starting_mode(
     }
 }
 
-/// Next mode when the pill is clicked: `$` → `%` → tokens → `$` (wraps). `Auto`
-/// shouldn't reach here (panes store a concrete mode), but maps to `$` so a click
-/// always lands somewhere concrete.
-pub(crate) fn cycle(mode: BillingMode) -> BillingMode {
-    match mode {
-        BillingMode::Api => BillingMode::Subscription,
-        BillingMode::Subscription => BillingMode::Tokens,
-        BillingMode::Tokens | BillingMode::Auto => BillingMode::Api,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cycle_wraps_through_three_modes() {
-        assert_eq!(cycle(BillingMode::Api), BillingMode::Subscription);
-        assert_eq!(cycle(BillingMode::Subscription), BillingMode::Tokens);
-        assert_eq!(cycle(BillingMode::Tokens), BillingMode::Api);
-        assert_eq!(cycle(BillingMode::Auto), BillingMode::Api); // safety landing
-    }
 
     #[test]
     fn starting_mode_prefers_override_then_global() {

@@ -11,8 +11,7 @@ use gpui::{
     div, prelude::*, px, rgba, AnyElement, App, Context, Div, FontWeight, MouseButton, Overflow,
     SharedString, WeakEntity,
 };
-use tn_agent::AgentStatus;
-use tn_config::BillingMode;
+use tn_agent::{AgentStatus, AiUsage};
 use tn_core::Rgb;
 
 use super::TerminalView;
@@ -42,6 +41,10 @@ fn short_chip(s: &str, max_chars: usize) -> String {
         out.push('…');
         out
     }
+}
+
+fn usage_token_chip_label(u: &AiUsage, _mode: tn_config::BillingMode) -> String {
+    format!("{} TOK", crate::workspace::human_tokens(u.total_tokens()))
 }
 
 impl TerminalView {
@@ -192,22 +195,10 @@ impl TerminalView {
         // without it instead of showing an empty ring.
         if let Some(u) = self.usage.as_ref().filter(|_| self.agent_caps.usage) {
             let pct = (u.context_frac() * 100.0).round() as u32;
-            // This pane's chosen display mode (WYSIWYG): API always shows the
-            // dollar estimate, subscription the context %, tokens the throughput.
-            // Clicking cycles it per pane (usage_mode).
-            let billing = self.usage_mode;
-            let reading = match billing {
-                BillingMode::Api => format!("${:.2}", u.cost_usd),
-                BillingMode::Subscription => format!("CTX {pct}%"),
-                BillingMode::Tokens => {
-                    format!("{} TOK", crate::workspace::human_tokens(u.total_tokens()))
-                }
-                BillingMode::Auto => format!("CTX {pct}%"),
-            };
+            let reading = usage_token_chip_label(u, self.usage_mode);
             // SHEET 02:`84K / 200K` 读数(mono t2)+ Ø18 环 + 身份色 chip。Click the
-            // readout/ring → 额度 popover (windowed spend); click the chip → cycle
-            // THIS pane's $/%/tokens mode (at CLICK time — 不在 render 期 update,踩过
-            // re-lease panic 坑)。
+            // readout/ring → 额度 popover (windowed spend). The right chip is kept
+            // token-only; context remains on the left readout/ring.
             let weak_quota = weak.clone();
             head = head.child(
                 div()
@@ -235,14 +226,6 @@ impl TerminalView {
                     .child(
                         div()
                             .id("usage-mode")
-                            .cursor_pointer()
-                            .on_mouse_down(MouseButton::Left, move |_e, _w, app: &mut App| {
-                                app.stop_propagation(); // don't also open the popover
-                                let _ = weak.update(app, |v, c| {
-                                    v.usage_mode = crate::usage_display::cycle(v.usage_mode);
-                                    c.notify();
-                                });
-                            })
                             .child(self.agent_chip(reading, accent)),
                     ),
             );
@@ -751,8 +734,10 @@ impl TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{fmt_reset, short_chip};
+    use super::{fmt_reset, short_chip, usage_token_chip_label};
     use std::time::{Duration, SystemTime};
+    use tn_agent::AiUsage;
+    use tn_config::BillingMode;
 
     #[test]
     fn fmt_reset_unknown_and_past_say_imminent() {
@@ -780,5 +765,31 @@ mod tests {
         assert_eq!(short_chip("hello world", 5), "hell…");
         // CJK counted per char, not per display column.
         assert_eq!(short_chip("你好世界一二三", 5), "你好世界…");
+    }
+
+    #[test]
+    fn usage_token_chip_label_ignores_cost_and_context_modes() {
+        let usage = AiUsage {
+            model: "m".to_string(),
+            input: 444_000,
+            output: 731,
+            cache_create: 0,
+            cache_read: 0,
+            context_used: 45_000,
+            context_max: 100_000,
+            cost_usd: 12.34,
+            turns: 3,
+        };
+
+        assert_eq!(usage_token_chip_label(&usage, BillingMode::Api), "444K TOK");
+        assert_eq!(
+            usage_token_chip_label(&usage, BillingMode::Subscription),
+            "444K TOK"
+        );
+        assert_eq!(
+            usage_token_chip_label(&usage, BillingMode::Tokens),
+            "444K TOK"
+        );
+        assert_eq!(usage_token_chip_label(&usage, BillingMode::Auto), "444K TOK");
     }
 }
