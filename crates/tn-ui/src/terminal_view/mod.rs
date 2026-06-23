@@ -528,6 +528,109 @@ pub(super) const AGENT_EXIT_SENTINEL: &str = "TN::agent-exited";
 
 type SharedWriter = Arc<Mutex<Box<dyn Write + Send>>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalCursorKeyIntent {
+    Insert,
+    Backspace,
+    DeleteForward,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalCursorMotionKind {
+    Snap,
+    InsertEcho,
+    BackspaceEcho,
+    DeleteForward,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerminalCursorMotionEnvelope {
+    width_offset: f32,
+    height_offset: f32,
+    duration_ms: u64,
+}
+
+fn terminal_cursor_motion_envelope(
+    kind: TerminalCursorMotionKind,
+    t: f32,
+    cell_width: f32,
+    line_height: f32,
+) -> TerminalCursorMotionEnvelope {
+    let duration_ms = match kind {
+        TerminalCursorMotionKind::InsertEcho => CURSOR_GLIDE_MS,
+        TerminalCursorMotionKind::BackspaceEcho => 58,
+        TerminalCursorMotionKind::DeleteForward => 42,
+        TerminalCursorMotionKind::Snap => 0,
+    };
+    let t = t.clamp(0.0, 1.0);
+    let u = 1.0 - t;
+    let pop = u * u * u;
+    let (width_offset, height_offset) = match kind {
+        TerminalCursorMotionKind::InsertEcho => {
+            (cell_width * 0.20 * pop, -line_height * 0.07 * pop)
+        }
+        TerminalCursorMotionKind::BackspaceEcho => {
+            (-cell_width * 0.28 * pop, line_height * 0.16 * pop)
+        }
+        TerminalCursorMotionKind::DeleteForward => {
+            (-cell_width * 0.22 * pop, line_height * 0.12 * pop)
+        }
+        TerminalCursorMotionKind::Snap => (0.0, 0.0),
+    };
+    TerminalCursorMotionEnvelope {
+        width_offset,
+        height_offset,
+        duration_ms,
+    }
+}
+
+fn terminal_cursor_motion_position(
+    kind: TerminalCursorMotionKind,
+    from: (f32, f32),
+    to: (f32, f32),
+    t: f32,
+) -> (f32, f32) {
+    if matches!(
+        kind,
+        TerminalCursorMotionKind::Snap | TerminalCursorMotionKind::DeleteForward
+    ) {
+        return to;
+    }
+    let t = t.clamp(0.0, 1.0);
+    let u = 1.0 - (1.0 - t).powi(3);
+    (from.0 + (to.0 - from.0) * u, from.1 + (to.1 - from.1) * u)
+}
+
+fn classify_terminal_cursor_motion(
+    intent: Option<TerminalCursorKeyIntent>,
+    from: (usize, usize),
+    to: (usize, usize),
+    focused: bool,
+    force_hide_cursor: bool,
+) -> TerminalCursorMotionKind {
+    if !focused || force_hide_cursor || from.0 != to.0 {
+        return TerminalCursorMotionKind::Snap;
+    }
+
+    let dcol = to.1 as i64 - from.1 as i64;
+    if dcol.abs() > CURSOR_GLIDE_MAX_COLS {
+        return TerminalCursorMotionKind::Snap;
+    }
+
+    match intent {
+        Some(TerminalCursorKeyIntent::Backspace) if dcol < 0 => {
+            TerminalCursorMotionKind::BackspaceEcho
+        }
+        Some(TerminalCursorKeyIntent::DeleteForward) if dcol == 0 => {
+            TerminalCursorMotionKind::DeleteForward
+        }
+        Some(TerminalCursorKeyIntent::Insert) if dcol > 0 => TerminalCursorMotionKind::InsertEcho,
+        None if dcol > 0 => TerminalCursorMotionKind::InsertEcho,
+        None if dcol < 0 => TerminalCursorMotionKind::BackspaceEcho,
+        _ => TerminalCursorMotionKind::Snap,
+    }
+}
+
 /// Activity-rail「本次改动」state machine — keeps the UI render path a pure
 /// read of an already-resolved state; no git/io inside `render()`. The enum
 /// replaces ad-hoc `Vec` + `bool` flags so the render can distinguish between
@@ -634,7 +737,8 @@ pub struct TerminalView {
     cursor_px: (f32, f32),
     cursor_cell: (usize, usize),
     cursor_anim_start: Option<Instant>,
-    cursor_action_forward: bool,
+    cursor_motion_kind: TerminalCursorMotionKind,
+    cursor_key_intent: Option<TerminalCursorKeyIntent>,
     cursor_gliding: bool,
     cursor_vel: (f32, f32),
     // While dragging the scrollbar thumb: the grab offset (cursor Y − thumb top,
@@ -1183,7 +1287,8 @@ impl TerminalView {
             cursor_px: (0.0, 0.0),
             cursor_cell: (usize::MAX, usize::MAX), // sentinel → first frame snaps
             cursor_anim_start: None,
-            cursor_action_forward: true,
+            cursor_motion_kind: TerminalCursorMotionKind::Snap,
+            cursor_key_intent: None,
             cursor_gliding: false,
             cursor_vel: (0.0, 0.0),
             scrollbar_drag: None,
@@ -2604,8 +2709,14 @@ impl TerminalView {
         self.cursor_on = true;
         let m = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        self.cursor_key_intent = match key {
+            "backspace" => Some(TerminalCursorKeyIntent::Backspace),
+            "delete" => Some(TerminalCursorKeyIntent::DeleteForward),
+            _ => None,
+        };
         // Copy: Ctrl+Shift+C (reserved from the encoder).
         if m.control && m.shift && key == "c" {
+            self.cursor_key_intent = None;
             self.copy(cx);
             cx.stop_propagation();
             return;
@@ -2614,6 +2725,7 @@ impl TerminalView {
         if (m.control && m.shift && key == "v")
             || (m.shift && !m.control && !m.alt && key == "insert")
         {
+            self.cursor_key_intent = None;
             self.paste(cx);
             cx.stop_propagation();
             return;
@@ -2659,6 +2771,7 @@ impl TerminalView {
         let is_text_input =
             !m.control && !m.alt && !m.platform && (key.chars().count() == 1 || key == "space");
         if is_text_input {
+            self.cursor_key_intent = Some(TerminalCursorKeyIntent::Insert);
             return;
         }
 
@@ -2919,6 +3032,7 @@ impl EntityInputHandler for TerminalView {
         // (Backspace is encoded in `on_key`, never routed here — `translate_message`
         // emits no WM_CHAR for it, see the on_key note.)
         if !text.is_empty() {
+            self.cursor_key_intent = Some(TerminalCursorKeyIntent::Insert);
             self.terminal.lock().unwrap().scroll_to_bottom();
             self.send_bytes(text.as_bytes());
         }
@@ -3217,43 +3331,73 @@ impl Render for TerminalView {
             let dcol = cur_col as i64 - self.cursor_cell.1 as i64;
             let first = self.cursor_cell == (usize::MAX, usize::MAX);
             let small = same_row && dcol.abs() <= CURSOR_GLIDE_MAX_COLS;
+            let motion_kind = classify_terminal_cursor_motion(
+                self.cursor_key_intent,
+                self.cursor_cell,
+                (cur_row, cur_col),
+                focused && small && !first,
+                force_hide_cursor,
+            );
             self.cursor_cell = (cur_row, cur_col);
-            if focused && small && !first && !force_hide_cursor {
+            if motion_kind != TerminalCursorMotionKind::Snap {
                 self.cursor_anim_start = Some(Instant::now());
-                self.cursor_action_forward = dcol > 0;
+                self.cursor_motion_kind = motion_kind;
                 self.spawn_cursor_glide(cx);
             } else {
                 self.cursor_anim_start = None; // snap
+                self.cursor_motion_kind = TerminalCursorMotionKind::Snap;
                 self.cursor_px = target_px;
                 self.cursor_vel = (0.0, 0.0);
             }
+            self.cursor_key_intent = None;
+        } else if self.cursor_key_intent == Some(TerminalCursorKeyIntent::DeleteForward)
+            && focused
+            && !force_hide_cursor
+        {
+            self.cursor_anim_start = Some(Instant::now());
+            self.cursor_motion_kind = TerminalCursorMotionKind::DeleteForward;
+            self.cursor_px = target_px;
+            self.cursor_vel = (0.0, 0.0);
+            self.cursor_key_intent = None;
+            self.spawn_cursor_glide(cx);
+        } else if self.cursor_key_intent.is_some() {
+            self.cursor_key_intent = None;
         }
-
-        let (cur_x, cur_y) = self.cursor_px;
 
         // Calculate pop/squish animation offsets
         let mut width_offset = 0.0;
         let mut height_offset = 0.0;
         if let Some(start) = self.cursor_anim_start {
-            let t =
-                (start.elapsed().as_secs_f32() / (CURSOR_GLIDE_MS as f32 / 1000.0)).clamp(0.0, 1.0);
+            let duration_ms = terminal_cursor_motion_envelope(
+                self.cursor_motion_kind,
+                0.0,
+                self.cell_width,
+                self.line_height,
+            )
+            .duration_ms
+            .max(1);
+            let t = (start.elapsed().as_secs_f32() / (duration_ms as f32 / 1000.0)).clamp(0.0, 1.0);
             if t >= 1.0 {
                 self.cursor_anim_start = None;
+                self.cursor_px = target_px;
             } else {
-                // Mechanical strike envelope: instant peak, cubic decay back to normal
-                let u = 1.0 - t;
-                let pop = u * u * u;
-                if self.cursor_action_forward {
-                    // Typing: widen subtly, shrink height subtly (micro-feedback)
-                    width_offset = self.cell_width * 0.22 * pop;
-                    height_offset = -self.line_height * 0.08 * pop;
-                } else {
-                    // Deleting: squeeze width subtly, stretch height subtly
-                    width_offset = -self.cell_width * 0.15 * pop;
-                    height_offset = self.line_height * 0.15 * pop;
-                }
+                self.cursor_px = terminal_cursor_motion_position(
+                    self.cursor_motion_kind,
+                    self.cursor_px,
+                    target_px,
+                    t,
+                );
+                let env = terminal_cursor_motion_envelope(
+                    self.cursor_motion_kind,
+                    t,
+                    self.cell_width,
+                    self.line_height,
+                );
+                width_offset = env.width_offset;
+                height_offset = env.height_offset;
             }
         }
+        let (cur_x, cur_y) = self.cursor_px;
 
         // 字符淡入淡出(原 §3.1)已删:fade-in 在快速打字 / Claude spinner 下像多光标
         // 残块、fade-out 像删除延迟残影 —— 产品上已禁用(push 早被注释)。连同每帧
@@ -4847,6 +4991,122 @@ mod tests {
         // Past the end / empty row → one cell (plain block on a blank).
         assert_eq!(cursor_cell_cols(&row, 9), 1);
         assert_eq!(cursor_cell_cols(&[], 0), 1);
+    }
+
+    #[test]
+    fn terminal_cursor_motion_classifies_backspace_delete_forward_and_jumps() {
+        let prev = (4, 10);
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::Backspace),
+                prev,
+                (4, 9),
+                true,
+                false,
+            ),
+            TerminalCursorMotionKind::BackspaceEcho
+        );
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::DeleteForward),
+                prev,
+                prev,
+                true,
+                false,
+            ),
+            TerminalCursorMotionKind::DeleteForward
+        );
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::Insert),
+                prev,
+                (4, 11),
+                true,
+                false,
+            ),
+            TerminalCursorMotionKind::InsertEcho
+        );
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::Backspace),
+                prev,
+                (5, 0),
+                true,
+                false,
+            ),
+            TerminalCursorMotionKind::Snap
+        );
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::Backspace),
+                prev,
+                (4, 9),
+                false,
+                false,
+            ),
+            TerminalCursorMotionKind::Snap
+        );
+        assert_eq!(
+            classify_terminal_cursor_motion(
+                Some(TerminalCursorKeyIntent::Backspace),
+                prev,
+                (4, 9),
+                true,
+                true,
+            ),
+            TerminalCursorMotionKind::Snap
+        );
+    }
+
+    #[test]
+    fn terminal_cursor_motion_envelope_makes_backspace_harder_than_insert() {
+        let insert =
+            terminal_cursor_motion_envelope(TerminalCursorMotionKind::InsertEcho, 0.35, 12.0, 20.0);
+        let backspace = terminal_cursor_motion_envelope(
+            TerminalCursorMotionKind::BackspaceEcho,
+            0.35,
+            12.0,
+            20.0,
+        );
+        assert!(insert.width_offset > 0.0);
+        assert!(insert.height_offset < 0.0);
+        assert!(backspace.width_offset < 0.0);
+        assert!(backspace.height_offset > 0.0);
+        assert!(backspace.duration_ms < insert.duration_ms);
+    }
+
+    #[test]
+    fn terminal_cursor_motion_envelope_delete_forward_has_in_place_bite() {
+        let bite = terminal_cursor_motion_envelope(
+            TerminalCursorMotionKind::DeleteForward,
+            0.25,
+            12.0,
+            20.0,
+        );
+        assert!(bite.width_offset < 0.0);
+        assert!(bite.height_offset > 0.0);
+        assert!(bite.duration_ms <= 45);
+    }
+
+    #[test]
+    fn terminal_cursor_motion_position_chases_target_and_snaps_when_done() {
+        let from = (100.0, 20.0);
+        let to = (112.0, 20.0);
+        let mid = terminal_cursor_motion_position(TerminalCursorMotionKind::InsertEcho, from, to, 0.35);
+        assert!(mid.0 > from.0 && mid.0 < to.0, "insert should chase toward target");
+        assert_eq!(
+            terminal_cursor_motion_position(TerminalCursorMotionKind::InsertEcho, from, to, 1.0),
+            to
+        );
+        assert_eq!(
+            terminal_cursor_motion_position(TerminalCursorMotionKind::DeleteForward, from, from, 0.3),
+            from,
+            "DeleteForward is an in-place bite"
+        );
+        assert_eq!(
+            terminal_cursor_motion_position(TerminalCursorMotionKind::Snap, from, to, 0.1),
+            to
+        );
     }
 
     #[test]
