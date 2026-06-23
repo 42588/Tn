@@ -1936,6 +1936,21 @@ impl QuickLook {
         md_block_src_lines(&lines.join("\n"))
     }
 
+    fn scroll_markdown_to_line(&mut self, line: usize) -> bool {
+        if self.md_blocks_map.is_none() {
+            self.md_blocks_map = Some(self.compute_md_blocks_map());
+        }
+        let Some(idx) = self
+            .md_blocks_map
+            .as_ref()
+            .and_then(|map| md_block_index_for_line(map, line))
+        else {
+            return false;
+        };
+        self.md_scroll.scroll_to_top_of_item(idx);
+        true
+    }
+
     /// Open `path`: read its text off the **background** thread, default to the File
     /// tab (preview). Binary files (null bytes) or files exceeding [`MAX_FILE_SIZE`]
     /// are detected early — instead of garbled/empty content, the overlay shows file
@@ -4626,6 +4641,9 @@ impl QuickLook {
         self.file_jump_highlight = Some(jump.highlight_row);
         self.edit_drag = false;
         self.scroll.scroll_to_item(jump.row, ScrollStrategy::Center);
+        if is_markdown_path(self.path.as_deref()) {
+            self.scroll_markdown_to_line(jump.row);
+        }
         self.el_center_file_cursor((jump.row, 0));
         self.el_reveal_col(jump.row, 0);
         true
@@ -7263,21 +7281,7 @@ impl Render for QuickLook {
                                     }
                                     OutlineTarget::Line(l) => {
                                         if !this.editing && is_md {
-                                            if this.md_blocks_map.is_none() {
-                                                this.md_blocks_map = Some(this.compute_md_blocks_map());
-                                            }
-                                            if let Some(map) = &this.md_blocks_map {
-                                                let mut best_idx = 0;
-                                                let mut min_diff = usize::MAX;
-                                                for (idx, &line_idx) in map.iter().enumerate() {
-                                                    let diff = (line_idx as isize - l as isize).abs() as usize;
-                                                    if diff < min_diff {
-                                                        min_diff = diff;
-                                                        best_idx = idx;
-                                                    }
-                                                }
-                                                this.md_scroll.scroll_to_top_of_item(best_idx);
-                                            }
+                                            this.scroll_markdown_to_line(l);
                                             // Keep the clicked heading highlighted: the
                                             // active-item math reads `cursor.0` (the md
                                             // preview never paints this caret).
@@ -8948,6 +8952,19 @@ fn md_block_src_lines(source: &str) -> Vec<usize> {
     block_lines
 }
 
+fn md_block_index_for_line(block_lines: &[usize], line: usize) -> Option<usize> {
+    let mut best = None;
+    let mut best_diff = usize::MAX;
+    for (idx, &block_line) in block_lines.iter().enumerate() {
+        let diff = block_line.abs_diff(line);
+        if diff < best_diff {
+            best = Some(idx);
+            best_diff = diff;
+        }
+    }
+    best
+}
+
 /// Markdown 预览视图:解析整篇 → 块元素,装进可纵向滚动的浮板正文区。
 fn markdown_view(config: &Loaded, lines: &[String], scroll_handle: &ScrollHandle) -> impl IntoElement {
     let source = lines.join("\n");
@@ -9935,6 +9952,34 @@ mod tests {
         assert_eq!(diff_target_file_row(&rows, 0), Some(19));
         assert_eq!(diff_target_file_row(&rows, 1), Some(19));
         assert_eq!(diff_target_file_row(&rows, 3), Some(20));
+    }
+
+    #[test]
+    fn markdown_jump_uses_nearest_rendered_block_for_source_line() {
+        let map = vec![0, 4, 12, 30];
+
+        assert_eq!(md_block_index_for_line(&map, 0), Some(0));
+        assert_eq!(md_block_index_for_line(&map, 6), Some(1));
+        assert_eq!(md_block_index_for_line(&map, 20), Some(2));
+        assert_eq!(md_block_index_for_line(&map, 29), Some(3));
+        assert_eq!(md_block_index_for_line(&[], 3), None);
+    }
+
+    #[test]
+    fn diff_jump_target_selects_markdown_block_for_target_file_row() {
+        let raw = concat!(
+            "@@ -1,1 +8,4 @@\n",
+            "+# Added heading\n",
+            "+\n",
+            "+Added body\n",
+            " context\n",
+        );
+        let rows = diff_render_rows(&parse_diff(raw));
+        let jump = diff_file_jump_target_for_file_len(&rows, 1, 40).unwrap();
+        let md_blocks = vec![0, 4, 7, 15];
+
+        assert_eq!(jump.row, 7);
+        assert_eq!(md_block_index_for_line(&md_blocks, jump.row), Some(2));
     }
 
     #[test]
