@@ -845,6 +845,8 @@ impl PetContext {
 
 /// 双击逗弄的玩耍窗口(设计.md `play`:蹦跳 + 爱心)。
 const PLAY_MS: u64 = 1400;
+/// 单击需要等一个短双击窗口后再确认,避免双击时先弹出历史面板。
+const SINGLE_CLICK_CONFIRM_MS: u64 = 220;
 /// 探头入场窗口(SHEET 05-E:从岗台线后升起,全高裁切,~500ms 缓出)。
 const PEEK_MS: u64 = 500;
 /// idle 微动作单次时长(规则 C:做完 ≤1.5s 回 idle)。略加长到 1.8s,
@@ -1003,6 +1005,43 @@ struct PetDrag {
     patted: bool,
 }
 
+#[derive(Default)]
+struct PetClickGate {
+    next_token: u64,
+    pending_single: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PetClickIntent {
+    None,
+    PendingSingle(u64),
+    Single,
+    Double,
+}
+
+impl PetClickGate {
+    fn single_mouse_up(&mut self) -> PetClickIntent {
+        self.next_token = self.next_token.saturating_add(1);
+        self.pending_single = Some(self.next_token);
+        PetClickIntent::PendingSingle(self.next_token)
+    }
+
+    fn double_mouse_down(&mut self) -> PetClickIntent {
+        self.next_token = self.next_token.saturating_add(1);
+        self.pending_single = None;
+        PetClickIntent::Double
+    }
+
+    fn confirm_pending(&mut self, token: u64) -> PetClickIntent {
+        if self.pending_single == Some(token) {
+            self.pending_single = None;
+            PetClickIntent::Single
+        } else {
+            PetClickIntent::None
+        }
+    }
+}
+
 /// 像素小狗 overlay。挂在 workspace root 上(inset 0 的穿透容器,只有小狗
 /// 本体与菜单有命中区)。
 pub struct PetView {
@@ -1042,6 +1081,7 @@ pub struct PetView {
     bubble: Option<(SharedString, u64)>,
     hover: bool,
     drag: Option<PetDrag>,
+    click_gate: PetClickGate,
     menu_open: bool,
     /// 当前 tab 是否欢迎页(welcome_only 模式用;由 workspace 每帧喂入)。
     on_welcome: bool,
@@ -1158,6 +1198,7 @@ impl PetView {
             bubble: None,
             hover: false,
             drag: None,
+            click_gate: PetClickGate::default(),
             menu_open: false,
             on_welcome: false,
             entrance: None,
@@ -3365,6 +3406,7 @@ impl Render for PetView {
                     // 设置不再占双击 — 右键/命令面板/状态栏席位可达)。
                     if ev.click_count >= 2 {
                         pet.drag = None;
+                        let _ = pet.click_gate.double_mouse_down();
                         pet.play(cx);
                         return;
                     }
@@ -3796,9 +3838,23 @@ impl Render for PetView {
                                     pet.settle(q, cx); // settle 内含 state.save()
                                 } else if drag.patted {
                                     // 摸头已在长按时处理,松手不再当单击。
-                                } else {
-                                    pet.bark(cx); // 原地松手 = 单击互动
-                                    cx.emit(PetClicked);
+                                } else if let PetClickIntent::PendingSingle(token) =
+                                    pet.click_gate.single_mouse_up()
+                                {
+                                    cx.spawn(async move |this, cx| {
+                                        cx.background_executor()
+                                            .timer(Duration::from_millis(SINGLE_CLICK_CONFIRM_MS))
+                                            .await;
+                                        let _ = this.update(cx, |pet, cx| {
+                                            if pet.click_gate.confirm_pending(token)
+                                                == PetClickIntent::Single
+                                            {
+                                                pet.bark(cx); // 原地松手 = 单击互动
+                                                cx.emit(PetClicked);
+                                            }
+                                        });
+                                    })
+                                    .detach();
                                 }
                             }
                             cx.notify();
@@ -3930,6 +3986,18 @@ mod tests {
         assert!(!cmd_is_commit("git status"));
         assert!(!cmd_is_commit("cargo test"));
         assert!(!cmd_is_commit("echo git commit"));
+    }
+
+    #[test]
+    fn double_click_cancels_pending_single_click() {
+        let mut clicks = PetClickGate::default();
+
+        assert_eq!(clicks.single_mouse_up(), PetClickIntent::PendingSingle(1));
+        assert_eq!(clicks.double_mouse_down(), PetClickIntent::Double);
+        assert_eq!(clicks.confirm_pending(1), PetClickIntent::None);
+
+        assert_eq!(clicks.single_mouse_up(), PetClickIntent::PendingSingle(3));
+        assert_eq!(clicks.confirm_pending(3), PetClickIntent::Single);
     }
 
     /// 垂耳犬不得对「竖耳听声」赋权(规则 C:0 = 不做该动作),否则会触发
