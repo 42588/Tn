@@ -24,7 +24,7 @@ Thumbs.db
 tn.zip
 
 # Installer output (cargo-packager) — lands in crates/tn-app/dist/
-dist/1
+dist/
 
 # Loose downloaded redistributable archives + the dev-time loose pdfium.dll at
 # repo root (the real copy is vendored under crates/tn-app/vendor/pdfium/, so
@@ -40,6 +40,6 @@ tmp/
 # 宠物 Lottie 原型:本地 scaffold 的官方播放器(diffusionstudio/lottie)整体不入库。
 # 只用 `git add -f` 强制跟踪自写文件:script/gen_pet_lottie.mjs、生成的 lottie.json/
 # controls.json、README.md(预览方式见该 README)。
-/design/pet-lottie/
+/design/
 
 .fonttmp/
