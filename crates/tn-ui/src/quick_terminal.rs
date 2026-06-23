@@ -34,11 +34,12 @@ use crate::local_dir_picker::{
     WorkdirRecents,
 };
 use crate::platform;
+use crate::quick_look::{QuickLook, QuickLookEvent};
 use crate::ssh_recents::{AuthBadge, SshRecents};
-use crate::style::{col, cola, icon, R_CARD, UI_SANS};
+use crate::style::{col, cola, icon, R_CARD, SCRIM, UI_SANS};
 use crate::terminal_view::{
-    FileNamespace, LaunchSpec, ProcessExited, SshCloseRequested, SshConnected, SshRememberPassword,
-    SshRetryRequested, TerminalView, UsageUpdated,
+    FileNamespace, LaunchSpec, OpenInQuickLook, ProcessExited, RailFileTarget, SshCloseRequested,
+    SshConnected, SshRememberPassword, SshRetryRequested, TerminalView, UsageUpdated,
 };
 use crate::welcome::{
     launch_entries, profile_card, ssh_card, wsl_card, wsl_distros, CardId, LaunchEntry,
@@ -60,6 +61,8 @@ pub struct QuickTerminal {
     term: Option<Entity<TerminalView>>,
     /// Last launch spec for the hosted session; SSH retry / remember-password update it.
     term_spec: Option<LaunchSpec>,
+    quick_look: Entity<QuickLook>,
+    quick_look_state: QuickTerminalQuickLookState,
     /// Launcher overlay state.
     picker_open: bool,
     picker_sel: usize,
@@ -111,6 +114,51 @@ enum PickerItem {
     SshPrompt,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct QuickTerminalQuickLookState {
+    open: bool,
+    rail_idx: usize,
+}
+
+impl QuickTerminalQuickLookState {
+    fn open_from_rail(&mut self, idx: usize) {
+        self.open = true;
+        self.rail_idx = idx;
+    }
+
+    fn set_rail_index(&mut self, idx: usize) {
+        if self.open {
+            self.rail_idx = idx;
+        }
+    }
+
+    fn close(&mut self) {
+        self.open = false;
+        self.rail_idx = 0;
+    }
+
+    fn is_open(&self) -> bool {
+        self.open
+    }
+
+    fn current_index(&self) -> Option<usize> {
+        self.open.then_some(self.rail_idx)
+    }
+
+    fn rail_pos(&self, total: usize) -> Option<(usize, usize)> {
+        (self.open && total > 0).then_some((self.rail_idx.min(total - 1), total))
+    }
+
+    #[cfg(test)]
+    fn nav_index(&self, total: usize, delta: i32) -> Option<usize> {
+        if !self.open || total == 0 {
+            return None;
+        }
+        let total = total as i32;
+        Some(((self.rail_idx as i32 + delta).rem_euclid(total)) as usize)
+    }
+}
+
 #[derive(Clone)]
 enum QuickSshRow {
     Profile {
@@ -155,10 +203,49 @@ impl QuickSshRow {
 impl QuickTerminal {
     pub fn new(cx: &mut Context<Self>, config: Arc<Loaded>) -> Self {
         let launch_profiles = crate::workspace::discover_profiles(&config);
+        let quick_look = cx.new({
+            let config = config.clone();
+            move |cx| QuickLook::new(cx, config)
+        });
+        cx.subscribe(&quick_look, |this, _ql, ev: &QuickLookEvent, cx| {
+            match ev {
+                QuickLookEvent::Nav(delta) => {
+                    let current = this.quick_look_state.current_index().unwrap_or(0);
+                    let result = this
+                        .term
+                        .as_ref()
+                        .and_then(|term| term.read(cx).rail_nav(current, *delta));
+                    if let Some((new_idx, target)) = result {
+                        this.quick_look_state.set_rail_index(new_idx);
+                        this.open_quick_look_diff_target(target, cx);
+                    }
+                }
+                QuickLookEvent::Close => {
+                    let closed = this.quick_look.update(cx, |v, cx| v.request_close(cx));
+                    if closed {
+                        this.quick_look_state.close();
+                        this.pending_focus = true;
+                    }
+                }
+                QuickLookEvent::CloseConfirmed | QuickLookEvent::QuitConfirmed => {
+                    this.quick_look_state.close();
+                    this.pending_focus = true;
+                }
+                QuickLookEvent::FileSaved(_) | QuickLookEvent::RemoteChangesDirty => {
+                    if let Some(term) = &this.term {
+                        term.update(cx, |term, cx| term.refresh_changes(cx));
+                    }
+                }
+            }
+            cx.notify();
+        })
+        .detach();
         Self {
             config,
             term: None,
             term_spec: None,
+            quick_look,
+            quick_look_state: QuickTerminalQuickLookState::default(),
             picker_open: false,
             picker_sel: 0,
             wsl_drill: false,
@@ -486,6 +573,17 @@ impl QuickTerminal {
         self.launch_spec(spec, cx);
     }
 
+    fn open_quick_look_diff_target(
+        &mut self,
+        target: RailFileTarget,
+        cx: &mut Context<Self>,
+    ) {
+        self.quick_look.update(cx, |v, cx| match target {
+            RailFileTarget::Local(path) => v.open_diff(path, cx),
+            RailFileTarget::Remote(file) => v.open_remote_diff(file, cx),
+        });
+    }
+
     /// Launch `spec` as the hosted session (replacing any previous one — its process is
     /// killed by `LocalPty::Drop`), grow the card-sized window to the drop-down, fade in.
     fn launch_spec(&mut self, spec: LaunchSpec, cx: &mut Context<Self>) {
@@ -501,6 +599,17 @@ impl QuickTerminal {
         // Repaint when this session's agent usage changes (keeps the ring live).
         cx.subscribe(&term, |_qt, _t, _ev: &UsageUpdated, cx| cx.notify())
             .detach();
+        cx.subscribe(&term, |this, emitter, ev: &OpenInQuickLook, cx| {
+            if this.term.as_ref().map(|t| t.entity_id()) != Some(emitter.entity_id()) {
+                return;
+            }
+            let target = ev.0.clone();
+            let file_idx = emitter.read(cx).rail_find_idx(&target).unwrap_or(0);
+            this.quick_look_state.open_from_rail(file_idx);
+            this.open_quick_look_diff_target(target, cx);
+            cx.notify();
+        })
+        .detach();
         cx.subscribe(&term, |this, emitter, ev: &SshConnected, _cx| {
             if this.term.as_ref().map(|t| t.entity_id()) != Some(emitter.entity_id()) {
                 return;
@@ -527,6 +636,7 @@ impl QuickTerminal {
             }
             this.term = None;
             this.term_spec = None;
+            this.quick_look_state.close();
             this.picker_open = true;
             this.ssh_prompt_open = false;
             this.local_dir_picker = None;
@@ -554,6 +664,7 @@ impl QuickTerminal {
             if this.term.as_ref().map(|t| t.entity_id()) == Some(emitter.entity_id()) {
                 this.term = None;
                 this.term_spec = None;
+                this.quick_look_state.close();
                 this.picker_open = true;
                 this.ssh_prompt_open = false;
                 this.local_dir_picker = None;
@@ -567,6 +678,7 @@ impl QuickTerminal {
             }
         })
         .detach();
+        self.quick_look_state.close();
         self.term = Some(term); // replaces any prior session (old one is dropped -> killed)
         self.term_spec = Some(term_spec);
         self.picker_open = false;
@@ -2515,6 +2627,9 @@ impl Render for QuickTerminal {
                 self.ssh_prompt_focus.focus(window);
             } else if self.picker_open {
                 self.picker_focus.focus(window);
+            } else if self.quick_look_state.is_open() {
+                let fh = self.quick_look.read(cx).focus_handle();
+                fh.focus(window);
             } else if let Some(t) = &self.term {
                 let fh = t.read(cx).focus_handle();
                 fh.focus(window);
@@ -2535,7 +2650,13 @@ impl Render for QuickTerminal {
 
         let theme = &self.config.theme;
         let ui = &theme.ui;
-        let mut root = div().size_full().overflow_hidden();
+        let ql_rail_pos = self.term.as_ref().and_then(|term| {
+            self.quick_look_state
+                .rail_pos(term.read(cx).rail_len())
+        });
+        self.quick_look
+            .update(cx, |v, cx| v.set_rail_pos(ql_rail_pos, cx));
+        let mut root = div().size_full().relative().overflow_hidden();
 
         // The live session fills the window (its own header shows the agent +
         // usage ring). The launcher overlays everything when open.
@@ -2687,6 +2808,46 @@ impl Render for QuickTerminal {
             // 幽灵窗外壳:顶垂 + 顶缘磷光 + 残影签名(SHEET 04 板 C)。
             root = root.child(self.ghost_frame(session));
         }
+        if self.quick_look_state.is_open() && self.quick_look.read(cx).has_file() {
+            root = root.child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .bg(rgba(SCRIM))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e, _w, cx| {
+                            let closed = this.quick_look.update(cx, |v, cx| v.request_close(cx));
+                            if closed {
+                                this.quick_look_state.close();
+                                this.pending_focus = true;
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .on_scroll_wheel(
+                        cx.listener(|_this, _e: &gpui::ScrollWheelEvent, _w, cx| {
+                            cx.stop_propagation();
+                        }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .w(gpui::relative(0.88))
+                                    .max_w(px(1080.))
+                                    .h(gpui::relative(0.78))
+                                    .max_h(px(520.))
+                                    .child(self.quick_look.clone()),
+                            ),
+                    ),
+            );
+        }
         if let Some(picker) = self.render_picker(cx) {
             root = root.child(picker);
         }
@@ -2694,5 +2855,29 @@ impl Render for QuickTerminal {
             root = root.child(ssh_prompt);
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quick_terminal_rail_preview_state_opens_and_wraps_navigation() {
+        let mut state = QuickTerminalQuickLookState::default();
+
+        assert_eq!(state.rail_pos(4), None);
+
+        state.open_from_rail(2);
+        assert_eq!(state.rail_pos(4), Some((2, 4)));
+        assert_eq!(state.nav_index(4, 1), Some(3));
+
+        state.set_rail_index(3);
+        assert_eq!(state.nav_index(4, 1), Some(0));
+        assert_eq!(state.nav_index(4, -1), Some(2));
+
+        state.close();
+        assert_eq!(state.rail_pos(4), None);
+        assert_eq!(state.nav_index(4, 1), None);
     }
 }
